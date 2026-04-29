@@ -36,7 +36,7 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
-from .courses.foreup.captcha import make_captcha_provider
+from .courses.foreup.captcha import make_2captcha_provider, make_captcha_provider
 from .courses.foreup.mangrove_bay import MANGROVE_BAY_BOOKING_PAGE_URL, MangroveBayAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
@@ -137,7 +137,15 @@ def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, C
     adapters: dict[CourseId, CourseAdapter] = {}
     for c in cfg.courses:
         if c.adapter == "foreup.mangrove_bay":
-            cp = None if dry_run else make_captcha_provider(MANGROVE_BAY_BOOKING_PAGE_URL)
+            if dry_run:
+                cp = None
+            else:
+                twocaptcha_key = os.environ.get("TWOCAPTCHA_API_KEY")
+                cp = (
+                    make_2captcha_provider(twocaptcha_key, MANGROVE_BAY_BOOKING_PAGE_URL)
+                    if twocaptcha_key
+                    else make_captcha_provider(MANGROVE_BAY_BOOKING_PAGE_URL)
+                )
             adapters[CourseId(c.id)] = MangroveBayAdapter(captcha_provider=cp)
         else:
             cls = _ADAPTER_REGISTRY.get(c.adapter)

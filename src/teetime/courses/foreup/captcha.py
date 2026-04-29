@@ -1,18 +1,31 @@
-"""Playwright-based reCAPTCHA v2 invisible token provider for ForeUP bookings.
+"""reCAPTCHA v2 invisible token providers for ForeUP bookings.
 
-ForeUP's booking POST requires a reCAPTCHA v2 invisible token in the `captchaid`
-field. This module navigates to the booking page in a real browser context so
-Google's reCAPTCHA can run against the correct domain and a genuine browser
-fingerprint. Tokens expire in ~2 minutes; call this immediately before book().
+ForeUP's booking POST requires a valid reCAPTCHA v2 invisible token in the
+`captchaid` field. Two providers are available:
+
+1. Playwright (get_foreup_captcha_token / make_captcha_provider):
+   Launches a headless browser and executes reCAPTCHA on the real ForeUP page.
+   Free but unreliable — Google's risk scorer often rejects Playwright browsers.
+   Use only from residential IPs where bot detection is lenient.
+
+2. 2captcha (get_foreup_captcha_token_2captcha / make_2captcha_provider):
+   Delegates solving to 2captcha.com's human/AI solver pool. Reliable, costs
+   ~$0.003/solve (~$0.15/year for weekly bookings). Requires an API key from
+   https://2captcha.com; set TWOCAPTCHA_API_KEY in .env.
 
 Site key confirmed from ForeUP's booking page source:
     6LfZGS0qAAAAAMVgxySjd43HvklGdg1Jady2TolK
+
+Tokens expire in ~2 minutes; providers are called immediately before book().
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
+from typing import Any
 
+import httpx
 from playwright.async_api import async_playwright
 
 FOREUP_RECAPTCHA_SITE_KEY = "6LfZGS0qAAAAAMVgxySjd43HvklGdg1Jady2TolK"
@@ -42,6 +55,16 @@ _RECAPTCHA_JS = """\
 })
 """
 
+_TWOCAPTCHA_SUBMIT_URL = "https://2captcha.com/in.php"
+_TWOCAPTCHA_RESULT_URL = "https://2captcha.com/res.php"
+_TWOCAPTCHA_DEFAULT_POLL_INTERVAL_S = 5.0
+_TWOCAPTCHA_DEFAULT_MAX_POLLS = 24  # 24 x 5 s = 2 min max wait
+
+
+# ---------------------------------------------------------------------------
+# Playwright provider (free, may be blocked by Google bot detection)
+# ---------------------------------------------------------------------------
+
 
 async def get_foreup_captcha_token(
     *,
@@ -51,8 +74,8 @@ async def get_foreup_captcha_token(
     """Launch a headless browser, navigate to the ForeUP booking page, and return
     a fresh reCAPTCHA v2 invisible token.
 
-    The page must be on foreupsoftware.com so the site key's domain restriction
-    is satisfied. Raises TimeoutError if reCAPTCHA does not resolve in ~30 s.
+    Unreliable if Google's risk scorer detects the automated browser. Use
+    get_foreup_captcha_token_2captcha for a reliable alternative.
     """
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -80,9 +103,80 @@ async def get_foreup_captcha_token(
 
 
 def make_captcha_provider(booking_page_url: str) -> Callable[[], Awaitable[str]]:
-    """Return a zero-argument async callable that fetches a fresh token."""
+    """Return a zero-argument async callable that fetches a fresh Playwright token."""
 
     async def _provider() -> str:
         return await get_foreup_captcha_token(booking_page_url=booking_page_url)
+
+    return _provider
+
+
+# ---------------------------------------------------------------------------
+# 2captcha provider (reliable, ~$0.003/solve)
+# ---------------------------------------------------------------------------
+
+
+async def get_foreup_captcha_token_2captcha(
+    *,
+    api_key: str,
+    page_url: str,
+    site_key: str = FOREUP_RECAPTCHA_SITE_KEY,
+    poll_interval_s: float = _TWOCAPTCHA_DEFAULT_POLL_INTERVAL_S,
+    max_polls: int = _TWOCAPTCHA_DEFAULT_MAX_POLLS,
+) -> str:
+    """Solve ForeUP's reCAPTCHA v2 invisible via 2captcha.com.
+
+    Submits a task to 2captcha's solver pool, polls until the result is ready,
+    and returns the token. Typically resolves in 15-30 seconds.
+
+    Raises RuntimeError on API errors, TimeoutError if max_polls is exhausted.
+    """
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            _TWOCAPTCHA_SUBMIT_URL,
+            data={
+                "key": api_key,
+                "method": "userrecaptcha",
+                "googlekey": site_key,
+                "pageurl": page_url,
+                "invisible": "1",
+                "json": "1",
+            },
+        )
+        r.raise_for_status()
+        submit: Any = r.json()
+        if not isinstance(submit, dict) or submit.get("status") != 1:
+            detail = submit.get("request") if isinstance(submit, dict) else repr(submit)
+            raise RuntimeError(f"2captcha submission failed: {detail}")
+        task_id = str(submit["request"])
+
+        for _ in range(max_polls):
+            await asyncio.sleep(poll_interval_s)
+            r = await client.get(
+                _TWOCAPTCHA_RESULT_URL,
+                params={"key": api_key, "action": "get", "id": task_id, "json": "1"},
+            )
+            r.raise_for_status()
+            result: Any = r.json()
+            if not isinstance(result, dict):
+                raise RuntimeError(f"2captcha unexpected response: {result!r}")
+            if result.get("status") == 1:
+                return str(result["request"])
+            if result.get("request") != "CAPCHA_NOT_READY":
+                raise RuntimeError(f"2captcha error: {result.get('request')}")
+
+    raise TimeoutError(
+        f"2captcha did not solve CAPTCHA within {max_polls * poll_interval_s:.0f}s"
+    )
+
+
+def make_2captcha_provider(
+    api_key: str,
+    page_url: str,
+) -> Callable[[], Awaitable[str]]:
+    """Return a zero-argument async callable that solves reCAPTCHA via 2captcha.com."""
+
+    async def _provider() -> str:
+        return await get_foreup_captcha_token_2captcha(api_key=api_key, page_url=page_url)
 
     return _provider
