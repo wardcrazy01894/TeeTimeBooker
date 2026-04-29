@@ -1,0 +1,71 @@
+# TeeTimeBooker — example config.
+# Copy to config/local.toml (gitignored) and edit. Secrets live in env vars,
+# referenced here by NAME (e.g. password_env = "MB_PASS"); never inline them.
+
+[[courses]]
+id = "foreup:mangrove_bay"
+adapter = "foreup.mangrove_bay"
+username_env = "MB_USERNAME"
+password_env = "MB_PASSWORD"
+extra = { booking_class_id = "2149" }
+
+# Add additional ForeUP-backed St. Pete munis here as siblings:
+# [[courses]]
+# id = "foreup:twin_brooks"
+# adapter = "foreup.twin_brooks"
+# username_env = "TB_USERNAME"
+# password_env = "TB_PASSWORD"
+
+[request]
+# Target dates are computed at run time from offsets (days from today, in the
+# scheduler timezone). [7] = "always book 7 days out". The RequestId is derived
+# from offsets (NOT resolved dates), so the same idempotency identity persists
+# across daily cron firings; the (RequestId, resolved_date) pair is the actual
+# idempotency key. See PLAN.md §13.
+target_offsets     = [7]
+holes              = 18
+# Decimal-as-string. Pydantic coerces via Decimal(str) — no float drift.
+max_price_per_player = "55.00"
+cart               = "either"     # "either" | "cart" | "walking"
+course_preferences = ["foreup:mangrove_bay"]
+
+# Party size = len(players). Each player is one row. PII fields prefer env-var
+# refs; inline only if you accept the file is gitignored.
+[[request.players]]
+first_name    = "Alex"
+last_name     = "Lancaster"
+email_env     = "PLAYER1_EMAIL"
+phone_env     = "PLAYER1_PHONE"
+member_number_env = "PLAYER1_MB_MEMBER"
+
+[[request.players]]
+first_name    = "Guest"
+last_name     = "Player"
+email_env     = "PLAYER2_EMAIL"
+
+# Multiple windows OR together: any matching window is acceptable.
+[[request.time_windows]]
+earliest = 07:00
+latest   = 09:30
+
+[[request.time_windows]]
+earliest = 16:00
+latest   = 18:00
+
+[scheduler]
+timezone         = "America/New_York"   # Mangrove Bay is in ET
+fire_time        = 06:00:00              # local wall-clock; DST handled by zoneinfo
+early_arrival_ms = 500                   # land 0.5 s before T0
+poll_interval_ms = 250
+max_poll_seconds = 30                    # give up polling after this
+
+[notifier]
+backend         = "email"
+email_to        = "alanc3939+claude@gmail.com"
+smtp_host_env   = "SMTP_HOST"
+smtp_user_env   = "SMTP_USER"
+smtp_pass_env   = "SMTP_PASS"
+
+[persistence]
+backend = "sqlite"
+path    = "./state/teetime.db"
