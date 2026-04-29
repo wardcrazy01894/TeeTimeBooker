@@ -314,6 +314,54 @@ async def test_book_includes_captchaid_when_provider_given() -> None:
 
 
 @respx.mock
+async def test_book_includes_player_list() -> None:
+    """book() must send player_list with first/last/email (+ optional phone/member_id)."""
+    route = respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(200, json={"id": "CONF-42"})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    two_player_req = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(TARGET_DATE,),
+        time_windows=(TimeWindow(earliest=time(7, 0), latest=time(9, 30)),),
+        players=(
+            Player(
+                first_name="Alex",
+                last_name="Lancaster",
+                email="al@test.com",
+                phone="555-0001",
+                member_number="MB42",
+            ),
+            Player(first_name="Guest", last_name="Player", email="guest@test.com"),
+        ),
+        course_preferences=(CID,),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        await adapter.book(slot, two_player_req)
+    body = stdlib_json.loads(route.calls[0].request.content)
+    pl = body.get("player_list")
+    assert isinstance(pl, list) and len(pl) == 2
+    assert pl[0]["first_name"] == "Alex"
+    assert pl[0]["email"] == "al@test.com"
+    assert pl[0]["phone"] == "555-0001"
+    assert pl[0].get("member_id") == "MB42"
+    assert pl[1]["first_name"] == "Guest"
+    assert "phone" not in pl[1]
+    assert "member_id" not in pl[1]
+
+
+@respx.mock
 async def test_book_omits_captchaid_without_provider() -> None:
     """book() must NOT send captchaid when no captcha_provider is given."""
     route = respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(

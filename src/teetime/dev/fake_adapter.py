@@ -63,6 +63,12 @@ class FakeAdapter:
     def set_book_to_raise(self, exc: AdapterError) -> None:
         self._book_exc = exc
 
+    def set_book_side_effects(
+        self, effects: list[BookingOutcome | AdapterError]
+    ) -> None:
+        """Configure successive book() calls to yield outcomes or raise exceptions in order."""
+        self._book_side_effects: list[BookingOutcome | AdapterError] = list(effects)
+
     def set_existing_reservations(self, reservations: list[ExistingReservation]) -> None:
         self._existing = list(reservations)
 
@@ -85,19 +91,27 @@ class FakeAdapter:
         request: BookingRequest,
     ) -> BookingResult:
         self.book_call_count += 1
-        if self._book_exc is not None:
+        side_effects: list[BookingOutcome | AdapterError] = getattr(
+            self, "_book_side_effects", []
+        )
+        if side_effects:
+            effect = side_effects.pop(0)
+            if isinstance(effect, AdapterError):
+                raise effect
+            outcome = effect
+        elif self._book_exc is not None:
             raise self._book_exc
+        else:
+            outcome = self._book_outcome
         return BookingResult(
             request_id=request.request_id,
-            outcome=self._book_outcome,
+            outcome=outcome,
             course_id=self.course_id,
             slot=slot,
             confirmation_code=(
-                f"FAKE-{slot.slot_id}"
-                if self._book_outcome == BookingOutcome.BOOKED
-                else None
+                f"FAKE-{slot.slot_id}" if outcome == BookingOutcome.BOOKED else None
             ),
-            booked_at=datetime.now(tz=UTC) if self._book_outcome == BookingOutcome.BOOKED else None,
+            booked_at=datetime.now(tz=UTC) if outcome == BookingOutcome.BOOKED else None,
             attempts=1,
         )
 

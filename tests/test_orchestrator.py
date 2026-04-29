@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import pytest
 
-from teetime.core.adapter import NoInventoryError
+from teetime.core.adapter import NoInventoryError, SlotGoneError
 from teetime.core.clock import FakeClock
 from teetime.core.config import SchedulerConfig
 from teetime.core.models import (
@@ -203,6 +203,36 @@ async def test_run_falls_back_to_next_course_when_first_empty() -> None:
     assert result.course_id == c2
     assert fa1.book_call_count == 0
     assert fa2.book_call_count == 1
+
+
+async def test_run_retries_next_slot_when_first_is_gone() -> None:
+    """If the best slot is taken (409), orchestrator tries the next candidate."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    slot1 = _slot(cid, hour=7)
+    slot2 = _slot(cid, hour=8)
+    fa.set_search_response([slot1, slot2])
+    fa.set_book_side_effects([SlotGoneError("slot1 taken"), BookingOutcome.BOOKED])
+
+    orch, _, _ = _build({cid: fa})
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.book_call_count == 2
+
+
+async def test_run_returns_no_inventory_when_all_slots_gone() -> None:
+    """If every candidate slot is taken, orchestrator raises the last SlotGoneError."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid, hour=7), _slot(cid, hour=8)])
+    fa.set_book_side_effects(
+        [SlotGoneError("slot1 taken"), SlotGoneError("slot2 taken")]
+    )
+
+    orch, _, _ = _build({cid: fa})
+    with pytest.raises(SlotGoneError):
+        await orch.run(_request(course_ids=(cid,)))
 
 
 async def test_run_falls_back_on_no_inventory_error() -> None:
