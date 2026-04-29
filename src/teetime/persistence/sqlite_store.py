@@ -33,10 +33,10 @@ Locks via `BEGIN IMMEDIATE` + a row in a `request_locks` table holding the holde
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import AsyncIterator
 
 from ..core.models import BookingResult, CourseId, RequestId
 
@@ -87,4 +87,4 @@ class SqliteStore:
     @asynccontextmanager
     async def _request_lock_impl(self, request_id: RequestId) -> AsyncIterator[None]:
         raise NotImplementedError
-        yield  # pragma: no cover  (asynccontextmanager requires a yield in the body)
+        yield  # type: ignore[unreachable]  # asynccontextmanager requires a yield

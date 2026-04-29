@@ -45,12 +45,12 @@ email_env     = "PLAYER2_EMAIL"
 
 # Multiple windows OR together: any matching window is acceptable.
 [[request.time_windows]]
-earliest = 07:00
-latest   = 09:30
+earliest = 07:00:00
+latest   = 09:30:00
 
 [[request.time_windows]]
-earliest = 16:00
-latest   = 18:00
+earliest = 16:00:00
+latest   = 18:00:00
 
 [scheduler]
 timezone         = "America/New_York"   # Mangrove Bay is in ET

@@ -151,6 +151,8 @@ activemq-data/
 .env
 .envrc
 .venv
+config/local.toml
+state/
 env/
 venv/
 ENV/

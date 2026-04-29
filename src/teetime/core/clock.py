@@ -8,10 +8,12 @@ FakeClock.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Protocol
+import asyncio
+from datetime import UTC, datetime, timedelta
+from typing import Protocol, runtime_checkable
 
 
+@runtime_checkable
 class Clock(Protocol):
     """Minimal time interface. Everything else (windows, deadlines) is built on this."""
 
@@ -25,13 +27,37 @@ class Clock(Protocol):
 
 
 class RealClock:
-    """Production clock backed by `datetime.now(UTC)` and `asyncio.sleep`. Stub."""
+    """Production clock backed by `datetime.now(UTC)` and `asyncio.sleep`."""
 
     def now_utc(self) -> datetime:
-        raise NotImplementedError
+        return datetime.now(tz=UTC)
 
     async def sleep(self, seconds: float) -> None:
-        raise NotImplementedError
+        await asyncio.sleep(seconds)
+
+
+class FakeClock:
+    """Controllable Clock for deterministic tests.
+
+    `now_utc()` returns the internal `_now`; `sleep(s)` advances it by `s`
+    simulated seconds while awaiting `asyncio.sleep(0)` so other coroutines
+    on the loop are not starved. `sleep_count` lets tests assert on the
+    fine/coarse split in `busy_wait_until` without sampling timestamps.
+    """
+
+    def __init__(self, *, start: datetime) -> None:
+        if start.tzinfo is None:
+            raise ValueError("FakeClock start must be tz-aware")
+        self._now = start.astimezone(UTC)
+        self.sleep_count: int = 0
+
+    def now_utc(self) -> datetime:
+        return self._now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleep_count += 1
+        self._now = self._now + timedelta(seconds=seconds)
+        await asyncio.sleep(0)
 
 
 async def busy_wait_until(
@@ -49,17 +75,13 @@ async def busy_wait_until(
 
     Test contract: with a FakeClock, the wall-clock returned from `clock.now_utc()`
     on exit is within `fine_accuracy_s` of `target_utc`. `fine_accuracy_s` is the
-    desired ACCURACY of the wakeup; `fine_step_s` is the loop CADENCE. Keeping
-    them distinct prevents the conflation flagged in v0 review item 8.
-
-    Implementation outline (M1.T1):
-        while True:
-            delta = (target_utc - clock.now_utc()).total_seconds()
-            if delta <= 0:
-                return
-            if delta > coarse_threshold_s:
-                await clock.sleep(min(coarse_step_s, delta - coarse_threshold_s))
-            else:
-                await clock.sleep(fine_step_s)
+    desired ACCURACY of the wakeup; `fine_step_s` is the loop CADENCE.
     """
-    raise NotImplementedError
+    while True:
+        delta = (target_utc - clock.now_utc()).total_seconds()
+        if delta <= 0:
+            return
+        if delta > coarse_threshold_s:
+            await clock.sleep(min(coarse_step_s, delta - coarse_threshold_s))
+        else:
+            await clock.sleep(fine_step_s)

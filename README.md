@@ -69,12 +69,39 @@ Variable names follow the `*_env` references in your config; the names above are
 
 ## Running
 
-```bash
-# Dry run — full flow without the final booking POST
-uv run teetime run --config config/local.toml --dry-run true
+### Local demo (no ForeUP credentials needed)
 
-# Print resolved config (secrets redacted)
-uv run teetime show-config --config config/local.toml
+The `--use-fake-adapter` flag wires an in-process scriptable adapter so you
+can drive the full orchestrator flow locally without hitting ForeUP. Useful
+for verifying the install, exploring the CLI, or developing against the
+booking pipeline before Spike S1 / M5 lands.
+
+```bash
+cp .env.example .env
+$EDITOR .env                # placeholders are fine for the fake adapter
+set -a; source .env; set +a
+
+# Print the resolved config with secrets masked.
+uv run teetime show-config --config config/example.toml
+
+# Dry run — full search/pick flow, no booking POST.
+uv run teetime run --config config/example.toml --dry-run true --use-fake-adapter
+
+# Demo a "successful" booking against the fake adapter.
+uv run teetime run --config config/example.toml --dry-run false --use-fake-adapter
+```
+
+Without `--use-fake-adapter`, the CLI exits non-zero with a clear message —
+the real ForeUP adapter is gated behind Spike S1 / M5 (PLAN.md §17).
+
+### Real bookings (post-M5)
+
+```bash
+cp config/example.toml config/local.toml
+$EDITOR config/local.toml   # if your needs differ from the example
+
+# Once M5 lands, drop --use-fake-adapter:
+uv run teetime run --config config/local.toml --dry-run true
 ```
 
 ---

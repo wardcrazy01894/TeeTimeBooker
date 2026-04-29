@@ -1,67 +1,49 @@
-"""Shared pytest fixtures for the test suite.
+"""Shared pytest fixtures. PLAN.md §11.
 
-Stubs only — bodies will be filled in alongside the milestone that owns each
-fixture (mostly M2.T1). Listing them here NOW prevents the M2 implementer
-from having to invent fixture names mid-task and keeps the cross-milestone
-test surface coherent. See PLAN.md §11.
+Each fixture owns one collaborator the orchestrator depends on. Tests pull
+the ones they need; nothing else is implicit.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from teetime.core.clock import Clock
-    from teetime.notifications.notifier import Notifier
-    from teetime.persistence.store import BookingStore
-
-
-@pytest.fixture
-def fake_clock() -> Clock:
-    """A controllable Clock for deterministic race-window tests.
-
-    Real impl in M1.T1: a Clock whose `now_utc()` returns a settable internal
-    `_now` and whose `sleep(s)` advances `_now` by `s` seconds without real
-    I/O. Tests for `busy_wait_until` use this to assert ±50 ms targeting
-    accuracy without waiting 7 days.
-    """
-    raise NotImplementedError("M1.T1: implement FakeClock")
-
-
-@pytest.fixture
-def in_memory_store() -> BookingStore:
-    """An InMemoryStore (M2.T1). Use for orchestrator unit tests; SqliteStore
-    is reserved for its own M3 tests.
-    """
-    raise NotImplementedError("M2.T1: instantiate InMemoryStore")
-
-
-@pytest.fixture
-def noop_notifier() -> Notifier:
-    """A Notifier whose `notify()` records calls but does nothing else (M4.T2)."""
-    raise NotImplementedError("M4.T2: implement NoopNotifier in tests")
-
-
-@pytest.fixture
-async def fake_adapter() -> AsyncIterator[object]:
-    """A scriptable CourseAdapter for orchestrator tests (M2.T1).
-
-    Concrete shape: a class exposing setters like `set_search_response(slots)` and
-    `set_book_outcome(outcome)` so tests can drive specific code paths through
-    the orchestrator without hitting the network. SHOULD also support recording
-    that `list_reservations()` was called (for §9 reconciliation tests).
-    """
-    raise NotImplementedError("M2.T1: implement scriptable FakeAdapter")
-    yield  # pragma: no cover
+from teetime.core.clock import Clock, FakeClock
+from teetime.core.models import CourseId
+from teetime.dev.fake_adapter import FakeAdapter
+from teetime.notifications.notifier import NoopNotifier, Notifier
+from teetime.persistence.in_memory_store import InMemoryStore
+from teetime.persistence.store import BookingStore
 
 
 @pytest.fixture
 def t0_utc() -> datetime:
-    """A canonical T0 used by race-window tests. Tied to a date safely inside
-    EDT to avoid DST-edge ambiguity. M1.T1 freezes this to a specific value."""
+    """Canonical T0 for race-window tests. 2026-05-06 06:00 EDT == 10:00 UTC.
+    Date deliberately inside EDT to avoid DST-edge ambiguity."""
     return datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def fake_clock(t0_utc: datetime) -> Clock:
+    """A FakeClock anchored 2 s before the canonical T0."""
+    return FakeClock(start=t0_utc - timedelta(seconds=2))
+
+
+@pytest.fixture
+def in_memory_store() -> BookingStore:
+    """A fresh InMemoryStore. Behavioral parity with SqliteStore for tests."""
+    return InMemoryStore()
+
+
+@pytest.fixture
+def noop_notifier() -> Notifier:
+    """Silent notifier — for tests that don't care about delivery."""
+    return NoopNotifier()
+
+
+@pytest.fixture
+def fake_adapter() -> FakeAdapter:
+    """Default-happy-path scriptable adapter. Tests override via set_*()."""
+    return FakeAdapter(course_id=CourseId("fake:course"))
