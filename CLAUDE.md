@@ -13,7 +13,9 @@ v0 is single-user, GitHub Actions-driven. No frontend.
 
 ## Status
 
-Stubs + plan. No real ForeUP traffic yet — that lands after Spike S1 (PLAN.md §17).
+M1 + M2 + M5 complete. ForeUP adapter is fully implemented and a live dry-run
+(`outcome=dry_run`) has been confirmed against Mangrove Bay. M3 (SQLite), M4
+(email notifications), and M6 (first production run) are the remaining v0 tasks.
 
 ## Package layout
 
@@ -34,9 +36,6 @@ Persistence, notifications, and adapters all see each other via Protocols
 in `core/` — never directly. This is the cut line for parallel work.
 
 ## Common commands
-
-(All are stubs until M1 lands. They will work once `pyproject.toml`'s deps
-are synced.)
 
 | Command                                  | Purpose                                  |
 |------------------------------------------|------------------------------------------|
@@ -86,8 +85,10 @@ are synced.)
 ## Mangrove Bay specifics
 
 - Booking URL: `https://foreupsoftware.com/index.php/booking/19671/2149#/teetimes`
-- `course_pk = 19671`, `booking_class_id = 2149`. `schedule_id` TBD by Spike S1.
-- 7-day window opens 06:00 America/New_York exactly.
+- `course_pk = 19671`, `booking_class_id = 2149` (teesheet/URL ID), `schedule_id = 2149`
+- `public_booking_class_id = 12239` — the "Public" booking class from the page's `SCHEDULES` JSON; used in the login POST and is distinct from the teesheet URL ID
+- Login uses `api_key=""` (empty); search uses `api_key="no_limits"` — confirmed by browser capture
+- 7-day window opens 06:00 America/New_York exactly; minimum 2 players required
 
 ## How we write code in this repo: red-green TDD
 
