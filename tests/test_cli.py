@@ -78,16 +78,19 @@ def test_run_no_dry_run_with_fake_adapter_books() -> None:
     assert "booked" in result.output.lower()
 
 
-def test_run_without_fake_adapter_fails_clearly() -> None:
-    """Real ForeUP adapter is unimplemented stubs (Spike S1 pending). Without
-    --use-fake-adapter, the CLI must refuse to run rather than crash mid-flow."""
+def test_run_without_fake_adapter_fails_on_missing_creds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without --use-fake-adapter the CLI uses the real adapter. Missing course
+    credentials must produce a clear error, not an unhandled exception."""
+    monkeypatch.delenv("MB_USERNAME", raising=False)
     runner = CliRunner()
     result = runner.invoke(
         cli,
         ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true"],
     )
     assert result.exit_code != 0
-    assert "use-fake-adapter" in result.output.lower() or "spike" in result.output.lower()
+    assert "MB_USERNAME" in result.output
 
 
 def test_show_config_missing_env_fails(monkeypatch: pytest.MonkeyPatch) -> None:

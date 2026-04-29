@@ -9,6 +9,7 @@ Two commands:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -16,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 import click
 
+from .core.adapter import CourseAdapter
 from .core.clock import RealClock
 from .core.config import (
     AppConfig,
@@ -26,6 +28,7 @@ from .core.config import (
 )
 from .core.models import (
     BookingRequest,
+    CourseCredentials,
     CourseId,
     Player,
     TimeWindow,
@@ -33,9 +36,14 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
+from .courses.foreup.mangrove_bay import MangroveBayAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
 from .persistence.in_memory_store import InMemoryStore
+
+_ADAPTER_REGISTRY: dict[str, type[CourseAdapter]] = {
+    "foreup.mangrove_bay": MangroveBayAdapter,
+}
 
 
 @click.group()
@@ -89,21 +97,21 @@ def run_cmd(config_path: Path, dry_run: bool, use_fake_adapter: bool) -> None:
     except MissingEnvVarError as e:
         raise click.ClickException(str(e)) from e
 
-    if not use_fake_adapter:
-        raise click.ClickException(
-            "Real ForeUP adapter is not implemented yet (Spike S1 / M5 pending). "
-            "Pass --use-fake-adapter to demo the orchestrator flow locally."
-        )
-
-    asyncio.run(_run(cfg, dry_run=dry_run))
+    asyncio.run(_run(cfg, dry_run=dry_run, use_fake_adapter=use_fake_adapter))
 
 
-async def _run(cfg: AppConfig, *, dry_run: bool) -> None:
+async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None:
     request = _build_request(cfg, dry_run=dry_run)
 
-    adapters = {
-        CourseId(c.id): FakeAdapter(course_id=CourseId(c.id)) for c in cfg.courses
-    }
+    if use_fake_adapter:
+        adapters: dict[CourseId, CourseAdapter] = {
+            CourseId(c.id): FakeAdapter(course_id=CourseId(c.id)) for c in cfg.courses
+        }
+        creds: dict[CourseId, CourseCredentials] = {}
+    else:
+        adapters = _build_adapters(cfg)
+        creds = _resolve_creds(cfg)
+
     store = InMemoryStore()
     await store.initialize()
 
@@ -117,11 +125,45 @@ async def _run(cfg: AppConfig, *, dry_run: bool) -> None:
         notifier=ConsoleNotifier(),
         clock=RealClock(),
         scheduler=scheduler,
-        creds={},  # FakeAdapter ignores creds.
+        creds=creds,
     )
     result = await orch.run(request)
     if result.outcome.value not in {"booked", "dry_run", "already_booked"}:
         raise click.ClickException(f"booking failed: outcome={result.outcome.value}")
+
+
+def _build_adapters(cfg: AppConfig) -> dict[CourseId, CourseAdapter]:
+    adapters: dict[CourseId, CourseAdapter] = {}
+    for c in cfg.courses:
+        cls = _ADAPTER_REGISTRY.get(c.adapter)
+        if cls is None:
+            raise click.ClickException(
+                f"Unknown adapter {c.adapter!r} for course {c.id!r}. "
+                f"Known adapters: {list(_ADAPTER_REGISTRY)}"
+            )
+        adapters[CourseId(c.id)] = cls()
+    return adapters
+
+
+def _resolve_creds(cfg: AppConfig) -> dict[CourseId, CourseCredentials]:
+    creds: dict[CourseId, CourseCredentials] = {}
+    for c in cfg.courses:
+        username = os.environ.get(c.username_env)
+        password = os.environ.get(c.password_env)
+        if username is None:
+            raise click.ClickException(
+                f"Required env var {c.username_env!r} (course {c.id!r}) is unset. "
+                "Run: set -a && source .env && set +a"
+            )
+        if password is None:
+            raise click.ClickException(
+                f"Required env var {c.password_env!r} (course {c.id!r}) is unset. "
+                "Run: set -a && source .env && set +a"
+            )
+        creds[CourseId(c.id)] = CourseCredentials(
+            username=username, password=password, extra=c.extra
+        )
+    return creds
 
 
 def _local_demo_scheduler(base: SchedulerConfig) -> SchedulerConfig:
