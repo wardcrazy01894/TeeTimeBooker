@@ -46,24 +46,23 @@ Copy the example config and fill in your preferences:
 cp config/example.toml config/local.toml
 ```
 
-Secrets are never stored in TOML — the config file references env var names, and the loader resolves them at runtime:
+Secrets are never stored in TOML — the config file references env var names, and the loader resolves them at runtime.
+
+Copy `.env.example` to `.env` and fill in your values. Wrap any value that contains special characters (`&`, `!`, `$`, etc.) in **single quotes**:
 
 ```bash
-# Required
-export MB_USERNAME="your_foreup_username"
-export MB_PASSWORD="your_foreup_password"
-export PLAYER1_EMAIL="you@example.com"
-export PLAYER1_PHONE="555-1234"
-export SMTP_HOST="smtp.gmail.com"
-export SMTP_USER="you@example.com"
-export SMTP_PASS="your_app_password"
-
-# Optional — set only if your config references them
-export PLAYER1_MB_MEMBER="your_foreup_member_number"
-export PLAYER2_EMAIL="guest@example.com"
+cp .env.example .env
+$EDITOR .env
+# e.g. MB_PASSWORD='yourpass&word'
 ```
 
-Variable names follow the `*_env` references in your config; the names above are the defaults from `config/example.toml`.
+Load for your current terminal session:
+
+```bash
+set -a && source .env && set +a
+```
+
+Variable names follow the `*_env` references in your config; the names are listed in `.env.example` and match the defaults in `config/example.toml`.
 
 ---
 
@@ -164,8 +163,8 @@ All subsystems are `Protocol`-typed — the orchestrator wires them together; no
 | Milestone | Scope | Status |
 |---|---|---|
 | M0 | Repo skeleton, stubs, plan | Done |
-| M1 | Foundations: `Clock`, config loader, CLI | Pending |
-| M2 | Orchestrator core, state machine, idempotency | Pending |
+| M1 | Foundations: `Clock`, config loader, CLI | Done |
+| M2 | Orchestrator core, state machine, idempotency | Done |
 | M3 | SQLite persistence | Pending |
 | M4 | Email notifications | Pending |
 | M5 | ForeUP adapter (gated by Spike S1) | Pending |
