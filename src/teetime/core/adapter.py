@@ -1,0 +1,119 @@
+"""CourseAdapter contract. Adding a new course is a new file implementing this Protocol.
+
+Two operations: search() finds candidate slots, book() commits one. Adapters own
+auth, HTTP transport, retry-of-transient (network blips), and translating
+course-specific errors into our typed exceptions. They do NOT own:
+- scheduling (the orchestrator wakes them at T0)
+- cross-course fallback (orchestrator)
+- idempotency (BookingStore)
+- notifications
+"""
+
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+from .models import (
+    BookingRequest,
+    BookingResult,
+    CourseCredentials,
+    CourseId,
+    ExistingReservation,
+    TeeTimeSlot,
+)
+
+
+class AdapterError(Exception):
+    """Base for adapter-raised errors. Orchestrator catches and routes to outcome."""
+
+
+class InventoryNotPublishedError(AdapterError):
+    """The 7-day window hasn't opened yet (HTTP 200 + empty list, or 4xx specific to
+    'too far in advance'). Distinct from NoInventoryError because it warrants a poll-retry.
+    """
+
+
+class NoInventoryError(AdapterError):
+    """Inventory IS published but nothing matches the request (window/players/price)."""
+
+
+class AuthError(AdapterError):
+    """Credentials rejected, session expired, or account locked."""
+
+
+class CaptchaError(AdapterError):
+    """A captcha challenge was returned. v0 stops here and notifies the user."""
+
+
+class RateLimitError(AdapterError):
+    """We were throttled. Includes optional retry-after seconds."""
+
+    def __init__(self, message: str, retry_after_s: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
+
+
+class SlotGoneError(AdapterError):
+    """Slot was visible at search() but disappeared by book() — race lost."""
+
+
+@runtime_checkable
+class CourseAdapter(Protocol):
+    """Structural contract every course implementation satisfies.
+
+    Lifecycle: orchestrator instantiates one adapter per (CourseId, BookingRequest),
+    calls authenticate() once, search() one-or-more times (poll loop), then book()
+    on the chosen slot. Adapters MAY hold an open HTTP session for the lifetime of
+    a single orchestration run; they MUST be safe to discard mid-flight.
+    """
+
+    course_id: CourseId
+
+    async def authenticate(self, creds: CourseCredentials) -> None:
+        """Establish an authenticated session. Idempotent. Raises AuthError on bad creds."""
+        ...
+
+    async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
+        """Return slots matching request criteria for this adapter's course.
+
+        Raises:
+            InventoryNotPublishedError: window not yet open.
+            RateLimitError, AuthError, CaptchaError: as named.
+
+        An empty list (no exception) means inventory IS published but nothing matches.
+        """
+        ...
+
+    async def book(
+        self,
+        slot: TeeTimeSlot,
+        request: BookingRequest,
+    ) -> BookingResult:
+        """Commit the booking. Returns BookingResult with confirmation_code on success.
+
+        MUST be safe to retry only if SlotGoneError is raised. On ANY other failure
+        mode (including raw network errors, ambiguous 5xx, and surprise non-error
+        responses), the orchestrator transitions to the UNCERTAIN state in the §9
+        state machine and MUST NOT call book() again until reconcile via
+        list_reservations() has run — see PLAN.md §9.
+        """
+        ...
+
+    async def list_reservations(self) -> list[ExistingReservation]:
+        """Return the authenticated user's existing reservations on this course.
+
+        Load-bearing for §9 layers 2 (pre-book remote check) and 4 (post-mortem
+        reconciliation). The orchestrator calls this BEFORE the book() POST to
+        guard against an already-existing booking, and AGAIN after any uncertain
+        book() failure to determine whether the POST landed.
+
+        MUST be a read-only operation with no side effects on the booking system.
+        MAY return reservations for dates outside the current request — caller
+        filters. Implementations should sort by `tee_time` ascending for stable
+        matching.
+        """
+        ...
+
+    async def aclose(self) -> None:
+        """Release HTTP sessions, browser contexts, etc. Always called by orchestrator."""
+        ...

@@ -1,0 +1,137 @@
+# Daily booking run. GitHub Actions cron is in UTC; we register TWO entries to
+# stay locked on 6:00 AM America/New_York year-round (see PLAN.md "DST math").
+#
+#   EDT (Mar–Nov, UTC-4): 06:00 ET == 10:00 UTC
+#   EST (Nov–Mar, UTC-5): 06:00 ET == 11:00 UTC
+#
+# We schedule both crons every day. The job's first step computes the actual
+# current ET wall-clock and writes `proceed=true|false` based on whether the
+# hour equals 5 (the cron fires at :50 of the hour preceding 06:00 ET, so the
+# CORRECT half lands the runner in the 5:xx ET window; the WRONG half lands
+# at 4:xx or 6:xx ET). All downstream steps gate on `proceed`. This is
+# cheaper than maintaining branches per season AND prevents the wrong-half
+# cron from running the bot anyway (review item 1).
+#
+# IMPORTANT: GH Actions cron has 1–15 min jitter. We schedule 10 min EARLIER
+# than the wall-clock target and use the bot's own busy_wait_until() to land
+# on T0 to within ~250ms. See PLAN.md "6:00 AM race strategy".
+
+name: book-tee-time
+
+on:
+  schedule:
+    # 09:50 UTC = 05:50 EDT (EDT half of year — fires 10 min before T0)
+    - cron: "50 9 * * *"
+    # 10:50 UTC = 05:50 EST (EST half of year — fires 10 min before T0)
+    - cron: "50 10 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true, run everything except the final booking POST"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+# Prevent two concurrent runs against the same RequestId. Belt-and-suspenders
+# with the BookingStore advisory lock.
+concurrency:
+  group: book-tee-time
+  cancel-in-progress: false
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: America/New_York
+      MB_USERNAME: ${{ secrets.MB_USERNAME }}
+      MB_PASSWORD: ${{ secrets.MB_PASSWORD }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: DST-half check
+        # The cron fires at :50 of the hour preceding 06:00 ET. The CORRECT
+        # cron half lands the runner at 5:xx ET. The WRONG cron half lands it
+        # at 4:xx or 6:xx ET. This step writes `proceed=true|false` based on
+        # ET wall-clock hour; downstream steps gate on it. workflow_dispatch
+        # always proceeds. See PLAN.md §6.3.
+        id: dst
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          event = os.environ.get("GITHUB_EVENT_NAME", "")
+          if event != "schedule":
+              print("proceed=true")
+              raise SystemExit(0)
+          now = datetime.now(ZoneInfo("America/New_York"))
+          ok = now.hour == 5
+          print(f"proceed={'true' if ok else 'false'}")
+          print(f"et_now={now.isoformat()}")
+          PY
+
+      - name: Log DST decision
+        run: |
+          echo "DST-half: proceed=${{ steps.dst.outputs.proceed }} et_now=${{ steps.dst.outputs.et_now }}"
+          if [ "${{ steps.dst.outputs.proceed }}" != "true" ]; then
+            echo "Wrong cron half; skipping booking."
+          fi
+
+      - name: Set up Python
+        if: steps.dst.outputs.proceed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        if: steps.dst.outputs.proceed == 'true'
+        uses: astral-sh/setup-uv@v3
+
+      - name: uv sync
+        if: steps.dst.outputs.proceed == 'true'
+        run: uv sync
+
+      # Cross-run state restore. Without this, SqliteStore starts empty every
+      # run and the §9-layer-1 idempotency check is defeated. We use the GH
+      # Actions cache (single key) — catastrophic eviction triggers a phantom-
+      # booking re-check on the next run via §9 layer 2 (list_reservations).
+      # See PLAN.md §10 "Cross-run state".
+      - name: Restore state cache
+        if: steps.dst.outputs.proceed == 'true'
+        id: state-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: state/
+          key: teetime-state-v1
+          # No restore-keys: a partial/stale match is worse than empty.
+
+      - name: Run booking
+        if: steps.dst.outputs.proceed == 'true'
+        run: |
+          mkdir -p state
+          uv run teetime run \
+            --config config/local.toml \
+            --dry-run "${{ github.event.inputs.dry_run || 'false' }}"
+
+      # Always save state, even on failure, so attempt_log persists. Cache
+      # 'always' save uses save@v4 unconditionally; we accept overwriting an
+      # older entry under the same key.
+      - name: Save state cache
+        if: always() && steps.dst.outputs.proceed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: state/
+          key: teetime-state-v1
+
+      - name: Upload state diff (forensic artifact)
+        if: always() && steps.dst.outputs.proceed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: teetime-state
+          path: state/
+          if-no-files-found: ignore
