@@ -1,0 +1,163 @@
+// main.bicep — entry point for TeeTimeBooker v1 Azure infrastructure.
+// Orchestrates all modules per environment. Deploy with:
+//   az deployment group create \
+//     --resource-group rg-teetime-<envName> \
+//     --template-file infra/bicep/main.bicep \
+//     --parameters @infra/bicep/main.bicepparam.dev
+//
+// See: infra/AZURE_PLAN.md §3 (module layout), §4 (parameter strategy),
+//      §10 (deploy runbook).
+
+targetScope = 'resourceGroup'
+
+// ---------------------------------------------------------------------------
+// Parameters
+// ---------------------------------------------------------------------------
+
+@description('Environment name suffix used in all resource names (e.g. dev, prod).')
+@minLength(2)
+@maxLength(8)
+param envName string
+
+@description('Azure region for all resources. Must match the resource group region.')
+param location string = resourceGroup().location
+
+@description('Full image reference for the bot container (e.g. teetime.azurecr.io/teetime:dev).')
+param containerImage string
+
+// NOTE: budgetAmountUsd and budgetAlertEmail are NOT parameters here.
+// budget.bicep is subscription-scoped and deployed in a separate
+// az deployment sub create command from azure-iac.yml. See AZURE_PLAN.md §9.2.
+
+@description('ACR SKU tier.')
+@allowed(['Basic', 'Standard', 'Premium'])
+param acrSku string = 'Basic'
+
+@description('Key Vault SKU name.')
+@allowed(['standard', 'premium'])
+param kvSku string = 'standard'
+
+// ---------------------------------------------------------------------------
+// Module: identity
+// User-assigned managed identity — the SINGLE principalId for all RBAC.
+// Deploying identity first breaks the chicken-and-egg cycle: keyvault,
+// registry, and storage can all receive the principalId before compute
+// is declared, and compute references the identity by resource ID.
+// See: infra/AZURE_PLAN.md §7.2
+// ---------------------------------------------------------------------------
+
+module identity 'modules/identity.bicep' = {
+  name: 'identity-${envName}'
+  params: {
+    envName: envName
+    location: location
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module: registry
+// ACR Basic — bot image repository.
+// See: infra/AZURE_PLAN.md §2 (service selection), §7.2 (AcrPull role)
+// ---------------------------------------------------------------------------
+
+module registry 'modules/registry.bicep' = {
+  name: 'registry-${envName}'
+  params: {
+    envName: envName
+    location: location
+    acrSku: acrSku
+    jobPrincipalId: identity.outputs.principalId
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module: storage
+// Blob Storage account + teetime-state container for SQLite state blob.
+// See: infra/AZURE_PLAN.md §6
+// ---------------------------------------------------------------------------
+
+module storage 'modules/storage.bicep' = {
+  name: 'storage-${envName}'
+  params: {
+    envName: envName
+    location: location
+    jobPrincipalId: identity.outputs.principalId
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module: keyvault
+// Key Vault Standard + RBAC role assignments.
+// See: infra/AZURE_PLAN.md §7
+// ---------------------------------------------------------------------------
+
+module keyvault 'modules/keyvault.bicep' = {
+  name: 'keyvault-${envName}'
+  params: {
+    envName: envName
+    location: location
+    kvSku: kvSku
+    jobPrincipalId: identity.outputs.principalId
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module: logs
+// Log Analytics Workspace + Application Insights.
+// See: infra/AZURE_PLAN.md §11
+// ---------------------------------------------------------------------------
+
+module logs 'modules/logs.bicep' = {
+  // TODO(M-azure-T5): output workspaceId to compute.bicep for ACA env config
+  name: 'logs-${envName}'
+  params: {
+    envName: envName
+    location: location
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module: compute
+// Container Apps Environment (Consumption) + Container Apps Job (two crons).
+// See: infra/AZURE_PLAN.md §5 (race), §6.2 (parallelism=1)
+// ---------------------------------------------------------------------------
+
+module compute 'modules/compute.bicep' = {
+  // TODO(M-azure-T6): wire all module outputs:
+  //   - registry.outputs.loginServer → containerImage prefix
+  //   - logs.outputs.workspaceId → ACA environment diagnostics
+  //   - keyvault.outputs.vaultUri → secret keyVaultUrl references
+  //   - storage.outputs.storageAccountName → AZURE_STORAGE_ACCOUNT_NAME env var (non-secret)
+  name: 'compute-${envName}'
+  params: {
+    envName: envName
+    location: location
+    containerImage: containerImage
+    userAssignedIdentityResourceId: identity.outputs.identityResourceId
+    userAssignedIdentityClientId: identity.outputs.clientId
+    keyVaultUri: keyvault.outputs.vaultUri
+    storageAccountName: storage.outputs.storageAccountName
+    logAnalyticsWorkspaceId: logs.outputs.workspaceId
+    logAnalyticsWorkspaceKey: logs.outputs.workspaceKey
+  }
+  dependsOn: [keyvault, logs, registry, storage]
+}
+
+// ---------------------------------------------------------------------------
+// Outputs
+// ---------------------------------------------------------------------------
+
+@description('ACA Job resource name, for manual trigger via az containerapp job start.')
+output jobName string = compute.outputs.jobName
+
+@description('ACR login server, for image push commands.')
+output acrLoginServer string = registry.outputs.loginServer
+
+@description('Key Vault URI, for az keyvault secret set commands.')
+output keyVaultUri string = keyvault.outputs.vaultUri
+
+@description('Storage account name, for az storage blob commands.')
+output storageAccountName string = storage.outputs.storageAccountName
+
+@description('User-assigned managed identity principal ID. Used to verify RBAC assignments post-deploy.')
+output identityPrincipalId string = identity.outputs.principalId

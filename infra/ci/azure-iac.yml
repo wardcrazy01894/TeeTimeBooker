@@ -1,0 +1,236 @@
+# azure-iac.yml — IaC validation and deployment for TeeTimeBooker v1 Azure infra.
+#
+# This workflow is SEPARATE from book.yml (v0 booking runner). It touches only
+# infra/ and never modifies src/, tests/, or .github/workflows/book.yml.
+#
+# Trigger strategy (see AZURE_PLAN.md §8.1):
+#   pull_request (infra/**) → bicep build lint + what-if (read-only, no deploy)
+#   push to main (infra/**)  → bicep build + what-if + deploy to dev
+#   push tag infra/v*         → bicep build + what-if + deploy to prod
+#   workflow_dispatch          → manual deploy to chosen env
+#
+# Auth: OIDC federated credential — no client secret stored in GitHub.
+# Required GitHub secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# See: AZURE_PLAN.md §8.2 (OIDC setup), §8.3 (what-if known issue)
+#
+# SAFETY RULE: az deployment ... create ONLY runs when explicitly triggered
+# (push to main, tag push, or workflow_dispatch). It NEVER runs on pull_request.
+# An agent must NOT run create without explicit user approval. See CLAUDE.md
+# "v1 Azure infra" section.
+#
+# GITHUB ENVIRONMENT PROTECTION (one-time operator setup, NEW1):
+# Both 'dev' and 'prod' GitHub environments must have manual approval gates.
+# To configure:
+#   1. GitHub repo > Settings > Environments > New environment > 'dev'
+#   2. Under 'Deployment protection rules', enable 'Required reviewers'
+#   3. Add yourself (the operator) as a required reviewer
+#   4. Repeat for the 'prod' environment
+# Without this, every push to main auto-deploys to dev without human review.
+# See: AZURE_PLAN.md §8.1 (NEW1 resolution)
+
+name: azure-iac
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'infra/**'
+    tags:
+      - 'infra/v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (dev or prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options: ['dev', 'prod']
+      dry_run:
+        description: 'If true, run what-if only (no deploy)'
+        required: false
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+# Prevent concurrent IaC deployments to the same env. Does not cancel in-progress.
+# Concurrency group is per-ref, so two PRs on DIFFERENT branches can run
+# concurrently (each gets its own group). This is intentional for a personal
+# project where there is rarely more than one open PR at a time. The protection
+# that matters is against two deploys on the SAME branch/tag simultaneously,
+# which this group key enforces. If stricter serialisation is needed, change
+# the group key to a fixed string like 'azure-iac-global'.
+concurrency:
+  group: azure-iac-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write   # Required for OIDC token exchange
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # validate — runs on every PR touching infra/
+  # ---------------------------------------------------------------------------
+  validate:
+    name: Bicep build + what-if
+    runs-on: ubuntu-latest
+    # TODO(M-azure-T8): set env-specific resource group; derive from trigger.
+    # For PRs, always use dev RG (read-only what-if; no deploy).
+    env:
+      RESOURCE_GROUP: rg-teetime-dev
+      PARAM_FILE: infra/bicep/main.bicepparam.dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        # TODO(M-azure-T8): implement OIDC login step.
+        # Uses azure/login@v2 with client-id, tenant-id, subscription-id.
+        # client-secret is NOT used (OIDC only).
+        # See: AZURE_PLAN.md §8.2
+        # TODO(M-azure-T8): wire AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+        # from GitHub repository secrets (set by operator one-time).
+        run: echo "TODO(M-azure-T8) -- replace with azure/login@v2 action"
+
+      - name: Install Bicep CLI
+        # TODO(M-azure-T8): az bicep install (or use az CLI which bundles Bicep)
+        run: echo "TODO(M-azure-T8) -- az bicep install"
+
+      - name: Bicep build (lint)
+        # Fails if Bicep has syntax or type errors. This is the PR gate.
+        # See: AZURE_PLAN.md §8.3 (only bicep build failures block the PR)
+        run: |
+          # TODO(M-azure-T8): az bicep build --file infra/bicep/main.bicep
+          echo "TODO(M-azure-T8) -- az bicep build --file infra/bicep/main.bicep"
+
+      - name: Deployment what-if
+        # Advisory only — prints planned changes but does NOT block on change
+        # detection. See AZURE_PLAN.md §8.3 for the known false-positive issue
+        # with Container Apps secrets blocks in what-if output.
+        run: |
+          # TODO(M-azure-T8):
+          # az deployment group what-if \
+          #   --resource-group ${{ env.RESOURCE_GROUP }} \
+          #   --template-file infra/bicep/main.bicep \
+          #   --parameters @${{ env.PARAM_FILE }}
+          echo "TODO(M-azure-T8) -- az deployment group what-if"
+
+  # ---------------------------------------------------------------------------
+  # deploy-dev — runs on push to main touching infra/
+  # ---------------------------------------------------------------------------
+  deploy-dev:
+    name: Deploy to dev
+    runs-on: ubuntu-latest
+    needs: validate
+    # Only run on push to main (not on PRs, not on tag pushes handled by deploy-prod)
+    if: |
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      !startsWith(github.ref, 'refs/tags/')
+    environment: dev   # Uses GitHub environment protection rules if configured
+    env:
+      RESOURCE_GROUP: rg-teetime-dev
+      PARAM_FILE: infra/bicep/main.bicepparam.dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        # TODO(M-azure-T8): same as validate job login step
+        run: echo "TODO(M-azure-T8) -- azure/login@v2"
+
+      - name: Deploy to dev
+        # TODO(M-azure-T8):
+        # az deployment group create \
+        #   --resource-group ${{ env.RESOURCE_GROUP }} \
+        #   --template-file infra/bicep/main.bicep \
+        #   --parameters @${{ env.PARAM_FILE }}
+        # See: AZURE_PLAN.md §8, §10.2
+        # IMPORTANT: this step runs az deployment group create.
+        # Agents must NOT run this step without explicit user approval.
+        # See CLAUDE.md "v1 Azure infra" section.
+        run: echo "TODO(M-azure-T8) -- az deployment group create (dev)"
+
+      - name: Deploy budget (subscription-scoped)
+        # Budget must be deployed separately at subscription scope.
+        # See: AZURE_PLAN.md §9.2
+        # TODO(M-azure-T8):
+        # az deployment sub create \
+        #   --location eastus2 \
+        #   --template-file infra/bicep/modules/budget.bicep \
+        #   --parameters envName=dev budgetAmountUsd=10 \
+        #                budgetAlertEmail=${{ secrets.BUDGET_ALERT_EMAIL }}
+        run: echo "TODO(M-azure-T8) -- az deployment sub create (budget, dev)"
+
+  # ---------------------------------------------------------------------------
+  # deploy-prod — runs on tag push matching infra/v*
+  # ---------------------------------------------------------------------------
+  deploy-prod:
+    name: Deploy to prod
+    runs-on: ubuntu-latest
+    needs: validate
+    if: |
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/infra/v')
+    environment: prod   # Requires manual approval if GitHub environment protection is configured
+    env:
+      RESOURCE_GROUP: rg-teetime-prod
+      PARAM_FILE: infra/bicep/main.bicepparam.prod
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        run: echo "TODO(M-azure-T8) -- azure/login@v2"
+
+      - name: Deploy to prod
+        # TODO(M-azure-T8): same as dev deploy step but with prod params.
+        # IMPORTANT: agents must NOT run this without explicit user approval.
+        run: echo "TODO(M-azure-T8) -- az deployment group create (prod)"
+
+      - name: Deploy budget (prod)
+        run: echo "TODO(M-azure-T8) -- az deployment sub create (budget, prod)"
+
+  # ---------------------------------------------------------------------------
+  # deploy-manual — runs on workflow_dispatch
+  # ---------------------------------------------------------------------------
+  deploy-manual:
+    name: Manual deploy (${{ github.event.inputs.environment }})
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        run: echo "TODO(M-azure-T8) -- azure/login@v2"
+
+      - name: Resolve env-specific params
+        # Sets RESOURCE_GROUP and PARAM_FILE in $GITHUB_ENV so the subsequent
+        # deploy step can reference them as ${{ env.RESOURCE_GROUP }} etc.
+        # TODO(M-azure-T8): replace the echo with actual writes:
+        run: |
+          if [ "${{ github.event.inputs.environment }}" == "prod" ]; then
+            echo "RESOURCE_GROUP=rg-teetime-prod" >> "$GITHUB_ENV"
+            echo "PARAM_FILE=infra/bicep/main.bicepparam.prod" >> "$GITHUB_ENV"
+          else
+            echo "RESOURCE_GROUP=rg-teetime-dev" >> "$GITHUB_ENV"
+            echo "PARAM_FILE=infra/bicep/main.bicepparam.dev" >> "$GITHUB_ENV"
+          fi
+
+      - name: Deploy (or dry-run what-if)
+        # If dry_run == 'true', run what-if only. If 'false', run create.
+        # See: AZURE_PLAN.md §8.1
+        # IMPORTANT: agents must NOT set dry_run=false without explicit user approval.
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+            echo "TODO(M-azure-T8) -- az deployment group what-if (manual dry-run)"
+          else
+            echo "TODO(M-azure-T8) -- az deployment group create (manual deploy)"
+          fi

@@ -1,0 +1,25 @@
+// main.bicepparam.prod — production environment parameter values.
+// Deploy: az deployment group create \
+//   --resource-group rg-teetime-prod \
+//   --template-file infra/bicep/main.bicep \
+//   --parameters @infra/bicep/main.bicepparam.prod
+//
+// See: infra/AZURE_PLAN.md §4 (parameter strategy), §10.2 (deploy workflow),
+//      §12 (open questions)
+
+using 'main.bicep'
+
+// TODO(M-azure-T0): fill in actual values. See AZURE_PLAN.md §12.
+param envName = 'prod'
+param location = 'eastus2'
+
+// TODO(M-azure-T6): update on each prod release. Pin to explicit image tag,
+// not :latest, in prod. Format: <acrLoginServer>/teetime:<semver>
+// AZURE_PLAN.md §10.2 — image tag is the release artifact.
+param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime:PLACEHOLDER_VERSION'
+
+// Budget params are NOT set here. budget.bicep is subscription-scoped and
+// deployed separately. See AZURE_PLAN.md §9.2.
+
+param acrSku = 'Basic'
+param kvSku = 'standard'

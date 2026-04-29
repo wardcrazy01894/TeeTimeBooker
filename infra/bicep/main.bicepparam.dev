@@ -1,0 +1,24 @@
+// main.bicepparam.dev — development environment parameter values.
+// Deploy: az deployment group create \
+//   --resource-group rg-teetime-dev \
+//   --template-file infra/bicep/main.bicep \
+//   --parameters @infra/bicep/main.bicepparam.dev
+//
+// See: infra/AZURE_PLAN.md §4 (parameter strategy), §12 (open questions)
+
+using 'main.bicep'
+
+// TODO(M-azure-T0): fill in actual values. See AZURE_PLAN.md §12.
+param envName = 'dev'
+param location = 'eastus2'
+
+// TODO(M-azure-T6): update this after first `az acr build` push.
+// Format: <acrLoginServer>/teetime:<tag>
+// AZURE_PLAN.md §12 Q7 — confirm ACR name is globally unique.
+param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime:dev'
+
+// Budget params are NOT set here. budget.bicep is subscription-scoped and
+// deployed separately. See AZURE_PLAN.md §9.2.
+
+param acrSku = 'Basic'
+param kvSku = 'standard'

@@ -76,3 +76,8 @@ markers = [
     "integration: hits a live external service (skipped by default)",
     "cassette: replays a recorded HTTP cassette",
 ]
+
+[dependency-groups]
+dev = [
+    "playwright>=1.59.0",
+]
