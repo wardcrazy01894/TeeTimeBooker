@@ -53,7 +53,6 @@ from ...core.models import (
     CourseCredentials,
     CourseId,
     ExistingReservation,
-    Player,
     SlotId,
     TeeTimeSlot,
 )
@@ -257,7 +256,7 @@ class ForeUpAdapter(CourseAdapter):
             "purchased": 0,
             "paid_player_count": 0,
             "discount_percent": 0,
-            "player_list": [_player_payload(p) for p in request.players],
+            "player_list": False,
         }
         if self._captcha_provider is not None:
             body["captchaid"] = await self._captcha_provider()
@@ -307,24 +306,7 @@ class ForeUpAdapter(CourseAdapter):
         self._client = None
 
 
-# --- Free functions -------------------------------------------------------
-
-
-def _player_payload(player: Player) -> dict[str, str]:
-    """Map a Player to the object ForeUP's booking POST expects."""
-    payload: dict[str, str] = {
-        "first_name": player.first_name,
-        "last_name": player.last_name,
-        "email": player.email,
-    }
-    if player.phone:
-        payload["phone"] = player.phone
-    if player.member_number:
-        payload["member_id"] = player.member_number
-    return payload
-
-
-# --- Parsing raw ForeUP JSON ----------------------------------------------
+# --- Free functions for parsing raw ForeUP JSON ---------------------------
 
 
 def _parse_slot(

@@ -314,8 +314,9 @@ async def test_book_includes_captchaid_when_provider_given() -> None:
 
 
 @respx.mock
-async def test_book_includes_player_list() -> None:
-    """book() must send player_list with first/last/email (+ optional phone/member_id)."""
+async def test_book_sends_false_for_player_list() -> None:
+    """ForeUP booking does not require player details — player_list must be False.
+    The website confirms the booking with just a player count, no individual data."""
     route = respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
         return_value=httpx.Response(200, json={"id": "CONF-42"})
     )
@@ -329,36 +330,12 @@ async def test_book_includes_player_list() -> None:
         cart_included=False,
         raw=dict(_RAW_SLOT),
     )
-    two_player_req = BookingRequest(
-        request_id=RequestId(uuid4()),
-        target_dates=(TARGET_DATE,),
-        time_windows=(TimeWindow(earliest=time(7, 0), latest=time(9, 30)),),
-        players=(
-            Player(
-                first_name="Alex",
-                last_name="Lancaster",
-                email="al@test.com",
-                phone="555-0001",
-                member_number="MB42",
-            ),
-            Player(first_name="Guest", last_name="Player", email="guest@test.com"),
-        ),
-        course_preferences=(CID,),
-    )
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         adapter = _adapter(client)
         adapter._logged_in = True
-        await adapter.book(slot, two_player_req)
+        await adapter.book(slot, _request())
     body = stdlib_json.loads(route.calls[0].request.content)
-    pl = body.get("player_list")
-    assert isinstance(pl, list) and len(pl) == 2
-    assert pl[0]["first_name"] == "Alex"
-    assert pl[0]["email"] == "al@test.com"
-    assert pl[0]["phone"] == "555-0001"
-    assert pl[0].get("member_id") == "MB42"
-    assert pl[1]["first_name"] == "Guest"
-    assert "phone" not in pl[1]
-    assert "member_id" not in pl[1]
+    assert body.get("player_list") is False
 
 
 @respx.mock
