@@ -40,6 +40,39 @@ def derive_request_id(fingerprint: str) -> RequestId:
     return RequestId(uuid5(_REQUEST_ID_NAMESPACE, fingerprint))
 
 
+def build_request_fingerprint(
+    *,
+    course_ids: list[CourseId],
+    target_offsets: list[int],
+    time_windows: list[TimeWindow],
+    players: list[Player],
+) -> str:
+    """Build the canonical fingerprint string per PLAN.md §13.1.
+
+    Format: ``<courses>|<offsets>|<windows>|<party>`` where each segment is
+    sorted and comma-joined:
+
+    - ``courses``: sorted CourseId values.
+    - ``offsets``: sorted integers as decimal strings.
+    - ``windows``: ``HH:MM-HH:MM``, sorted lexically.
+    - ``party``: per-player ``first_name|last_name`` (note: NOT comma-joined —
+      the player tokens follow the outer pipe so the canonical form is
+      ``courses|offsets|windows|first1|last1|first2|last2``). Email and phone
+      are deliberately excluded so contact-info rotation does not change the
+      RequestId.
+    """
+    courses_seg = ",".join(sorted(course_ids))
+    offsets_seg = ",".join(str(o) for o in sorted(target_offsets))
+    windows_seg = ",".join(
+        sorted(
+            f"{w.earliest.strftime('%H:%M')}-{w.latest.strftime('%H:%M')}"
+            for w in time_windows
+        )
+    )
+    party_tokens = sorted(f"{p.first_name}|{p.last_name}" for p in players)
+    return "|".join([courses_seg, offsets_seg, windows_seg, *party_tokens])
+
+
 # --- Enums ----------------------------------------------------------------
 
 class BookingOutcome(StrEnum):

@@ -24,10 +24,10 @@ class _FakeAdapter:
 
     course_id = CourseId("fake:course")
 
-    async def authenticate(self, creds: CourseCredentials) -> None:  # noqa: ARG002
+    async def authenticate(self, creds: CourseCredentials) -> None:
         return None
 
-    async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:  # noqa: ARG002
+    async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
         return []
 
     async def book(

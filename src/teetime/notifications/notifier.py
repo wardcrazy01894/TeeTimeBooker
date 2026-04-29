@@ -6,7 +6,8 @@ MUST NOT mask a successful booking — orchestrator catches and logs.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+import sys
+from typing import IO, Protocol, runtime_checkable
 
 from ..core.models import BookingResult
 
@@ -21,14 +22,25 @@ class Notifier(Protocol):
 
 
 class NoopNotifier:
-    """Used in tests and dry-runs. Stub."""
+    """Used in tests and dry-runs. Silent success — never raises, never writes."""
 
     async def notify(self, result: BookingResult) -> None:
-        raise NotImplementedError
+        return None
 
 
 class ConsoleNotifier:
-    """Prints to stdout. Used for local manual runs. Stub."""
+    """Prints a single-line summary to a stream (default: stdout)."""
+
+    def __init__(self, *, stream: IO[str] | None = None) -> None:
+        self._stream = stream if stream is not None else sys.stdout
 
     async def notify(self, result: BookingResult) -> None:
-        raise NotImplementedError
+        line = (
+            f"[teetime] outcome={result.outcome.value} "
+            f"course={result.course_id} "
+            f"confirmation={result.confirmation_code or '-'} "
+            f"attempts={result.attempts}"
+        )
+        if result.error_message:
+            line += f" error={result.error_message!r}"
+        print(line, file=self._stream)

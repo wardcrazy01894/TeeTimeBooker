@@ -1,12 +1,185 @@
-"""CLI entry point. `python -m teetime` and `teetime` (via project.scripts) land here."""
+"""CLI entry point. `python -m teetime` and `teetime` (via project.scripts) land here.
+
+Two commands:
+- show-config: print the resolved AppConfig with secrets masked.
+- run: execute one BookingRequest end-to-end. v0 requires --use-fake-adapter
+  because the real ForeUP adapter is gated behind Spike S1 / M5.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import sys
+from datetime import datetime, time, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import click
+
+from .core.clock import RealClock
+from .core.config import (
+    AppConfig,
+    MissingEnvVarError,
+    SchedulerConfig,
+    load,
+    redact,
+)
+from .core.models import (
+    BookingRequest,
+    CourseId,
+    Player,
+    TimeWindow,
+    build_request_fingerprint,
+    derive_request_id,
+)
+from .core.orchestrator import Orchestrator
+from .dev.fake_adapter import FakeAdapter
+from .notifications.notifier import ConsoleNotifier
+from .persistence.in_memory_store import InMemoryStore
+
+
+@click.group()
+def cli() -> None:
+    """TeeTimeBooker CLI."""
+
+
+@cli.command(name="show-config")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Path to a TOML config file (see config/example.toml).",
+)
+def show_config_cmd(config_path: Path) -> None:
+    """Print the loaded AppConfig with secrets masked."""
+    try:
+        cfg = load(config_path)
+    except MissingEnvVarError as e:
+        raise click.ClickException(str(e)) from e
+    masked = redact(cfg)
+    click.echo(masked.model_dump_json(indent=2))
+
+
+@cli.command(name="run")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--dry-run",
+    type=bool,
+    default=True,
+    show_default=True,
+    help="If true, do everything except the final booking POST.",
+)
+@click.option(
+    "--use-fake-adapter",
+    is_flag=True,
+    default=False,
+    help="Use the in-process FakeAdapter (v0 demo). Real ForeUP adapter "
+    "lands in M5 (gated behind Spike S1).",
+)
+def run_cmd(config_path: Path, dry_run: bool, use_fake_adapter: bool) -> None:
+    """Run one BookingRequest end-to-end."""
+    try:
+        cfg = load(config_path)
+    except MissingEnvVarError as e:
+        raise click.ClickException(str(e)) from e
+
+    if not use_fake_adapter:
+        raise click.ClickException(
+            "Real ForeUP adapter is not implemented yet (Spike S1 / M5 pending). "
+            "Pass --use-fake-adapter to demo the orchestrator flow locally."
+        )
+
+    asyncio.run(_run(cfg, dry_run=dry_run))
+
+
+async def _run(cfg: AppConfig, *, dry_run: bool) -> None:
+    request = _build_request(cfg, dry_run=dry_run)
+
+    adapters = {
+        CourseId(c.id): FakeAdapter(course_id=CourseId(c.id)) for c in cfg.courses
+    }
+    store = InMemoryStore()
+    await store.initialize()
+
+    # Local demo: skip the 6 AM ET busy-wait. The real wait only makes sense
+    # when invoked by the cron in book.yml.
+    scheduler = _local_demo_scheduler(cfg.scheduler)
+
+    orch = Orchestrator(
+        adapters=adapters,
+        store=store,
+        notifier=ConsoleNotifier(),
+        clock=RealClock(),
+        scheduler=scheduler,
+        creds={},  # FakeAdapter ignores creds.
+    )
+    result = await orch.run(request)
+    if result.outcome.value not in {"booked", "dry_run", "already_booked"}:
+        raise click.ClickException(f"booking failed: outcome={result.outcome.value}")
+
+
+def _local_demo_scheduler(base: SchedulerConfig) -> SchedulerConfig:
+    """Return a scheduler whose T0 is 'now' in the configured tz, so the
+    orchestrator's busy_wait returns immediately for local demo runs."""
+    tz = ZoneInfo(base.timezone)
+    now_local = datetime.now(tz=tz)
+    return SchedulerConfig(
+        timezone=base.timezone,
+        fire_time=time(now_local.hour, now_local.minute, now_local.second),
+        early_arrival_ms=0,
+        poll_interval_ms=10,
+        max_poll_seconds=1,
+    )
+
+
+def _build_request(cfg: AppConfig, *, dry_run: bool) -> BookingRequest:
+    tz = ZoneInfo(cfg.scheduler.timezone)
+    today = datetime.now(tz=tz).date()
+    target_dates = tuple(today + timedelta(days=o) for o in sorted(cfg.request.target_offsets))
+
+    course_ids = [CourseId(c.id) for c in cfg.courses]
+    windows = [TimeWindow(earliest=w.earliest, latest=w.latest) for w in cfg.request.time_windows]
+    players = [
+        Player(
+            first_name=p.first_name,
+            last_name=p.last_name,
+            email=p.email or "",
+            phone=p.phone,
+            member_number=p.member_number,
+        )
+        for p in cfg.request.players
+    ]
+    fp = build_request_fingerprint(
+        course_ids=course_ids,
+        target_offsets=cfg.request.target_offsets,
+        time_windows=windows,
+        players=players,
+    )
+    rid = derive_request_id(fp)
+
+    return BookingRequest(
+        request_id=rid,
+        target_dates=target_dates,
+        time_windows=tuple(windows),
+        players=tuple(players),
+        course_preferences=tuple(CourseId(p) for p in cfg.request.course_preferences),
+        holes=cfg.request.holes,
+        max_price_per_player=cfg.request.max_price_per_player,
+        cart=cfg.request.cart,
+        dry_run=dry_run,
+    )
+
 
 def main() -> int:
-    """CLI entry point. Stub — real wiring in Milestone M2."""
-    raise NotImplementedError("CLI not implemented yet; see PLAN.md M2.T1.")
+    cli(standalone_mode=False)
+    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

@@ -89,6 +89,44 @@ are synced.)
 - `course_pk = 19671`, `booking_class_id = 2149`. `schedule_id` TBD by Spike S1.
 - 7-day window opens 06:00 America/New_York exactly.
 
+## How we write code in this repo: red-green TDD
+
+**Mandatory.** Every behavior change lands as test-first. The exact loop:
+
+1. **Red.** Write the smallest test that captures the desired behavior. Run it
+   and confirm it fails for the right reason (missing impl, wrong return, etc.)
+   — not for an unrelated import error or fixture typo.
+2. **Green.** Write the minimum implementation that makes the test pass. No
+   extra fields, no future-proofing, no untested branches.
+3. **Refactor.** With the safety net of green tests, clean up names,
+   duplication, and structure. Re-run tests; they must stay green.
+4. **Commit boundary.** A meaningful unit of red→green→refactor is a fine
+   commit. Don't bundle ten unrelated cycles.
+
+Per-milestone rules:
+
+- A stub's `NotImplementedError` is the test's red phase already on disk —
+  the next thing you write is the test that exercises the contract, then
+  the body. Don't implement the body before the test exists.
+- For Protocol implementations (Clock, BookingStore, Notifier, CourseAdapter):
+  the test should verify the structural contract (`isinstance(impl, Protocol)`)
+  and at least one behavioral path. See `tests/test_adapter_stub.py` for the
+  reference pattern.
+- For the §9.1 state-machine work (M2.T1, M2.T3): each transition listed in
+  the diagram needs its own failing test before the orchestrator branch that
+  implements it. The state machine is too subtle to backfill tests onto.
+- `pytest -k <name>` for fast inner-loop iteration; full suite before commit.
+- If you find a bug in already-merged code, write the failing test that
+  reproduces it FIRST, then fix. The test is the regression guard.
+
+Anti-patterns we don't accept:
+- Writing implementation, then tests that "describe" what the code does
+  (tests written this way encode bugs as features).
+- Mocking the type under test. Mock collaborators, never the SUT.
+- Skipping red — "obviously this passes" is how silent regressions ship.
+- Tests that pass on `pytest` but only because they don't actually call
+  the code path. Always verify the test fails before you write the impl.
+
 ## When in doubt
 
 - Implementing a new milestone task? Read PLAN.md §16 for inputs/outputs/deps.
