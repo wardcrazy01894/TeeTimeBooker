@@ -82,13 +82,17 @@ class ForeUpAdapter(CourseAdapter):
         course_pk: int,
         booking_class_id: int,
         schedule_id: int,
+        public_booking_class_id: int | None = None,
         timezone: str = "America/New_York",
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.course_id = course_id
         self._course_pk = course_pk
-        self._booking_class_id = booking_class_id
+        self._booking_class_id = booking_class_id  # teesheet/URL ID (e.g. 2149)
         self._schedule_id = schedule_id
+        # The "Public" booking class used in login + search (e.g. 12239 for Mangrove Bay).
+        # Distinct from booking_class_id which is the teesheet URL parameter.
+        self._public_booking_class_id = public_booking_class_id or booking_class_id
         self._timezone = timezone
         self._client = http_client
         self._owns_client = http_client is None
@@ -147,8 +151,9 @@ class ForeUpAdapter(CourseAdapter):
             data={
                 "username": creds.username,
                 "password": creds.password,
-                "api_key": _API_KEY,
-                "booking_class_id": str(self._booking_class_id),
+                "api_key": "",  # booking widget uses empty api_key (not "no_limits")
+                "booking_class_id": str(self._public_booking_class_id),
+                "course_id": str(self._course_pk),
             },
         )
         self._guard_captcha(r)
@@ -223,9 +228,8 @@ class ForeUpAdapter(CourseAdapter):
         """POST /reservations echoing slot raw fields with overridden player/fee totals."""
         if not self._logged_in:
             raise AuthError(
-                "Full login required to book. "
-                "The account may use Google OAuth — provide session cookies via "
-                "MB_PHPSESSID + MB_TOKEN env vars (see README)."
+                "Full login required to book. authenticate() must succeed before book(). "
+                "Check that MB_USERNAME and MB_PASSWORD are correct."
             )
         client = self._c()
         players = len(request.players)

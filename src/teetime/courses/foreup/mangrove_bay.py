@@ -19,8 +19,9 @@ from .base import ForeUpAdapter
 
 MANGROVE_BAY_COURSE_ID = CourseId("foreup:mangrove_bay")
 MANGROVE_BAY_COURSE_PK = 19671
-MANGROVE_BAY_BOOKING_CLASS_ID = 2149
+MANGROVE_BAY_BOOKING_CLASS_ID = 2149  # teesheet/URL ID (appears in booking page URL)
 MANGROVE_BAY_SCHEDULE_ID = 2149  # confirmed from DEFAULT_FILTER in booking page HTML
+MANGROVE_BAY_PUBLIC_BOOKING_CLASS_ID = 12239  # "Public" class from SCHEDULES JSON
 
 
 class MangroveBayAdapter(ForeUpAdapter):
@@ -32,6 +33,7 @@ class MangroveBayAdapter(ForeUpAdapter):
             course_pk=MANGROVE_BAY_COURSE_PK,
             booking_class_id=MANGROVE_BAY_BOOKING_CLASS_ID,
             schedule_id=MANGROVE_BAY_SCHEDULE_ID,
+            public_booking_class_id=MANGROVE_BAY_PUBLIC_BOOKING_CLASS_ID,
             timezone="America/New_York",
             http_client=http_client,
         )

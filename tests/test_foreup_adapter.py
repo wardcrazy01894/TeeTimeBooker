@@ -116,7 +116,9 @@ async def test_authenticate_success() -> None:
 
 
 @respx.mock
-async def test_authenticate_bad_password_raises_auth_error() -> None:
+async def test_authenticate_bad_password_soft_fails() -> None:
+    """401 login is a soft-fail: PHPSESSID alone still allows search().
+    book() will refuse until _logged_in=True."""
     respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
         return_value=httpx.Response(200, text="<html/>")
     )
@@ -129,8 +131,8 @@ async def test_authenticate_bad_password_raises_auth_error() -> None:
     )
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         adapter = _adapter(client)
-        with pytest.raises(AuthError, match="invalid"):
-            await adapter.authenticate(CREDS)
+        await adapter.authenticate(CREDS)  # must not raise
+        assert adapter._logged_in is False
 
 
 @respx.mock
@@ -244,6 +246,7 @@ async def test_book_success_returns_booked_result() -> None:
     )
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         adapter = _adapter(client)
+        adapter._logged_in = True  # simulate successful authenticate()
         result = await adapter.book(slot, _request())
     assert result.outcome == BookingOutcome.BOOKED
     assert result.confirmation_code == "CONF-42"
@@ -267,6 +270,7 @@ async def test_book_slot_gone_raises() -> None:
     )
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         adapter = _adapter(client)
+        adapter._logged_in = True  # simulate successful authenticate()
         with pytest.raises(SlotGoneError):
             await adapter.book(slot, _request())
 
