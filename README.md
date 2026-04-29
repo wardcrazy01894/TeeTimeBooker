@@ -2,11 +2,12 @@
 
 Python bot that books a tee time at **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET, 7 days in advance. Runs unattended via GitHub Actions; emails you the result.
 
-**Status:** v0 — framework and stubs committed, no live ForeUP traffic yet. Real booking logic lands in Milestone 1+.
+**Status:** M1 + M2 + M5 complete. ForeUP adapter implemented and live dry-run confirmed against Mangrove Bay. Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run).
 
 **Where to look:**
 - [PLAN.md](./PLAN.md) — full design, milestone roadmap, state machine, DST math, spikes
 - [CLAUDE.md](./CLAUDE.md) — operator and contributor notes (read this if you're picking up a milestone task)
+- [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md) — v1 Azure serverless hosting design (Container Apps Jobs, Bicep IaC, OIDC CI)
 - `config/example.toml` — copy to `config/local.toml` and edit before running
 
 ---
@@ -72,8 +73,7 @@ Variable names follow the `*_env` references in your config; the names are liste
 
 The `--use-fake-adapter` flag wires an in-process scriptable adapter so you
 can drive the full orchestrator flow locally without hitting ForeUP. Useful
-for verifying the install, exploring the CLI, or developing against the
-booking pipeline before Spike S1 / M5 lands.
+for verifying the install, exploring the CLI, or developing against the booking pipeline.
 
 ```bash
 cp .env.example .env
@@ -90,22 +90,48 @@ uv run teetime run --config config/example.toml --dry-run true --use-fake-adapte
 uv run teetime run --config config/example.toml --dry-run false --use-fake-adapter
 ```
 
-Without `--use-fake-adapter`, the CLI exits non-zero with a clear message —
-the real ForeUP adapter is gated behind Spike S1 / M5 (PLAN.md §17).
-
-### Real bookings (post-M5)
+### Real bookings
 
 ```bash
 cp config/example.toml config/local.toml
 $EDITOR config/local.toml   # if your needs differ from the example
 
-# Once M5 lands, drop --use-fake-adapter:
+# Dry run — searches live ForeUP, prints result, skips the booking POST.
 uv run teetime run --config config/local.toml --dry-run true
+
+# Live booking — omit --dry-run or set it to false.
+uv run teetime run --config config/local.toml --dry-run false
 ```
 
 ---
 
-## GitHub Actions setup
+## Docker (v1)
+
+The bot can be built as a container for Azure deployment:
+
+```bash
+docker build -t teetime:dev .
+```
+
+The container reads config from `config/container.toml` (baked in) and secrets from environment variables — the same names as GitHub Actions secrets / Azure Key Vault references. For a local test run:
+
+```bash
+# Set-a sources .env; MB_USERNAME etc. must be present.
+set -a && source .env && set +a
+docker run --rm \
+  -e MB_USERNAME -e MB_PASSWORD \
+  -e PLAYER1_EMAIL -e PLAYER1_PHONE -e PLAYER1_MB_MEMBER \
+  -e PLAYER2_EMAIL \
+  -e AZURE_TENANT_ID -e AZURE_SUBSCRIPTION_ID -e AZURE_CLIENT_ID \
+  teetime:dev \
+  uv run teetime run --config /app/config/container.toml --dry-run true
+```
+
+The container notifier defaults to `console` (stdout) until SMTP credentials are wired. SQLite state is written to `/tmp/teetime-state/teetime.db`; the v1 `BlobStateManager` handles upload/download to Azure Blob Storage automatically in production.
+
+---
+
+## GitHub Actions setup (v0)
 
 The workflow at `.github/workflows/book.yml` runs on two daily crons to handle DST:
 
@@ -131,6 +157,26 @@ State persists between runs via `actions/cache` (key `teetime-state-v1`), storin
 ```bash
 gh workflow run book-tee-time -f dry_run=true
 ```
+
+---
+
+## Azure v1 hosting (in progress)
+
+The v1 upgrade moves off GitHub Actions onto **Azure Container Apps Jobs** — a managed, serverless scheduled job that runs the same Python container on a UTC cron, busy-waits to 6:00 AM ET, and books the tee time. State moves from `actions/cache` to **Azure Blob Storage**; secrets move to **Azure Key Vault**.
+
+**Cost:** ~$5/month (ACR Basic flat; Container Apps compute is within the free tier).
+
+IaC lives in `infra/bicep/`; CI lives in `infra/ci/azure-iac.yml`. See [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md) for the full architecture, cost breakdown, security checklist, and deploy runbook.
+
+**Additional GitHub secrets required for v1 CI** (once OIDC is configured per AZURE_PLAN.md §8.2):
+
+```
+AZURE_CLIENT_ID       # appId from: az ad app create --display-name teetime-iac-ci
+AZURE_TENANT_ID       # 5151757e-ef5b-42a5-a09b-6410b40b2186
+AZURE_SUBSCRIPTION_ID # 3f82c7e1-4b1b-4a55-b905-d79f65c6887d
+```
+
+No `AZURE_CLIENT_SECRET` is stored — authentication uses OIDC federated credentials.
 
 ---
 
@@ -167,8 +213,9 @@ All subsystems are `Protocol`-typed — the orchestrator wires them together; no
 | M2 | Orchestrator core, state machine, idempotency | Done |
 | M3 | SQLite persistence | Pending |
 | M4 | Email notifications | Pending |
-| M5 | ForeUP adapter (gated by Spike S1) | Pending |
-| M6 | End-to-end, first production run | Pending |
+| M5 | ForeUP adapter — live dry-run confirmed | Done |
+| M6 | End-to-end, first production cron run | Pending |
+| M-azure | Azure v1 hosting: Bicep IaC, BlobStateManager, Container Apps Job | In design |
 
 See [PLAN.md §16](./PLAN.md) for the full milestone breakdown with owner files, dependencies, and which tasks can run in parallel. A handful of v0 architectural decisions remain open — see PLAN.md §17 and the per-section "open questions" notes.
 

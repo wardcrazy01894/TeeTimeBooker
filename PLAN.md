@@ -467,7 +467,7 @@ user goal. The actual idempotency key in `booking_history` is
 | Item              | Value (v0)                                                       |
 |-------------------|------------------------------------------------------------------|
 | User-Agent        | `TeeTimeBooker/0.0.0 (+https://github.com/alanc3939/TeeTimeBooker)` |
-| `api-key` header  | `no_limits` (community-observed; revisit in Spike S1 if it appears to be a bot signal) |
+| `api-key` header  | `no_limits` for search; `""` (empty) for login POST — confirmed by browser capture (S1) |
 | Accept-Language   | `en-US,en;q=0.9`                                                 |
 | Session lifetime  | One HTTP session per orchestrator run; reused across search+book. JWT is **NOT** cached cross-run in v0 — the daily 24 h gap exceeds any reasonable JWT TTL anyway, and `workflow_dispatch` testing happens rarely enough that re-login is cheap. The `session_cache` table exists but `cache_session`/`load_session` are deferred to v1 (review item 10). |
 | Cookies           | PHPSESSID + ForeUP JWT, persisted via `session_cache` blob.      |
@@ -503,14 +503,14 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 |-------|---------------------------------------------------------------------------------------|------------------|----------------------------|-------------|------|
 | M0.T1 | Lay down package skeleton, pyproject.toml, stubs, example.toml, workflow shell, CLAUDE.md | this plan        | the files in this PR       | all stubs   | —    |
 
-### M1 — Foundations
+### M1 — Foundations (DONE)
 | ID    | Task                                              | Inputs                       | Outputs                              | Owner-files                                       | Parallelizable with |
 |-------|---------------------------------------------------|------------------------------|--------------------------------------|---------------------------------------------------|---------------------|
 | M1.T1 | Implement `Clock` (`RealClock`, `busy_wait_until`) + `FakeClock` test util + `tests/conftest.py::fake_clock` fixture body | `core/clock.py` stub         | working clock + tests proving ±50 ms accuracy under FakeClock; loop yields each fine-step | `core/clock.py`, `tests/test_clock.py`, `tests/conftest.py` | M1.T2, M1.T3 |
 | M1.T2 | Implement `core/config.py::load` (incl. `PlayerConfig`, `target_offsets` -> resolved-date helper, env-var ref resolution for player PII) | `config/example.toml`        | TOML round-trip; secret-env resolution; clear errors on missing env; PlayerConfig.email_env -> Player.email | `core/config.py`, `tests/test_config.py` | M1.T1, M1.T3 |
 | M1.T3 | Wire CLI (`teetime run`, `teetime show-config`) via Click | `core/config.py` shape       | `__main__.py` real impl              | `src/teetime/__main__.py`, `tests/test_cli.py`    | M1.T1, M1.T2 |
 
-### M2 — Orchestrator core (depends on M1)
+### M2 — Orchestrator core (DONE)
 | ID    | Task                                                | Inputs                  | Outputs                                                              | Owner-files                                | Deps        |
 |-------|-----------------------------------------------------|-------------------------|----------------------------------------------------------------------|--------------------------------------------|-------------|
 | M2.T1 | Implement `Orchestrator.run` with FakeAdapter, **InMemoryStore** (already a stub in `persistence/in_memory_store.py`), NoopNotifier; encode the §9.1 state machine | M1, all stubs           | end-to-end happy path, fallback path, idempotency path passing; state machine transitions match §9.1 diagram exactly | `core/orchestrator.py`, `persistence/in_memory_store.py`, `tests/test_orchestrator.py`, `tests/conftest.py` | M1.*  |
@@ -532,7 +532,7 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 | M4.T2 | Implement `ConsoleNotifier`                | —                 | prints structured outcome to stdout | `notifications/notifier.py`                          | —     |
 | M4.T3 | Render templates (success / failure / no inventory) | M4.T1     | clean subject + body per outcome | `notifications/email_notifier.py` (templates module) | M4.T1 |
 
-### M5 — ForeUP adapter (parallel with M3/M4 once M1.T1 lands)
+### M5 — ForeUP adapter (DONE — live dry-run confirmed)
 | ID    | Task                                                        | Inputs              | Outputs                                                          | Owner-files                                                          | Deps         |
 |-------|-------------------------------------------------------------|---------------------|------------------------------------------------------------------|----------------------------------------------------------------------|--------------|
 | **S1** | **Spike: confirm ForeUP endpoints, request shapes, captcha posture, schedule_id** for Mangrove Bay | live ForeUP, browser devtools | recorded vcrpy cassettes + a 1-page note in `docs/foreup-spike.md` (committed) | `tests/cassettes/foreup_*.yaml`, `docs/foreup-spike.md`              | M1.*         |
@@ -564,7 +564,7 @@ S1    ──► M5.T1 ─► M5.T2 ─► M5.T3 ─► M5.T5 ─┘
 
 | ID  | Question                                                                                    | Exit criterion                                                                    | Suggested time |
 |-----|---------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------|----------------|
-| S1  | Are the ForeUP endpoints documented in `courses/foreup/base.py` correct and stable for Mangrove Bay? Does login carry CSRF? Is there a captcha on login or only on booking? What is the exact `schedule_id`? Is `api-key: no_limits` the right header value to send in 2026? Does `list_reservations` exist as a single GET, or must we paginate? | Recorded cassettes covering ALL of: (a) login happy path; (b) login auth failure; (c) /times **200 + empty pre-T0** (window not yet open); (d) /times **200 + empty post-T0** (window open, no slots match); (e) /times **200 + non-empty**; (f) successful booking POST; (g) GET reservations (the list_reservations endpoint). The pre-T0 vs post-T0 distinction is load-bearing — without it the orchestrator cannot decide poll-vs-give-up (review item 7). Brief notes committed to `docs/foreup-spike.md`. | 1 session |
+| **S1 (DONE)** | Are the ForeUP endpoints documented in `courses/foreup/base.py` correct and stable for Mangrove Bay? Does login carry CSRF? Is there a captcha on login or only on booking? What is the exact `schedule_id`? Is `api-key: no_limits` the right header value to send in 2026? Does `list_reservations` exist as a single GET, or must we paginate? | **Confirmed via live browser capture + httpx testing:** `schedule_id=2149`; login uses `api_key=""` (empty) + `booking_class_id=12239` (Public class from SCHEDULES JSON); search uses `api_key="no_limits"`; no CSRF token required; no login captcha observed; `/api/booking/users/reservations` is a single GET (no pagination). Cassettes not recorded (respx unit tests cover the shapes instead). Live dry-run `outcome=dry_run` confirmed. | 1 session |
 | S2  | Chronogolf API shape for any future backed-on-Chronogolf course (deferred — no v0 course needs it). | Documented endpoints + auth flow when first such course is added.                | future         |
 | S3  | Does ForeUP rate-limit pre-T0 polling? Could a 5 ms poll interval get the user banned?      | Empirical: poll at progressively faster rates from 1000 ms down; record response codes / latency. | 1 session |
 
@@ -593,13 +593,13 @@ Each item from the brief, addressed:
 
 1. **GH Actions doesn't actually fire.** Mitigation in v1; v0 accepts the loss.
 2. **ForeUP changes endpoints.** Adapter is one file; vcrpy cassettes go red loud. Manageable.
-3. **`api-key: no_limits` is a known-bot signal.** Spike S1 may show we should drop or change this header. If so, fix in M5.T1.
+3. ~~**`api-key: no_limits` is a known-bot signal.**~~ Resolved in S1: login uses `api_key=""` (empty); search uses `api_key="no_limits"`. No adverse response observed.
 4. **The user's ForeUP account gets restricted.** §12. Accepted v0 risk; would invalidate v0 entirely until manual unlock.
 5. **Time-window picker logic ("best slot")** is under-specified. v0 picks the slot whose `tee_time` is closest to the midpoint of the user's window. Revisit in v1 with explicit ranking config.
 6. **Cross-run cache eviction** (review item 9). Mitigation: §9 layer 2 (`list_reservations`) catches the missing-history case — see §9.2. v1 moves to S3/GCS.
 7. **DST spring-forward day** (review failure mode). 06:00 ET still exists on 2nd Sunday of March (the skipped hour is 02:00–03:00). Add `tests/test_dst_edge.py::test_spring_forward_t0_resolves` in M1.T1: assert `zoneinfo` returns 06:00 EDT on March 8 2026 with no ambiguity exception.
 8. **Workflow disabled by `gh workflow disable` after CAPTCHA_BLOCKED** (review failure mode). No automation re-enables it. Documented runbook step §15: after manual investigation, run `gh workflow enable book-tee-time`. We do NOT auto-re-enable — a human MUST verify the cause is gone.
-9. **`api-key: no_limits` is a community-observed magic string.** ForeUP could change it; Spike S3 should record the response shape if it's missing.
+9. ~~**`api-key: no_limits` is a community-observed magic string.**~~ Resolved in S1: search header confirmed; login uses empty string. Behaviour stable as of 2026-04-29.
 
 ### 19.1 Disagreements with v0 review
 
