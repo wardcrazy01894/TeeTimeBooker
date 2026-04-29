@@ -36,14 +36,15 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
-from .courses.foreup.mangrove_bay import MangroveBayAdapter
+from .courses.foreup.captcha import make_captcha_provider
+from .courses.foreup.mangrove_bay import MANGROVE_BAY_BOOKING_PAGE_URL, MangroveBayAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
 from .persistence.in_memory_store import InMemoryStore
 
-_ADAPTER_REGISTRY: dict[str, type[CourseAdapter]] = {
-    "foreup.mangrove_bay": MangroveBayAdapter,
-}
+# Fallback registry for adapters that don't need constructor arguments.
+# foreup.mangrove_bay is handled explicitly in _build_adapters to thread captcha_provider.
+_ADAPTER_REGISTRY: dict[str, type[CourseAdapter]] = {}
 
 
 @click.group()
@@ -109,7 +110,7 @@ async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None
         }
         creds: dict[CourseId, CourseCredentials] = {}
     else:
-        adapters = _build_adapters(cfg)
+        adapters = _build_adapters(cfg, dry_run=dry_run)
         creds = _resolve_creds(cfg)
 
     store = InMemoryStore()
@@ -132,16 +133,20 @@ async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None
         raise click.ClickException(f"booking failed: outcome={result.outcome.value}")
 
 
-def _build_adapters(cfg: AppConfig) -> dict[CourseId, CourseAdapter]:
+def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, CourseAdapter]:
     adapters: dict[CourseId, CourseAdapter] = {}
     for c in cfg.courses:
-        cls = _ADAPTER_REGISTRY.get(c.adapter)
-        if cls is None:
-            raise click.ClickException(
-                f"Unknown adapter {c.adapter!r} for course {c.id!r}. "
-                f"Known adapters: {list(_ADAPTER_REGISTRY)}"
-            )
-        adapters[CourseId(c.id)] = cls()
+        if c.adapter == "foreup.mangrove_bay":
+            cp = None if dry_run else make_captcha_provider(MANGROVE_BAY_BOOKING_PAGE_URL)
+            adapters[CourseId(c.id)] = MangroveBayAdapter(captcha_provider=cp)
+        else:
+            cls = _ADAPTER_REGISTRY.get(c.adapter)
+            if cls is None:
+                raise click.ClickException(
+                    f"Unknown adapter {c.adapter!r} for course {c.id!r}. "
+                    f"Known adapters: {list(_ADAPTER_REGISTRY)}"
+                )
+            adapters[CourseId(c.id)] = cls()
     return adapters
 
 
