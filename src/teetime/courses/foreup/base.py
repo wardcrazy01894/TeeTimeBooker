@@ -92,6 +92,7 @@ class ForeUpAdapter(CourseAdapter):
         self._timezone = timezone
         self._client = http_client
         self._owns_client = http_client is None
+        self._logged_in = False  # True only after a successful username/password login
 
     def _make_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -129,10 +130,15 @@ class ForeUpAdapter(CourseAdapter):
             raise CaptchaError(msg or "browser challenge (openNewWindow) required")
 
     async def authenticate(self, creds: CourseCredentials) -> None:
-        """Warm up PHPSESSID via GET then POST login. Sets session cookies."""
+        """Warm up PHPSESSID, then attempt username/password login.
+
+        The PHPSESSID warmup alone is enough for search(). A successful login
+        is required for book(). If the login fails (e.g. account uses Google
+        OAuth), search() still works; book() will raise AuthError.
+        """
         if self._client is None:
             self._client = self._make_client()
-        # Pre-warm: PHPSESSID must exist before the login POST.
+        # Always warm up — PHPSESSID alone is sufficient for search().
         await self._client.get(
             f"/index.php/booking/{self._course_pk}/{self._booking_class_id}"
         )
@@ -147,17 +153,17 @@ class ForeUpAdapter(CourseAdapter):
         )
         self._guard_captcha(r)
         if r.status_code in (400, 401):
-            msg = "Authentication failed"
-            with contextlib.suppress(ValueError):
-                msg = r.json().get("msg", msg)
-            raise AuthError(msg)
+            # Login failed — session cookie is still valid for search/list.
+            # book() will refuse to proceed without _logged_in=True.
+            return
         r.raise_for_status()
         try:
             data: object = r.json()
             if isinstance(data, dict) and not data.get("success", True):
-                raise AuthError(str(data.get("msg", "Login rejected")))
+                return  # same as above: partial session only
         except ValueError:
             pass
+        self._logged_in = True
 
     async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
         """GET /times for each target_date, filter by time_windows/holes/price/spots."""
@@ -215,6 +221,12 @@ class ForeUpAdapter(CourseAdapter):
 
     async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
         """POST /reservations echoing slot raw fields with overridden player/fee totals."""
+        if not self._logged_in:
+            raise AuthError(
+                "Full login required to book. "
+                "The account may use Google OAuth — provide session cookies via "
+                "MB_PHPSESSID + MB_TOKEN env vars (see README)."
+            )
         client = self._c()
         players = len(request.players)
         green_fee = float(slot.price_per_player)
@@ -292,14 +304,26 @@ class ForeUpAdapter(CourseAdapter):
 def _parse_slot(
     raw: dict[str, Any], target_date: date, course_id: CourseId, tz: ZoneInfo
 ) -> TeeTimeSlot:
-    """Map one ForeUP /times item to a TeeTimeSlot."""
-    _time_parts_min_len = 2
-    parts = str(raw["time"]).split(":")
-    h, m, s = int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > _time_parts_min_len else 0
-    tee_time = datetime(target_date.year, target_date.month, target_date.day, h, m, s, tzinfo=tz)
+    """Map one ForeUP /times item to a TeeTimeSlot.
+
+    ForeUP returns time as "YYYY-MM-DD HH:MM" (full datetime string).
+    teesheet_id is the schedule (same for all slots); start_front is the
+    unique per-slot integer used as slot_id.
+    """
+    time_str = str(raw["time"])
+    if " " in time_str:
+        # "YYYY-MM-DD HH:MM" — ForeUP's actual format
+        tee_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+    else:
+        # "HH:MM:SS" or "HH:MM" — fallback for alternate format
+        _min_parts = 2
+        parts = time_str.split(":")
+        h, m, s = int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > _min_parts else 0
+        tee_time = datetime(target_date.year, target_date.month, target_date.day, h, m, s, tzinfo=tz)
+    slot_id = str(raw.get("start_front") or raw.get("teesheet_side_id") or raw["teesheet_id"])
     return TeeTimeSlot(
         course_id=course_id,
-        slot_id=SlotId(str(raw["teesheet_id"])),
+        slot_id=SlotId(slot_id),
         tee_time=tee_time,
         holes=int(raw.get("holes", 18)),
         available_spots=int(raw.get("available_spots", 4)),
