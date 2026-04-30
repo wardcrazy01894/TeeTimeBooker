@@ -6,6 +6,9 @@ on:
     branches: [main]
 
 jobs:
+  # -------------------------------------------------------------------------
+  # Python: lint, type-check, and test
+  # -------------------------------------------------------------------------
   test:
     name: test / lint / typecheck
     runs-on: ubuntu-latest
@@ -21,6 +24,9 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
+
+      - name: Verify lockfile is up to date
+        run: uv lock --locked
 
       - name: Install dependencies
         run: uv sync --all-extras
@@ -39,3 +45,37 @@ jobs:
 
       - name: Tests (non-integration)
         run: uv run pytest -m "not integration"
+
+  # -------------------------------------------------------------------------
+  # Container: verify the Docker image builds
+  # -------------------------------------------------------------------------
+  docker-build:
+    name: docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build container image
+        run: docker build -t teetime:ci .
+
+  # -------------------------------------------------------------------------
+  # IaC: validate Bicep templates (no Azure credentials required)
+  # -------------------------------------------------------------------------
+  bicep-lint:
+    name: bicep lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bicep CLI
+        run: az bicep install
+
+      - name: Lint main template (+ all modules it imports)
+        run: az bicep build --file infra/bicep/main.bicep
+
+      - name: Lint budget template (subscription-scoped, separate entry point)
+        run: az bicep build --file infra/bicep/modules/budget.bicep
