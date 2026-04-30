@@ -11,7 +11,8 @@ RUN pip install uv --no-cache-dir
 WORKDIR /app
 
 # Install runtime deps first (cached layer unless pyproject/lockfile change)
-COPY pyproject.toml uv.lock ./
+# README.md is required by hatchling (build backend) to install the project itself
+COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --no-dev --frozen
 
 # Source and runtime config
