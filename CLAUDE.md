@@ -128,6 +128,22 @@ Anti-patterns we don't accept:
 - Tests that pass on `pytest` but only because they don't actually call
   the code path. Always verify the test fails before you write the impl.
 
+## Documentation standard
+
+Every PR must leave the docs in sync with the code. Before opening a PR,
+check each of these and update any that the PR makes stale:
+
+| Doc | Update when… |
+|-----|-------------|
+| `README.md` | Milestone status changes; new prerequisites, commands, or env vars; architecture diagram changes; roadmap table |
+| `CLAUDE.md` | New architectural invariants; changes to common commands; new subsystems, protocols, or agent rules |
+| `PLAN.md` | Milestone marked done or scope changes; open questions resolved or added; new spikes |
+| `infra/AZURE_PLAN.md` | Azure open questions resolved; new Key Vault secrets; IaC module changes; OIDC/RBAC changes |
+
+A PR that introduces a new CLI flag, env var, or milestone task with no
+corresponding doc update is incomplete. Not every PR touches every doc —
+the rule is to check and update the ones that are now stale.
+
 ## When in doubt
 
 - Implementing a new milestone task? Read PLAN.md §16 for inputs/outputs/deps.
