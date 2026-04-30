@@ -162,7 +162,12 @@ async def get_foreup_captcha_token_2captcha(
         for i in range(max_polls):
             await asyncio.sleep(poll_interval_s)
             elapsed = int((i + 1) * poll_interval_s)
-            _log.info("2captcha: waiting for solve (attempt %d/%d, ~%ds elapsed)...", i + 1, max_polls, elapsed)
+            _log.info(
+                "2captcha: waiting for solve (attempt %d/%d, ~%ds elapsed)...",
+                i + 1,
+                max_polls,
+                elapsed,
+            )
             r = await client.get(
                 _TWOCAPTCHA_RESULT_URL,
                 params={"key": api_key, "action": "get", "id": task_id, "json": "1"},

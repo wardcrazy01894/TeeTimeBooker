@@ -39,8 +39,6 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-_log = logging.getLogger(__name__)
-
 from ...core.adapter import (
     AuthError,
     CaptchaError,
@@ -59,6 +57,8 @@ from ...core.models import (
     SlotId,
     TeeTimeSlot,
 )
+
+_log = logging.getLogger(__name__)
 
 FOREUP_BASE_URL = "https://foreupsoftware.com"
 LOGIN_PATH = "/index.php/api/booking/users/login"
@@ -164,13 +164,18 @@ class ForeUpAdapter(CourseAdapter):
         )
         self._guard_captcha(r)
         if r.status_code in (400, 401):
-            _log.warning("ForeUP: login failed (status %d) — search still possible, book will require re-auth", r.status_code)
+            _log.warning(
+                "ForeUP: login failed (status %d) — search still possible, book requires re-auth",
+                r.status_code,
+            )
             return
         r.raise_for_status()
         try:
             data: object = r.json()
             if isinstance(data, dict) and not data.get("success", True):
-                _log.warning("ForeUP: login rejected by server — search still possible, book will require re-auth")
+                _log.warning(
+                    "ForeUP: login rejected by server — search ok, book requires re-auth"
+                )
                 return
         except ValueError:
             pass
@@ -185,7 +190,11 @@ class ForeUpAdapter(CourseAdapter):
 
         for target_date in request.target_dates:
             await asyncio.sleep(_MIN_BETWEEN_S)
-            _log.info("ForeUP: fetching tee times for %s (%d player(s))...", target_date, len(request.players))
+            _log.info(
+                "ForeUP: fetching tee times for %s (%d player(s))...",
+                target_date,
+                len(request.players),
+            )
             r = await client.get(
                 TIMES_PATH,
                 params={
@@ -273,7 +282,11 @@ class ForeUpAdapter(CourseAdapter):
             _log.info("ForeUP: CAPTCHA token obtained, posting booking...")
         else:
             _log.info("ForeUP: posting booking (no CAPTCHA)...")
-        _log.info("ForeUP: booking slot %s at %s...", slot.slot_id, slot.tee_time.strftime("%Y-%m-%d %H:%M %Z"))
+        _log.info(
+            "ForeUP: booking slot %s at %s...",
+            slot.slot_id,
+            slot.tee_time.strftime("%Y-%m-%d %H:%M %Z"),
+        )
         r = await client.post(RESERVATION_PATH, json=body)
         if r.status_code == _HTTP_SLOT_GONE:
             _log.warning("ForeUP: slot %s is gone (409) — will try next candidate", slot.slot_id)
