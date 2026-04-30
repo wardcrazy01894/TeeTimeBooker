@@ -30,7 +30,7 @@ Anti-bot etiquette:
 from __future__ import annotations
 
 import asyncio
-import contextlib
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -85,6 +85,7 @@ class ForeUpAdapter(CourseAdapter):
         public_booking_class_id: int | None = None,
         timezone: str = "America/New_York",
         http_client: httpx.AsyncClient | None = None,
+        captcha_provider: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         self.course_id = course_id
         self._course_pk = course_pk
@@ -97,6 +98,7 @@ class ForeUpAdapter(CourseAdapter):
         self._client = http_client
         self._owns_client = http_client is None
         self._logged_in = False  # True only after a successful username/password login
+        self._captcha_provider = captcha_provider
 
     def _make_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -256,9 +258,11 @@ class ForeUpAdapter(CourseAdapter):
             "discount_percent": 0,
             "player_list": False,
         }
+        if self._captcha_provider is not None:
+            body["captchaid"] = await self._captcha_provider()
         r = await client.post(RESERVATION_PATH, json=body)
         if r.status_code == _HTTP_SLOT_GONE:
-            raise SlotGoneError("Slot gone between search and book")
+            raise SlotGoneError(f"Slot gone (409): {r.text[:300]}")
         self._guard_captcha(r)
         r.raise_for_status()
         data: Any = r.json() if r.text else {}
@@ -323,7 +327,9 @@ def _parse_slot(
         _min_parts = 2
         parts = time_str.split(":")
         h, m, s = int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > _min_parts else 0
-        tee_time = datetime(target_date.year, target_date.month, target_date.day, h, m, s, tzinfo=tz)
+        tee_time = datetime(
+            target_date.year, target_date.month, target_date.day, h, m, s, tzinfo=tz
+        )
     slot_id = str(raw.get("start_front") or raw.get("teesheet_side_id") or raw["teesheet_id"])
     return TeeTimeSlot(
         course_id=course_id,

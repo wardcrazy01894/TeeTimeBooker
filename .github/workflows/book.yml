@@ -96,6 +96,10 @@ jobs:
         if: steps.dst.outputs.proceed == 'true'
         run: uv sync
 
+      - name: Install Playwright browsers
+        if: steps.dst.outputs.proceed == 'true'
+        run: uv run playwright install chromium --with-deps
+
       # Cross-run state restore. Without this, SqliteStore starts empty every
       # run and the §9-layer-1 idempotency check is defeated. We use the GH
       # Actions cache (single key) — catastrophic eviction triggers a phantom-

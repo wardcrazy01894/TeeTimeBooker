@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from .adapter import (
     InventoryNotPublishedError,
     NoInventoryError,
+    SlotGoneError,
 )
 from .clock import busy_wait_until
 from .models import (
@@ -123,8 +124,8 @@ class Orchestrator:
         if not slots:
             raise _CourseSkippedError()
 
-        best = self._pick_best_slot(slots, request)
-        if best is None:
+        candidates = self._rank_slots(slots, request)
+        if not candidates:
             raise _CourseSkippedError()
 
         if request.dry_run:
@@ -132,13 +133,21 @@ class Orchestrator:
                 request_id=request.request_id,
                 outcome=BookingOutcome.DRY_RUN,
                 course_id=course_id,
-                slot=best,
+                slot=candidates[0],
                 confirmation_code=None,
                 booked_at=None,
                 attempts=1,
             )
 
-        return await adapter.book(best, request)
+        last_exc: SlotGoneError | None = None
+        for candidate in candidates:
+            try:
+                return await adapter.book(candidate, request)
+            except SlotGoneError as exc:
+                last_exc = exc
+        if last_exc is not None:
+            raise last_exc
+        raise _CourseSkippedError()
 
     # --- timing ---------------------------------------------------------
 
@@ -186,16 +195,15 @@ class Orchestrator:
 
     # --- slot selection ------------------------------------------------
 
-    def _pick_best_slot(
+    def _rank_slots(
         self,
         slots: list[TeeTimeSlot],
         request: BookingRequest,
-    ) -> TeeTimeSlot | None:
-        """Filter to slots that match the request, then pick the one whose
-        tee_time is closest to the midpoint of any matching window. Returns
-        None if no slot matches (caller treats as NO_INVENTORY for this course).
+    ) -> list[TeeTimeSlot]:
+        """Filter to matching slots and return them sorted by closeness to each
+        window's midpoint (best candidate first). Empty list = no inventory.
         """
-        candidates: list[tuple[float, TeeTimeSlot]] = []
+        scored: list[tuple[float, TeeTimeSlot]] = []
         for s in slots:
             if s.available_spots < len(request.players):
                 continue
@@ -209,11 +217,9 @@ class Orchestrator:
                 continue
             mid = self._window_midpoint_utc(s.tee_time, window)
             distance = abs((s.tee_time - mid).total_seconds())
-            candidates.append((distance, s))
-        if not candidates:
-            return None
-        candidates.sort(key=lambda x: x[0])
-        return candidates[0][1]
+            scored.append((distance, s))
+        scored.sort(key=lambda x: x[0])
+        return [s for _, s in scored]
 
     @staticmethod
     def _matching_window(slot: TeeTimeSlot, request: BookingRequest) -> TimeWindow | None:

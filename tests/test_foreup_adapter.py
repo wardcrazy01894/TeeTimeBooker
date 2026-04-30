@@ -6,6 +6,7 @@ aclose, and the two parse helpers. No real network traffic.
 
 from __future__ import annotations
 
+import json as stdlib_json
 from datetime import date, datetime, time
 from decimal import Decimal
 from uuid import uuid4
@@ -16,7 +17,6 @@ import pytest
 import respx
 
 from teetime.core.adapter import (
-    AuthError,
     CaptchaError,
     CourseAdapter,
     RateLimitError,
@@ -273,6 +273,93 @@ async def test_book_slot_gone_raises() -> None:
         adapter._logged_in = True  # simulate successful authenticate()
         with pytest.raises(SlotGoneError):
             await adapter.book(slot, _request())
+
+
+@respx.mock
+async def test_book_includes_captchaid_when_provider_given() -> None:
+    """book() must include captchaid in the POST body when captcha_provider is set."""
+    captcha_token = "test-captcha-token-xyz"
+
+    async def fake_provider() -> str:
+        return captcha_token
+
+    route = respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(200, json={"id": "CONF-99"})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = ForeUpAdapter(
+            course_id=CID,
+            course_pk=19671,
+            booking_class_id=2149,
+            schedule_id=2149,
+            timezone="America/New_York",
+            http_client=client,
+            captcha_provider=fake_provider,
+        )
+        adapter._logged_in = True
+        result = await adapter.book(slot, _request())
+    assert result.confirmation_code == "CONF-99"
+    body = stdlib_json.loads(route.calls[0].request.content)
+    assert body.get("captchaid") == captcha_token
+
+
+@respx.mock
+async def test_book_sends_false_for_player_list() -> None:
+    """ForeUP booking does not require player details — player_list must be False.
+    The website confirms the booking with just a player count, no individual data."""
+    route = respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(200, json={"id": "CONF-42"})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        await adapter.book(slot, _request())
+    body = stdlib_json.loads(route.calls[0].request.content)
+    assert body.get("player_list") is False
+
+
+@respx.mock
+async def test_book_omits_captchaid_without_provider() -> None:
+    """book() must NOT send captchaid when no captcha_provider is given."""
+    route = respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(200, json={"id": "CONF-42"})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        await adapter.book(slot, _request())
+    body = stdlib_json.loads(route.calls[0].request.content)
+    assert "captchaid" not in body
 
 
 # --- list_reservations ---------------------------------------------------

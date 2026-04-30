@@ -590,6 +590,7 @@ source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "httpx" },
+    { name = "playwright" },
     { name = "pydantic" },
     { name = "structlog" },
     { name = "tenacity" },
@@ -607,17 +608,13 @@ dev = [
     { name = "vcrpy" },
 ]
 
-[package.dev-dependencies]
-dev = [
-    { name = "playwright" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "freezegun", marker = "extra == 'dev'", specifier = ">=1.5" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "playwright", specifier = ">=1.37" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
@@ -631,7 +628,7 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "playwright", specifier = ">=1.59.0" }]
+dev = []
 
 [[package]]
 name = "tenacity"
