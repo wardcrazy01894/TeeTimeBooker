@@ -217,9 +217,7 @@ async def test_search_rate_limited_raises() -> None:
 
 @respx.mock
 async def test_search_empty_list_returns_no_slots() -> None:
-    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(return_value=httpx.Response(200, json=[]))
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         adapter = _adapter(client)
         slots = await adapter.search(_request())
@@ -255,9 +253,7 @@ async def test_book_success_returns_booked_result() -> None:
 
 @respx.mock
 async def test_book_slot_gone_raises() -> None:
-    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
-        return_value=httpx.Response(409)
-    )
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(return_value=httpx.Response(409))
     slot = TeeTimeSlot(
         course_id=CID,
         slot_id=SlotId("99001"),

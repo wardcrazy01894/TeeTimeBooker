@@ -21,9 +21,7 @@ class MissingEnvVarError(RuntimeError):
     """A required env-var referenced by the config is unset."""
 
     def __init__(self, var_name: str, field_path: str) -> None:
-        super().__init__(
-            f"required env var {var_name!r} (referenced by {field_path}) is unset"
-        )
+        super().__init__(f"required env var {var_name!r} (referenced by {field_path}) is unset")
         self.var_name = var_name
         self.field_path = field_path
 

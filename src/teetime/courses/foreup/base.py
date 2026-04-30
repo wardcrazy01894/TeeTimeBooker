@@ -148,9 +148,7 @@ class ForeUpAdapter(CourseAdapter):
         if self._client is None:
             self._client = self._make_client()
         _log.info("ForeUP: warming up session cookie...")
-        await self._client.get(
-            f"/index.php/booking/{self._course_pk}/{self._booking_class_id}"
-        )
+        await self._client.get(f"/index.php/booking/{self._course_pk}/{self._booking_class_id}")
         _log.info("ForeUP: logging in as %s...", creds.username)
         r = await self._client.post(
             LOGIN_PATH,
@@ -173,9 +171,7 @@ class ForeUpAdapter(CourseAdapter):
         try:
             data: object = r.json()
             if isinstance(data, dict) and not data.get("success", True):
-                _log.warning(
-                    "ForeUP: login rejected by server — search ok, book requires re-auth"
-                )
+                _log.warning("ForeUP: login rejected by server — search ok, book requires re-auth")
                 return
         except ValueError:
             pass
@@ -317,9 +313,7 @@ class ForeUpAdapter(CourseAdapter):
         r.raise_for_status()
         raw: Any = r.json() if r.text else []
         items: list[Any] = (
-            raw if isinstance(raw, list)
-            else raw.get("data", []) if isinstance(raw, dict)
-            else []
+            raw if isinstance(raw, list) else raw.get("data", []) if isinstance(raw, dict) else []
         )
         tz = ZoneInfo(self._timezone)
         out: list[ExistingReservation] = []

@@ -226,9 +226,7 @@ async def test_run_returns_no_inventory_when_all_slots_gone() -> None:
     cid = CourseId("fake:course")
     fa = FakeAdapter(course_id=cid)
     fa.set_search_response([_slot(cid, hour=7), _slot(cid, hour=8)])
-    fa.set_book_side_effects(
-        [SlotGoneError("slot1 taken"), SlotGoneError("slot2 taken")]
-    )
+    fa.set_book_side_effects([SlotGoneError("slot1 taken"), SlotGoneError("slot2 taken")])
 
     orch, _, _ = _build({cid: fa})
     with pytest.raises(SlotGoneError):
@@ -365,4 +363,4 @@ async def test_run_busy_waits_until_t0() -> None:
     delta = (t0 - clock.now_utc()).total_seconds()
     # Should have stopped at ~early_arrival_ms before T0 (= 100ms),
     # within fine_step tolerance (1ms).
-    assert -0.05 <= delta <= 0.15, f"clock landed {delta*1000:.1f}ms before T0"
+    assert -0.05 <= delta <= 0.15, f"clock landed {delta * 1000:.1f}ms before T0"

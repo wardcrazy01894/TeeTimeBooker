@@ -44,7 +44,7 @@ async def test_real_clock_sleep_actually_sleeps() -> None:
     start = clock.now_utc()
     await clock.sleep(0.05)
     elapsed = (clock.now_utc() - start).total_seconds()
-    assert elapsed >= 0.04, f"expected >=40ms; got {elapsed*1000:.1f}ms"
+    assert elapsed >= 0.04, f"expected >=40ms; got {elapsed * 1000:.1f}ms"
 
 
 # --- FakeClock -----------------------------------------------------------
@@ -102,7 +102,7 @@ async def test_busy_wait_lands_within_accuracy_of_target() -> None:
     fc = FakeClock(start=t0 - timedelta(seconds=1.5))
     await busy_wait_until(t0, fc, fine_accuracy_s=0.05)
     delta = abs((fc.now_utc() - t0).total_seconds())
-    assert delta <= 0.05, f"landed {delta*1000:.1f}ms off target (>50ms)"
+    assert delta <= 0.05, f"landed {delta * 1000:.1f}ms off target (>50ms)"
 
 
 async def test_busy_wait_uses_coarse_step_when_far_from_target() -> None:

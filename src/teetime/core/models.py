@@ -17,7 +17,7 @@ from uuid import UUID, uuid5
 # --- Identity types -------------------------------------------------------
 
 CourseId = NewType("CourseId", str)  # adapter-stable id, e.g. "foreup:19671:2149"
-SlotId = NewType("SlotId", str)      # adapter-local opaque id for a tee time
+SlotId = NewType("SlotId", str)  # adapter-local opaque id for a tee time
 RequestId = NewType("RequestId", UUID)  # one BookingRequest invocation
 
 # Stable namespace UUID used by `derive_request_id` to fold a config fingerprint
@@ -64,10 +64,7 @@ def build_request_fingerprint(
     courses_seg = ",".join(sorted(course_ids))
     offsets_seg = ",".join(str(o) for o in sorted(target_offsets))
     windows_seg = ",".join(
-        sorted(
-            f"{w.earliest.strftime('%H:%M')}-{w.latest.strftime('%H:%M')}"
-            for w in time_windows
-        )
+        sorted(f"{w.earliest.strftime('%H:%M')}-{w.latest.strftime('%H:%M')}" for w in time_windows)
     )
     party_tokens = sorted(f"{p.first_name}|{p.last_name}" for p in players)
     return "|".join([courses_seg, offsets_seg, windows_seg, *party_tokens])
@@ -75,19 +72,20 @@ def build_request_fingerprint(
 
 # --- Enums ----------------------------------------------------------------
 
+
 class BookingOutcome(StrEnum):
     """Terminal status of a single BookingRequest after orchestration."""
 
     BOOKED = "booked"
-    NO_INVENTORY = "no_inventory"          # course had no slots matching criteria
+    NO_INVENTORY = "no_inventory"  # course had no slots matching criteria
     INVENTORY_NOT_PUBLISHED = "inventory_not_published"  # 7-day window not open yet
-    PRICE_REJECTED = "price_rejected"      # slots existed but exceeded max_price
+    PRICE_REJECTED = "price_rejected"  # slots existed but exceeded max_price
     AUTH_FAILED = "auth_failed"
     CAPTCHA_BLOCKED = "captcha_blocked"
     RATE_LIMITED = "rate_limited"
-    ALREADY_BOOKED = "already_booked"      # idempotency hit
-    DRY_RUN = "dry_run"                    # everything succeeded except final POST
-    ERROR = "error"                        # uncategorized failure
+    ALREADY_BOOKED = "already_booked"  # idempotency hit
+    DRY_RUN = "dry_run"  # everything succeeded except final POST
+    ERROR = "error"  # uncategorized failure
 
 
 class CartPreference(StrEnum):
@@ -99,6 +97,7 @@ class CartPreference(StrEnum):
 
 
 # --- Player identity ------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class Player:
@@ -114,6 +113,7 @@ class Player:
 
 
 # --- Search criteria & request -------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class TimeWindow:
@@ -136,17 +136,18 @@ class BookingRequest:
     """
 
     request_id: RequestId
-    target_dates: tuple[date, ...]                # ordered preference, first wins
-    time_windows: tuple[TimeWindow, ...]          # any window matches
-    players: tuple[Player, ...]                   # length == party size
-    course_preferences: tuple[CourseId, ...]      # ordered fallback list
+    target_dates: tuple[date, ...]  # ordered preference, first wins
+    time_windows: tuple[TimeWindow, ...]  # any window matches
+    players: tuple[Player, ...]  # length == party size
+    course_preferences: tuple[CourseId, ...]  # ordered fallback list
     holes: int = 18
-    max_price_per_player: Decimal | None = None   # None = no cap
+    max_price_per_player: Decimal | None = None  # None = no cap
     cart: CartPreference = CartPreference.EITHER
-    dry_run: bool = False                         # if True, never POST the booking
+    dry_run: bool = False  # if True, never POST the booking
 
 
 # --- Search results -------------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class TeeTimeSlot:
@@ -154,9 +155,9 @@ class TeeTimeSlot:
 
     course_id: CourseId
     slot_id: SlotId
-    tee_time: datetime              # tz-aware, course-local zone
+    tee_time: datetime  # tz-aware, course-local zone
     holes: int
-    available_spots: int            # remaining seats in the group
+    available_spots: int  # remaining seats in the group
     price_per_player: Decimal
     cart_included: bool
     raw: dict[str, object] = field(default_factory=dict)  # adapter-specific echo
@@ -174,7 +175,7 @@ class ExistingReservation:
 
     course_id: CourseId
     confirmation_code: str
-    tee_time: datetime          # tz-aware, course-local zone
+    tee_time: datetime  # tz-aware, course-local zone
     party_size: int
     raw: dict[str, object] = field(default_factory=dict)
 
@@ -187,14 +188,15 @@ class BookingResult:
     outcome: BookingOutcome
     course_id: CourseId | None
     slot: TeeTimeSlot | None
-    confirmation_code: str | None        # course/ForeUP confirmation number
-    booked_at: datetime | None           # tz-aware UTC
+    confirmation_code: str | None  # course/ForeUP confirmation number
+    booked_at: datetime | None  # tz-aware UTC
     attempts: int
     error_message: str | None = None
     diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 # --- Auth context (passed to adapters; never persisted in models) --------
+
 
 @dataclass(frozen=True, slots=True)
 class CourseCredentials:

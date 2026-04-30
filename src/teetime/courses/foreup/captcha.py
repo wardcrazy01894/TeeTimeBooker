@@ -182,9 +182,7 @@ async def get_foreup_captcha_token_2captcha(
             if result.get("request") != "CAPCHA_NOT_READY":
                 raise RuntimeError(f"2captcha error: {result.get('request')}")
 
-    raise TimeoutError(
-        f"2captcha did not solve CAPTCHA within {max_polls * poll_interval_s:.0f}s"
-    )
+    raise TimeoutError(f"2captcha did not solve CAPTCHA within {max_polls * poll_interval_s:.0f}s")
 
 
 def make_2captcha_provider(
