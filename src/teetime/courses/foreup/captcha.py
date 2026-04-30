@@ -13,8 +13,10 @@ ForeUP's booking POST requires a valid reCAPTCHA v2 invisible token in the
    ~$0.003/solve (~$0.15/year for weekly bookings). Requires an API key from
    https://2captcha.com; set TWOCAPTCHA_API_KEY in .env.
 
-Site key confirmed from ForeUP's booking page source:
-    6LfZGS0qAAAAAMVgxySjd43HvklGdg1Jady2TolK
+Invisible site key confirmed from ForeUP's booking page source (CAPTCHA_INVISIBLE_SITE_KEY):
+    6Le0bf4pAAAAALufPGSllYP0-QN79MW_XTUa-24h
+The page also defines CAPTCHA_VISIBLE_SITE_KEY (6LfZGS0q...) — that is the wrong key;
+the booking widget callback uses the invisible key.
 
 Tokens expire in ~2 minutes; providers are called immediately before book().
 """
@@ -31,7 +33,7 @@ from playwright.async_api import async_playwright
 
 _log = logging.getLogger(__name__)
 
-FOREUP_RECAPTCHA_SITE_KEY = "6LfZGS0qAAAAAMVgxySjd43HvklGdg1Jady2TolK"
+FOREUP_RECAPTCHA_SITE_KEY = "6Le0bf4pAAAAALufPGSllYP0-QN79MW_XTUa-24h"
 
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "

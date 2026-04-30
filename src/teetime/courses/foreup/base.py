@@ -285,12 +285,23 @@ class ForeUpAdapter(CourseAdapter):
         )
         r = await client.post(RESERVATION_PATH, json=body)
         if r.status_code == _HTTP_SLOT_GONE:
-            _log.warning("ForeUP: slot %s is gone (409) — will try next candidate", slot.slot_id)
+            _log.warning(
+                "ForeUP: slot %s → 409. Response: %s",
+                slot.slot_id,
+                r.text[:300],
+            )
             raise SlotGoneError(f"Slot gone (409): {r.text[:300]}")
         self._guard_captcha(r)
         r.raise_for_status()
         data: Any = r.json() if r.text else {}
-        conf_raw = data.get("id") or data.get("booking_id") or data.get("confirmation_code")
+        _log.info("ForeUP: booking response: %s", data)
+        conf_raw = (
+            data.get("id")
+            or data.get("booking_id")
+            or data.get("confirmation_code")
+            or data.get("reservation_id")
+            or data.get("reservationId")
+        )
         conf = str(conf_raw) if conf_raw is not None else None
         _log.info("ForeUP: booking confirmed! confirmation_code=%s", conf)
         return BookingResult(
