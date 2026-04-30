@@ -399,6 +399,7 @@ the blob manager opt-in via env var, keeping backward compatibility.
 | `SMTP-PASS` | SMTP login password | Bot env var `SMTP_PASS` |
 | `PLAYER1-EMAIL` | Player 1 email (PII) | Bot env var `PLAYER1_EMAIL` |
 | `PLAYER1-PHONE` | Player 1 phone (PII) | Bot env var `PLAYER1_PHONE` |
+| `TWOCAPTCHA-API-KEY` | 2captcha.com API key for CAPTCHA solving | Bot env var `TWOCAPTCHA_API_KEY` |
 
 Additional `PLAYER*` secrets follow the same pattern. The set of secrets is
 determined by the config file (`config/local.toml`) which references env var
@@ -530,33 +531,59 @@ human-initiated merges and any agent-initiated PRs.
 ### 8.2 OIDC federated credential setup (one-time, operator)
 
 ```bash
-# 1. Create the Azure AD app registration (no service principal secret created).
-az ad app create --display-name teetime-iac-ci
+# 0. Pre-flight: log in and set subscription context.
+az login --tenant 5151757e-ef5b-42a5-a09b-6410b40b2186
+az account set --subscription 3f82c7e1-4b1b-4a55-b905-d79f65c6887d
+
+# 1. DONE — app registration already created.
+#    appId (= AZURE_CLIENT_ID for GitHub secrets): 7a9c17a4-b65b-4028-99db-6a099d2b9524
+#    Object ID (used in --id for federated-credential commands):
+#                                                  d24e6af8-90cf-4883-afe9-3c68c4bb28c7
+#    Note: appId and object ID are different fields. appId is the "client ID" used
+#    by azure/login and GitHub secrets. Object ID is used only in az CLI --id args below.
 
 # 2. Create a service principal for the app (needed for RBAC assignments).
-az ad sp create --id <app-id>
+az ad sp create --id 7a9c17a4-b65b-4028-99db-6a099d2b9524
 
 # 3. Create the federated credential for GitHub Actions OIDC.
 #    IMPORTANT: audiences must be "api://AzureADTokenExchange" (not "AzureADApplications").
 #    Using the wrong audience causes AADSTS70021 at runtime.
+#    NOTE: --id here takes the app OBJECT ID, not the appId.
 az ad app federated-credential create \
-  --id <app-id> \
+  --id d24e6af8-90cf-4883-afe9-3c68c4bb28c7 \
   --parameters '{
     "name": "gh-main",
     "issuer": "https://token.actions.githubusercontent.com",
-    "subject": "repo:<owner>/TeeTimeBooker:ref:refs/heads/main",
+    "subject": "repo:wardcrazy01894/TeeTimeBooker:ref:refs/heads/main",
     "audiences": ["api://AzureADTokenExchange"]
   }'
 
 # 4. Add a separate credential for tag pushes (prod deploys).
 az ad app federated-credential create \
-  --id <app-id> \
+  --id d24e6af8-90cf-4883-afe9-3c68c4bb28c7 \
   --parameters '{
     "name": "gh-tags",
     "issuer": "https://token.actions.githubusercontent.com",
-    "subject": "repo:<owner>/TeeTimeBooker:ref:refs/tags/infra/*",
+    "subject": "repo:wardcrazy01894/TeeTimeBooker:ref:refs/tags/infra/*",
     "audiences": ["api://AzureADTokenExchange"]
   }'
+
+# 5. Grant the service principal Contributor + User Access Administrator on each RG.
+#    (Run once per env — dev first, then prod when ready.)
+az role assignment create \
+  --assignee 7a9c17a4-b65b-4028-99db-6a099d2b9524 \
+  --role "Contributor" \
+  --scope "/subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d/resourceGroups/rg-teetime-dev"
+
+az role assignment create \
+  --assignee 7a9c17a4-b65b-4028-99db-6a099d2b9524 \
+  --role "User Access Administrator" \
+  --scope "/subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d/resourceGroups/rg-teetime-dev"
+
+# 6. Add GitHub secrets (Settings → Secrets → Actions → New repository secret):
+#    AZURE_CLIENT_ID       = 7a9c17a4-b65b-4028-99db-6a099d2b9524
+#    AZURE_TENANT_ID       = 5151757e-ef5b-42a5-a09b-6410b40b2186
+#    AZURE_SUBSCRIPTION_ID = 3f82c7e1-4b1b-4a55-b905-d79f65c6887d
 ```
 
 GitHub repository secrets required: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
@@ -740,14 +767,14 @@ The following items cannot be resolved without operator input. The stubs in
 
 | # | Question | Where it's needed |
 |---|---|---|
-| 1 | **Azure AD tenant ID** | `azure-iac.yml` AZURE_TENANT_ID secret; OIDC federated credential setup |
-| 2 | **Azure subscription ID** | `azure-iac.yml` AZURE_SUBSCRIPTION_ID secret; budget.bicep deploy |
-| 3 | **Preferred environment names** — `dev`/`prod` (assumed in this plan) or something else like `nonprod`/`prod` | `main.bicepparam.*` filenames and resource name suffixes |
-| 4 | **Budget alert email address** | `budget.bicep` parameter |
-| 5 | **GitHub repo owner/name** (for OIDC subject claim) — assumed `alanc3939/TeeTimeBooker` from the bot's User-Agent in PLAN.md §14 | OIDC federated credential `subject` field |
-| 6 | **Is there a Dockerfile already, or does it need to be created as part of v1?** This plan assumes a Dockerfile exists or will be created alongside v1. If the bot has been running only on GH Actions runners (uv sync + uv run), a Dockerfile is needed. | `registry.bicep` + `azure-iac.yml` build step |
+| 1 | ~~**Azure AD tenant ID**~~ — **RESOLVED: `5151757e-ef5b-42a5-a09b-6410b40b2186`** | `azure-iac.yml` AZURE_TENANT_ID secret; OIDC setup |
+| 2 | ~~**Azure subscription ID**~~ — **RESOLVED: `3f82c7e1-4b1b-4a55-b905-d79f65c6887d`** | `azure-iac.yml` AZURE_SUBSCRIPTION_ID secret; budget.bicep deploy |
+| 3 | ~~**Preferred environment names**~~ — **RESOLVED: `dev`/`prod`** confirmed | `main.bicepparam.*` filenames and resource name suffixes |
+| 4 | **Budget alert email address** — `alanc3939+claude@gmail.com` from config/container.toml is a reasonable default; confirm or override | `budget.bicep` parameter |
+| 5 | ~~**GitHub repo owner/name**~~ — **RESOLVED: `wardcrazy01894/TeeTimeBooker`**. OIDC subject claims updated. | OIDC federated credential `subject` field |
+| 6 | ~~**Dockerfile needed?**~~ — **RESOLVED: created at `Dockerfile` + `config/container.toml` + `.dockerignore`**. SMTP backend set to `console` until credentials are wired. SQLite path set to `/tmp/teetime-state/teetime.db` for BlobStateManager. | `registry.bicep` + `azure-iac.yml` build step |
 | 7 | **ACR name** must be globally unique in Azure. Proposed: `teetime{envName}{shortId}` where `shortId` is a 4-char hash of the subscription ID. Confirm or override. | `registry.bicep` |
 | 8 | **Storage account name** must be globally unique, 3–24 chars, lowercase alphanumeric. Proposed: `teetime{envName}sa{shortId}`. Confirm or override. | `storage.bicep` |
 | 9 | **Key Vault name** must be globally unique, 3–24 chars. Proposed: `kv-teetime-{envName}-{shortId}`. Confirm or override. | `keyvault.bicep` |
-| 10 | **Are SMTP credentials already known, or will a different notification backend be used for v1?** The email notifier is v0; v1 might use SendGrid or another Azure-native service. | Key Vault secrets + `SMTP-*` secret names |
-| 11 | **ForeUP IP allowlist / bot-detection risk (highest-probability v1 cutover failure mode).** GitHub Actions runners have published, stable IP ranges that ForeUP may have implicitly been allowing. ACA Consumption uses shared NAT IPs with no SLA on stability — ForeUP could silently start blocking the bot after cutover. **Recommended action before cutover:** deploy the bot to an Azure VM in East US 2 (or use `az containerapp job start --no-wait` with `az containerapp job logs show`) and verify that the ForeUP API (`foreupsoftware.com`) responds correctly. Perform this test BEFORE disabling the v0 cron (§10.3 step 3). If ForeUP blocks ACA egress IPs, mitigations include: (a) Azure NAT Gateway with a static public IP on the ACA VNet, (b) keeping v0 GH Actions runner as primary with v1 as standby. This is a candidate Spike S4 in PLAN.md §17 — the user should decide whether to add it there. | v1 cutover; §10.3 |
+| 10 | ~~**SMTP credentials**~~ — **DEFERRED.** `config/container.toml` uses `backend = "console"` for now. Switch to `backend = "email"` and provision SMTP_HOST/SMTP_USER/SMTP_PASS in Key Vault when ready. | Key Vault secrets + `SMTP-*` secret names |
+| 11 | **ForeUP IP allowlist / bot-detection risk** — **ACCEPTED RISK for now.** Bot can be run locally via `uv run teetime run --config config/local.toml --dry-run true` while v1 ACA is still being built. Test from Azure before v1 cutover (§10.3 step 2b). Mitigations if blocked: NAT Gateway with static IP, or keep v0 GH Actions as primary. | v1 cutover; §10.3 |

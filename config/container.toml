@@ -1,0 +1,57 @@
+# TeeTimeBooker — container runtime config (v1 Azure / Docker).
+# Baked into the image. All secrets arrive as env vars via ACA secretRef;
+# this file only wires env-var names and non-secret settings.
+# See infra/AZURE_PLAN.md §7.3 for the full env var inventory.
+
+[[courses]]
+id      = "foreup:mangrove_bay"
+adapter = "foreup.mangrove_bay"
+username_env = "MB_USERNAME"
+password_env = "MB_PASSWORD"
+extra = { booking_class_id = "2149" }
+
+[request]
+target_offsets       = [7]
+holes                = 18
+max_price_per_player = "55.00"
+cart                 = "either"
+course_preferences   = ["foreup:mangrove_bay"]
+
+[[request.players]]
+first_name        = "Alex"
+last_name         = "Lancaster"
+email_env         = "PLAYER1_EMAIL"
+phone_env         = "PLAYER1_PHONE"
+member_number_env = "PLAYER1_MB_MEMBER"
+
+[[request.players]]
+first_name = "Guest"
+last_name  = "Player"
+email_env  = "PLAYER2_EMAIL"
+
+[[request.time_windows]]
+earliest = 07:00:00
+latest   = 09:30:00
+
+[[request.time_windows]]
+earliest = 16:00:00
+latest   = 18:00:00
+
+[scheduler]
+timezone         = "America/New_York"
+fire_time        = 06:00:00
+early_arrival_ms = 500
+poll_interval_ms = 250
+max_poll_seconds = 30
+
+[notifier]
+# SMTP is deferred — use console until SMTP_HOST is provisioned in Key Vault.
+# Switch to backend = "email" once SMTP credentials are wired.
+backend  = "console"
+email_to = "alanc3939+claude@gmail.com"
+
+[persistence]
+backend = "sqlite"
+# BlobStateManager (M-azure-T5) downloads the blob to /tmp/teetime-state/teetime.db
+# before the bot starts and uploads it on exit. Do not change this path.
+path = "/tmp/teetime-state/teetime.db"
