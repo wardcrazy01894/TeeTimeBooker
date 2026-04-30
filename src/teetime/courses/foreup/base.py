@@ -295,12 +295,16 @@ class ForeUpAdapter(CourseAdapter):
         r.raise_for_status()
         data: Any = r.json() if r.text else {}
         _log.info("ForeUP: booking response: %s", data)
+        # ForeUP returns {"reservation": {"pending_reservation_id": ..., ...}}
+        # Fall back through several field names seen across ForeUP API versions.
+        reservation: Any = data.get("reservation") if isinstance(data, dict) else None
         conf_raw = (
-            data.get("id")
+            (reservation.get("pending_reservation_id") if isinstance(reservation, dict) else None)
+            or (reservation.get("id") if isinstance(reservation, dict) else None)
+            or data.get("pending_reservation_id")
+            or data.get("id")
             or data.get("booking_id")
             or data.get("confirmation_code")
-            or data.get("reservation_id")
-            or data.get("reservationId")
         )
         conf = str(conf_raw) if conf_raw is not None else None
         _log.info("ForeUP: booking confirmed! confirmation_code=%s", conf)
