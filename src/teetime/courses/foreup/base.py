@@ -30,6 +30,7 @@ Anti-bot etiquette:
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
@@ -37,6 +38,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
+
+_log = logging.getLogger(__name__)
 
 from ...core.adapter import (
     AuthError,
@@ -144,10 +147,11 @@ class ForeUpAdapter(CourseAdapter):
         """
         if self._client is None:
             self._client = self._make_client()
-        # Always warm up — PHPSESSID alone is sufficient for search().
+        _log.info("ForeUP: warming up session cookie...")
         await self._client.get(
             f"/index.php/booking/{self._course_pk}/{self._booking_class_id}"
         )
+        _log.info("ForeUP: logging in as %s...", creds.username)
         r = await self._client.post(
             LOGIN_PATH,
             data={
@@ -160,17 +164,18 @@ class ForeUpAdapter(CourseAdapter):
         )
         self._guard_captcha(r)
         if r.status_code in (400, 401):
-            # Login failed — session cookie is still valid for search/list.
-            # book() will refuse to proceed without _logged_in=True.
+            _log.warning("ForeUP: login failed (status %d) — search still possible, book will require re-auth", r.status_code)
             return
         r.raise_for_status()
         try:
             data: object = r.json()
             if isinstance(data, dict) and not data.get("success", True):
-                return  # same as above: partial session only
+                _log.warning("ForeUP: login rejected by server — search still possible, book will require re-auth")
+                return
         except ValueError:
             pass
         self._logged_in = True
+        _log.info("ForeUP: login successful")
 
     async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
         """GET /times for each target_date, filter by time_windows/holes/price/spots."""
@@ -180,6 +185,7 @@ class ForeUpAdapter(CourseAdapter):
 
         for target_date in request.target_dates:
             await asyncio.sleep(_MIN_BETWEEN_S)
+            _log.info("ForeUP: fetching tee times for %s (%d player(s))...", target_date, len(request.players))
             r = await client.get(
                 TIMES_PATH,
                 params={
@@ -205,6 +211,8 @@ class ForeUpAdapter(CourseAdapter):
             if not isinstance(raw_list, list):
                 raise InventoryNotPublishedError(f"Unexpected /times shape: {r.text[:200]}")
 
+            _log.info("ForeUP: got %d raw slot(s) for %s, filtering...", len(raw_list), target_date)
+            before = len(results)
             for raw in raw_list:
                 try:
                     slot = _parse_slot(raw, target_date, self.course_id, tz)
@@ -223,6 +231,7 @@ class ForeUpAdapter(CourseAdapter):
                 ):
                     continue
                 results.append(slot)
+            _log.info("ForeUP: %d slot(s) match filters for %s", len(results) - before, target_date)
 
         return results
 
@@ -259,15 +268,22 @@ class ForeUpAdapter(CourseAdapter):
             "player_list": False,
         }
         if self._captcha_provider is not None:
+            _log.info("ForeUP: requesting CAPTCHA token (this can take 15-30s)...")
             body["captchaid"] = await self._captcha_provider()
+            _log.info("ForeUP: CAPTCHA token obtained, posting booking...")
+        else:
+            _log.info("ForeUP: posting booking (no CAPTCHA)...")
+        _log.info("ForeUP: booking slot %s at %s...", slot.slot_id, slot.tee_time.strftime("%Y-%m-%d %H:%M %Z"))
         r = await client.post(RESERVATION_PATH, json=body)
         if r.status_code == _HTTP_SLOT_GONE:
+            _log.warning("ForeUP: slot %s is gone (409) — will try next candidate", slot.slot_id)
             raise SlotGoneError(f"Slot gone (409): {r.text[:300]}")
         self._guard_captcha(r)
         r.raise_for_status()
         data: Any = r.json() if r.text else {}
         conf_raw = data.get("id") or data.get("booking_id") or data.get("confirmation_code")
         conf = str(conf_raw) if conf_raw is not None else None
+        _log.info("ForeUP: booking confirmed! confirmation_code=%s", conf)
         return BookingResult(
             request_id=request.request_id,
             outcome=BookingOutcome.BOOKED,
@@ -283,6 +299,7 @@ class ForeUpAdapter(CourseAdapter):
         """GET /reservations and return all existing bookings for the authenticated user."""
         client = self._c()
         await asyncio.sleep(_MIN_BETWEEN_S)
+        _log.info("ForeUP: fetching existing reservations...")
         r = await client.get(RESERVATION_PATH)
         r.raise_for_status()
         raw: Any = r.json() if r.text else []
@@ -298,6 +315,7 @@ class ForeUpAdapter(CourseAdapter):
                 out.append(_parse_reservation(item, self.course_id, tz))
             except (KeyError, ValueError, TypeError):
                 continue
+        _log.info("ForeUP: found %d existing reservation(s)", len(out))
         return out
 
     async def aclose(self) -> None:

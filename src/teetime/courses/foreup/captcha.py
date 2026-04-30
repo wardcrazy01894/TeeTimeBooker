@@ -22,11 +22,14 @@ Tokens expire in ~2 minutes; providers are called immediately before book().
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 from playwright.async_api import async_playwright
+
+_log = logging.getLogger(__name__)
 
 FOREUP_RECAPTCHA_SITE_KEY = "6LfZGS0qAAAAAMVgxySjd43HvklGdg1Jady2TolK"
 
@@ -77,6 +80,7 @@ async def get_foreup_captcha_token(
     Unreliable if Google's risk scorer detects the automated browser. Use
     get_foreup_captcha_token_2captcha for a reliable alternative.
     """
+    _log.info("Playwright: launching headless browser...")
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=True,
@@ -87,18 +91,21 @@ async def get_foreup_captcha_token(
             viewport={"width": 1280, "height": 800},
         )
         page = await context.new_page()
+        _log.info("Playwright: navigating to ForeUP booking page...")
         await page.goto(booking_page_url, wait_until="load")
 
-        # reCAPTCHA api.js is loaded by the booking widget; wait for the global.
+        _log.info("Playwright: waiting for reCAPTCHA to load...")
         await page.wait_for_function(
             "typeof window.grecaptcha !== 'undefined' "
             "&& typeof window.grecaptcha.render === 'function'",
             timeout=15_000,
         )
 
+        _log.info("Playwright: executing reCAPTCHA widget (up to 25s)...")
         raw: object = await page.evaluate(_RECAPTCHA_JS, site_key)
         await browser.close()
 
+    _log.info("Playwright: reCAPTCHA token obtained")
     return str(raw)
 
 
@@ -131,6 +138,7 @@ async def get_foreup_captcha_token_2captcha(
 
     Raises RuntimeError on API errors, TimeoutError if max_polls is exhausted.
     """
+    _log.info("2captcha: submitting CAPTCHA task...")
     async with httpx.AsyncClient() as client:
         r = await client.post(
             _TWOCAPTCHA_SUBMIT_URL,
@@ -149,9 +157,12 @@ async def get_foreup_captcha_token_2captcha(
             detail = submit.get("request") if isinstance(submit, dict) else repr(submit)
             raise RuntimeError(f"2captcha submission failed: {detail}")
         task_id = str(submit["request"])
+        _log.info("2captcha: task %s queued, polling for result...", task_id)
 
-        for _ in range(max_polls):
+        for i in range(max_polls):
             await asyncio.sleep(poll_interval_s)
+            elapsed = int((i + 1) * poll_interval_s)
+            _log.info("2captcha: waiting for solve (attempt %d/%d, ~%ds elapsed)...", i + 1, max_polls, elapsed)
             r = await client.get(
                 _TWOCAPTCHA_RESULT_URL,
                 params={"key": api_key, "action": "get", "id": task_id, "json": "1"},
@@ -161,6 +172,7 @@ async def get_foreup_captcha_token_2captcha(
             if not isinstance(result, dict):
                 raise RuntimeError(f"2captcha unexpected response: {result!r}")
             if result.get("status") == 1:
+                _log.info("2captcha: token received after ~%ds", elapsed)
                 return str(result["request"])
             if result.get("request") != "CAPCHA_NOT_READY":
                 raise RuntimeError(f"2captcha error: {result.get('request')}")

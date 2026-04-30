@@ -9,6 +9,7 @@ Two commands:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 from datetime import datetime, time, timedelta
@@ -102,7 +103,20 @@ def run_cmd(config_path: Path, dry_run: bool, use_fake_adapter: bool) -> None:
 
 
 async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
     request = _build_request(cfg, dry_run=dry_run)
+    log = logging.getLogger(__name__)
+    log.info(
+        "Booking run: target=%s dry_run=%s players=%d",
+        [str(d) for d in request.target_dates],
+        dry_run,
+        len(request.players),
+    )
 
     if use_fake_adapter:
         adapters: dict[CourseId, CourseAdapter] = {
