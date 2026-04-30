@@ -127,8 +127,9 @@ var replicaCompletionCount = 1
 //     { name: 'smtp-host',      keyVaultUrl: '${keyVaultUri}secrets/SMTP-HOST',      identity: userAssignedIdentityClientId }
 //     { name: 'smtp-user',      keyVaultUrl: '${keyVaultUri}secrets/SMTP-USER',      identity: userAssignedIdentityClientId }
 //     { name: 'smtp-pass',      keyVaultUrl: '${keyVaultUri}secrets/SMTP-PASS',      identity: userAssignedIdentityClientId }
-//     { name: 'player1-email',  keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-EMAIL',  identity: userAssignedIdentityClientId }
-//     { name: 'player1-phone',  keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-PHONE',  identity: userAssignedIdentityClientId }
+//     { name: 'player1-email',         keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-EMAIL',         identity: userAssignedIdentityClientId }
+//     { name: 'player1-phone',         keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-PHONE',         identity: userAssignedIdentityClientId }
+//     { name: 'twocaptcha-api-key',    keyVaultUrl: '${keyVaultUri}secrets/TWOCAPTCHA-API-KEY',    identity: userAssignedIdentityClientId }
 //   ]
 //   NOTE: No storage-conn secret. Storage account name is a plain env var;
 //   the bot uses DefaultAzureCredential (picks up the user-assigned MI
@@ -151,6 +152,7 @@ var replicaCompletionCount = 1
 //       { name: 'SMTP_PASS',                  secretRef: 'smtp-pass' }
 //       { name: 'PLAYER1_EMAIL',              secretRef: 'player1-email' }
 //       { name: 'PLAYER1_PHONE',              secretRef: 'player1-phone' }
+//       { name: 'TWOCAPTCHA_API_KEY',         secretRef: 'twocaptcha-api-key' }
 //       { name: 'AZURE_STORAGE_ACCOUNT_NAME', value: storageAccountName }
 //       { name: 'TEETIME_ENV',                value: envName }
 //     ]

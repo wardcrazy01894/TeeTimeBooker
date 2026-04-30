@@ -40,8 +40,7 @@ class InMemoryStore:
         existing = self._history.get(key)
         if existing is not None and existing.outcome != result.outcome:
             raise ValueError(
-                f"conflicting terminal for {key}: existing={existing.outcome}, "
-                f"new={result.outcome}"
+                f"conflicting terminal for {key}: existing={existing.outcome}, new={result.outcome}"
             )
         self._history[key] = result
 

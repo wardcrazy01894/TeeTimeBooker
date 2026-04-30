@@ -101,7 +101,10 @@ async def test_append_attempt_records_event() -> None:
     rid = _rid()
     await store.initialize()
     await store.append_attempt(
-        rid, attempt=1, event="SEARCH_START", payload={"course_id": "c1"},
+        rid,
+        attempt=1,
+        event="SEARCH_START",
+        payload={"course_id": "c1"},
         at=datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC),
     )
     # InMemoryStore exposes the list for test inspection (real store reads via SQL).

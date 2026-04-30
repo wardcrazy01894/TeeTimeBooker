@@ -63,9 +63,7 @@ class FakeAdapter:
     def set_book_to_raise(self, exc: AdapterError) -> None:
         self._book_exc = exc
 
-    def set_book_side_effects(
-        self, effects: list[BookingOutcome | AdapterError]
-    ) -> None:
+    def set_book_side_effects(self, effects: list[BookingOutcome | AdapterError]) -> None:
         """Configure successive book() calls to yield outcomes or raise exceptions in order."""
         self._book_side_effects: list[BookingOutcome | AdapterError] = list(effects)
 
@@ -91,9 +89,7 @@ class FakeAdapter:
         request: BookingRequest,
     ) -> BookingResult:
         self.book_call_count += 1
-        side_effects: list[BookingOutcome | AdapterError] = getattr(
-            self, "_book_side_effects", []
-        )
+        side_effects: list[BookingOutcome | AdapterError] = getattr(self, "_book_side_effects", [])
         if side_effects:
             effect = side_effects.pop(0)
             if isinstance(effect, AdapterError):
