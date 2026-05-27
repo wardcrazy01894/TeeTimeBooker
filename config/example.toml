@@ -76,3 +76,35 @@ smtp_pass_env   = "SMTP_PASS"
 [persistence]
 backend = "sqlite"
 path    = "./state/teetime.db"
+
+# Cancellation-monitor job (M-feature-1). Disabled by default.
+# When enabled, `teetime watch` polls for newly available slots on the target
+# date (useful after the 6 AM opening failed or to grab a better time).
+[watcher]
+enabled             = false
+poll_interval_s     = 600   # 10 minutes; must be >= 300 (anti-bot floor)
+polling_start_hour  = 7     # don't poll before 7 AM course-local
+polling_end_hour    = 22    # don't poll after 10 PM course-local
+
+# One-booking policy (M-feature-2). Disabled by default.
+# When enabled, the watch job will cancel the current managed booking and rebook
+# if a higher-priority slot (lower priority index) becomes available.
+[one_booking_policy]
+enabled = false
+
+# Ordered list of preferred slots. priority=0 is most preferred.
+# If this list is empty, defaults to [request].course_preferences order with
+# [request].time_windows[0]. Within one priority level, earlier tee_time wins.
+#
+# Example: prefer any 09:00-09:30 slot over any 09:30-10:30 slot.
+# [[one_booking_policy.priority_slots]]
+# priority              = 0
+# course_id             = "foreup:mangrove_bay"
+# time_window_earliest  = 09:00:00
+# time_window_latest    = 09:30:00
+#
+# [[one_booking_policy.priority_slots]]
+# priority              = 1
+# course_id             = "foreup:mangrove_bay"
+# time_window_earliest  = 09:30:00
+# time_window_latest    = 10:30:00

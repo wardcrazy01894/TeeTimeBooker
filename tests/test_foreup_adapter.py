@@ -247,7 +247,9 @@ async def test_book_success_returns_booked_result() -> None:
         adapter._logged_in = True  # simulate successful authenticate()
         result = await adapter.book(slot, _request())
     assert result.outcome == BookingOutcome.BOOKED
-    assert result.confirmation_code == "CONF-42"
+    # MF-1 (Option A): confirmation_code is stamped with the TTB: managed-booking
+    # prefix. The raw ForeUP id "CONF-42" is stored as "TTB:CONF-42".
+    assert result.confirmation_code == "TTB:CONF-42"
     assert result.course_id == CID
 
 
@@ -304,7 +306,8 @@ async def test_book_includes_captchaid_when_provider_given() -> None:
         )
         adapter._logged_in = True
         result = await adapter.book(slot, _request())
-    assert result.confirmation_code == "CONF-99"
+    # MF-1 (Option A): confirmation_code is stamped with the TTB: prefix.
+    assert result.confirmation_code == "TTB:CONF-99"
     body = stdlib_json.loads(route.calls[0].request.content)
     assert body.get("captchaid") == captcha_token
 

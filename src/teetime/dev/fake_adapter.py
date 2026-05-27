@@ -16,8 +16,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 
-from ..core.adapter import AdapterError
+from ..core.adapter import AdapterError, CancelError
 from ..core.models import (
+    MANAGED_BOOKING_TAG,
     BookingOutcome,
     BookingRequest,
     BookingResult,
@@ -41,10 +42,13 @@ class FakeAdapter:
         self._book_outcome: BookingOutcome = BookingOutcome.BOOKED
         self._book_exc: AdapterError | None = None
         self._existing: list[ExistingReservation] = []
+        self._cancel_exc: CancelError | None = None
+        self._cancel_should_succeed: bool = True
         self.authenticate_call_count: int = 0
         self.search_call_count: int = 0
         self.book_call_count: int = 0
         self.list_reservations_call_count: int = 0
+        self.cancel_call_count: int = 0
         self.aclose_call_count: int = 0
 
     # --- scripting surface ----------------------------------------------
@@ -69,6 +73,16 @@ class FakeAdapter:
 
     def set_existing_reservations(self, reservations: list[ExistingReservation]) -> None:
         self._existing = list(reservations)
+
+    def set_cancel_to_raise(self, exc: CancelError) -> None:
+        """Script cancel_reservation() to raise `exc` (simulates server refusal)."""
+        self._cancel_exc = exc
+        self._cancel_should_succeed = False
+
+    def set_cancel_to_succeed(self) -> None:
+        """Script cancel_reservation() to succeed (removes matching reservation from _existing)."""
+        self._cancel_exc = None
+        self._cancel_should_succeed = True
 
     # --- CourseAdapter Protocol -----------------------------------------
 
@@ -99,21 +113,57 @@ class FakeAdapter:
             raise self._book_exc
         else:
             outcome = self._book_outcome
-        return BookingResult(
+        conf_code = (
+            f"{MANAGED_BOOKING_TAG}FAKE-{slot.slot_id}"
+            if outcome == BookingOutcome.BOOKED
+            else None
+        )
+        result = BookingResult(
             request_id=request.request_id,
             outcome=outcome,
             course_id=self.course_id,
             slot=slot,
-            confirmation_code=(
-                f"FAKE-{slot.slot_id}" if outcome == BookingOutcome.BOOKED else None
-            ),
+            confirmation_code=conf_code,
             booked_at=datetime.now(tz=UTC) if outcome == BookingOutcome.BOOKED else None,
             attempts=1,
         )
+        # SF-2: reflect a successful book in _existing so list_reservations()
+        # returns the new reservation in subsequent calls. This makes upgrade
+        # tests accurate: after book() succeeds, list_reservations sees it.
+        if outcome == BookingOutcome.BOOKED and conf_code is not None:
+            self._existing.append(
+                ExistingReservation(
+                    course_id=self.course_id,
+                    # Store without the TTB: prefix in ExistingReservation, mirroring
+                    # real ForeUP behaviour (server does not echo the TTB: prefix back).
+                    confirmation_code=f"FAKE-{slot.slot_id}",
+                    tee_time=slot.tee_time,
+                    party_size=len(request.players),
+                )
+            )
+        return result
 
     async def list_reservations(self) -> list[ExistingReservation]:
         self.list_reservations_call_count += 1
         return list(self._existing)
+
+    async def cancel_reservation(self, confirmation_code: str) -> None:
+        """Simulate cancellation. If set_cancel_to_raise() was called, raises CancelError.
+        Otherwise removes the matching reservation from _existing (idempotent on 404-style
+        not-found: if no matching reservation exists, returns normally).
+
+        Mirrors ForeUpAdapter.cancel_reservation(): strips the TTB: prefix from
+        `confirmation_code` before matching, so callers may pass either the raw id
+        or the TTB:-prefixed store value (as maybe_upgrade() will do).
+        """
+        self.cancel_call_count += 1
+        if self._cancel_exc is not None:
+            raise self._cancel_exc
+        # Strip the TTB: prefix if present — _existing stores raw ids (no prefix),
+        # mirroring real ForeUP behaviour. This matches what ForeUpAdapter does.
+        raw_id = confirmation_code.removeprefix(MANAGED_BOOKING_TAG)
+        # Remove matching reservation — simulates successful server-side cancel.
+        self._existing = [r for r in self._existing if r.confirmation_code != raw_id]
 
     async def aclose(self) -> None:
         self.aclose_call_count += 1

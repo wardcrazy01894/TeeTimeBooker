@@ -47,6 +47,27 @@ class BookingStore(Protocol):
         """
         ...
 
+    async def delete_terminal(
+        self,
+        request_id: RequestId,
+        resolved_date: date,
+    ) -> None:
+        """Delete the terminal record for `(request_id, resolved_date)`.
+
+        This is the ONLY mechanism by which the idempotency block is cleared to
+        allow a rebook after a cancel (M-feature-2). The orchestrator calls this
+        after a successful cancel_reservation() and before attempting the upgrade
+        booking. Calling delete_terminal when no record exists is a no-op (not
+        an error).
+
+        Contract: the caller MUST hold the advisory lock (request_lock) for the
+        duration of delete_terminal + subsequent record_terminal, so no concurrent
+        run can observe the gap between deletion and re-insertion.
+
+        See PLAN.md M-feature-2 §"Idempotency key collision on rebook".
+        """
+        ...
+
     async def append_attempt(
         self,
         request_id: RequestId,

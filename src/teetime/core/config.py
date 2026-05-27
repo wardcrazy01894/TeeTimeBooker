@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from .models import CartPreference
+from .models import CartPreference, WatchConfig
 
 
 class MissingEnvVarError(RuntimeError):
@@ -92,12 +92,82 @@ class PersistenceConfig(BaseModel):
     path: Path = Path("./state/teetime.db")
 
 
+class WatcherConfig(BaseModel):
+    """Config for the cancellation-monitor job (M-feature-1).
+
+    The watcher job runs on its own cron schedule (every 10 minutes during
+    reasonable hours) and polls for newly available slots on the target date.
+
+    All fields are optional so this block may be omitted from TOML configs
+    that do not use the watch feature; defaults are applied automatically.
+
+    Use `to_watch_config()` to translate to the frozen `WatchConfig` dataclass
+    consumed by `WatchOrchestrator`. The conversion happens in the CLI's
+    `teetime watch` command before constructing `WatchOrchestrator`. Note that
+    `WatcherConfig` does NOT have `max_watch_duration_s` — that field lives
+    only in `WatchConfig` (the dataclass) and is always set to its default
+    (518400 s = 6 days) since there is no user-facing knob for it.
+    """
+
+    enabled: bool = False
+    poll_interval_s: int = 600  # 10 minutes; must be >= 300 (anti-bot floor)
+    # Wall-clock hours (course-local) bounding when polling is permitted.
+    polling_start_hour: int = 7  # 7 AM
+    polling_end_hour: int = 22  # 10 PM
+
+    def to_watch_config(self) -> WatchConfig:
+        """Translate pydantic WatcherConfig to the frozen WatchConfig dataclass.
+
+        This conversion is performed in the CLI's `teetime watch` command before
+        constructing `WatchOrchestrator`. `WatchConfig.max_watch_duration_s` has no
+        corresponding TOML field — it is always the default (518400 s = 6 days). If
+        a future need arises to expose it, add `max_watch_duration_s` to this class
+        and pass it through here.
+        """
+        return WatchConfig(
+            poll_interval_s=self.poll_interval_s,
+            polling_start_hour=self.polling_start_hour,
+            polling_end_hour=self.polling_end_hour,
+        )
+
+
+class PrioritySlotConfig(BaseModel):
+    """One entry in the ordered priority list (M-feature-2).
+
+    priority=0 is highest. course_id must appear in [[courses]].
+    time_window overrides [request.time_windows] for this specific priority check.
+    """
+
+    priority: int
+    course_id: str
+    time_window_earliest: time
+    time_window_latest: time
+
+
+class OneBookingPolicyConfig(BaseModel):
+    """Config for the "one booking" invariant enforcer (M-feature-2).
+
+    When enabled, the watch job also checks whether a higher-priority slot has
+    become available. If so, it cancels the current managed booking and books
+    the better slot.
+
+    priority_slots is an ordered list (priority=0 wins). If omitted, the policy
+    defaults to the courses in [request].course_preferences order with the same
+    time_window as [request].time_windows[0].
+    """
+
+    enabled: bool = False
+    priority_slots: list[PrioritySlotConfig] = Field(default_factory=list)
+
+
 class AppConfig(BaseModel):
     courses: list[CourseConfig]
     request: RequestConfig
     scheduler: SchedulerConfig = SchedulerConfig()
     notifier: NotifierConfig = NotifierConfig()
     persistence: PersistenceConfig = PersistenceConfig()
+    watcher: WatcherConfig = WatcherConfig()
+    one_booking_policy: OneBookingPolicyConfig = OneBookingPolicyConfig()
 
 
 def _resolve_env(var_name: str, field_path: str) -> str:

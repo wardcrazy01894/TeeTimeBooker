@@ -48,6 +48,7 @@ from ...core.adapter import (
     SlotGoneError,
 )
 from ...core.models import (
+    MANAGED_BOOKING_TAG,
     BookingOutcome,
     BookingRequest,
     BookingResult,
@@ -317,7 +318,13 @@ class ForeUpAdapter(CourseAdapter):
             or data.get("booking_id")
             or data.get("confirmation_code")
         )
-        conf = str(conf_raw) if conf_raw is not None else None
+        conf_raw_str = str(conf_raw) if conf_raw is not None else None
+        # Option A (MF-1): stamp the TTB: prefix so ExistingReservation.is_managed
+        # works correctly. BookingResult.confirmation_code stores "TTB:<raw_id>".
+        # cancel_reservation() strips this prefix before calling ForeUP.
+        # list_reservations() returns raw server IDs (no prefix) → is_managed=False
+        # for bookings not made by this system, which is the correct behaviour.
+        conf = (MANAGED_BOOKING_TAG + conf_raw_str) if conf_raw_str is not None else None
         _log.info("ForeUP: booking confirmed! confirmation_code=%s", conf)
         return BookingResult(
             request_id=request.request_id,
@@ -350,6 +357,47 @@ class ForeUpAdapter(CourseAdapter):
                 continue
         _log.info("ForeUP: found %d existing reservation(s)", len(out))
         return out
+
+    async def cancel_reservation(self, confirmation_code: str) -> None:
+        """DELETE or POST-cancel an existing reservation by confirmation_code.
+
+        ForeUP cancellation endpoint is not yet confirmed via browser capture.
+        This is a Spike S4 task (see PLAN.md M-feature-2 §"Spike S4").
+
+        Expected endpoint candidates (to be confirmed in S4):
+            DELETE /index.php/api/booking/users/reservations/<id>
+            POST   /index.php/api/booking/users/reservations/<id>/cancel
+
+        Behaviour contract:
+        - If the endpoint returns 404 (already cancelled), this method MUST
+          return normally (idempotent post-condition satisfied).
+        - If the endpoint returns any other 4xx or 5xx, raise CancelError so
+          the caller knows the booking is still live.
+        - The confirmation_code passed here may contain the TTB: prefix (it comes
+          from BookingResult.confirmation_code which stores "TTB:<raw_id>"). This
+          method MUST strip the prefix before passing the raw id to ForeUP. See
+          PLAN.md §20 "MANAGED_BOOKING_TAG implementation (Option A)".
+
+        MANAGED_BOOKING_TAG enforcement (whether to cancel or not) is the
+        UpgradeOrchestrator's responsibility, not this method.
+
+        See PLAN.md M-feature-2.T1 for the implementation contract.
+        """
+        # Strip TTB: prefix if present — the raw ForeUP id is what the server expects.
+        # This is the Option A contract: BookingResult stores "TTB:<raw>", this method
+        # strips to get the raw id. Implemented here so the caller never has to think
+        # about it.
+        raw_id = (
+            confirmation_code[len(MANAGED_BOOKING_TAG) :]
+            if confirmation_code.startswith(MANAGED_BOOKING_TAG)
+            else confirmation_code
+        )
+        # Implementation pending Spike S4 (ForeUP cancel endpoint confirmation).
+        raise NotImplementedError(
+            f"ForeUpAdapter.cancel_reservation(raw_id={raw_id!r}) — implement in "
+            "M-feature-2.T1 after Spike S4 confirms the ForeUP cancellation endpoint. "
+            "See PLAN.md M-feature-2."
+        )
 
     async def aclose(self) -> None:
         if self._client is not None and self._owns_client:

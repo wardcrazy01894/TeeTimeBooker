@@ -33,8 +33,8 @@ from .models import (
     CourseId,
     ExistingReservation,
     TeeTimeSlot,
-    TimeWindow,
 )
+from .slot_utils import rank_slots_for_request
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -200,40 +200,16 @@ class Orchestrator:
         slots: list[TeeTimeSlot],
         request: BookingRequest,
     ) -> list[TeeTimeSlot]:
-        """Filter to matching slots and return them sorted by closeness to each
-        window's midpoint (best candidate first). Empty list = no inventory.
+        """Filter to matching slots and return them sorted ascending by tee_time
+        (earliest first). Empty list = no inventory.
+
+        Delegates to the shared `rank_slots_for_request` helper in slot_utils
+        so WatchOrchestrator can reuse the same logic without duplication.
+
+        Feature 3 (M-feature-3): sort ascending by tee_time — prefer 09:00
+        over 09:10 over 10:30. See slot_utils.rank_slots_for_request docstring.
         """
-        scored: list[tuple[float, TeeTimeSlot]] = []
-        for s in slots:
-            if s.available_spots < len(request.players):
-                continue
-            if request.holes not in (s.holes, 0):
-                continue
-            cap = request.max_price_per_player
-            if cap is not None and s.price_per_player > cap:
-                continue
-            window = self._matching_window(s, request)
-            if window is None:
-                continue
-            mid = self._window_midpoint_utc(s.tee_time, window)
-            distance = abs((s.tee_time - mid).total_seconds())
-            scored.append((distance, s))
-        scored.sort(key=lambda x: x[0])
-        return [s for _, s in scored]
-
-    @staticmethod
-    def _matching_window(slot: TeeTimeSlot, request: BookingRequest) -> TimeWindow | None:
-        local = slot.tee_time
-        for w in request.time_windows:
-            if w.earliest <= local.time() <= w.latest:
-                return w
-        return None
-
-    @staticmethod
-    def _window_midpoint_utc(slot_time: datetime, window: TimeWindow) -> datetime:
-        start = datetime.combine(slot_time.date(), window.earliest, tzinfo=slot_time.tzinfo)
-        end = datetime.combine(slot_time.date(), window.latest, tzinfo=slot_time.tzinfo)
-        return start + (end - start) / 2
+        return rank_slots_for_request(slots, request)
 
     # --- pre-book reservation match -----------------------------------
 

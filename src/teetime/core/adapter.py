@@ -57,6 +57,18 @@ class SlotGoneError(AdapterError):
     """Slot was visible at search() but disappeared by book() — race lost."""
 
 
+class CancelError(AdapterError):
+    """cancel_reservation() failed. Booking was NOT cancelled.
+
+    Implementations MUST raise this rather than a bare exception so the
+    orchestrator can distinguish "cancel failed, still have a booking" from
+    other error categories. Crucially, this error means the pre-cancel booking
+    is still live and the user's position is safe (nothing was lost).
+
+    See PLAN.md M-feature-2 for the cancel+rebook safety protocol.
+    """
+
+
 @runtime_checkable
 class CourseAdapter(Protocol):
     """Structural contract every course implementation satisfies.
@@ -111,6 +123,27 @@ class CourseAdapter(Protocol):
         MAY return reservations for dates outside the current request — caller
         filters. Implementations should sort by `tee_time` ascending for stable
         matching.
+        """
+        ...
+
+    async def cancel_reservation(self, confirmation_code: str) -> None:
+        """Cancel an existing reservation identified by `confirmation_code`.
+
+        This method MUST be idempotent with respect to an already-cancelled
+        reservation (e.g. 404 on cancel should NOT raise CancelError — the
+        reservation is gone, which is the desired post-condition).
+
+        Raises:
+            CancelError: if the cancellation was definitively refused by the
+                course backend (e.g. non-cancellable reservation type, past
+                the cancellation window, or a 4xx that is NOT a 404).
+                A CancelError means the original booking is still live.
+            AuthError: if the session is not authenticated.
+            RateLimitError: if throttled.
+
+        The orchestrator uses a "cancel-only-if-booked, rebook-only-if-cancelled"
+        protocol (see PLAN.md M-feature-2). cancel_reservation is NEVER called
+        unless list_reservations has confirmed the booking still exists first.
         """
         ...
 

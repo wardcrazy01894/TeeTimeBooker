@@ -1,9 +1,9 @@
 """CLI entry point. `python -m teetime` and `teetime` (via project.scripts) land here.
 
-Two commands:
+Commands:
 - show-config: print the resolved AppConfig with secrets masked.
-- run: execute one BookingRequest end-to-end. v0 requires --use-fake-adapter
-  because the real ForeUP adapter is gated behind Spike S1 / M5.
+- run: execute one BookingRequest end-to-end.
+- watch: perform one cancellation-availability check (M-feature-1).
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -37,6 +37,7 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
+from .core.watch_orchestrator import WatchOrchestrator
 from .courses.foreup.base import ForeUpAdapter
 from .courses.foreup.captcha import make_2captcha_provider, make_captcha_provider
 from .courses.foreup.mangrove_bay import MangroveBayAdapter
@@ -155,6 +156,123 @@ async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None
     result = await orch.run(request)
     if result.outcome.value not in {"booked", "dry_run", "already_booked"}:
         raise click.ClickException(f"booking failed: outcome={result.outcome.value}")
+
+
+@cli.command(name="watch")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--dry-run",
+    type=bool,
+    default=True,
+    show_default=True,
+    help="If true, find available slots but do not book.",
+)
+@click.option(
+    "--date",
+    "target_date_str",
+    type=str,
+    default="",
+    help="Date to watch (YYYY-MM-DD). Defaults to today + target_offsets[0] days.",
+)
+@click.option(
+    "--use-fake-adapter",
+    is_flag=True,
+    default=False,
+    help="Use the in-process FakeAdapter (testing only).",
+)
+def watch_cmd(
+    config_path: Path,
+    dry_run: bool,
+    target_date_str: str,
+    use_fake_adapter: bool,
+) -> None:
+    """Perform one cancellation-availability check for the target date.
+
+    Designed to be called on a recurring schedule (every ~10 minutes via
+    GH Actions cron or ACA Job). Exits 0 whether or not a slot was found.
+    Re-exits non-zero only on CaptchaError or AuthError (operator action needed).
+    """
+    try:
+        cfg = load(config_path)
+    except MissingEnvVarError as e:
+        raise click.ClickException(str(e)) from e
+
+    if not cfg.watcher.enabled:
+        # Q2 (resolved): warning log + clean exit when watcher is disabled.
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+        log = logging.getLogger(__name__)
+        log.warning(
+            "Watch job is disabled in config (watcher.enabled = false). Set to true to activate."
+        )
+        return  # exit 0
+
+    asyncio.run(
+        _watch(
+            cfg, dry_run=dry_run, target_date_str=target_date_str, use_fake_adapter=use_fake_adapter
+        )
+    )
+
+
+async def _watch(
+    cfg: AppConfig,
+    *,
+    dry_run: bool,
+    target_date_str: str,
+    use_fake_adapter: bool,
+) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+    log = logging.getLogger(__name__)
+
+    request = _build_request(cfg, dry_run=dry_run)
+
+    # Derive target_date: explicit override, or first target_date from the request.
+    if target_date_str:
+        try:
+            target_date: date = date.fromisoformat(target_date_str)
+        except ValueError as e:
+            raise click.ClickException(f"--date must be YYYY-MM-DD, got {target_date_str!r}") from e
+    else:
+        target_date = request.target_dates[0]
+
+    log.info("Watch check: target=%s dry_run=%s", target_date, dry_run)
+
+    if use_fake_adapter:
+        adapters: dict[CourseId, CourseAdapter] = {
+            CourseId(c.id): FakeAdapter(course_id=CourseId(c.id)) for c in cfg.courses
+        }
+        creds: dict[CourseId, CourseCredentials] = {}
+    else:
+        adapters = _build_adapters(cfg, dry_run=dry_run)
+        creds = _resolve_creds(cfg)
+
+    store = InMemoryStore()
+    await store.initialize()
+
+    watch_config = cfg.watcher.to_watch_config()
+    watch = WatchOrchestrator(
+        adapters=adapters,
+        store=store,
+        notifier=ConsoleNotifier(),
+        clock=RealClock(),
+        scheduler=cfg.scheduler,
+        watch_config=watch_config,
+        creds=creds,
+    )
+    result = await watch.check_once(request, target_date)
+    if result is not None:
+        log.info(
+            "watch result: outcome=%s confirmation=%s", result.outcome, result.confirmation_code
+        )
 
 
 def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, CourseAdapter]:
