@@ -169,6 +169,17 @@ def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, C
     """
     twocaptcha_key = None if dry_run else os.environ.get("TWOCAPTCHA_API_KEY")
 
+    # Validate: every course_preferences entry must have a [[courses]] entry.
+    # Without this, the orchestrator silently skips the missing course and returns
+    # NO_INVENTORY — indistinguishable from genuine inventory absence.
+    configured_ids = {c.id for c in cfg.courses}
+    for pref in cfg.request.course_preferences:
+        if pref not in configured_ids:
+            raise click.ClickException(
+                f"course_preferences has {pref!r} but there is no [[courses]] entry for it. "
+                "Add a [[courses]] block with that id, or remove it from course_preferences."
+            )
+
     adapters: dict[CourseId, CourseAdapter] = {}
     for c in cfg.courses:
         cls = _ADAPTER_REGISTRY.get(c.adapter)
@@ -180,10 +191,18 @@ def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, C
             )
         if dry_run:
             cp = None
-        elif twocaptcha_key:
-            cp = make_2captcha_provider(twocaptcha_key, cls.booking_page_url)
         else:
-            cp = make_captcha_provider(cls.booking_page_url)
+            # Validate booking_page_url before building the CAPTCHA provider —
+            # an empty URL would silently pass bad input to the CAPTCHA service.
+            if not cls.booking_page_url:
+                raise click.ClickException(
+                    f"Adapter {cls.__name__!r} (for course {c.id!r}) has no booking_page_url. "
+                    "Set booking_page_url = <url> in the adapter class before live use."
+                )
+            if twocaptcha_key:
+                cp = make_2captcha_provider(twocaptcha_key, cls.booking_page_url)
+            else:
+                cp = make_captcha_provider(cls.booking_page_url)
         # Each registered subclass overrides __init__ to only require captcha_provider;
         # mypy can't verify this from type[ForeUpAdapter] alone.
         adapters[CourseId(c.id)] = cls(captcha_provider=cp)  # type: ignore[call-arg]

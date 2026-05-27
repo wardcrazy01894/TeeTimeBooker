@@ -206,3 +206,99 @@ def test_build_adapters_mangrove_bay_resolves_via_registry() -> None:
 
     assert CourseId("foreup:mangrove_bay") in adapters
     assert isinstance(adapters[CourseId("foreup:mangrove_bay")], MangroveBayAdapter)
+
+
+# ---------------------------------------------------------------------------
+# Validation: course_preferences must reference configured courses
+# ---------------------------------------------------------------------------
+
+
+def _cfg_with_pref_not_in_courses() -> AppConfig:
+    """Config where course_preferences has a course ID absent from [[courses]]."""
+    return AppConfig.model_validate(
+        {
+            "courses": [
+                {
+                    "id": "foreup:mangrove_bay",
+                    "adapter": "foreup.mangrove_bay",
+                    "username_env": "MB_USERNAME",
+                    "password_env": "MB_PASSWORD",
+                }
+            ],
+            "request": {
+                "target_offsets": [7],
+                "time_windows": [{"earliest": "09:00:00", "latest": "10:30:00"}],
+                "players": [{"first_name": "A", "last_name": "L", "email": "a@x.test"}],
+                # foreup:twin_brooks is listed here but has no [[courses]] entry
+                "course_preferences": ["foreup:mangrove_bay", "foreup:twin_brooks"],
+            },
+        }
+    )
+
+
+def test_build_adapters_raises_if_course_preference_has_no_courses_entry() -> None:
+    """If course_preferences names a course not in [[courses]], _build_adapters()
+    must raise a clear ClickException rather than silently producing NO_INVENTORY.
+
+    Without the check: the orchestrator calls adapters.get('foreup:twin_brooks')
+    which returns None, skips it, and returns NO_INVENTORY — indistinguishable
+    from genuine inventory absence. The user has no idea their config is wrong.
+    """
+    with pytest.raises(click.ClickException) as exc_info:
+        _build_adapters(_cfg_with_pref_not_in_courses(), dry_run=True)
+
+    msg = exc_info.value.format_message()
+    assert "foreup:twin_brooks" in msg, (
+        "Error must name the missing course so the operator knows what to add to [[courses]]."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Validation: booking_page_url must be set for live (non-dry-run) mode
+# ---------------------------------------------------------------------------
+
+
+def _cfg_with_bare_foreup_adapter() -> AppConfig:
+    """Minimal AppConfig whose adapter is in the registry but has booking_page_url=''."""
+    return AppConfig.model_validate(
+        {
+            "courses": [
+                {
+                    "id": "foreup:mangrove_bay",
+                    "adapter": "foreup.mangrove_bay",
+                    "username_env": "MB_USERNAME",
+                    "password_env": "MB_PASSWORD",
+                }
+            ],
+            "request": {
+                "target_offsets": [7],
+                "time_windows": [{"earliest": "09:00:00", "latest": "10:30:00"}],
+                "players": [{"first_name": "A", "last_name": "L", "email": "a@x.test"}],
+                "course_preferences": ["foreup:mangrove_bay"],
+            },
+        }
+    )
+
+
+def test_build_adapters_live_mode_raises_if_booking_page_url_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registered adapter that forgets to set booking_page_url must raise a clear
+    error in live (non-dry-run) mode, not silently pass an empty URL to the CAPTCHA
+    provider.
+
+    MangroveBayAdapter correctly sets booking_page_url, so we simulate a broken
+    subclass by temporarily clearing it.
+    """
+    # Temporarily blank out the class attribute to simulate a misconfigured subclass.
+    original = MangroveBayAdapter.booking_page_url
+    MangroveBayAdapter.booking_page_url = ""
+    try:
+        with pytest.raises(click.ClickException) as exc_info:
+            _build_adapters(_cfg_with_bare_foreup_adapter(), dry_run=False)
+        msg = exc_info.value.format_message()
+        assert "booking_page_url" in msg, (
+            "Error must mention booking_page_url so the developer knows what to set."
+        )
+    finally:
+        MangroveBayAdapter.booking_page_url = original
