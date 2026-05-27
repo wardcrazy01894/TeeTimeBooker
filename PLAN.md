@@ -471,7 +471,7 @@ week but the goal is the same. The actual idempotency key in `booking_history` i
 | User-Agent        | `TeeTimeBooker/0.0.0 (+https://github.com/alanc3939/TeeTimeBooker)` |
 | `api-key` header  | `no_limits` for search; `""` (empty) for login POST — confirmed by browser capture (S1) |
 | Accept-Language   | `en-US,en;q=0.9`                                                 |
-| Session lifetime  | One HTTP session per orchestrator run; reused across search+book. JWT is **NOT** cached cross-run in v0 — the daily 24 h gap exceeds any reasonable JWT TTL anyway, and `workflow_dispatch` testing happens rarely enough that re-login is cheap. The `session_cache` table exists but `cache_session`/`load_session` are deferred to v1 (review item 10). |
+| Session lifetime  | One HTTP session per orchestrator run; reused across search+book. JWT is **NOT** cached cross-run in v0 — the weekend-only cron runs at least every few days, far exceeding any reasonable JWT TTL, and `workflow_dispatch` testing happens rarely enough that re-login is cheap. The `session_cache` table exists but `cache_session`/`load_session` are deferred to v1 (review item 10). |
 | Cookies           | PHPSESSID + ForeUP JWT, persisted via `session_cache` blob.      |
 | Concurrency       | At most 1 in-flight HTTP request per adapter at a time.          |
 
@@ -525,7 +525,7 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 | M3.T1 | Schema + migrations + `initialize`            | DDL in `sqlite_store.py` docstring| schema applied; idempotent re-init       | `persistence/sqlite_store.py`, `tests/test_sqlite_schema.py` | M1.T2 |
 | M3.T2 | `record_terminal`, `get_terminal`, idempotent guard against conflicting outcome | M3.T1 | tests: writing a different outcome for an existing RequestId raises | `persistence/sqlite_store.py`, `tests/test_sqlite_history.py` | M3.T1 |
 | M3.T3 | `request_lock` via `BEGIN IMMEDIATE` + holder PID row | M3.T1                            | second concurrent acquisition raises `ConcurrentRunError` immediately | `persistence/sqlite_store.py`, `tests/test_sqlite_lock.py` | M3.T1 |
-| ~~M3.T4~~ | ~~`cache_session` / `load_session` with TTL~~ DEFERRED to v1 (review item 10): daily-cron cadence makes a 12 h JWT cache pointless. Stubs remain in `SqliteStore` to keep the Protocol shape stable. | — | — | — | — |
+| ~~M3.T4~~ | ~~`cache_session` / `load_session` with TTL~~ DEFERRED to v1 (review item 10): weekend cron cadence makes a 12 h JWT cache pointless. Stubs remain in `SqliteStore` to keep the Protocol shape stable. | — | — | — | — |
 
 ### M4 — Notifications (parallel with M2/M3)
 | ID    | Task                                       | Inputs            | Outputs                       | Owner-files                                           | Deps  |
@@ -606,5 +606,5 @@ Each item from the brief, addressed:
 ### 19.1 Disagreements with v0 review
 
 - **Item 11 (asyncio_mode + @pytest.mark.asyncio)**: agreed and fixed; the marker was redundant under `asyncio_mode = "auto"`.
-- **Item 10 (defer cache_session)**: agreed and applied — daily cron means JWT cache buys nothing in v0.
+- **Item 10 (defer cache_session)**: agreed and applied — weekend cron means JWT cache buys nothing in v0.
 - **Nit (cron defaults `dry_run=false`)**: KEEPING this. With the DST gate fixed (item 1), only one cron of the day proceeds. The user explicitly wants real bookings on cron — the bot's purpose is to book, not dry-run. Manual `workflow_dispatch` defaults to `dry_run=true` (safe testing default). This is intentional asymmetry.

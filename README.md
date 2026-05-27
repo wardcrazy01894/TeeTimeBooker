@@ -1,6 +1,6 @@
 # TeeTimeBooker
 
-Python bot that books a tee time at **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET, 7 days in advance. Runs unattended via GitHub Actions; emails you the result.
+Python bot that books a tee time at **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Runs unattended via GitHub Actions; emails you the result.
 
 **Status:** M1 + M2 + M5 complete. ForeUP adapter implemented and live dry-run confirmed against Mangrove Bay. Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run).
 
