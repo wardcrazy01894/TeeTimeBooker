@@ -122,6 +122,8 @@ docker run --rm \
   -e MB_USERNAME -e MB_PASSWORD \
   -e PLAYER1_EMAIL -e PLAYER1_PHONE -e PLAYER1_MB_MEMBER \
   -e PLAYER2_EMAIL \
+  -e PLAYER3_EMAIL \
+  -e PLAYER4_EMAIL \
   -e AZURE_TENANT_ID -e AZURE_SUBSCRIPTION_ID -e AZURE_CLIENT_ID \
   teetime:dev \
   uv run teetime run --config /app/config/container.toml --dry-run true
@@ -146,7 +148,10 @@ A workflow step verifies the ET wall-clock hour before proceeding, so only one c
 
 ```
 MB_USERNAME, MB_PASSWORD
-PLAYER1_EMAIL, PLAYER1_PHONE
+PLAYER1_EMAIL, PLAYER1_PHONE, PLAYER1_MB_MEMBER
+PLAYER2_EMAIL
+PLAYER3_EMAIL
+PLAYER4_EMAIL
 SMTP_HOST, SMTP_USER, SMTP_PASS
 ```
 

@@ -25,6 +25,8 @@ _REQUIRED_ENV = {
     "PLAYER1_PHONE": "555-0001",
     "PLAYER1_MB_MEMBER": "12345",
     "PLAYER2_EMAIL": "guest@example.test",
+    "PLAYER3_EMAIL": "guest3@example.test",
+    "PLAYER4_EMAIL": "guest4@example.test",
     "SMTP_HOST": "smtp.example.test",
     "SMTP_USER": "smtp-user",
     "SMTP_PASS": "smtp-secret",
@@ -45,7 +47,7 @@ def test_loads_example_toml(env_set: None) -> None:
     assert cfg.request.target_offsets == [7]
     assert cfg.request.holes == 18
     assert cfg.request.max_price_per_player == Decimal("55.00")
-    assert len(cfg.request.players) == 2
+    assert len(cfg.request.players) == 4
 
 
 def test_player_email_env_resolves_to_email_value(env_set: None) -> None:

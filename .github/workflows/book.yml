@@ -47,6 +47,12 @@ jobs:
       TZ: America/New_York
       MB_USERNAME: ${{ secrets.MB_USERNAME }}
       MB_PASSWORD: ${{ secrets.MB_PASSWORD }}
+      PLAYER1_EMAIL: ${{ secrets.PLAYER1_EMAIL }}
+      PLAYER1_PHONE: ${{ secrets.PLAYER1_PHONE }}
+      PLAYER1_MB_MEMBER: ${{ secrets.PLAYER1_MB_MEMBER }}
+      PLAYER2_EMAIL: ${{ secrets.PLAYER2_EMAIL }}
+      PLAYER3_EMAIL: ${{ secrets.PLAYER3_EMAIL }}
+      PLAYER4_EMAIL: ${{ secrets.PLAYER4_EMAIL }}
       SMTP_HOST: ${{ secrets.SMTP_HOST }}
       SMTP_USER: ${{ secrets.SMTP_USER }}
       SMTP_PASS: ${{ secrets.SMTP_PASS }}

@@ -43,6 +43,16 @@ first_name    = "Guest"
 last_name     = "Player"
 email_env     = "PLAYER2_EMAIL"
 
+[[request.players]]
+first_name    = "Guest"
+last_name     = "Player3"
+email_env     = "PLAYER3_EMAIL"
+
+[[request.players]]
+first_name    = "Guest"
+last_name     = "Player4"
+email_env     = "PLAYER4_EMAIL"
+
 # Multiple windows OR together: any matching window is acceptable.
 [[request.time_windows]]
 earliest = 07:00:00
