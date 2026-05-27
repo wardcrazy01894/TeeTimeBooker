@@ -39,11 +39,6 @@ NOTIFICATION:
 
 from __future__ import annotations
 
-import pytest
-
-from teetime.core.upgrade_orchestrator import UpgradeOrchestrator
-
-
 # --- "Our" vs "manual" booking detection --------------------------------
 
 

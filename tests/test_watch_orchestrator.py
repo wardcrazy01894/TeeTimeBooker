@@ -24,8 +24,6 @@ import pytest
 # These imports will work once the stubs are filled.
 # The test file itself must not raise ImportError.
 from teetime.core.models import WatchConfig
-from teetime.core.watch_orchestrator import WatchOrchestrator
-
 
 # --- Happy path ---------------------------------------------------------
 
