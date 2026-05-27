@@ -150,8 +150,18 @@ the rule is to check and update the ones that are now stale.
 ## When in doubt
 
 - Implementing a new milestone task? Read PLAN.md §16 for inputs/outputs/deps.
-- Adding a new course? Drop a sibling next to `mangrove_bay.py` if ForeUP-backed,
-  or stand up `chronogolf/base.py` if Chronogolf-backed (Spike S2 first).
+- Adding a new ForeUP course? Three steps:
+  1. Drop a sibling file next to `mangrove_bay.py` (e.g. `twin_brooks.py`).
+     Set all four IDs (`course_pk`, `booking_class_id`, `schedule_id`,
+     `public_booking_class_id`) and override `booking_page_url`.
+  2. Import it in `__main__.py` and add one line to `_ADAPTER_REGISTRY`:
+     `"foreup.twin_brooks": TwinBrooksAdapter,`
+  3. Add a `[[courses]]` entry in your TOML config and add `"foreup:twin_brooks"`
+     to `course_preferences` in the desired priority position.
+  No other code needs to change. Adding a course to `[[courses]]` without
+  adding it to `course_preferences` is safe — it won't change the RequestId
+  or be tried by the orchestrator.
+- Adding a Chronogolf course? Stand up `chronogolf/base.py` first (Spike S2).
 - Touching the orchestrator? Make sure FakeAdapter + FakeClock + InMemoryStore
   tests still cover your change. Fixtures live in `tests/conftest.py`. The
   race-window test is the canary.

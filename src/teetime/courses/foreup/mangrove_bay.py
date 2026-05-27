@@ -32,6 +32,8 @@ MANGROVE_BAY_BOOKING_PAGE_URL = (
 class MangroveBayAdapter(ForeUpAdapter):
     """Mangrove Bay specialization. Sets the IDs; inherits all HTTP logic from ForeUpAdapter."""
 
+    booking_page_url = MANGROVE_BAY_BOOKING_PAGE_URL
+
     def __init__(
         self,
         *,

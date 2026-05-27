@@ -442,7 +442,9 @@ Across runs (multiple days):
 
     course_ids|target_offsets|time_windows|party_fingerprint
 
-- `course_ids`: sorted, comma-joined `CourseConfig.id` values.
+- `course_ids`: sorted, comma-joined values from `request.course_preferences`
+  (NOT from `[[courses]]` — standby courses in `[[courses]]` that aren't in
+  `course_preferences` must not change the RequestId).
 - `target_offsets`: sorted, comma-joined integers (e.g. `"7"` or `"7,14"`).
 - `time_windows`: sorted by `(earliest, latest)`, joined as `"HH:MM-HH:MM"`,
   comma-joined.
