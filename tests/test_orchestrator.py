@@ -283,8 +283,7 @@ async def test_run_short_circuits_when_4player_reservation_matches() -> None:
     cid = CourseId("fake:course")
     fa = FakeAdapter(course_id=cid)
     four_players = tuple(
-        Player(first_name=f"G{i}", last_name="Player", email=f"g{i}@x.test")
-        for i in range(4)
+        Player(first_name=f"G{i}", last_name="Player", email=f"g{i}@x.test") for i in range(4)
     )
     fa.set_existing_reservations(
         [
@@ -325,8 +324,7 @@ async def test_run_proceeds_when_existing_reservation_party_size_differs() -> No
     cid = CourseId("fake:course")
     fa = FakeAdapter(course_id=cid)
     four_players = tuple(
-        Player(first_name=f"G{i}", last_name="Player", email=f"g{i}@x.test")
-        for i in range(4)
+        Player(first_name=f"G{i}", last_name="Player", email=f"g{i}@x.test") for i in range(4)
     )
     fa.set_existing_reservations(
         [
