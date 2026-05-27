@@ -200,14 +200,14 @@ class Orchestrator:
         slots: list[TeeTimeSlot],
         request: BookingRequest,
     ) -> list[TeeTimeSlot]:
-        """Filter to matching slots and return them sorted ascending by tee_time
-        (earliest first). Empty list = no inventory.
+        """Filter to matching slots and return them sorted by distance from the
+        window midpoint (closest wins). Empty list = no inventory.
 
         Delegates to the shared `rank_slots_for_request` helper in slot_utils
         so WatchOrchestrator can reuse the same logic without duplication.
 
-        Feature 3 (M-feature-3): sort ascending by tee_time — prefer 09:00
-        over 09:10 over 10:30. See slot_utils.rank_slots_for_request docstring.
+        Feature 3 (M-feature-3): midpoint-distance sort — for window 09:00-10:00
+        (midpoint 09:30), prefer 09:37 over 09:22. See slot_utils module docstring.
         """
         return rank_slots_for_request(slots, request)
 

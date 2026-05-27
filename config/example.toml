@@ -56,8 +56,8 @@ email_env     = "PLAYER4_EMAIL"
 # Morning window targets the best slots at Mangrove Bay.
 # For ad-hoc mid-week bookings, adjust this window or add a second entry.
 [[request.time_windows]]
-earliest = 09:00:00
-latest   = 10:30:00
+earliest = 08:45:00
+latest   = 10:00:00
 
 [scheduler]
 timezone         = "America/New_York"   # Mangrove Bay is in ET
@@ -94,17 +94,18 @@ enabled = false
 
 # Ordered list of preferred slots. priority=0 is most preferred.
 # If this list is empty, defaults to [request].course_preferences order with
-# [request].time_windows[0]. Within one priority level, earlier tee_time wins.
+# [request].time_windows[0]. Within one priority level, the slot closest to
+# the window midpoint wins (midpoint-distance sort, Feature 3).
 #
-# Example: prefer any 09:00-09:30 slot over any 09:30-10:30 slot.
+# Example: prefer any 08:45-09:22 slot over any 09:22-10:00 slot.
 # [[one_booking_policy.priority_slots]]
 # priority              = 0
 # course_id             = "foreup:mangrove_bay"
-# time_window_earliest  = 09:00:00
-# time_window_latest    = 09:30:00
+# time_window_earliest  = 08:45:00
+# time_window_latest    = 09:22:00
 #
 # [[one_booking_policy.priority_slots]]
 # priority              = 1
 # course_id             = "foreup:mangrove_bay"
-# time_window_earliest  = 09:30:00
-# time_window_latest    = 10:30:00
+# time_window_earliest  = 09:22:00
+# time_window_latest    = 10:00:00

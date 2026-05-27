@@ -82,12 +82,13 @@ Idempotency key handling:
     (§9 layer 2) sees the new booking and records ALREADY_BOOKED — no phantom.
 
 Priority tie-breaking:
-    If two slots of equal priority index are available, we pick the one with
-    the earlier tee_time (Feature 3 — ascending time sort). This is consistent
-    with the main orchestrator's _rank_slots behavior after Feature 3 lands.
+    If two slots of equal priority index are available, we pick the one closest
+    to the midpoint of the time window (Feature 3 — midpoint-distance sort).
+    Equidistant slots are broken by ascending tee_time. This is consistent with
+    the main orchestrator's _rank_slots behavior (slot_utils.rank_slots_for_request).
     Ties are not possible across different course_ids at the same priority —
     the priority list is ordered by the operator and ambiguity is not possible
-    within a single priority index on the same course (the time sort handles it).
+    within a single priority index on the same course (the midpoint sort handles it).
 """
 
 from __future__ import annotations

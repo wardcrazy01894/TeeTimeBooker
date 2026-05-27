@@ -146,7 +146,7 @@ in `core/` — never directly. This is the cut line for parallel work.
 - 7-day window opens 06:00 America/New_York exactly; minimum 2 players required
 - **Party size is 4** (configured in `config/example.toml` + `config/local.toml` as 4 `[[request.players]]` entries). The idempotency layer-2 guard (`list_reservations`) matches on `party_size == len(request.players)` exactly — if you change party size between production runs an existing booking with the old party size will NOT block a new attempt. Cancel any conflicting reservation before deploying a party-size change.
 - **Schedule is Saturday + Sunday only.** The cron runs at 6:00 AM ET on weekends; `target_offsets = [7]` books the same weekday 7 days out (Sat→Sat, Sun→Sun). For ad-hoc mid-week bookings use `workflow_dispatch` and adjust `target_offsets` in `config/local.toml` before triggering.
-- **Time window is 09:00–10:30 ET** (single morning window). For mid-week or afternoon bookings, add a second `[[request.time_windows]]` entry in `config/local.toml` for that run only.
+- **Time window is 08:45–10:00 ET** (single morning window). Midpoint is 09:22:30; the slot closest to that midpoint wins (midpoint-distance sort). For mid-week or afternoon bookings, add a second `[[request.time_windows]]` entry in `config/local.toml` for that run only.
 
 ## How we write code in this repo: red-green TDD
 
