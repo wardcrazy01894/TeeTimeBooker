@@ -33,8 +33,8 @@ from .models import (
     CourseId,
     ExistingReservation,
     TeeTimeSlot,
-    TimeWindow,
 )
+from .slot_utils import rank_slots_for_request
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -203,41 +203,13 @@ class Orchestrator:
         """Filter to matching slots and return them sorted ascending by tee_time
         (earliest first). Empty list = no inventory.
 
-        Feature 3 (M-feature-3): sort by ascending tee_time within the window.
-        Prefer 09:00 over 09:10 over 10:30. This replaces the midpoint-distance
-        sort from v0, which was documented as a placeholder in PLAN.md §19 item 5.
+        Delegates to the shared `rank_slots_for_request` helper in slot_utils
+        so WatchOrchestrator can reuse the same logic without duplication.
 
-        Rationale for ascending-over-midpoint: the user's preferred window is
-        09:00-10:30, so the best slot is the earliest available. A midpoint bias
-        (09:45) was never the stated preference — the window just bounds what is
-        acceptable. Within acceptable bounds, earlier is better.
-
-        All filtering criteria (spots, holes, price, window membership) are unchanged.
+        Feature 3 (M-feature-3): sort ascending by tee_time — prefer 09:00
+        over 09:10 over 10:30. See slot_utils.rank_slots_for_request docstring.
         """
-        candidates: list[TeeTimeSlot] = []
-        for s in slots:
-            if s.available_spots < len(request.players):
-                continue
-            if request.holes not in (s.holes, 0):
-                continue
-            cap = request.max_price_per_player
-            if cap is not None and s.price_per_player > cap:
-                continue
-            window = self._matching_window(s, request)
-            if window is None:
-                continue
-            candidates.append(s)
-        # Sort ascending by tee_time: prefer earliest available slot.
-        candidates.sort(key=lambda s: s.tee_time)
-        return candidates
-
-    @staticmethod
-    def _matching_window(slot: TeeTimeSlot, request: BookingRequest) -> TimeWindow | None:
-        local = slot.tee_time
-        for w in request.time_windows:
-            if w.earliest <= local.time() <= w.latest:
-                return w
-        return None
+        return rank_slots_for_request(slots, request)
 
     # --- pre-book reservation match -----------------------------------
 

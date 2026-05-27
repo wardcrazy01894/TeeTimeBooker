@@ -150,7 +150,7 @@ class UpgradeOrchestrator:
         """Attempt to upgrade `current_booking` to a higher-priority slot.
 
         `current_booking` is the STORE RECORD (a BookingResult retrieved via
-        store.get_booked or equivalent), NOT an ExistingReservation from
+        store.get_terminal), NOT an ExistingReservation from
         list_reservations. Its confirmation_code carries the TTB: prefix so that
         the managed-booking check is reliable. The caller (WatchOrchestrator.check_once)
         is responsible for cross-referencing the store record against the live
@@ -219,12 +219,19 @@ class UpgradeOrchestrator:
 
     def _build_priority_list(
         self,
+        request: BookingRequest,
         target_date: date,
     ) -> list[PrioritySlot]:
         """Materialize the ordered PrioritySlot list for `target_date` from policy config.
 
         If policy.priority_slots is empty, derive a default list from
         request.course_preferences order with request.time_windows[0].
+
+        Args:
+            request: the active BookingRequest (used for fallback list when
+                policy.priority_slots is empty).
+            target_date: the date being watched (for any date-specific filtering
+                that M-feature-2.T2 may add, e.g. day-of-week windows).
         """
         raise NotImplementedError(
             "UpgradeOrchestrator._build_priority_list — implement in M-feature-2.T2."
