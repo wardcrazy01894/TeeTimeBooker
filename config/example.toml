@@ -53,14 +53,11 @@ first_name    = "Guest"
 last_name     = "Player"
 email_env     = "PLAYER4_EMAIL"
 
-# Multiple windows OR together: any matching window is acceptable.
+# Morning window targets the best slots at Mangrove Bay.
+# For ad-hoc mid-week bookings, adjust this window or add a second entry.
 [[request.time_windows]]
-earliest = 07:00:00
-latest   = 09:30:00
-
-[[request.time_windows]]
-earliest = 16:00:00
-latest   = 18:00:00
+earliest = 09:00:00
+latest   = 10:30:00
 
 [scheduler]
 timezone         = "America/New_York"   # Mangrove Bay is in ET

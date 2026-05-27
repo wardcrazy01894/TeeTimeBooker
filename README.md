@@ -135,14 +135,18 @@ The container notifier defaults to `console` (stdout) until SMTP credentials are
 
 ## GitHub Actions setup (v0)
 
-The workflow at `.github/workflows/book.yml` runs on two daily crons to handle DST:
+The workflow at `.github/workflows/book.yml` runs on **Saturday and Sunday only** at 6:00 AM ET. With `target_offsets = [7]`, Saturday's run books the next Saturday and Sunday's run books the next Sunday. Four cron entries cover both days across both DST seasons:
 
-| Cron (UTC)  | Covers  |
-|-------------|---------|
-| `50 9 * * *`  | EDT (UTC−4) |
-| `50 10 * * *` | EST (UTC−5) |
+| Cron (UTC)    | Day      | Covers      |
+|---------------|----------|-------------|
+| `50 9 * * 6`  | Saturday | EDT (UTC−4) |
+| `50 10 * * 6` | Saturday | EST (UTC−5) |
+| `50 9 * * 0`  | Sunday   | EDT (UTC−4) |
+| `50 10 * * 0` | Sunday   | EST (UTC−5) |
 
-A workflow step verifies the ET wall-clock hour before proceeding, so only one cron actually fires on any given day.
+A workflow step verifies the ET wall-clock hour before proceeding, so only one of the two same-day crons actually books.
+
+**Ad-hoc mid-week bookings:** trigger manually via `gh workflow run book-tee-time -f dry_run=false` after temporarily adjusting `target_offsets` in `config/local.toml`.
 
 **Required repository secrets** (Settings → Secrets → Actions):
 

@@ -1,16 +1,20 @@
-# Daily booking run. GitHub Actions cron is in UTC; we register TWO entries to
-# stay locked on 6:00 AM America/New_York year-round (see PLAN.md "DST math").
+# Weekend booking run — fires at 6:00 AM ET on Saturday and Sunday only.
+# target_offsets = [7] in the config means each run books exactly 7 days out,
+# so Saturday's run books the next Saturday and Sunday's run books the next Sunday.
 #
-#   EDT (Mar–Nov, UTC-4): 06:00 ET == 10:00 UTC
-#   EST (Nov–Mar, UTC-5): 06:00 ET == 11:00 UTC
+# GitHub Actions cron is UTC-only, so we register FOUR entries to cover both
+# DST seasons on both weekend days (see PLAN.md "DST math"):
 #
-# We schedule both crons every day. The job's first step computes the actual
-# current ET wall-clock and writes `proceed=true|false` based on whether the
-# hour equals 5 (the cron fires at :50 of the hour preceding 06:00 ET, so the
-# CORRECT half lands the runner in the 5:xx ET window; the WRONG half lands
-# at 4:xx or 6:xx ET). All downstream steps gate on `proceed`. This is
-# cheaper than maintaining branches per season AND prevents the wrong-half
-# cron from running the bot anyway (review item 1).
+#   EDT (Mar–Nov, UTC-4): 06:00 ET == 10:00 UTC → fire at 09:50 UTC
+#   EST (Nov–Mar, UTC-5): 06:00 ET == 11:00 UTC → fire at 10:50 UTC
+#
+# The DST-half check step gates on ET wall-clock hour == 5 so only the correct
+# seasonal cron proceeds; the other fires and exits immediately.
+#
+# For ad-hoc mid-week bookings: use workflow_dispatch (sets dry_run=true by
+# default) and temporarily adjust target_offsets in config/local.toml before
+# triggering. The cron days do NOT restrict workflow_dispatch — manual triggers
+# always proceed past the DST gate.
 #
 # IMPORTANT: GH Actions cron has 1–15 min jitter. We schedule 10 min EARLIER
 # than the wall-clock target and use the bot's own busy_wait_until() to land
@@ -20,10 +24,14 @@ name: book-tee-time
 
 on:
   schedule:
-    # 09:50 UTC = 05:50 EDT (EDT half of year — fires 10 min before T0)
-    - cron: "50 9 * * *"
-    # 10:50 UTC = 05:50 EST (EST half of year — fires 10 min before T0)
-    - cron: "50 10 * * *"
+    # Saturday EDT (UTC-4): 09:50 UTC = 05:50 ET — fires 10 min before T0
+    - cron: "50 9 * * 6"
+    # Saturday EST (UTC-5): 10:50 UTC = 05:50 ET — fires 10 min before T0
+    - cron: "50 10 * * 6"
+    # Sunday EDT (UTC-4): 09:50 UTC = 05:50 ET — fires 10 min before T0
+    - cron: "50 9 * * 0"
+    # Sunday EST (UTC-5): 10:50 UTC = 05:50 ET — fires 10 min before T0
+    - cron: "50 10 * * 0"
   workflow_dispatch:
     inputs:
       dry_run:
