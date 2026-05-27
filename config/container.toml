@@ -30,12 +30,8 @@ last_name  = "Player"
 email_env  = "PLAYER2_EMAIL"
 
 [[request.time_windows]]
-earliest = 07:00:00
-latest   = 09:30:00
-
-[[request.time_windows]]
-earliest = 16:00:00
-latest   = 18:00:00
+earliest = 09:00:00
+latest   = 10:30:00
 
 [scheduler]
 timezone         = "America/New_York"

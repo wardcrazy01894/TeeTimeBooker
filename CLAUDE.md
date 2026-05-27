@@ -27,7 +27,7 @@ src/teetime/
   courses/foreup/   # Shared ForeUP HTTP base + per-course IDs
   courses/chronogolf/  # placeholder; not used in v0
 config/             # example.toml; secrets via env-var refs only
-.github/workflows/  # GH Actions cron (2 entries for DST)
+.github/workflows/  # GH Actions cron (4 entries: Sat+Sun × 2 DST seasons)
 tests/              # pytest; vcrpy cassettes go in tests/cassettes/
 ```
 
@@ -77,7 +77,7 @@ in `core/` — never directly. This is the cut line for parallel work.
   See PLAN.md §9.2.
 - **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
   This lets `target_offsets = [7]` produce one stable RequestId across the
-  daily cron while still booking a fresh date each day. See PLAN.md §13.1.
+  weekend cron while still booking a fresh date each week. See PLAN.md §13.1.
 - **Player PII redacted before write** to `attempt_log` (SHA-256 prefix).
   See PLAN.md §10.1. The store is a workflow artifact — assume contents
   are visible to anyone with repo read access.

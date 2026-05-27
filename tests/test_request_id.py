@@ -2,7 +2,7 @@
 
 PLAN §13.1: fingerprint = course_ids|target_offsets|time_windows|party_fingerprint
 with sort order canonical and PII excluded. Resolved dates NOT in the fingerprint
-(daily cron must produce identical RequestId across days).
+(weekend cron must produce identical RequestId across the same-day runs).
 """
 
 from __future__ import annotations
@@ -31,13 +31,15 @@ def _guest() -> Player:
 
 
 def test_fingerprint_canonical_form() -> None:
+    """Canonical fingerprint matches the production config: Mangrove Bay,
+    offset 7, morning window 09:00-10:30, one player."""
     fp = build_request_fingerprint(
         course_ids=[CourseId("foreup:mangrove_bay")],
         target_offsets=[7],
-        time_windows=[_w(7, 0, 9, 30)],
+        time_windows=[_w(9, 0, 10, 30)],
         players=[_alex()],
     )
-    assert fp == "foreup:mangrove_bay|7|07:00-09:30|Alex|Lancaster"
+    assert fp == "foreup:mangrove_bay|7|09:00-10:30|Alex|Lancaster"
 
 
 def test_fingerprint_sorts_courses_offsets_windows_players() -> None:

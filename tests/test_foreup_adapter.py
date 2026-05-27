@@ -173,7 +173,7 @@ async def test_search_returns_matching_slots() -> None:
 
 @respx.mock
 async def test_search_filters_out_of_window_slots() -> None:
-    out_of_window = {**_RAW_SLOT, "time": "12:00:00"}  # noon, outside 07:00-09:30
+    out_of_window = {**_RAW_SLOT, "time": "12:00:00"}  # noon, outside 09:00-10:30
     respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
         return_value=httpx.Response(200, json=[out_of_window])
     )

@@ -14,7 +14,7 @@ Python bot that books a tee time at **Mangrove Bay Golf Course** (St. Petersburg
 
 ## How it works
 
-1. A GitHub Actions cron fires ~10 minutes before 6:00 AM ET (two entries handle DST)
+1. A GitHub Actions cron fires ~10 minutes before 6:00 AM ET on Saturday and Sunday (four entries handle both days × both DST seasons)
 2. The bot busy-waits until T0 (±250 ms)
 3. It polls for available slots, picks the best match from your config, and POSTs the booking
 4. It emails you success or failure, and persists the result to SQLite for idempotency
