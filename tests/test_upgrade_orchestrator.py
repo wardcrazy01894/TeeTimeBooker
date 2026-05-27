@@ -1,7 +1,11 @@
 """Feature 2 — One Booking Policy / Upgrade Orchestrator (M-feature-2).
 
 Red-phase tests. Each test documents one behavioral contract of UpgradeOrchestrator.
-All raise NotImplementedError until M-feature-2.T3 is implemented.
+All are marked xfail(strict=True) until M-feature-2.T3 is implemented.
+
+strict=True means:
+- If the test fails (as expected, via NotImplementedError) → XFAIL (CI passes).
+- If the test unexpectedly passes → XPASS (CI fails), preventing silent green.
 
 Coverage areas (adversarial reviewer's checklist mapped to tests):
 
@@ -39,9 +43,16 @@ NOTIFICATION:
 
 from __future__ import annotations
 
+import pytest
+
 # --- "Our" vs "manual" booking detection --------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_skips_unmanaged_booking() -> None:
     """If current_booking (a BookingResult from the store) has a confirmation_code
     WITHOUT the TTB: prefix, maybe_upgrade() returns None immediately —
@@ -52,6 +63,11 @@ async def test_upgrade_skips_unmanaged_booking() -> None:
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_proceeds_for_managed_booking() -> None:
     """If current_booking (a BookingResult from the store) has a confirmation_code
     WITH the TTB: prefix, maybe_upgrade() proceeds to check for higher-priority slots."""
@@ -61,18 +77,33 @@ async def test_upgrade_proceeds_for_managed_booking() -> None:
 # --- Priority logic -----------------------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_returns_none_when_no_higher_priority_slot_available() -> None:
     """If no higher-priority slots are available (search returns empty for all
     higher-priority windows), maybe_upgrade() returns None."""
     raise NotImplementedError("RED: implement M-feature-2.T3.")
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_books_and_cancels_when_higher_priority_available() -> None:
     """Happy path: higher-priority slot found -> book new -> cancel old ->
     delete_terminal -> record_terminal with new result."""
     raise NotImplementedError("RED: implement M-feature-2.T3.")
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_does_not_upgrade_to_equal_priority() -> None:
     """A slot at the SAME priority as the current booking does not trigger
     a cancel+rebook — only strictly higher priority does."""
@@ -82,12 +113,22 @@ async def test_upgrade_does_not_upgrade_to_equal_priority() -> None:
 # --- Book-before-cancel atomicity ---------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_books_before_cancelling() -> None:
     """Verify call order: adapter.book() is called BEFORE adapter.cancel_reservation().
     If book() fails, cancel_reservation() must NOT be called."""
     raise NotImplementedError("RED: implement M-feature-2.T3 book-before-cancel protocol.")
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_retains_original_if_rebook_fails() -> None:
     """If book() raises (slot gone, network error, etc.), the original booking is
     preserved: cancel_reservation is NOT called, store is unchanged."""
@@ -97,6 +138,11 @@ async def test_upgrade_retains_original_if_rebook_fails() -> None:
 # --- Cancel-after-rebook failure ----------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_persists_new_booking_if_cancel_fails() -> None:
     """If book() succeeds but cancel_reservation() raises CancelError, the new
     booking MUST still be persisted (we have a real confirmation code). The
@@ -105,6 +151,11 @@ async def test_upgrade_persists_new_booking_if_cancel_fails() -> None:
     raise NotImplementedError("RED: implement M-feature-2.T3 cancel-failure path.")
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_sends_dual_booking_warning_on_cancel_failure() -> None:
     """Dual-booking scenario: notifier receives a result with a diagnostic
     field indicating the old booking must be manually cancelled."""
@@ -114,12 +165,22 @@ async def test_upgrade_sends_dual_booking_warning_on_cancel_failure() -> None:
 # --- Idempotency-key handling -------------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_deletes_then_reinserts_terminal_under_lock() -> None:
     """The sequence must be: acquire lock -> book new -> delete_terminal ->
     record_terminal (new). Verified by checking InMemoryStore state transitions."""
     raise NotImplementedError("RED: implement M-feature-2.T3 idempotency handling.")
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_does_not_delete_terminal_if_rebook_fails() -> None:
     """If book() fails, delete_terminal must NOT have been called —
     the old BOOKED terminal must still be in the store."""
@@ -129,6 +190,11 @@ async def test_upgrade_does_not_delete_terminal_if_rebook_fails() -> None:
 # --- Tie-breaking (Feature 3 integration) -------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_picks_earliest_slot_within_priority() -> None:
     """When multiple slots exist at a higher-priority window, the earliest
     tee_time slot is selected (ascending sort per Feature 3)."""
@@ -138,6 +204,11 @@ async def test_upgrade_picks_earliest_slot_within_priority() -> None:
 # --- Notification -------------------------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=NotImplementedError,
+    reason="RED stub: implement UpgradeOrchestrator.maybe_upgrade (M-feature-2.T3)",
+)
 async def test_upgrade_notifies_on_successful_upgrade() -> None:
     """After a successful cancel+rebook, notifier.notify() is called exactly
     once with the new BOOKED BookingResult."""
