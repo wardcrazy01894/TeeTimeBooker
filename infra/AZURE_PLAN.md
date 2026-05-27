@@ -79,7 +79,7 @@ platform using the same user-assigned MI.
 | Concern | Chosen | Rejected | Rejection reason |
 |---|---|---|---|
 | Compute | **Azure Container Apps Jobs (Consumption)** | Azure Functions Consumption | Cold-start variance (documented 0–60s) breaks the T0 busy-wait window — see §5.1 |
-| Compute | (same) | Azure Functions Premium EP1 | ~$146/mo, 29× cost ceiling; no benefit for single daily 5-min job |
+| Compute | (same) | Azure Functions Premium EP1 | ~$146/mo, 29× cost ceiling; no benefit for twice-weekly 5-min job |
 | Compute | (same) | Azure Logic Apps | No native Python; JSON-based workflows can't run the bot code |
 | State persistence | **Azure Blob Storage (LRS Hot)** | Azure Cosmos DB | Overkill; $24+/mo minimum RU reservation |
 | State persistence | (same) | Azure Table Storage | No ACID multi-row transactions; SQLite gives us that for free |
