@@ -37,15 +37,25 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
+from .courses.foreup.base import ForeUpAdapter
 from .courses.foreup.captcha import make_2captcha_provider, make_captcha_provider
-from .courses.foreup.mangrove_bay import MANGROVE_BAY_BOOKING_PAGE_URL, MangroveBayAdapter
+from .courses.foreup.mangrove_bay import MangroveBayAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
 from .persistence.in_memory_store import InMemoryStore
 
-# Fallback registry for adapters that don't need constructor arguments.
-# foreup.mangrove_bay is handled explicitly in _build_adapters to thread captcha_provider.
-_ADAPTER_REGISTRY: dict[str, type[CourseAdapter]] = {}
+# Registry mapping TOML adapter names to their ForeUpAdapter subclass.
+# _build_adapters() resolves every [[courses]] entry through this dict.
+#
+# To add a new ForeUP course:
+#   1. Create src/teetime/courses/foreup/<course_name>.py as a sibling of mangrove_bay.py.
+#      Set all four IDs and override booking_page_url.
+#   2. Import the class here and add one line below, e.g.:
+#        "foreup.twin_brooks": TwinBrooksAdapter,
+#   3. Add a [[courses]] entry in your TOML config.
+_ADAPTER_REGISTRY: dict[str, type[ForeUpAdapter]] = {
+    "foreup.mangrove_bay": MangroveBayAdapter,
+}
 
 
 @click.group()
@@ -148,27 +158,54 @@ async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None
 
 
 def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, CourseAdapter]:
+    """Build a CourseAdapter for each [[courses]] entry via _ADAPTER_REGISTRY.
+
+    In dry_run mode, captcha_provider is always None (no CAPTCHA solving needed
+    because the final booking POST is skipped). In live mode, 2captcha is used
+    when TWOCAPTCHA_API_KEY is set; otherwise falls back to the inline solver.
+
+    The booking_page_url on each ForeUpAdapter subclass determines which page
+    the captcha provider targets — every course has its own booking page.
+    """
+    twocaptcha_key = None if dry_run else os.environ.get("TWOCAPTCHA_API_KEY")
+
+    # Validate: every course_preferences entry must have a [[courses]] entry.
+    # Without this, the orchestrator silently skips the missing course and returns
+    # NO_INVENTORY — indistinguishable from genuine inventory absence.
+    configured_ids = {c.id for c in cfg.courses}
+    for pref in cfg.request.course_preferences:
+        if pref not in configured_ids:
+            raise click.ClickException(
+                f"course_preferences has {pref!r} but there is no [[courses]] entry for it. "
+                "Add a [[courses]] block with that id, or remove it from course_preferences."
+            )
+
     adapters: dict[CourseId, CourseAdapter] = {}
     for c in cfg.courses:
-        if c.adapter == "foreup.mangrove_bay":
-            if dry_run:
-                cp = None
-            else:
-                twocaptcha_key = os.environ.get("TWOCAPTCHA_API_KEY")
-                cp = (
-                    make_2captcha_provider(twocaptcha_key, MANGROVE_BAY_BOOKING_PAGE_URL)
-                    if twocaptcha_key
-                    else make_captcha_provider(MANGROVE_BAY_BOOKING_PAGE_URL)
-                )
-            adapters[CourseId(c.id)] = MangroveBayAdapter(captcha_provider=cp)
+        cls = _ADAPTER_REGISTRY.get(c.adapter)
+        if cls is None:
+            raise click.ClickException(
+                f"Unknown adapter {c.adapter!r} for course {c.id!r}. "
+                f"Register it in __main__._ADAPTER_REGISTRY. "
+                f"Known adapters: {sorted(_ADAPTER_REGISTRY)}"
+            )
+        if dry_run:
+            cp = None
         else:
-            cls = _ADAPTER_REGISTRY.get(c.adapter)
-            if cls is None:
+            # Validate booking_page_url before building the CAPTCHA provider —
+            # an empty URL would silently pass bad input to the CAPTCHA service.
+            if not cls.booking_page_url:
                 raise click.ClickException(
-                    f"Unknown adapter {c.adapter!r} for course {c.id!r}. "
-                    f"Known adapters: {list(_ADAPTER_REGISTRY)}"
+                    f"Adapter {cls.__name__!r} (for course {c.id!r}) has no booking_page_url. "
+                    "Set booking_page_url = <url> in the adapter class before live use."
                 )
-            adapters[CourseId(c.id)] = cls()
+            if twocaptcha_key:
+                cp = make_2captcha_provider(twocaptcha_key, cls.booking_page_url)
+            else:
+                cp = make_captcha_provider(cls.booking_page_url)
+        # Each registered subclass overrides __init__ to only require captcha_provider;
+        # mypy can't verify this from type[ForeUpAdapter] alone.
+        adapters[CourseId(c.id)] = cls(captcha_provider=cp)  # type: ignore[call-arg]
     return adapters
 
 
@@ -212,7 +249,11 @@ def _build_request(cfg: AppConfig, *, dry_run: bool) -> BookingRequest:
     today = datetime.now(tz=tz).date()
     target_dates = tuple(today + timedelta(days=o) for o in sorted(cfg.request.target_offsets))
 
-    course_ids = [CourseId(c.id) for c in cfg.courses]
+    # Use course_preferences (not cfg.courses) for the fingerprint.
+    # cfg.courses may contain standby/disabled courses not in course_preferences;
+    # including them would change the RequestId and invalidate idempotency records
+    # every time the [[courses]] block is edited. See PLAN.md §13.1.
+    course_ids = [CourseId(p) for p in cfg.request.course_preferences]
     windows = [TimeWindow(earliest=w.earliest, latest=w.latest) for w in cfg.request.time_windows]
     players = [
         Player(

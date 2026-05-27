@@ -34,7 +34,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -74,9 +74,20 @@ _HTTP_SLOT_GONE = 409
 class ForeUpAdapter(CourseAdapter):
     """Base for any ForeUP-backed course. Subclasses set course_pk, booking_class_id,
     schedule_id, and optionally timezone. All HTTP logic lives here.
+
+    To add a new ForeUP course:
+      1. Create a sibling file (e.g. twin_brooks.py) that subclasses ForeUpAdapter,
+         sets the four IDs, and overrides booking_page_url.
+      2. Register it in __main__._ADAPTER_REGISTRY under the adapter name used in TOML.
+      3. Add a [[courses]] entry in your TOML config.
     """
 
     course_id: CourseId
+
+    # Each subclass MUST override this with the ForeUP booking page URL for that course.
+    # Used by _build_adapters() to configure the CAPTCHA provider with the correct page.
+    # Format: "https://foreupsoftware.com/index.php/booking/<course_pk>/<booking_class_id>"
+    booking_page_url: ClassVar[str] = ""
 
     def __init__(
         self,
