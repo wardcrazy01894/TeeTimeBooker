@@ -277,6 +277,83 @@ async def test_run_short_circuits_when_existing_reservation_matches() -> None:
     assert fa.book_call_count == 0
 
 
+async def test_run_short_circuits_when_4player_reservation_matches() -> None:
+    """list_reservations guard fires for a 4-player request when an existing
+    4-player reservation is found on the target date. Outcome=ALREADY_BOOKED."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    four_players = tuple(
+        Player(first_name=f"G{i}", last_name="Player", email=f"g{i}@x.test") for i in range(4)
+    )
+    fa.set_existing_reservations(
+        [
+            ExistingReservation(
+                course_id=cid,
+                confirmation_code="EXISTING-4P",
+                tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=UTC),
+                party_size=4,
+            )
+        ]
+    )
+    fa.set_search_response([_slot(cid)])
+    orch, _, _ = _build({cid: fa})
+
+    req = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(date(2026, 5, 13),),
+        time_windows=(TimeWindow(earliest=time(7, 0), latest=time(9, 30)),),
+        players=four_players,
+        course_preferences=(cid,),
+        dry_run=False,
+    )
+    result = await orch.run(req)
+
+    assert result.outcome == BookingOutcome.ALREADY_BOOKED
+    assert result.confirmation_code == "EXISTING-4P"
+    assert fa.book_call_count == 0
+
+
+async def test_run_proceeds_when_existing_reservation_party_size_differs() -> None:
+    """A prior 2-player reservation does NOT match a new 4-player request —
+    party_size must equal len(request.players) exactly (PLAN §9 layer 2).
+
+    This documents the transition behavior: switching party size from 2→4
+    means an existing 2-player booking for the same date will NOT short-circuit
+    the new run. Operators should be aware of this when changing party size
+    between production runs."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    four_players = tuple(
+        Player(first_name=f"G{i}", last_name="Player", email=f"g{i}@x.test") for i in range(4)
+    )
+    fa.set_existing_reservations(
+        [
+            ExistingReservation(
+                course_id=cid,
+                confirmation_code="OLD-2P",
+                tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=UTC),
+                party_size=2,  # old booking; does NOT match 4-player request
+            )
+        ]
+    )
+    fa.set_search_response([_slot(cid)])
+    orch, _, _ = _build({cid: fa})
+
+    req = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(date(2026, 5, 13),),
+        time_windows=(TimeWindow(earliest=time(7, 0), latest=time(9, 30)),),
+        players=four_players,
+        course_preferences=(cid,),
+        dry_run=False,
+    )
+    result = await orch.run(req)
+
+    # Guard did NOT fire — booking proceeds normally.
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.book_call_count == 1
+
+
 # --- Concurrent run defense (PLAN §9 layer 5) -------------------------
 
 

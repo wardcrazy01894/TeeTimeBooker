@@ -26,6 +26,8 @@ _REQUIRED_ENV = {
     "PLAYER1_PHONE": "555-0001",
     "PLAYER1_MB_MEMBER": "12345",
     "PLAYER2_EMAIL": "guest@example.test",
+    "PLAYER3_EMAIL": "guest3@example.test",
+    "PLAYER4_EMAIL": "guest4@example.test",
     "SMTP_HOST": "smtp.example.test",
     "SMTP_USER": "smtp-user",
     "SMTP_PASS": "smtp-secret",
@@ -43,6 +45,8 @@ def test_show_config_redacts_secrets() -> None:
     result = runner.invoke(cli, ["show-config", "--config", str(EXAMPLE_TOML)])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
+    # All four players must be present.
+    assert len(payload["request"]["players"]) == 4
     p1 = payload["request"]["players"][0]
     assert p1["email"] == "***"
     assert p1["phone"] == "***"

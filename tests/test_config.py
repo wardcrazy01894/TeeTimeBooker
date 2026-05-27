@@ -25,6 +25,8 @@ _REQUIRED_ENV = {
     "PLAYER1_PHONE": "555-0001",
     "PLAYER1_MB_MEMBER": "12345",
     "PLAYER2_EMAIL": "guest@example.test",
+    "PLAYER3_EMAIL": "guest3@example.test",
+    "PLAYER4_EMAIL": "guest4@example.test",
     "SMTP_HOST": "smtp.example.test",
     "SMTP_USER": "smtp-user",
     "SMTP_PASS": "smtp-secret",
@@ -45,7 +47,7 @@ def test_loads_example_toml(env_set: None) -> None:
     assert cfg.request.target_offsets == [7]
     assert cfg.request.holes == 18
     assert cfg.request.max_price_per_player == Decimal("55.00")
-    assert len(cfg.request.players) == 2
+    assert len(cfg.request.players) == 4
 
 
 def test_player_email_env_resolves_to_email_value(env_set: None) -> None:
@@ -73,6 +75,18 @@ def test_missing_required_env_raises_missing_env_error(
         monkeypatch.setenv(k, v)
     monkeypatch.delenv("PLAYER1_EMAIL", raising=False)
     with pytest.raises(MissingEnvVarError, match="PLAYER1_EMAIL"):
+        load(EXAMPLE_TOML)
+
+
+def test_missing_player3_email_raises_missing_env_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Players 3 and 4 have email_env set — their env vars are required at
+    load time, same as Player 1. Verify the loader fails with the right var name."""
+    for k, v in _REQUIRED_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("PLAYER3_EMAIL", raising=False)
+    with pytest.raises(MissingEnvVarError, match="PLAYER3_EMAIL"):
         load(EXAMPLE_TOML)
 
 

@@ -89,6 +89,7 @@ in `core/` — never directly. This is the cut line for parallel work.
 - `public_booking_class_id = 12239` — the "Public" booking class from the page's `SCHEDULES` JSON; used in the login POST and is distinct from the teesheet URL ID
 - Login uses `api_key=""` (empty); search uses `api_key="no_limits"` — confirmed by browser capture
 - 7-day window opens 06:00 America/New_York exactly; minimum 2 players required
+- **Party size is 4** (configured in `config/example.toml` + `config/local.toml` as 4 `[[request.players]]` entries). The idempotency layer-2 guard (`list_reservations`) matches on `party_size == len(request.players)` exactly — if you change party size between production runs an existing booking with the old party size will NOT block a new attempt. Cancel any conflicting reservation before deploying a party-size change.
 
 ## How we write code in this repo: red-green TDD
 
