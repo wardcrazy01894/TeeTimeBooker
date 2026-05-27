@@ -78,6 +78,18 @@ def test_missing_required_env_raises_missing_env_error(
         load(EXAMPLE_TOML)
 
 
+def test_missing_player3_email_raises_missing_env_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Players 3 and 4 have email_env set — their env vars are required at
+    load time, same as Player 1. Verify the loader fails with the right var name."""
+    for k, v in _REQUIRED_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("PLAYER3_EMAIL", raising=False)
+    with pytest.raises(MissingEnvVarError, match="PLAYER3_EMAIL"):
+        load(EXAMPLE_TOML)
+
+
 def test_optional_env_unset_leaves_field_none(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

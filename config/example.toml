@@ -45,12 +45,12 @@ email_env     = "PLAYER2_EMAIL"
 
 [[request.players]]
 first_name    = "Guest"
-last_name     = "Player3"
+last_name     = "Player"
 email_env     = "PLAYER3_EMAIL"
 
 [[request.players]]
 first_name    = "Guest"
-last_name     = "Player4"
+last_name     = "Player"
 email_env     = "PLAYER4_EMAIL"
 
 # Multiple windows OR together: any matching window is acceptable.
