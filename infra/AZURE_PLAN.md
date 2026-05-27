@@ -242,7 +242,7 @@ This gate is already part of the `teetime run` CLI in v0 (the orchestrator
 checks wall-clock ET before entering busy-wait). No new code is required for
 v1; only the scheduling primitive changes from GH Actions to ACA.
 
-**The gate is not optional.** Without it, both crons would fire the full
+**The gate is not optional.** Without it, all four crons would fire the full
 booking logic, and the wrong-half run would arrive at T0 ± 1 hour, bypassing
 the idempotency check (same RequestId but wrong resolved_date) and potentially
 booking the wrong day.
