@@ -2,7 +2,7 @@
 
 Python bot that books a tee time at **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Runs unattended via GitHub Actions; emails you the result.
 
-**Status:** M1 + M2 + M5 complete. ForeUP adapter implemented and live dry-run confirmed against Mangrove Bay. Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run).
+**Status:** M1 + M2 + M5 + M-feature-3 + M-feature-1 complete. ForeUP adapter implemented and live dry-run confirmed against Mangrove Bay. Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run). Cancellation watch job live (GH Actions `watch-tee-time.yml`); auto-upgrade (M-feature-2) pending Spike S4 (ForeUP cancel endpoint).
 
 **Where to look:**
 - [PLAN.md](./PLAN.md) — full design, milestone roadmap, state machine, DST math, spikes
@@ -14,10 +14,17 @@ Python bot that books a tee time at **Mangrove Bay Golf Course** (St. Petersburg
 
 ## How it works
 
+**6 AM booking job** (`book-tee-time.yml`):
 1. A GitHub Actions cron fires ~10 minutes before 6:00 AM ET on Saturday and Sunday (four entries handle both days × both DST seasons)
 2. The bot busy-waits until T0 (±250 ms)
-3. It polls for available slots, picks the best match from your config, and POSTs the booking
+3. It polls for available slots, picks the **earliest** slot in the 09:00–10:30 ET window, and POSTs the booking
 4. It emails you success or failure, and persists the result to SQLite for idempotency
+
+**Cancellation watch job** (`watch-tee-time.yml`):
+1. A second GitHub Actions cron fires every 10 minutes, year-round
+2. Each run performs one availability check for the target date (7 days out)
+3. If a slot opens in the preferred window, it books immediately
+4. Polling is suppressed outside 7 AM – 10 PM ET (handled internally — no DST gate needed)
 
 ---
 
@@ -102,6 +109,27 @@ uv run teetime run --config config/local.toml --dry-run true
 # Live booking — omit --dry-run or set it to false.
 uv run teetime run --config config/local.toml --dry-run false
 ```
+
+### Cancellation watch (one-shot check)
+
+The watch command runs one availability check and exits. In production it is
+called by the `watch-tee-time.yml` cron every 10 minutes. You can trigger it
+manually to test or to grab a cancellation slot immediately:
+
+```bash
+# Dry run — check for available slots but do not book.
+uv run teetime watch --config config/local.toml --dry-run true
+
+# Live check — book immediately if a slot is found.
+uv run teetime watch --config config/local.toml --dry-run false
+
+# Watch a specific date instead of the default (today + 7 days).
+uv run teetime watch --config config/local.toml --dry-run true --date 2026-06-07
+```
+
+The watch feature must be enabled in `config/local.toml` (`watcher.enabled = true`).
+When disabled, the command logs a warning and exits 0 — safe to leave running in the
+cron even if you don't want it active.
 
 ---
 
@@ -204,12 +232,12 @@ uv run ruff format .                 # format
 ## Architecture
 
 ```
-CLI → Orchestrator → CourseAdapter (ForeUP)
-                  → BookingStore  (SQLite)
-                  → Notifier      (Email)
+CLI → Orchestrator      → CourseAdapter (ForeUP)
+   → WatchOrchestrator  → BookingStore  (SQLite)
+                        → Notifier      (Email)
 ```
 
-All subsystems are `Protocol`-typed — the orchestrator wires them together; nothing else crosses subsystem boundaries. See [`PLAN.md`](./PLAN.md) for the full design, milestone roadmap, and DST math. See [`CLAUDE.md`](./CLAUDE.md) for agent/contributor notes.
+All subsystems are `Protocol`-typed — orchestrators wire them together; nothing else crosses subsystem boundaries. `WatchOrchestrator` is single-invocation: it checks once and exits; the cron loop is external. See [`PLAN.md`](./PLAN.md) for the full design, milestone roadmap, and DST math. See [`CLAUDE.md`](./CLAUDE.md) for agent/contributor notes.
 
 ---
 
@@ -224,9 +252,12 @@ All subsystems are `Protocol`-typed — the orchestrator wires them together; no
 | M4 | Email notifications | Pending |
 | M5 | ForeUP adapter — live dry-run confirmed | Done |
 | M6 | End-to-end, first production cron run | Pending |
-| M-azure | Azure v1 hosting: Bicep IaC, BlobStateManager, Container Apps Job | In design |
+| M-feature-3 | Prefer earliest slot in time window (ascending sort) | Done |
+| M-feature-1 | Cancellation watch job — poll every 10 min, book on cancellation | Done |
+| M-feature-2 | One-booking policy: auto-upgrade to higher-priority slot | Pending (blocked on Spike S4) |
+| M-azure | Azure v1 hosting: Bicep IaC, BlobStateManager, Container Apps Jobs | In design |
 
-See [PLAN.md §16](./PLAN.md) for the full milestone breakdown with owner files, dependencies, and which tasks can run in parallel. A handful of v0 architectural decisions remain open — see PLAN.md §17 and the per-section "open questions" notes.
+See [PLAN.md §20](./PLAN.md) for the v0.5 milestone breakdown. See [PLAN.md §16](./PLAN.md) for the core milestone breakdown with owner files and dependencies.
 
 ---
 

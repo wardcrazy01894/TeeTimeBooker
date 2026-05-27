@@ -89,18 +89,23 @@ jobs:
           key: teetime-state-v1
 
       - name: Run watch check
+        # Security: workflow_dispatch inputs are passed via step-level env vars
+        # (not interpolated into the shell script body) to prevent template
+        # injection. DATE_ARGS is a bash array so an empty target_date passes
+        # zero extra arguments rather than an empty string.
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          TARGET_DATE: ${{ github.event.inputs.target_date }}
         run: |
           mkdir -p state
-          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
-          TARGET_DATE="${{ github.event.inputs.target_date }}"
-          DATE_ARG=""
+          DATE_ARGS=()
           if [ -n "$TARGET_DATE" ]; then
-            DATE_ARG="--date $TARGET_DATE"
+            DATE_ARGS=(--date "$TARGET_DATE")
           fi
           uv run teetime watch \
             --config config/local.toml \
             --dry-run "$DRY_RUN" \
-            $DATE_ARG
+            "${DATE_ARGS[@]}"
 
       - name: Save state cache
         if: always()

@@ -59,7 +59,7 @@ ADVISORY LOCK OWNERSHIP:
     See upgrade_orchestrator.py module docstring for the canonical lock statement.
 
 How check_once() determines the "current booking" for maybe_upgrade():
-    check_once() calls store.get_booked(request.request_id, target_date) to
+    check_once() calls store.get_terminal(request.request_id, target_date) to
     retrieve the BookingResult stored by the main booking run. That record carries
     the TTB:-prefixed confirmation_code which is the source of truth for the
     is_managed check. check_once() also calls list_reservations() to confirm the
@@ -238,11 +238,13 @@ class WatchOrchestrator:
 
             except Exception as exc:
                 # Transient errors (network blips, unexpected HTTP responses).
-                # Return None so the cron can retry on the next interval.
+                # Log and continue to the next course — don't abandon the whole
+                # preference list because one course has a network blip. If all
+                # courses fail, check_once returns None and the cron retries.
                 log.warning(
                     "watch: transient error on course %s: %s", course_id, exc, exc_info=True
                 )
-                return None
+                continue
 
             if result is not None:
                 return result
@@ -294,9 +296,24 @@ class WatchOrchestrator:
     ) -> BookingResult | None:
         """Acquire the advisory lock and attempt to book the first available candidate.
 
+        In dry_run mode: returns a DRY_RUN result immediately without acquiring
+        the lock or POSTing to the adapter. Mirrors Orchestrator._run_course behaviour.
+
         Returns a BOOKED BookingResult on success, or None if the lock was
         contended or all candidates were gone.
         """
+        if request.dry_run:
+            # Dry run: surface the best candidate without making any real booking.
+            return BookingResult(
+                request_id=request.request_id,
+                outcome=BookingOutcome.DRY_RUN,
+                course_id=candidates[0].course_id,
+                slot=candidates[0],
+                confirmation_code=None,
+                booked_at=None,
+                attempts=0,
+            )
+
         try:
             async with self._store.request_lock(request.request_id):
                 # Re-check inside lock — the 6 AM job or another watch invocation

@@ -28,10 +28,11 @@
   │  │  teetime.azurecr.io │    │                              │  │
   │  └──────────┬──────────┘    │  ┌────────────────────────┐  │  │
   │             │ image pull    │  │  Container Apps Job     │  │  │
-  │             └───────────────┼─►│  (Scheduled trigger)   │  │  │
-  │                             │  │  parallelism=1          │  │  │
-  │                             │  │  replicaCompletion=1    │  │  │
-  │                             │  │  4 cron entries (DST)   │  │  │
+  │             └───────────────┼─►│  Booking Jobs (×2)      │  │  │
+  │                             │  │  4 DST cron entries     │  │  │
+  │                             │  ├────────────────────────┤  │  │
+  │                             │  │  Watch Job (×1)         │  │  │
+  │                             │  │  cron: */10 * * * *     │  │  │
   │                             │  └────────┬───────────────-┘  │  │
   │                             │           │ user-assigned MI   │  │
   │                             └───────────┼───────────────────┘  │
@@ -63,11 +64,12 @@
          SMTP relay (email notification)
 ```
 
-**One-line summary.** Two ACA Jobs (one per DST half) fire 10 minutes before
-6:00 AM ET on Saturdays and Sundays in UTC cron. Each job pulls the bot image from ACR using a
-user-assigned managed identity, downloads the SQLite state blob from Blob
-Storage (acquiring a 60-second renewable blob lease), runs the booking logic,
-and uploads the updated blob on exit — mirroring the v0 `actions/cache` pattern.
+**One-line summary.** Three ACA Jobs: two booking jobs (one per DST half) fire 10 minutes before
+6:00 AM ET on Saturdays and Sundays; one watch job fires every 10 minutes year-round to monitor for
+cancellation slots. Each job pulls the bot image from ACR using a user-assigned managed identity,
+downloads the SQLite state blob from Blob Storage (acquiring a 60-second renewable blob lease), runs
+the booking or watch logic, and uploads the updated blob on exit — mirroring the v0 `actions/cache`
+pattern. The watch job shares the same SQLite blob and advisory-lock mechanism as the booking jobs.
 Secrets flow from Key Vault into the job container as environment variables via
 native `keyVaultUrl` secret references, resolved at container start by the ACA
 platform using the same user-assigned MI.
@@ -246,6 +248,31 @@ v1; only the scheduling primitive changes from GH Actions to ACA.
 booking logic, and the wrong-half run would arrive at T0 ± 1 hour, bypassing
 the idempotency check (same RequestId but wrong resolved_date) and potentially
 booking the wrong day.
+
+### 5.4 Watch job ACA Job (M-feature-1)
+
+The cancellation-monitor (`teetime watch`) runs as a **third ACA Job** with a
+single cron `*/10 * * * *` (every 10 minutes, UTC, no DST gate needed).
+
+Key differences from the booking jobs:
+
+| Property | Booking jobs (×2) | Watch job (×1) |
+|---|---|---|
+| Cron | 4 entries for DST × day | `*/10 * * * *` (single, year-round) |
+| DST gate | Required (races a wall-clock moment) | Not required (WatchOrchestrator gates on polling hours internally via zoneinfo) |
+| `replicaTimeout` | 900 s (15 min) | 60 s (one HTTP round-trip) |
+| Command | `teetime run --config ...` | `teetime watch --config ...` |
+| Enabled | Always | Controlled by `watcher.enabled` in TOML; exits 0 when false |
+| Concurrency group | `book-tee-time` | `watch-tee-time` (separate; but a watch+book overlap is safe — advisory lock in code handles it) |
+
+The watch job shares the same SQLite blob, the same advisory lock, and the
+same `teetime-state` container as the booking jobs. It acquires `request_lock`
+only for the booking phase (if a cancellation slot is found), matching the
+booking jobs' lock discipline. The `WatchOrchestrator.check_once` module
+docstring is the canonical reference for lock ownership rules.
+
+`compute.bicep` needs one additional `Microsoft.App/jobs` resource for the
+watch job (task M-azure-T1 tracks this).
 
 ---
 

@@ -455,6 +455,99 @@ async def test_watch_reraises_auth_error_after_notify() -> None:
 
 
 # ---------------------------------------------------------------------------
+# dry_run gate
+# ---------------------------------------------------------------------------
+
+
+async def test_watch_dry_run_returns_dry_run_outcome_without_booking() -> None:
+    """check_once() with dry_run=True must return DRY_RUN — never POST a booking.
+
+    Regression guard for the bug where _book_candidates had no dry_run gate.
+    """
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot(hour=9, minute=15)])
+    watch, store, _ = _build(adapter)
+
+    req = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(TARGET_DATE,),
+        time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
+        players=(Player(first_name="A", last_name="L", email="a@x.test"),),
+        course_preferences=(COURSE_ID,),
+        dry_run=True,
+    )
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None
+    assert result.outcome == BookingOutcome.DRY_RUN
+    # No real booking POST.
+    assert adapter.book_call_count == 0
+    # DRY_RUN result is NOT persisted (we don't lock or write for dry runs).
+    stored = await store.get_terminal(req.request_id, TARGET_DATE)
+    assert stored is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-course fallback on transient error
+# ---------------------------------------------------------------------------
+
+COURSE_ID_2 = CourseId("fake:course2")
+
+
+async def test_watch_transient_error_on_first_course_still_tries_second() -> None:
+    """When the first course raises a transient error, check_once() continues to
+    the next course rather than returning None immediately.
+
+    Regression guard for the bug where the transient-error handler did
+    `return None` instead of `continue`.
+    """
+    adapter1 = FakeAdapter(course_id=COURSE_ID)
+    adapter1.search = AsyncMock(  # type: ignore[method-assign]
+        side_effect=httpx.RequestError("connection reset", request=None)
+    )
+
+    adapter2 = FakeAdapter(course_id=COURSE_ID_2)
+    adapter2.set_search_response([
+        TeeTimeSlot(
+            course_id=COURSE_ID_2,
+            slot_id=SlotId("slot-0930"),
+            tee_time=datetime(
+                TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, 9, 30, tzinfo=ET,
+            ),
+            holes=18,
+            available_spots=4,
+            price_per_player=Decimal("45.00"),
+            cart_included=True,
+        )
+    ])
+
+    store = InMemoryStore()
+    clock = FakeClock(start=DURING_POLLING_UTC)
+    creds = {
+        COURSE_ID: CourseCredentials(username="u", password="p"),
+        COURSE_ID_2: CourseCredentials(username="u", password="p"),
+    }
+    watch = WatchOrchestrator(
+        adapters={COURSE_ID: adapter1, COURSE_ID_2: adapter2},
+        store=store,
+        notifier=NoopNotifier(),
+        clock=clock,
+        scheduler=_scheduler(),
+        watch_config=_watch_config(),
+        creds=creds,
+    )
+
+    req = _request(course_ids=(COURSE_ID, COURSE_ID_2))
+    result = await watch.check_once(req, TARGET_DATE)
+
+    # Should have fallen through to adapter2 and booked.
+    assert result is not None
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.course_id == COURSE_ID_2
+    assert adapter2.book_call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # WatchConfig validation (these were already green — kept as regression guard)
 # ---------------------------------------------------------------------------
 
