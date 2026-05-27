@@ -64,7 +64,7 @@
 ```
 
 **One-line summary.** Two ACA Jobs (one per DST half) fire 10 minutes before
-6:00 AM ET daily in UTC cron. Each job pulls the bot image from ACR using a
+6:00 AM ET on Saturdays and Sundays in UTC cron. Each job pulls the bot image from ACR using a
 user-assigned managed identity, downloads the SQLite state blob from Blob
 Storage (acquiring a 60-second renewable blob lease), runs the booking logic,
 and uploads the updated blob on exit — mirroring the v0 `actions/cache` pattern.
@@ -108,7 +108,7 @@ infra/
       storage.bicep            # Blob Storage account (LRS Hot) + container 'teetime-state'; soft-delete 7d
       keyvault.bicep           # Key Vault Standard; grants Key Vault Secrets User to the job MI; soft-delete 90d
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
-      compute.bicep            # Container Apps Environment (Consumption) + Container Apps Job (two cron entries)
+      compute.bicep            # Container Apps Environment (Consumption) + Container Apps Job (four cron entries: Sat+Sun × 2 DST seasons)
       budget.bicep             # Cost Management budget ($10/mo at 80% alert); subscription-scoped
   ci/
     azure-iac.yml              # GH Actions workflow: bicep build + what-if on PR; deploy on tag push

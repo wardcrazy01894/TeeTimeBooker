@@ -336,10 +336,11 @@ in `book.yml`:
 - **Save step** at the end (`if: always()`) so attempt_log persists on failure.
 - **Forensic upload** still happens via `upload-artifact` for human review.
 
-**Risk: catastrophic cache eviction.** If the cache entry is evicted (rare;
-GH retains for 7 days of inactivity; weekend-only cron runs Sat+Sun so the
-run starts with an empty DB and `get_terminal` returns `None` for an already-
-booked RequestId. Layer 2 (`list_reservations`) catches this: pre-book remote
+**Risk: catastrophic cache eviction.** If the cache entry is evicted (GH
+retains for 7 days of inactivity; the weekend-only cron runs at most 6 days
+apart so eviction is rare but not impossible if a weekend run is skipped), the
+next run starts with an empty DB and `get_terminal` returns `None` for an
+already-booked RequestId. Layer 2 (`list_reservations`) catches this: pre-book remote
 check sees the existing reservation and the orchestrator records `ALREADY_BOOKED`
 without POSTing again. So cache loss = one extra round-trip on the next run,
 NOT a phantom booking. Documented as accepted v0 risk. v1 moves to S3/GCS.

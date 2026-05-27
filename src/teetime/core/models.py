@@ -33,9 +33,9 @@ def derive_request_id(fingerprint: str) -> RequestId:
     course_ids|target_offsets|time_windows|party_fingerprint, joined with
     '|', with values sorted where order is not semantically meaningful.
 
-    EXCLUDES the resolved target dates (which roll forward daily) — including
-    them would make every cron firing produce a fresh RequestId and defeat
-    cross-run idempotency. See PLAN.md §13 and item 5 of the v0 review.
+    EXCLUDES the resolved target dates (which advance each weekend run) —
+    including them would make every cron firing produce a fresh RequestId and
+    defeat cross-run idempotency. See PLAN.md §13 and item 5 of the v0 review.
     """
     return RequestId(uuid5(_REQUEST_ID_NAMESPACE, fingerprint))
 
