@@ -54,7 +54,7 @@ TARGET_DATE = date(2026, 5, 13)
 
 _RAW_SLOT = {
     "teesheet_id": 99001,
-    "time": "08:00:00",
+    "time": "09:30:00",
     "holes": 18,
     "available_spots": 4,
     "green_fee": "45.00",
@@ -85,7 +85,7 @@ def _request(*, dry_run: bool = False) -> BookingRequest:
     return BookingRequest(
         request_id=RequestId(uuid4()),
         target_dates=(TARGET_DATE,),
-        time_windows=(TimeWindow(earliest=time(7, 0), latest=time(9, 30)),),
+        time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
         players=(Player(first_name="A", last_name="L", email="a@x.test"),),
         course_preferences=(CID,),
         dry_run=dry_run,
@@ -192,7 +192,7 @@ async def test_search_filters_by_max_price() -> None:
     req = BookingRequest(
         request_id=RequestId(uuid4()),
         target_dates=(TARGET_DATE,),
-        time_windows=(TimeWindow(earliest=time(7, 0), latest=time(9, 30)),),
+        time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
         players=(Player(first_name="A", last_name="L", email="a@x.test"),),
         course_preferences=(CID,),
         max_price_per_player=Decimal("55.00"),
@@ -408,7 +408,7 @@ def test_parse_slot_maps_fields_correctly() -> None:
     tz = ZoneInfo("America/New_York")
     slot = _parse_slot(_RAW_SLOT, TARGET_DATE, CID, tz)
     assert slot.slot_id == SlotId("99001")
-    assert slot.tee_time == datetime(2026, 5, 13, 8, 0, 0, tzinfo=tz)
+    assert slot.tee_time == datetime(2026, 5, 13, 9, 30, 0, tzinfo=tz)
     assert slot.price_per_player == Decimal("45.00")
     assert slot.holes == 18
     assert not slot.cart_included

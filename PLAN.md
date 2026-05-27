@@ -198,9 +198,10 @@ GH Actions cron is documented as best-effort with potentially **15+ minute** del
 | Local target | EDT (Mar–Nov) | EST (Nov–Mar) |
 |--------------|---------------|---------------|
 | 06:00 ET     | 10:00 UTC     | 11:00 UTC     |
-| Cron we register | `50 9 * * *` (09:50 UTC, 10 min early in EDT) | `50 10 * * *` (10:50 UTC, 10 min early in EST) |
+| Cron (Saturday) | `50 9 * * 6` (09:50 UTC, 10 min early in EDT) | `50 10 * * 6` (10:50 UTC, 10 min early in EST) |
+| Cron (Sunday)   | `50 9 * * 0` (09:50 UTC, 10 min early in EDT) | `50 10 * * 0` (10:50 UTC, 10 min early in EST) |
 
-We register **both** crons every day, year-round. The job's first step ("DST-half check", implemented in `.github/workflows/book.yml`) computes `datetime.now(ZoneInfo("America/New_York"))` and writes `proceed=true|false` based on whether the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET). Subsequent steps gate on `steps.dst.outputs.proceed == 'true'`. This avoids the maintenance burden of seasonal workflow edits AND the "second cron of the day runs anyway" failure mode (review item 1).
+We register **all four** crons (two per day) on Saturdays and Sundays, year-round. The job's first step ("DST-half check", implemented in `.github/workflows/book.yml`) computes `datetime.now(ZoneInfo("America/New_York"))` and writes `proceed=true|false` based on whether the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET). Subsequent steps gate on `steps.dst.outputs.proceed == 'true'`. This avoids the maintenance burden of seasonal workflow edits AND the "second cron of the day runs anyway" failure mode (review item 1).
 
 `workflow_dispatch` always proceeds (the gate is `if: github.event_name == 'schedule'`-equivalent), so manual dry-runs aren't blocked by the gate.
 

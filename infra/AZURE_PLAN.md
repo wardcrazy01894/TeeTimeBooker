@@ -31,7 +31,7 @@
   │             └───────────────┼─►│  (Scheduled trigger)   │  │  │
   │                             │  │  parallelism=1          │  │  │
   │                             │  │  replicaCompletion=1    │  │  │
-  │                             │  │  2 cron entries (DST)   │  │  │
+  │                             │  │  4 cron entries (DST)   │  │  │
   │                             │  └────────┬───────────────-┘  │  │
   │                             │           │ user-assigned MI   │  │
   │                             └───────────┼───────────────────┘  │
