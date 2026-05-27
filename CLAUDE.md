@@ -27,7 +27,7 @@ src/teetime/
   courses/foreup/   # Shared ForeUP HTTP base + per-course IDs
   courses/chronogolf/  # placeholder; not used in v0
 config/             # example.toml; secrets via env-var refs only
-.github/workflows/  # GH Actions cron (2 entries for DST)
+.github/workflows/  # GH Actions cron (4 entries: Sat+Sun × 2 DST seasons)
 tests/              # pytest; vcrpy cassettes go in tests/cassettes/
 ```
 
@@ -77,7 +77,7 @@ in `core/` — never directly. This is the cut line for parallel work.
   See PLAN.md §9.2.
 - **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
   This lets `target_offsets = [7]` produce one stable RequestId across the
-  daily cron while still booking a fresh date each day. See PLAN.md §13.1.
+  weekend cron while still booking a fresh date each week. See PLAN.md §13.1.
 - **Player PII redacted before write** to `attempt_log` (SHA-256 prefix).
   See PLAN.md §10.1. The store is a workflow artifact — assume contents
   are visible to anyone with repo read access.
@@ -90,6 +90,8 @@ in `core/` — never directly. This is the cut line for parallel work.
 - Login uses `api_key=""` (empty); search uses `api_key="no_limits"` — confirmed by browser capture
 - 7-day window opens 06:00 America/New_York exactly; minimum 2 players required
 - **Party size is 4** (configured in `config/example.toml` + `config/local.toml` as 4 `[[request.players]]` entries). The idempotency layer-2 guard (`list_reservations`) matches on `party_size == len(request.players)` exactly — if you change party size between production runs an existing booking with the old party size will NOT block a new attempt. Cancel any conflicting reservation before deploying a party-size change.
+- **Schedule is Saturday + Sunday only.** The cron runs at 6:00 AM ET on weekends; `target_offsets = [7]` books the same weekday 7 days out (Sat→Sat, Sun→Sun). For ad-hoc mid-week bookings use `workflow_dispatch` and adjust `target_offsets` in `config/local.toml` before triggering.
+- **Time window is 09:00–10:30 ET** (single morning window). For mid-week or afternoon bookings, add a second `[[request.time_windows]]` entry in `config/local.toml` for that run only.
 
 ## How we write code in this repo: red-green TDD
 

@@ -1,8 +1,10 @@
 // compute.bicep — Container Apps Environment (Consumption) + Container Apps Job.
 //
-// Two scheduled triggers (identical job, two cron entries) handle DST:
-//   50 9 * * *   = 09:50 UTC = 05:50 EDT  (UTC-4, Mar-Nov) — fires 10 min before T0
-//   50 10 * * *  = 10:50 UTC = 05:50 EST  (UTC-5, Nov-Mar) — fires 10 min before T0
+// Four scheduled triggers (identical job, four cron entries) handle Sat+Sun × DST:
+//   50 9 * * 6   = 09:50 UTC = 05:50 EDT Saturday  (UTC-4, Mar-Nov)
+//   50 10 * * 6  = 10:50 UTC = 05:50 EST Saturday  (UTC-5, Nov-Mar)
+//   50 9 * * 0   = 09:50 UTC = 05:50 EDT Sunday    (UTC-4, Mar-Nov)
+//   50 10 * * 0  = 10:50 UTC = 05:50 EST Sunday    (UTC-5, Nov-Mar)
 //
 // The bot's DST gate (wall-clock ET hour == 5 check) ensures the wrong-half
 // cron exits immediately. This is identical to the book.yml pattern.
@@ -71,10 +73,13 @@ param logAnalyticsWorkspaceKey string
 var acaEnvName = 'cae-teetime-${envName}'
 var jobName = 'teetime-job-${envName}'
 
-// DST cron expressions (UTC). Both fire daily; DST gate in bot selects correct half.
+// DST cron expressions (UTC). Four crons: Sat+Sun × EDT+EST.
+// DST gate in bot selects correct half; wrong-half cron exits immediately.
 // See: infra/AZURE_PLAN.md §5.3
-var cronEdtHalf = '50 9 * * *'   // 09:50 UTC = 05:50 EDT
-var cronEstHalf = '50 10 * * *'  // 10:50 UTC = 05:50 EST
+var cronEdtSat = '50 9 * * 6'    // 09:50 UTC = 05:50 EDT Saturday
+var cronEstSat = '50 10 * * 6'   // 10:50 UTC = 05:50 EST Saturday
+var cronEdtSun = '50 9 * * 0'    // 09:50 UTC = 05:50 EDT Sunday
+var cronEstSun = '50 10 * * 0'   // 10:50 UTC = 05:50 EST Sunday
 
 // Hard-coded parallelism settings. See AZURE_PLAN.md §4.
 var replicaTimeout = 900      // 15 minutes in seconds
@@ -103,20 +108,23 @@ var replicaCompletionCount = 1
 //   reference(logAnalyticsWorkspaceId).customerId
 // The shared key is passed as logAnalyticsWorkspaceKey (secureString).
 
-// TODO(M-azure-T6): implement Container Apps Job resource — EDT half.
-// Two separate job resources, one per cron entry, so each has an independent
-// execution history and can be independently disabled without touching the other.
-// A single job with two scheduleTriggerConfigs is NOT supported by the ACA
-// ARM/Bicep API (scheduleTriggerConfig accepts one cronExpression). Therefore
-// deploy two job resources sharing the same image and config.
+// TODO(M-azure-T6): implement four Container Apps Job resources — one per cron entry.
+// Four separate job resources (Sat EDT, Sat EST, Sun EDT, Sun EST) so each has an
+// independent execution history and can be independently disabled without touching
+// the others. A single job with multiple scheduleTriggerConfigs is NOT supported by
+// the ACA ARM/Bicep API (scheduleTriggerConfig accepts one cronExpression). Therefore
+// deploy four job resources sharing the same image and config.
+//
+// Resource names: '${jobName}-edt-sat', '${jobName}-est-sat',
+//                 '${jobName}-edt-sun', '${jobName}-est-sun'
+// Cron variables: cronEdtSat, cronEstSat, cronEdtSun, cronEstSun (declared above)
 //
 // Resource type: Microsoft.App/jobs
-// Name: '${jobName}-edt'
-// Key properties:
+// Key properties (identical across all four jobs except cronExpression and name):
 //   identity.type: 'UserAssigned'
 //   identity.userAssignedIdentities: { '${userAssignedIdentityResourceId}': {} }
 //   configuration.triggerType: 'Schedule'
-//   configuration.scheduleTriggerConfig.cronExpression: cronEdtHalf
+//   configuration.scheduleTriggerConfig.cronExpression: <see cron variables above>
 //   configuration.scheduleTriggerConfig.parallelism: parallelism
 //   configuration.scheduleTriggerConfig.replicaCompletionCount: replicaCompletionCount
 //   configuration.replicaRetryLimit: replicaRetryLimit
@@ -159,20 +167,12 @@ var replicaCompletionCount = 1
 // Reference: https://learn.microsoft.com/en-us/azure/templates/microsoft.app/jobs
 // See: AZURE_PLAN.md §5.3 (DST), §7.3 (Key Vault injection)
 
-// TODO(M-azure-T6): implement Container Apps Job resource — EST half.
-// Name: '${jobName}-est'
-// Identical to the EDT job except:
-//   configuration.scheduleTriggerConfig.cronExpression: cronEstHalf
-// All other properties identical (same userAssignedIdentityResourceId,
-// same secrets block, same env block).
-// See: AZURE_PLAN.md §5.3
-
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
-@description('Container Apps Job name (EDT half). For az containerapp job start manual trigger.')
-output jobName string = '${jobName}-edt'
+@description('Container Apps Job base name. Four jobs are created: -edt-sat, -est-sat, -edt-sun, -est-sun. For az containerapp job start, target one by appending the suffix.')
+output jobName string = 'TODO(M-azure-T6): jobEdtSat.name'
 
 @description('Container Apps Environment resource ID.')
 output acaEnvironmentId string = 'TODO(M-azure-T6): acaEnv.id'

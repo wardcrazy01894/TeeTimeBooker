@@ -11,7 +11,7 @@ This plan is structured for parallel execution. Milestones are sequential; tasks
 ```
                      +-----------------------------+
                      |   GitHub Actions cron       |
-                     |   (UTC; 2 entries for DST)  |
+                     | (UTC; 4 entries: Sat+Sun×DST)|
                      +--------------+--------------+
                                     |  workflow_dispatch / cron fires ~10 min early
                                     v
@@ -198,9 +198,10 @@ GH Actions cron is documented as best-effort with potentially **15+ minute** del
 | Local target | EDT (Mar–Nov) | EST (Nov–Mar) |
 |--------------|---------------|---------------|
 | 06:00 ET     | 10:00 UTC     | 11:00 UTC     |
-| Cron we register | `50 9 * * *` (09:50 UTC, 10 min early in EDT) | `50 10 * * *` (10:50 UTC, 10 min early in EST) |
+| Cron (Saturday) | `50 9 * * 6` (09:50 UTC, 10 min early in EDT) | `50 10 * * 6` (10:50 UTC, 10 min early in EST) |
+| Cron (Sunday)   | `50 9 * * 0` (09:50 UTC, 10 min early in EDT) | `50 10 * * 0` (10:50 UTC, 10 min early in EST) |
 
-We register **both** crons every day, year-round. The job's first step ("DST-half check", implemented in `.github/workflows/book.yml`) computes `datetime.now(ZoneInfo("America/New_York"))` and writes `proceed=true|false` based on whether the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET). Subsequent steps gate on `steps.dst.outputs.proceed == 'true'`. This avoids the maintenance burden of seasonal workflow edits AND the "second cron of the day runs anyway" failure mode (review item 1).
+We register **all four** crons (two per day) on Saturdays and Sundays, year-round. The job's first step ("DST-half check", implemented in `.github/workflows/book.yml`) computes `datetime.now(ZoneInfo("America/New_York"))` and writes `proceed=true|false` based on whether the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET). Subsequent steps gate on `steps.dst.outputs.proceed == 'true'`. This avoids the maintenance burden of seasonal workflow edits AND the "second cron of the day runs anyway" failure mode (review item 1).
 
 `workflow_dispatch` always proceeds (the gate is `if: github.event_name == 'schedule'`-equivalent), so manual dry-runs aren't blocked by the gate.
 
@@ -336,10 +337,11 @@ in `book.yml`:
 - **Save step** at the end (`if: always()`) so attempt_log persists on failure.
 - **Forensic upload** still happens via `upload-artifact` for human review.
 
-**Risk: catastrophic cache eviction.** If the cache entry is evicted (rare;
-GH retains for 7 days of inactivity, which our daily cron resets), the next
-run starts with an empty DB and `get_terminal` returns `None` for an already-
-booked RequestId. Layer 2 (`list_reservations`) catches this: pre-book remote
+**Risk: catastrophic cache eviction.** If the cache entry is evicted (GH
+retains for 7 days of inactivity; the weekend-only cron runs at most 6 days
+apart so eviction is rare but not impossible if a weekend run is skipped), the
+next run starts with an empty DB and `get_terminal` returns `None` for an
+already-booked RequestId. Layer 2 (`list_reservations`) catches this: pre-book remote
 check sees the existing reservation and the orchestrator records `ALREADY_BOOKED`
 without POSTing again. So cache loss = one extra round-trip on the next run,
 NOT a phantom booking. Documented as accepted v0 risk. v1 moves to S3/GCS.
@@ -449,12 +451,12 @@ Across runs (multiple days):
   doesn't break idempotency).
 
 **Resolved dates are excluded from the fingerprint.** The reason: `target_offsets = [7]`
-firing daily produces a different resolved date every day, but it is the SAME
-user goal. The actual idempotency key in `booking_history` is
+firing on Saturday books the Saturday 7 days out; the resolved date changes each
+week but the goal is the same. The actual idempotency key in `booking_history` is
 `(RequestId, resolved_date)` — composite primary key. This:
 
-- Lets the daily cron book day N+7 today and day N+8 tomorrow without conflict.
-- Keeps the user's "I always want a Saturday at 8 AM 7 days out" rule a single
+- Lets the weekend cron book day N+7 this weekend and day N+14 next weekend without conflict.
+- Keeps the user's "I always want a Saturday at 9:00-10:30 AM 7 days out" rule a single
   RequestId for analytics and §9 layer-5 advisory locking.
 - BOOKED on resolved_date X does NOT block resolved_date Y for the same
   RequestId. (See review failure mode "Two target_dates with overlapping
@@ -480,7 +482,7 @@ user goal. The actual idempotency key in `booking_history` is
 **v0:**
 1. Set GH Actions repo secrets: `MB_USERNAME`, `MB_PASSWORD`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, plus per-player `PLAYER1_EMAIL`, `PLAYER1_PHONE` etc. as referenced by `config/local.toml`.
 2. Commit `config/local.toml` to a private fork OR pass via `workflow_dispatch` input file.
-3. Cron fires daily; the workflow's `dst` step gates downstream steps on ET wall-clock hour == 5 (see book.yml). Wrong cron half exits early as success.
+3. Cron fires on Saturday and Sunday at 6:00 AM ET; the workflow's `dst` step gates downstream steps on ET wall-clock hour == 5 (see book.yml). Wrong DST-half cron exits early as success.
 4. After each run, check email. State is restored/saved via `actions/cache` (key `teetime-state-v1`). The SQLite file is also uploaded as a workflow artifact for forensic review (downloadable for 90 days; PII redacted per §10.1).
 5. On `CAPTCHA_BLOCKED` or repeated `AUTH_FAILED`: `gh workflow disable book-tee-time`. Investigate manually. Re-enable with `gh workflow enable book-tee-time`. NO auto-re-enable — a human MUST confirm the cause is resolved.
 6. If the `actions/cache` entry is evicted (rare): the next run treats history as empty, but §9 layer 2 (`list_reservations`) catches any phantom booking before re-POSTing. One extra round-trip; no double-book risk.

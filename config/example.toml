@@ -20,7 +20,7 @@ extra = { booking_class_id = "2149" }
 # Target dates are computed at run time from offsets (days from today, in the
 # scheduler timezone). [7] = "always book 7 days out". The RequestId is derived
 # from offsets (NOT resolved dates), so the same idempotency identity persists
-# across daily cron firings; the (RequestId, resolved_date) pair is the actual
+# across weekend cron firings; the (RequestId, resolved_date) pair is the actual
 # idempotency key. See PLAN.md §13.
 target_offsets     = [7]
 holes              = 18
@@ -53,14 +53,11 @@ first_name    = "Guest"
 last_name     = "Player"
 email_env     = "PLAYER4_EMAIL"
 
-# Multiple windows OR together: any matching window is acceptable.
+# Morning window targets the best slots at Mangrove Bay.
+# For ad-hoc mid-week bookings, adjust this window or add a second entry.
 [[request.time_windows]]
-earliest = 07:00:00
-latest   = 09:30:00
-
-[[request.time_windows]]
-earliest = 16:00:00
-latest   = 18:00:00
+earliest = 09:00:00
+latest   = 10:30:00
 
 [scheduler]
 timezone         = "America/New_York"   # Mangrove Bay is in ET
