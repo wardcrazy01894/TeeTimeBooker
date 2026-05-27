@@ -96,6 +96,28 @@ class CourseAdapter(Protocol):
         """
         ...
 
+    async def prepare_book(
+        self,
+        slot: TeeTimeSlot,
+        request: BookingRequest,
+    ) -> None:
+        """Pre-fetch expensive prerequisites for book() (e.g., CAPTCHA token).
+
+        Called by UpgradeOrchestrator BEFORE cancel_reservation() so that the
+        cancel-to-book window is ~1-2 seconds (HTTP round-trips) rather than
+        ~60 seconds (CAPTCHA solve time). After this returns, book(slot, request)
+        should be able to complete without any slow blocking steps.
+
+        Adapters that need no pre-fetching (e.g., FakeAdapter, Chronogolf) should
+        implement this as a no-op. ForeUpAdapter overrides it to solve the CAPTCHA
+        and cache the resulting token for use in book().
+
+        Raises any exception to signal that the prerequisite fetch failed; the
+        UpgradeOrchestrator will abort the upgrade and leave the original booking
+        untouched.
+        """
+        ...
+
     async def book(
         self,
         slot: TeeTimeSlot,
