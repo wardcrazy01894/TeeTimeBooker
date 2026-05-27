@@ -120,6 +120,12 @@ class ForeUpAdapter(CourseAdapter):
         # on cancel_reservation() requests. None if login hasn't been called or the
         # response didn't contain a recognisable token field.
         self._auth_token: str | None = None
+        # Reservations cached from the login response body. ForeUP embeds the full
+        # reservation list in the POST /login response under "reservations". The
+        # separate GET /reservations endpoint returns the user profile with
+        # "reservations": false (a lazy-load flag, not actual data). authenticate()
+        # populates this; list_reservations() reads from it.
+        self._reservations_from_login: list[Any] = []
 
     def _make_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -195,18 +201,26 @@ class ForeUpAdapter(CourseAdapter):
             pass
         self._logged_in = True
         # Extract JWT for use in cancel_reservation() requests.
-        # ForeUP returns the session token in the login response body. Try
-        # several common field paths seen across ForeUP API versions.
+        # ForeUP returns the session token in the login response body. The
+        # current API uses "jwt"; older / community-documented versions used
+        # "token" or "access_token". Try all known variants.
         if isinstance(data, dict):
             inner: dict[str, object] = data.get("data") or {}
             raw_tok: object = (
-                data.get("token")
+                data.get("jwt")  # actual ForeUP field name (confirmed live)
+                or data.get("token")
                 or data.get("access_token")
                 or inner.get("token")
                 or inner.get("access_token")
             )
             if isinstance(raw_tok, str) and raw_tok:
                 self._auth_token = raw_tok
+            # Cache the reservation list from the login response. ForeUP embeds
+            # upcoming reservations directly in the login response body — the
+            # separate GET /reservations endpoint returns a user profile, not data.
+            raw_res: object = data.get("reservations")
+            if isinstance(raw_res, list):
+                self._reservations_from_login = raw_res
         _log.info("ForeUP: login successful")
 
     async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
@@ -357,19 +371,17 @@ class ForeUpAdapter(CourseAdapter):
         )
 
     async def list_reservations(self) -> list[ExistingReservation]:
-        """GET /reservations and return all existing bookings for the authenticated user."""
-        client = self._c()
-        await asyncio.sleep(_MIN_BETWEEN_S)
-        _log.info("ForeUP: fetching existing reservations...")
-        r = await client.get(RESERVATION_PATH)
-        r.raise_for_status()
-        raw: Any = r.json() if r.text else []
-        items: list[Any] = (
-            raw if isinstance(raw, list) else raw.get("data", []) if isinstance(raw, dict) else []
-        )
+        """Return reservations cached from the authenticate() login response.
+
+        ForeUP embeds the user's upcoming reservation list directly in the login
+        POST response body (under "reservations"). The separate GET endpoint
+        (/api/booking/users/reservations) returns a ~6 MB user-profile object
+        with "reservations": false — it is NOT a reservation list. authenticate()
+        must be called before this method.
+        """
         tz = ZoneInfo(self._timezone)
         out: list[ExistingReservation] = []
-        for item in items:
+        for item in self._reservations_from_login:
             try:
                 out.append(_parse_reservation(item, self.course_id, tz))
             except (KeyError, ValueError, TypeError):
@@ -487,10 +499,21 @@ def _parse_slot(
 def _parse_reservation(
     item: dict[str, Any], course_id: CourseId, tz: ZoneInfo
 ) -> ExistingReservation:
-    """Map one ForeUP reservation item to an ExistingReservation."""
-    raw_t = str(item.get("tee_time") or item.get("teetime") or item.get("time") or "")
+    """Map one ForeUP reservation item to an ExistingReservation.
+
+    Handles two shapes:
+    - Login-response shape (current API): TTID/teetime_id, start_datetime, player_count
+    - Legacy GET-endpoint shape: id/booking_id, tee_time/teetime/time, players
+    """
+    raw_t = str(
+        item.get("tee_time")
+        or item.get("teetime")
+        or item.get("start_datetime")  # login-response field
+        or item.get("time")
+        or ""
+    )
     tee_time: datetime | None = None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M", "%Y-%m-%dT%H:%M:%S"):
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%m/%d/%Y %H:%M", "%Y-%m-%dT%H:%M:%S"):
         try:
             tee_time = datetime.strptime(raw_t, fmt).replace(tzinfo=tz)
             break
@@ -498,11 +521,18 @@ def _parse_reservation(
             continue
     if tee_time is None:
         raise ValueError(f"Cannot parse tee_time: {raw_t!r}")
-    conf = str(item.get("id") or item.get("booking_id") or item.get("confirmation_code") or "")
+    conf = str(
+        item.get("id")
+        or item.get("booking_id")
+        or item.get("confirmation_code")
+        or item.get("TTID")  # login-response field
+        or item.get("teetime_id")  # login-response field
+        or ""
+    )
     return ExistingReservation(
         course_id=course_id,
         confirmation_code=conf,
         tee_time=tee_time,
-        party_size=int(item.get("players") or 1),
+        party_size=int(item.get("players") or item.get("player_count") or 1),
         raw=dict(item),
     )
