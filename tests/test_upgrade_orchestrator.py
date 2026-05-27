@@ -333,70 +333,143 @@ async def test_upgrade_does_not_upgrade_to_equal_priority() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Book-before-cancel atomicity
+# prepare_book() pre-fetch — minimise cancel-to-book window
+#
+# prepare_book() is called BEFORE cancel_reservation() so that expensive
+# prerequisites (CAPTCHA tokens, ~60 s) are ready before the cancel happens.
+# This shrinks the no-booking window from ~60 s to ~1-2 s (HTTP round-trips).
 # ---------------------------------------------------------------------------
 
 
-async def test_upgrade_books_before_cancelling() -> None:
-    """Verify call order: adapter.book() is called BEFORE adapter.cancel_reservation().
-    Verified by checking call counts at the point where cancel would be reached."""
+async def test_upgrade_calls_prepare_book_before_cancel() -> None:
+    """prepare_book() is invoked on the new-slot adapter exactly once, before
+    cancel_reservation() fires, so CAPTCHA is pre-fetched before the old
+    booking is released."""
     orc, fa, fb, st, _nt = _make_orchestrator()
     request = _make_request()
-    current = _managed_booking(request=request)
+    current = _managed_booking(request=request, course_id=COURSE_A)
+    await st.initialize()
     await st.record_terminal(current, TARGET_DATE)
 
-    better_slot = _make_slot(
+    better = _make_slot(
         course_id=COURSE_B,
-        tee_time=datetime(2026, 6, 7, 9, 15, tzinfo=ET),
+        tee_time=datetime(TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, 9, 15, tzinfo=ET),
         slot_id="better-1",
     )
-    fb.set_search_response([better_slot])
+    fb.set_search_response([better])
 
-    await orc.maybe_upgrade(request, TARGET_DATE, current)
+    result = await orc.maybe_upgrade(request, TARGET_DATE, current)
 
-    # Both were called; book happened first (implicit from the protocol)
-    assert fb.book_call_count == 1
-    assert fa.cancel_call_count == 1
+    assert result is not None
+    # prepare_book called exactly once on the new-slot adapter (COURSE_B / fb)
+    assert fb.prepare_book_call_count == 1
+    # NOT called on the old adapter (COURSE_A / fa)
+    assert fa.prepare_book_call_count == 0
 
 
-async def test_upgrade_retains_original_if_rebook_fails() -> None:
-    """If book() raises (slot gone, network error, etc.), the original booking is
-    preserved: cancel_reservation is NOT called, store is unchanged."""
-
+async def test_upgrade_aborts_if_prepare_book_raises() -> None:
+    """If prepare_book() raises, the upgrade is aborted and the original booking
+    is preserved — cancel_reservation() is never called."""
     orc, fa, fb, st, _nt = _make_orchestrator()
     request = _make_request()
-    current = _managed_booking(request=request)
+    current = _managed_booking(request=request, course_id=COURSE_A)
+    await st.initialize()
     await st.record_terminal(current, TARGET_DATE)
 
-    better_slot = _make_slot(
+    better = _make_slot(
         course_id=COURSE_B,
-        tee_time=datetime(2026, 6, 7, 9, 15, tzinfo=ET),
+        tee_time=datetime(TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, 9, 15, tzinfo=ET),
         slot_id="better-1",
     )
-    fb.set_search_response([better_slot])
-    fb.set_book_to_raise(SlotGoneError("slot gone"))  # book() fails
+    fb.set_search_response([better])
+    fb.set_prepare_book_to_raise(RuntimeError("captcha service unavailable"))
 
     result = await orc.maybe_upgrade(request, TARGET_DATE, current)
 
     assert result is None
-    assert fa.cancel_call_count == 0  # cancel was never called
+    assert fa.cancel_call_count == 0  # cancel NOT attempted after prepare_book failure
+    assert fb.book_call_count == 0  # book NOT attempted either
 
-    # Original booking still in store
+    # Original store record unchanged
     stored = await st.get_terminal(request.request_id, TARGET_DATE)
     assert stored is not None
     assert stored.confirmation_code == current.confirmation_code
 
 
 # ---------------------------------------------------------------------------
-# Cancel-after-rebook failure
+# Cancel-before-book protocol
+#
+# ForeUP enforces a one-active-booking-per-user-per-day limit. Attempting to
+# book a second slot while the first is still active returns HTTP 400. The
+# upgrade orchestrator therefore cancels the old booking FIRST, then books the
+# new slot. The risk: a narrow ~1-2 second window where the user has no booking.
 # ---------------------------------------------------------------------------
 
 
-async def test_upgrade_persists_new_booking_if_cancel_fails() -> None:
-    """If book() succeeds but cancel_reservation() raises CancelError, the new
-    booking MUST still be persisted (we have a real confirmation code). The
-    notifier is called with a dual-booking warning so the user can manually
-    cancel the old booking."""
+async def test_upgrade_cancels_then_books() -> None:
+    """Verify cancel-before-book protocol: cancel_reservation() is called and
+    succeeds; book() is then called and succeeds. Both adapters register the
+    expected call counts."""
+    orc, fa, fb, st, _nt = _make_orchestrator()
+    request = _make_request()
+    current = _managed_booking(request=request)
+    await st.record_terminal(current, TARGET_DATE)
+
+    better_slot = _make_slot(
+        course_id=COURSE_B,
+        tee_time=datetime(2026, 6, 7, 9, 15, tzinfo=ET),
+        slot_id="better-1",
+    )
+    fb.set_search_response([better_slot])
+
+    await orc.maybe_upgrade(request, TARGET_DATE, current)
+
+    # Cancel happened (before book in the cancel-before-book protocol).
+    assert fa.cancel_call_count == 1
+    # Book happened after cancel.
+    assert fb.book_call_count == 1
+
+
+async def test_upgrade_returns_none_if_book_fails_after_cancel() -> None:
+    """If cancel succeeds but book() raises, maybe_upgrade() returns None.
+    The store record for the old booking is unchanged (delete_terminal is only
+    called after book succeeds). The user temporarily has no live booking; a
+    subsequent watch invocation may recover."""
+    orc, fa, fb, st, _nt = _make_orchestrator()
+    request = _make_request()
+    current = _managed_booking(request=request)
+    await st.record_terminal(current, TARGET_DATE)
+
+    better_slot = _make_slot(
+        course_id=COURSE_B,
+        tee_time=datetime(2026, 6, 7, 9, 15, tzinfo=ET),
+        slot_id="better-1",
+    )
+    fb.set_search_response([better_slot])
+    fb.set_book_to_raise(SlotGoneError("slot gone"))  # book() fails after cancel
+
+    result = await orc.maybe_upgrade(request, TARGET_DATE, current)
+
+    assert result is None
+    assert fa.cancel_call_count == 1  # cancel WAS called (cancel-before-book)
+    assert fb.book_call_count == 1  # book was attempted but failed
+
+    # Store record still present (delete_terminal not called because book failed)
+    stored = await st.get_terminal(request.request_id, TARGET_DATE)
+    assert stored is not None
+    assert stored.confirmation_code == current.confirmation_code
+
+
+# ---------------------------------------------------------------------------
+# Cancel failure — original booking preserved
+# ---------------------------------------------------------------------------
+
+
+async def test_upgrade_aborts_if_cancel_fails() -> None:
+    """If cancel_reservation() raises CancelError, maybe_upgrade() returns None
+    and book() is never attempted — the original booking is fully preserved.
+    An upgrade attempt where cancel fails is safer to abort than to book a second
+    slot (which would violate ForeUP's one-booking limit)."""
     orc, fa, fb, st, nt = _make_orchestrator()
     request = _make_request()
     current = _managed_booking(request=request)
@@ -412,43 +485,17 @@ async def test_upgrade_persists_new_booking_if_cancel_fails() -> None:
 
     result = await orc.maybe_upgrade(request, TARGET_DATE, current)
 
-    # New booking is returned
-    assert result is not None
-    assert result.outcome == BookingOutcome.BOOKED
-    assert result.course_id == COURSE_B
+    # Upgrade aborted — no new booking
+    assert result is None
+    assert fb.book_call_count == 0  # book was NOT attempted after cancel failure
 
-    # New booking is persisted in the store
+    # Store unchanged — original booking preserved
     stored = await st.get_terminal(request.request_id, TARGET_DATE)
     assert stored is not None
-    assert stored.course_id == COURSE_B
+    assert stored.confirmation_code == current.confirmation_code
 
-    # Notifier was called (with dual-booking warning)
-    assert len(nt.calls) == 1
-
-
-async def test_upgrade_sends_dual_booking_warning_on_cancel_failure() -> None:
-    """Dual-booking scenario: notifier receives a result with a diagnostic
-    field indicating the old booking must be manually cancelled."""
-    orc, fa, fb, st, nt = _make_orchestrator()
-    request = _make_request()
-    current = _managed_booking(request=request)
-    await st.record_terminal(current, TARGET_DATE)
-
-    better_slot = _make_slot(
-        course_id=COURSE_B,
-        tee_time=datetime(2026, 6, 7, 9, 15, tzinfo=ET),
-        slot_id="better-1",
-    )
-    fb.set_search_response([better_slot])
-    fa.set_cancel_to_raise(CancelError("server refused cancel"))
-
-    await orc.maybe_upgrade(request, TARGET_DATE, current)
-
-    assert len(nt.calls) == 1
-    notified = nt.calls[0]
-    # The diagnostic must flag the dual-booking situation
-    assert notified.diagnostics.get("dual_booking_warning") is True
-    assert "old_confirmation_code" in notified.diagnostics
+    # No notification — no action was taken
+    assert len(nt.calls) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +504,7 @@ async def test_upgrade_sends_dual_booking_warning_on_cancel_failure() -> None:
 
 
 async def test_upgrade_deletes_then_reinserts_terminal_under_lock() -> None:
-    """The sequence must be: acquire lock → book new → delete_terminal →
+    """The sequence must be: acquire lock → cancel old → book new → delete_terminal →
     record_terminal (new). Verified by checking InMemoryStore state transitions."""
     orc, _fa, fb, st, _nt = _make_orchestrator()
     request = _make_request()
@@ -481,9 +528,10 @@ async def test_upgrade_deletes_then_reinserts_terminal_under_lock() -> None:
     assert MANAGED_BOOKING_TAG in stored.confirmation_code
 
 
-async def test_upgrade_does_not_delete_terminal_if_rebook_fails() -> None:
-    """If book() fails, delete_terminal must NOT have been called —
-    the old BOOKED terminal must still be in the store."""
+async def test_upgrade_does_not_delete_terminal_if_book_fails() -> None:
+    """If book() fails (after cancel), delete_terminal must NOT have been called —
+    the old BOOKED terminal must still be in the store (even though the live
+    reservation was cancelled; the store record is stale but preserved)."""
 
     orc, _fa, fb, st, _nt = _make_orchestrator()
     request = _make_request()
@@ -500,7 +548,7 @@ async def test_upgrade_does_not_delete_terminal_if_rebook_fails() -> None:
 
     await orc.maybe_upgrade(request, TARGET_DATE, current)
 
-    # Original terminal still present
+    # Original terminal still present (delete_terminal not called since book failed)
     stored = await st.get_terminal(request.request_id, TARGET_DATE)
     assert stored is not None
     assert stored.course_id == COURSE_A

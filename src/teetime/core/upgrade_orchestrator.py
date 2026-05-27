@@ -7,25 +7,25 @@ will:
 
     1. Verify the current managed booking still exists (list_reservations).
     2. Verify the higher-priority slot is actually bookable (search).
-    3. Attempt to book the new slot (without cancelling the old one yet).
-    4. Only if book() succeeds: cancel the old booking.
+    3. Cancel the old booking.
+    4. Only if cancel() succeeds: book the new slot.
     5. Update the persistent state to reflect the new booking.
 
-The critical design decision is step 3-before-4 (book-before-cancel). This
-avoids the failure mode where we cancel a good booking and then fail to rebook,
-leaving the user with nothing.
+The critical design decision is cancel-before-book (step 3-before-4). ForeUP
+enforces a one-active-booking-per-user-per-day limit: a book POST while an
+existing reservation is active returns HTTP 400. Therefore we MUST cancel first.
 
-WARNING: This approach risks a brief moment where the user holds TWO bookings
-simultaneously (between step 3 succeeding and step 4 completing). We accept
-this narrow window because:
-  a) The window is milliseconds to seconds (a single HTTP round-trip).
-  b) The alternative (cancel-before-rebook) risks leaving the user with ZERO
-     bookings, which is far worse.
-  c) Mangrove Bay's cancellation window is at least 24 hours before the round,
-     so the brief dual-booking does not trigger any violation of the booking rules.
-  d) The ForeUP backend may itself enforce a max-bookings-per-user limit. If so,
-     step 3 (book new slot) will fail before step 4 (cancel old), and the user
-     retains their original booking. This is the correct safe-failure mode.
+WARNING: This approach risks a narrow window (~1-2 HTTP round-trips, typically
+1-2 seconds) between step 3 completing and step 4 completing, during which the
+user has NO booking. We accept this window because:
+  a) The window is ~1-2 seconds (two sequential HTTP round-trips).
+  b) For low-demand tee-times (weekday afternoons, municipal courses), the
+     probability of another user claiming the slot in that window is negligible.
+  c) If book() fails after cancel, the watch job logs a warning. A subsequent
+     watch invocation can book any newly available slot, including the priority-0
+     one we just failed to grab.
+  d) The original design (book-before-cancel) is unworkable: ForeUP's server
+     rejects the second book POST with HTTP 400 before we can cancel.
 
 See PLAN.md M-feature-2 for the full design and state machine.
 
@@ -106,6 +106,7 @@ from .models import (
     CourseCredentials,
     CourseId,
     PrioritySlot,
+    TeeTimeSlot,
     TimeWindow,
 )
 from .slot_utils import rank_slots_for_request
@@ -177,12 +178,21 @@ class UpgradeOrchestrator:
             4. Acquire request_lock.
             5. For each higher-priority slot (ascending by priority index):
                a. Search adapter for available slots in that window.
-               b. If slots found: book the best one (earliest tee_time).
-               c. If book() succeeds: cancel old booking, update store, notify.
-               d. If book() fails: continue to next candidate.
-               e. If cancel() fails after book(): persist new booking anyway,
-                  notify with dual-booking warning.
+               b. If slots found: call adapter.prepare_book() to pre-fetch any
+                  expensive prerequisites (e.g. CAPTCHA token). If prepare_book()
+                  raises, abort this candidate (original booking preserved).
+               c. Cancel old booking (cancel-before-book protocol).
+               d. If cancel() fails: log warning, continue to next candidate
+                  (original booking preserved).
+               e. If cancel() succeeds: book the new slot (earliest tee_time).
+               f. If book() fails after cancel: log critical warning (user may
+                  have no booking), continue to next candidate.
+               g. If book() succeeds: update store, notify, return result.
             6. Return the new BookingResult, or None if no upgrade was possible.
+
+        Note on prepare_book() ordering: the CAPTCHA solve (~15-60 s) happens in
+        prepare_book(), BEFORE cancel_reservation(). This shrinks the no-booking
+        window from ~60 s to ~1-2 s (two HTTP round-trips). See PLAN.md M-feature-2.
         """
         # Step 1: Managed-booking guard (pre-lock, no mutation).
         if not (
@@ -231,8 +241,16 @@ class UpgradeOrchestrator:
     ) -> BookingResult | None:
         """Attempt one upgrade to `priority_slot`. Called while holding request_lock.
 
-        Returns the persisted BookingResult on success (with or without cancel failure),
-        or None if this slot could not be booked (caller should try the next one).
+        Uses cancel-before-book protocol: ForeUP enforces a one-active-booking-per-
+        user-per-day limit and rejects a second book POST (HTTP 400). Therefore we
+        cancel the old booking first, then book the new one.
+
+        Risk: a narrow window (~1-2 HTTP round-trips) where the user has NO booking.
+        If book() fails after cancel, the user temporarily has no live reservation;
+        a subsequent watch invocation may recover by booking any available slot.
+
+        Returns the persisted BookingResult on success, or None on any failure
+        (caller should try the next candidate).
         """
         adapter = self._adapters.get(priority_slot.course_id)
         if adapter is None:
@@ -262,25 +280,80 @@ class UpgradeOrchestrator:
         if not candidates:
             return None
 
-        best = candidates[0]
+        return await self._cancel_and_book_slot(
+            adapter, candidates[0], request, target_date, current_booking, priority_slot
+        )
+
+    async def _cancel_and_book_slot(
+        self,
+        adapter: CourseAdapter,
+        best: TeeTimeSlot,
+        request: BookingRequest,
+        target_date: date,
+        current_booking: BookingResult,
+        priority_slot: PrioritySlot,
+    ) -> BookingResult | None:
+        """Cancel the old booking, then book the new slot (cancel-before-book protocol).
+
+        Called while holding request_lock.
+
+        Returns the persisted BookingResult on success, or None on any failure.
+        If cancel fails: original booking preserved, book never attempted.
+        If book fails after cancel: logs critical warning, returns None (user
+        temporarily has no live booking; next watch invocation may recover).
+        """
+        # Pre-fetch expensive prerequisites (e.g. CAPTCHA token) BEFORE cancel.
+        # This shrinks the no-booking window from ~60 s (CAPTCHA solve) to ~1-2 s
+        # (two HTTP round-trips). If prepare_book() raises we abort early — the
+        # original booking is never touched.
+        try:
+            await adapter.prepare_book(best, request)
+        except Exception as exc:
+            log.warning(
+                "upgrade: prepare_book() failed for %s — aborting upgrade, original "
+                "booking %s preserved. Error: %s",
+                priority_slot.course_id,
+                current_booking.confirmation_code,
+                exc,
+            )
+            return None
+
+        # Cancel-before-book: cancel the old booking first. If cancel fails, abort
+        # rather than attempting a book that ForeUP would reject with HTTP 400.
+        cancel_failed = await self._cancel_old_booking(current_booking)
+        if cancel_failed:
+            log.warning(
+                "upgrade: cancel failed — aborting upgrade to preserve original booking %s",
+                current_booking.confirmation_code,
+            )
+            return None
+
+        # Old booking is cancelled. Now book the new slot.
         try:
             new_result = await adapter.book(best, request)
         except Exception as exc:
             log.warning(
-                "upgrade: book() failed for slot %s on %s: %s",
-                best.slot_id,
-                priority_slot.course_id,
+                "upgrade: book() failed after cancel of %s — user has no active booking "
+                "for %s. Next watch invocation may recover. Error: %s",
+                current_booking.confirmation_code,
+                target_date,
                 exc,
             )
             return None
 
         if new_result.outcome != BookingOutcome.BOOKED:
+            log.warning(
+                "upgrade: book() returned %s after cancel of %s — user may have no "
+                "active booking for %s.",
+                new_result.outcome,
+                current_booking.confirmation_code,
+                target_date,
+            )
             return None
 
-        # Book succeeded — now cancel the old booking (book-before-cancel protocol).
-        cancel_failed = await self._cancel_old_booking(current_booking)
+        # Cancel succeeded and book succeeded → persist and notify.
         return await self._persist_upgrade(
-            request, target_date, current_booking, new_result, priority_slot, cancel_failed
+            request, target_date, current_booking, new_result, priority_slot, cancel_failed=False
         )
 
     async def _cancel_old_booking(self, current_booking: BookingResult) -> bool:

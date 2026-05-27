@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -92,15 +93,19 @@ from .adapter import (
     SlotGoneError,
 )
 from .models import (
+    MANAGED_BOOKING_TAG,
     BookingOutcome,
     BookingRequest,
     BookingResult,
     CourseCredentials,
     CourseId,
+    ExistingReservation,
+    SlotId,
     TeeTimeSlot,
     WatchConfig,
 )
 from .slot_utils import rank_slots_for_request
+from .upgrade_orchestrator import UpgradeOrchestrator
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -109,7 +114,7 @@ if TYPE_CHECKING:
     from ..persistence.store import BookingStore
     from .adapter import CourseAdapter
     from .clock import Clock
-    from .config import SchedulerConfig
+    from .config import OneBookingPolicyConfig, SchedulerConfig
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +157,7 @@ class WatchOrchestrator:
         scheduler: SchedulerConfig,
         watch_config: WatchConfig,
         creds: Mapping[CourseId, CourseCredentials] | None = None,
+        policy: OneBookingPolicyConfig | None = None,
     ) -> None:
         self._adapters = adapters
         self._store = store
@@ -160,6 +166,7 @@ class WatchOrchestrator:
         self._scheduler = scheduler
         self._watch_config = watch_config
         self._creds = creds or {}
+        self._policy = policy
 
     async def check_once(
         self,
@@ -197,6 +204,12 @@ class WatchOrchestrator:
         # Gate 3: idempotency — already BOOKED in the store (main job or prior watch run).
         prior = await self._store.get_terminal(request.request_id, target_date)
         if prior is not None and prior.outcome == BookingOutcome.BOOKED:
+            if self._policy is not None and self._policy.enabled:
+                # Policy is active — check whether a higher-priority slot opened up.
+                # NOTE: caller must NOT hold request_lock here; _try_upgrade acquires it.
+                upgraded = await self._try_upgrade(request, target_date, prior)
+                if upgraded is not None:
+                    return upgraded
             log.debug(
                 "watch: store already has BOOKED terminal for (%s, %s), skipping",
                 request.request_id,
@@ -267,11 +280,21 @@ class WatchOrchestrator:
 
         # Layer 2: pre-book remote reservation check (§9).
         existing = await adapter.list_reservations()
-        already = any(
-            r.tee_time.date() == target_date and r.party_size == len(request.players)
+        matching = [
+            r
             for r in existing
-        )
-        if already:
+            if r.tee_time.date() == target_date and r.party_size == len(request.players)
+        ]
+        if matching:
+            if self._policy is not None and self._policy.enabled:
+                # No store record at this point (Gate 3 would have caught a BOOKED
+                # terminal before we reach _check_course). Synthesize a managed
+                # BookingResult so UpgradeOrchestrator can cancel+rebook if a better
+                # slot is found.
+                current = self._synthesize_managed_booking(matching[0], course_id, request)
+                upgraded = await self._try_upgrade(request, target_date, current)
+                if upgraded is not None:
+                    return upgraded
             log.debug("watch: existing reservation for %s on %s", course_id, target_date)
             return None
 
@@ -349,6 +372,73 @@ class WatchOrchestrator:
             )
 
         return None
+
+    # --- upgrade helpers --------------------------------------------------
+
+    async def _try_upgrade(
+        self,
+        request: BookingRequest,
+        target_date: date,
+        current_booking: BookingResult,
+    ) -> BookingResult | None:
+        """Delegate to UpgradeOrchestrator.maybe_upgrade().
+
+        Caller must ensure self._policy is not None and self._policy.enabled
+        before calling this method. The upgrade orchestrator acquires and releases
+        request_lock itself — the caller must NOT hold the lock.
+
+        Returns the upgraded BookingResult on success, or None if no upgrade
+        was possible (no higher-priority slot available, or unmanaged booking).
+        """
+        assert self._policy is not None  # Caller guarantee; narrows type for mypy.
+        orchestrator = UpgradeOrchestrator(
+            adapters=self._adapters,
+            store=self._store,
+            notifier=self._notifier,
+            clock=self._clock,
+            scheduler=self._scheduler,
+            policy=self._policy,
+            creds=self._creds,
+        )
+        return await orchestrator.maybe_upgrade(request, target_date, current_booking)
+
+    def _synthesize_managed_booking(
+        self,
+        reservation: ExistingReservation,
+        course_id: CourseId,
+        request: BookingRequest,
+    ) -> BookingResult:
+        """Synthesize a managed BookingResult from a live ExistingReservation.
+
+        Used in _check_course() when list_reservations() finds an existing booking
+        but the store has no BOOKED record (manual booking, cache eviction, or
+        booking made before this bot existed). Stamping TTB: on the
+        confirmation_code allows UpgradeOrchestrator to treat this reservation as
+        upgradeable and cancel it if a better slot is found.
+
+        ForeUpAdapter.cancel_reservation() strips the TTB: prefix before calling
+        the live API, so the cancel works correctly with the raw server id.
+
+        The synthesized slot's tee_time is used by _current_booking_priority() to
+        determine which priority window the existing booking falls into.
+        """
+        return BookingResult(
+            request_id=request.request_id,
+            outcome=BookingOutcome.BOOKED,
+            course_id=course_id,
+            slot=TeeTimeSlot(
+                course_id=course_id,
+                slot_id=SlotId(reservation.confirmation_code),
+                tee_time=reservation.tee_time,
+                holes=18,
+                available_spots=reservation.party_size,
+                price_per_player=Decimal("0"),
+                cart_included=False,
+            ),
+            confirmation_code=f"{MANAGED_BOOKING_TAG}{reservation.confirmation_code}",
+            booked_at=None,
+            attempts=0,
+        )
 
     # --- time gates -------------------------------------------------------
 
