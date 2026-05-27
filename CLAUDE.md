@@ -98,6 +98,18 @@ in `core/` — never directly. This is the cut line for parallel work.
   prefix — so `is_managed` returns False for server-sourced reservations, as
   expected. `FakeAdapter.book()` stamps `TTB:FAKE-<slot_id>` in `BookingResult`
   and stores the raw `FAKE-<slot_id>` in `_existing` to mirror this behaviour.
+- **`ForeUpAdapter.list_reservations()` reads a login-response cache, NOT a live
+  GET.** ForeUP's `GET /reservations` endpoint returns a ~6 MB user-profile
+  with `"reservations": false` (a lazy-load flag). Actual reservations come from
+  the `POST /login` response body. `authenticate()` caches the list; subsequent
+  `list_reservations()` reads from that snapshot. Consequence: reservations made
+  AFTER `authenticate()` completes (e.g. a manual booking during the bot's run
+  window) are not visible to `list_reservations()` in the same run. For the
+  pre-book layer-2 guard this is acceptable (seconds of staleness). The RECONCILING
+  path (M2.T3, not yet implemented) must re-authenticate before calling
+  `list_reservations()` to get a fresh snapshot. `list_reservations()` raises
+  `RuntimeError` if `authenticate()` has never been called — preventing a silent
+  empty-list from vacuously passing the pre-book guard in misconfigured deployments.
 - **`WatchOrchestrator.check_once` does NOT acquire `request_lock`**. It is
   read-only. If it delegates to `UpgradeOrchestrator.maybe_upgrade`, THAT method
   acquires and releases the lock itself. Never call `maybe_upgrade` while already

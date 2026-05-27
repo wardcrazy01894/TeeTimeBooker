@@ -70,6 +70,17 @@ _RAW_RESERVATION = {
     "players": 2,
 }
 
+# Matches the actual ForeUP login-response shape discovered via live API probe.
+# Field names differ from the legacy GET-endpoint shape above.
+_RAW_FOREUP_LOGIN_RESERVATION = {
+    "TTID": "TTID_05271417087kr17",
+    "teetime_id": "TTID_05271417087kr17",
+    "type": "teetime",
+    "start_datetime": "2026-06-03 14:15:00",
+    "player_count": "4",
+    "course_id": "19671",
+}
+
 
 def _adapter(client: httpx.AsyncClient) -> ForeUpAdapter:
     return ForeUpAdapter(
@@ -152,6 +163,60 @@ async def test_authenticate_captcha_raises_captcha_error() -> None:
         adapter = _adapter(client)
         with pytest.raises(CaptchaError):
             await adapter.authenticate(CREDS)
+
+
+@respx.mock
+async def test_authenticate_non_json_200_does_not_crash() -> None:
+    """HTTP 200 with a non-JSON body must not raise UnboundLocalError.
+
+    The prior bug: `data` was unbound after `ValueError` from `r.json()`, causing
+    `if isinstance(data, dict)` to raise UnboundLocalError. The fix initializes
+    `data = {}` before the try block. A non-JSON 200 is treated as a successful
+    login (status 200 is trusted), but no JWT or reservations are extracted.
+    """
+    respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        return_value=httpx.Response(200, text="<html>error page</html>")
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)  # must not raise UnboundLocalError
+    # 200 status → _logged_in=True; no JWT or reservations extracted from HTML body
+    assert adapter._auth_token is None
+    assert adapter._reservations_from_login == []
+
+
+@respx.mock
+async def test_authenticate_soft_fail_clears_reservations_cache() -> None:
+    """A 401 soft-fail resets _reservations_from_login so a stale prior cache is never returned."""
+    respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        return_value=httpx.Response(401, json={"success": False})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        # Simulate a stale cache from a previous successful login
+        adapter._reservations_from_login = [_RAW_RESERVATION]
+        await adapter.authenticate(CREDS)  # soft-fail
+    # Cache must be cleared — not left as stale data
+    assert adapter._reservations_from_login == []
+
+
+async def test_list_reservations_raises_if_not_authenticated() -> None:
+    """list_reservations() must raise RuntimeError when authenticate() was never called.
+    Guards PLAN §9 layer-2: silent empty list would pass the pre-book check vacuously."""
+    adapter = ForeUpAdapter(
+        course_id=CID,
+        course_pk=19671,
+        booking_class_id=2149,
+        schedule_id=2149,
+    )
+    with pytest.raises(RuntimeError, match="authenticate"):
+        await adapter.list_reservations()
 
 
 # --- search --------------------------------------------------------------
@@ -365,29 +430,74 @@ async def test_book_omits_captchaid_without_provider() -> None:
 # --- list_reservations ---------------------------------------------------
 
 
-@respx.mock
 async def test_list_reservations_returns_parsed_items() -> None:
-    respx.get(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
-        return_value=httpx.Response(200, json=[_RAW_RESERVATION])
-    )
+    """list_reservations() returns items from _reservations_from_login (no HTTP call)."""
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         adapter = _adapter(client)
+        adapter._reservations_from_login = [_RAW_RESERVATION]
         reservations = await adapter.list_reservations()
     assert len(reservations) == 1
     assert reservations[0].confirmation_code == "RES-123"
     assert reservations[0].party_size == 2
 
 
-@respx.mock
 async def test_list_reservations_skips_unparseable_items() -> None:
+    """Items that can't be parsed are silently skipped."""
     bad = {"id": "X"}  # no tee_time field
-    respx.get(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
-        return_value=httpx.Response(200, json=[bad, _RAW_RESERVATION])
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._reservations_from_login = [bad, _RAW_RESERVATION]
+        reservations = await adapter.list_reservations()
+    assert len(reservations) == 1  # bad item skipped, good item kept
+
+
+async def test_list_reservations_returns_foreup_login_shape() -> None:
+    """list_reservations() correctly parses the actual ForeUP login-response field names."""
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._reservations_from_login = [_RAW_FOREUP_LOGIN_RESERVATION]
+        reservations = await adapter.list_reservations()
+    assert len(reservations) == 1
+    r = reservations[0]
+    assert r.confirmation_code == "TTID_05271417087kr17"
+    assert r.tee_time == datetime(2026, 6, 3, 14, 15, 0, tzinfo=ET)
+    assert r.party_size == 4
+
+
+@respx.mock
+async def test_authenticate_populates_reservations_from_login_response() -> None:
+    """Login response with reservations list → cached in _reservations_from_login."""
+    respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "logged_in": True,
+                "reservations": [_RAW_FOREUP_LOGIN_RESERVATION],
+            },
+        )
     )
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         adapter = _adapter(client)
-        reservations = await adapter.list_reservations()
-    assert len(reservations) == 1  # bad item skipped, good item kept
+        await adapter.authenticate(CREDS)
+    assert adapter._reservations_from_login == [_RAW_FOREUP_LOGIN_RESERVATION]
+
+
+@respx.mock
+async def test_authenticate_stores_jwt_field_name() -> None:
+    """Login response with a 'jwt' field (actual ForeUP name) → stored as _auth_token."""
+    respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        return_value=httpx.Response(200, json={"logged_in": True, "jwt": "real-jwt-xyz"})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+    assert adapter._auth_token == "real-jwt-xyz"
 
 
 # --- cancel_reservation --------------------------------------------------
@@ -500,3 +610,12 @@ def test_parse_reservation_maps_fields_correctly() -> None:
     assert res.confirmation_code == "RES-123"
     assert res.tee_time == datetime(2026, 5, 13, 8, 0, 0, tzinfo=tz)
     assert res.party_size == 2
+
+
+def test_parse_reservation_foreup_login_shape() -> None:
+    # _parse_reservation handles login-response field names: TTID, start_datetime, player_count
+    tz = ZoneInfo("America/New_York")
+    res = _parse_reservation(_RAW_FOREUP_LOGIN_RESERVATION, CID, tz)
+    assert res.confirmation_code == "TTID_05271417087kr17"
+    assert res.tee_time == datetime(2026, 6, 3, 14, 15, 0, tzinfo=tz)
+    assert res.party_size == 4
