@@ -16,8 +16,14 @@ Endpoints confirmed via page-source analysis and community reverse-engineering:
         json: echo of slot raw fields + overridden player/fee/total values.
         Returns {id, ...} confirmation.
 
-    GET    /index.php/api/booking/users/reservations
-        Returns array of existing user reservations.
+    NOTE: GET /index.php/api/booking/users/reservations returns a ~6 MB user
+        profile object with "reservations": false (a lazy-load flag, NOT a
+        reservation list). Actual upcoming reservations are embedded in the
+        POST /login response body under "reservations": [...]. authenticate()
+        caches this list; list_reservations() reads from the cache.
+
+    DELETE /index.php/api/booking/users/reservations/<id>
+        Cancels a reservation. 200 → success. 404 → already cancelled (idempotent).
 
 Anti-bot etiquette:
     - Honest User-Agent
@@ -190,12 +196,19 @@ class ForeUpAdapter(CourseAdapter):
                 "ForeUP: login failed (status %d) — search still possible, book requires re-auth",
                 r.status_code,
             )
+            self._reservations_from_login = []  # don't leave stale cache from prior auth
             return
         r.raise_for_status()
+        # Initialize data before the try block so `isinstance(data, dict)` below
+        # is always safe — if r.json() raises ValueError (e.g. HTML error page on a
+        # 200), we fall through to the soft-fail path rather than crashing with
+        # UnboundLocalError.
+        data: object = {}
         try:
-            data: object = r.json()
+            data = r.json()
             if isinstance(data, dict) and not data.get("success", True):
                 _log.warning("ForeUP: login rejected by server — search ok, book requires re-auth")
+                self._reservations_from_login = []  # don't leave stale cache
                 return
         except ValueError:
             pass
@@ -378,7 +391,16 @@ class ForeUpAdapter(CourseAdapter):
         (/api/booking/users/reservations) returns a ~6 MB user-profile object
         with "reservations": false — it is NOT a reservation list. authenticate()
         must be called before this method.
+
+        Raises RuntimeError if authenticate() has never been called (client not
+        initialized). This prevents a silent empty-list return from vacuously
+        passing the PLAN §9 layer-2 pre-book guard in misconfigured deployments.
         """
+        # Mirror the _c() guard used by search() and book(): if authenticate()
+        # was never called, _client is None and we must fail loudly rather than
+        # return an empty list that looks like "no existing bookings".
+        if self._client is None:
+            raise RuntimeError("authenticate() must be called before list_reservations()")
         tz = ZoneInfo(self._timezone)
         out: list[ExistingReservation] = []
         for item in self._reservations_from_login:

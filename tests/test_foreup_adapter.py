@@ -165,6 +165,60 @@ async def test_authenticate_captcha_raises_captcha_error() -> None:
             await adapter.authenticate(CREDS)
 
 
+@respx.mock
+async def test_authenticate_non_json_200_does_not_crash() -> None:
+    """HTTP 200 with a non-JSON body must not raise UnboundLocalError.
+
+    The prior bug: `data` was unbound after `ValueError` from `r.json()`, causing
+    `if isinstance(data, dict)` to raise UnboundLocalError. The fix initializes
+    `data = {}` before the try block. A non-JSON 200 is treated as a successful
+    login (status 200 is trusted), but no JWT or reservations are extracted.
+    """
+    respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        return_value=httpx.Response(200, text="<html>error page</html>")
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)  # must not raise UnboundLocalError
+    # 200 status → _logged_in=True; no JWT or reservations extracted from HTML body
+    assert adapter._auth_token is None
+    assert adapter._reservations_from_login == []
+
+
+@respx.mock
+async def test_authenticate_soft_fail_clears_reservations_cache() -> None:
+    """A 401 soft-fail resets _reservations_from_login so a stale prior cache is never returned."""
+    respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        return_value=httpx.Response(401, json={"success": False})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        # Simulate a stale cache from a previous successful login
+        adapter._reservations_from_login = [_RAW_RESERVATION]
+        await adapter.authenticate(CREDS)  # soft-fail
+    # Cache must be cleared — not left as stale data
+    assert adapter._reservations_from_login == []
+
+
+async def test_list_reservations_raises_if_not_authenticated() -> None:
+    """list_reservations() must raise RuntimeError when authenticate() was never called.
+    Guards PLAN §9 layer-2: silent empty list would pass the pre-book check vacuously."""
+    adapter = ForeUpAdapter(
+        course_id=CID,
+        course_pk=19671,
+        booking_class_id=2149,
+        schedule_id=2149,
+    )
+    with pytest.raises(RuntimeError, match="authenticate"):
+        await adapter.list_reservations()
+
+
 # --- search --------------------------------------------------------------
 
 
