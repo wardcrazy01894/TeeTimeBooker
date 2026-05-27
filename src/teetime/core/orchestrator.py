@@ -200,10 +200,21 @@ class Orchestrator:
         slots: list[TeeTimeSlot],
         request: BookingRequest,
     ) -> list[TeeTimeSlot]:
-        """Filter to matching slots and return them sorted by closeness to each
-        window's midpoint (best candidate first). Empty list = no inventory.
+        """Filter to matching slots and return them sorted ascending by tee_time
+        (earliest first). Empty list = no inventory.
+
+        Feature 3 (M-feature-3): sort by ascending tee_time within the window.
+        Prefer 09:00 over 09:10 over 10:30. This replaces the midpoint-distance
+        sort from v0, which was documented as a placeholder in PLAN.md §19 item 5.
+
+        Rationale for ascending-over-midpoint: the user's preferred window is
+        09:00-10:30, so the best slot is the earliest available. A midpoint bias
+        (09:45) was never the stated preference — the window just bounds what is
+        acceptable. Within acceptable bounds, earlier is better.
+
+        All filtering criteria (spots, holes, price, window membership) are unchanged.
         """
-        scored: list[tuple[float, TeeTimeSlot]] = []
+        candidates: list[TeeTimeSlot] = []
         for s in slots:
             if s.available_spots < len(request.players):
                 continue
@@ -215,11 +226,10 @@ class Orchestrator:
             window = self._matching_window(s, request)
             if window is None:
                 continue
-            mid = self._window_midpoint_utc(s.tee_time, window)
-            distance = abs((s.tee_time - mid).total_seconds())
-            scored.append((distance, s))
-        scored.sort(key=lambda x: x[0])
-        return [s for _, s in scored]
+            candidates.append(s)
+        # Sort ascending by tee_time: prefer earliest available slot.
+        candidates.sort(key=lambda s: s.tee_time)
+        return candidates
 
     @staticmethod
     def _matching_window(slot: TeeTimeSlot, request: BookingRequest) -> TimeWindow | None:
@@ -228,12 +238,6 @@ class Orchestrator:
             if w.earliest <= local.time() <= w.latest:
                 return w
         return None
-
-    @staticmethod
-    def _window_midpoint_utc(slot_time: datetime, window: TimeWindow) -> datetime:
-        start = datetime.combine(slot_time.date(), window.earliest, tzinfo=slot_time.tzinfo)
-        end = datetime.combine(slot_time.date(), window.latest, tzinfo=slot_time.tzinfo)
-        return start + (end - start) / 2
 
     # --- pre-book reservation match -----------------------------------
 

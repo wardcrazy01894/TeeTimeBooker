@@ -179,6 +179,28 @@ class ExistingReservation:
     party_size: int
     raw: dict[str, object] = field(default_factory=dict)
 
+    @property
+    def is_managed(self) -> bool:
+        """True if this reservation was made by TeeTimeBooker and is therefore
+        eligible for automatic cancellation under the one-booking policy.
+
+        Detection strategy: confirmation_code was stamped with the MANAGED_BOOKING_TAG
+        prefix when booked. Manual reservations made through the ForeUP website will
+        not have this prefix and will not be touched.
+
+        See PLAN.md M-feature-2 §"Our vs manual booking detection".
+        """
+        return self.confirmation_code.startswith(MANAGED_BOOKING_TAG)
+
+
+# Prefix stamped into the booking POST body's `notes` field (or equivalent)
+# so we can identify our own bookings in list_reservations output.
+# This sentinel must be short enough to fit in ForeUP's notes field, and
+# unlikely to appear in manually-entered confirmation codes.
+# The value is intentionally stable — changing it orphans all existing managed
+# bookings (they lose is_managed=True) until they expire naturally.
+MANAGED_BOOKING_TAG = "TTB:"
+
 
 @dataclass(frozen=True, slots=True)
 class BookingResult:
@@ -207,3 +229,53 @@ class CourseCredentials:
     username: str
     password: str
     extra: dict[str, str] = field(default_factory=dict)  # e.g. {"booking_class_id": "2149"}
+
+
+# --- Watch / cancellation-monitor models (M-feature-1) ------------------
+
+
+@dataclass(frozen=True, slots=True)
+class WatchConfig:
+    """Configuration for the cancellation-monitor job.
+
+    The watch job polls for newly available slots on a target date that
+    has already been attempted (either succeeded or failed at 6 AM). It
+    operates at a much lower frequency than the 6 AM race window.
+
+    See PLAN.md M-feature-1 for the full design.
+    """
+
+    poll_interval_s: int = 600  # 10 minutes default; must be >= 300 (anti-bot floor)
+    max_watch_duration_s: int = 518400  # 6 days = just under the 7-day window opening
+    # Earliest and latest wall-clock hour (course-local) during which polling
+    # is permitted. Polling outside these hours is suppressed to reduce server
+    # load during off-peak times when new cancellations are unlikely.
+    polling_start_hour: int = 7   # 7 AM course-local
+    polling_end_hour: int = 22    # 10 PM course-local
+
+    def __post_init__(self) -> None:
+        _min_poll_s = 300
+        if self.poll_interval_s < _min_poll_s:
+            raise ValueError(
+                f"poll_interval_s must be >= {_min_poll_s} (anti-bot etiquette floor)"
+            )
+
+
+# --- One-booking priority models (M-feature-2) ---------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PrioritySlot:
+    """One entry in the user's ordered priority list for the one-booking policy.
+
+    Priority 0 is highest (most preferred). The orchestrator picks the available
+    slot with the lowest priority index. Within the same priority index, earlier
+    tee_time wins (Feature 3).
+
+    See PLAN.md M-feature-2 for the full design.
+    """
+
+    priority: int  # 0 = most preferred
+    course_id: CourseId
+    time_window: TimeWindow
+    target_date: date

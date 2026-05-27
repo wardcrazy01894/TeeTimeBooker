@@ -60,6 +60,17 @@ class SqliteStore:
     async def record_terminal(self, result: BookingResult, resolved_date: date) -> None:
         raise NotImplementedError
 
+    async def delete_terminal(
+        self,
+        request_id: RequestId,
+        resolved_date: date,
+    ) -> None:
+        """Delete the terminal record for (request_id, resolved_date).
+        No-op if absent. See M-feature-2 idempotency-key-on-rebook design.
+        Implement in M-feature-2.T4 (SqliteStore additions).
+        """
+        raise NotImplementedError
+
     async def append_attempt(
         self,
         request_id: RequestId,

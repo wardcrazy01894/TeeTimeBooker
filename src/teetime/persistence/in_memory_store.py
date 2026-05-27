@@ -44,6 +44,14 @@ class InMemoryStore:
             )
         self._history[key] = result
 
+    async def delete_terminal(
+        self,
+        request_id: RequestId,
+        resolved_date: date,
+    ) -> None:
+        """Delete the terminal record for (request_id, resolved_date). No-op if absent."""
+        self._history.pop((request_id, resolved_date), None)
+
     async def append_attempt(
         self,
         request_id: RequestId,

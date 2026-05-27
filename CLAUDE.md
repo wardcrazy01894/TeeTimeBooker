@@ -81,6 +81,30 @@ in `core/` — never directly. This is the cut line for parallel work.
 - **Player PII redacted before write** to `attempt_log` (SHA-256 prefix).
   See PLAN.md §10.1. The store is a workflow artifact — assume contents
   are visible to anyone with repo read access.
+- **`cancel_reservation` is on the `CourseAdapter` Protocol** (breaking — all
+  adapters must implement it). Raises `CancelError` on failure. Returns normally
+  on 404 (already-cancelled is the desired post-condition). See `core/adapter.py`.
+- **`delete_terminal` is on the `BookingStore` Protocol** (breaking — all stores
+  must implement it). Used only by `UpgradeOrchestrator` after a successful
+  cancel+rebook to clear the old idempotency record before inserting the new
+  one. Must be called under the advisory lock. See `persistence/store.py`.
+- **`WatchOrchestrator` and `UpgradeOrchestrator` live in `core/`**. They follow
+  the same collaborator-injection pattern as `Orchestrator`. Neither is
+  long-running — each is a single-invocation check (one ACA Job execution).
+- **`BookingResult.confirmation_code` stores `TTB:<raw_foreup_id>`** (not the
+  raw ForeUP id) when booked by this system (Option A, MF-1). `ForeUpAdapter.
+  cancel_reservation()` strips the prefix before calling ForeUP. `ExistingReservation.
+  confirmation_code` (from `list_reservations`) stores the raw server id — no
+  prefix — so `is_managed` returns False for server-sourced reservations, as
+  expected. `FakeAdapter.book()` stamps `TTB:FAKE-<slot_id>` in `BookingResult`
+  and stores the raw `FAKE-<slot_id>` in `_existing` to mirror this behaviour.
+- **`WatchOrchestrator.check_once` does NOT acquire `request_lock`**. It is
+  read-only. If it delegates to `UpgradeOrchestrator.maybe_upgrade`, THAT method
+  acquires and releases the lock itself. Never call `maybe_upgrade` while already
+  holding the lock — that deadlocks.
+- **Watch job shares `teetime-state-v1` cache key** with the main booking job.
+  Single SQLite file = single source of truth. Advisory locks serialise concurrent
+  writes. See PLAN.md §20.1 Q1 (resolved).
 
 ## Mangrove Bay specifics
 

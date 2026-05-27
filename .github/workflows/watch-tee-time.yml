@@ -1,0 +1,118 @@
+# Cancellation-monitor job — polls for newly available tee times every 10 minutes
+# during 7 AM – 10 PM ET, on Saturdays and Sundays (the days when Mangrove Bay slots
+# are being watched).
+#
+# DESIGN: Each run of this workflow performs exactly ONE availability check and exits.
+# The polling loop is handled externally by this cron schedule. The WatchOrchestrator
+# inside `teetime watch` has no internal loop — it checks once and returns.
+#
+# DST NOTE: Unlike book.yml, this workflow does NOT need a DST-half gate because the
+# watch job does not race a fixed wall-clock moment. The polling-hours gate (7 AM–10 PM
+# course-local) is handled INSIDE the WatchOrchestrator via zoneinfo, not by the cron.
+#
+# The */10 cron fires every 10 minutes year-round. The WatchOrchestrator will return
+# None immediately if the current time is outside polling_start_hour/polling_end_hour.
+# This is slightly wasteful (waking up to do nothing) but eliminates the DST complexity
+# of hour-gating in cron syntax.
+#
+# CONCURRENCY: Uses its own concurrency group (watch-tee-time) separate from
+# book-tee-time. This prevents two watch runs from overlapping; it does NOT prevent
+# a watch run from overlapping with a book run — those use separate groups. The
+# advisory lock inside WatchOrchestrator handles that case correctly.
+#
+# IMPLEMENT IN: M-feature-1.T3. This file is a STUB — teetime watch is not yet
+# implemented. The steps below are placeholders showing the intended shape.
+# Do not enable this workflow until WatchOrchestrator.check_once is implemented.
+
+name: watch-tee-time
+
+on:
+  # TODO (M-feature-1.T3): Uncomment schedule after WatchOrchestrator is implemented.
+  # Fires every 10 minutes. WatchOrchestrator gates on polling hours internally.
+  # schedule:
+  #   - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true, check availability but do not book"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      target_date:
+        description: "Date to watch (YYYY-MM-DD). If omitted, derived from store."
+        required: false
+        default: ""
+
+# Separate concurrency group from book-tee-time. Two watch runs must not overlap.
+# A watch run and a book run CAN be co-scheduled — the advisory lock inside
+# WatchOrchestrator handles mutual exclusion at the booking level.
+concurrency:
+  group: watch-tee-time
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TZ: America/New_York
+      MB_USERNAME: ${{ secrets.MB_USERNAME }}
+      MB_PASSWORD: ${{ secrets.MB_PASSWORD }}
+      PLAYER1_EMAIL: ${{ secrets.PLAYER1_EMAIL }}
+      PLAYER1_PHONE: ${{ secrets.PLAYER1_PHONE }}
+      PLAYER1_MB_MEMBER: ${{ secrets.PLAYER1_MB_MEMBER }}
+      PLAYER2_EMAIL: ${{ secrets.PLAYER2_EMAIL }}
+      PLAYER3_EMAIL: ${{ secrets.PLAYER3_EMAIL }}
+      PLAYER4_EMAIL: ${{ secrets.PLAYER4_EMAIL }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: uv sync
+        run: uv sync
+
+      # Restore watch state (shared SQLite DB with main booking job via same cache key).
+      # Shared with the main booking job — see PLAN.md §20.1 Q1 (resolved: shared key).
+      - name: Restore state cache
+        id: state-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: state/
+          key: teetime-state-v1
+
+      - name: Run watch check
+        run: |
+          mkdir -p state
+          # TODO (M-feature-1.T3): implement `teetime watch` CLI command.
+          # The command below is a placeholder showing the intended interface.
+          # teetime watch \
+          #   --config config/local.toml \
+          #   --dry-run "${{ github.event.inputs.dry_run || 'true' }}" \
+          #   ${{ github.event.inputs.target_date != '' && format('--date {0}', github.event.inputs.target_date) || '' }}
+          echo "STUB: teetime watch not yet implemented (M-feature-1.T3)"
+
+      - name: Save state cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state/
+          key: teetime-state-v1
+
+      - name: Upload state diff (forensic artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: teetime-watch-state
+          path: state/
+          if-no-files-found: ignore

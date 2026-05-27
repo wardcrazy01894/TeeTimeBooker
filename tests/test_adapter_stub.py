@@ -40,6 +40,10 @@ class _FakeAdapter:
     async def list_reservations(self) -> list[ExistingReservation]:
         return []
 
+    async def cancel_reservation(self, confirmation_code: str) -> None:
+        """Minimal structural stub for Protocol satisfaction."""
+        return None
+
     async def aclose(self) -> None:
         return None
 

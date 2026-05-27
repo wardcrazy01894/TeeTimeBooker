@@ -610,3 +610,284 @@ Each item from the brief, addressed:
 - **Item 11 (asyncio_mode + @pytest.mark.asyncio)**: agreed and fixed; the marker was redundant under `asyncio_mode = "auto"`.
 - **Item 10 (defer cache_session)**: agreed and applied — weekend cron means JWT cache buys nothing in v0.
 - **Nit (cron defaults `dry_run=false`)**: KEEPING this. With the DST gate fixed (item 1), only one cron of the day proceeds. The user explicitly wants real bookings on cron — the bot's purpose is to book, not dry-run. Manual `workflow_dispatch` defaults to `dry_run=true` (safe testing default). This is intentional asymmetry.
+
+---
+
+## 20. Feature milestones (v0.5 — watch, one-booking, sort)
+
+These three features build on the completed v0 foundation (M1–M5 done, M3/M4/M6 in progress).
+They share a dependency: M-feature-3 (sort) is a prerequisite for both M-feature-1 and
+M-feature-2 because those features select slots and must use the same ranking logic.
+
+**Parallel-execution map:**
+```
+M-feature-3 ──► M-feature-1.T1 ──► M-feature-1.T2 ──► M-feature-1.T3 ──► M-feature-1.T4
+                                                                          (GH Actions + ACA)
+               M-feature-2.T1 (Spike S4) ──► M-feature-2.T2 ──► M-feature-2.T3
+                                                                ──► M-feature-2.T4 ──► M-feature-2.T5
+```
+M-feature-1 and M-feature-2 share Spike S4 (cancel endpoint). M-feature-2.T3 depends on
+M-feature-1.T2 (WatchOrchestrator.check_once must exist for UpgradeOrchestrator to be called from it).
+
+---
+
+### M-feature-3 — Prefer Earlier Times Within the Window (SIMPLEST; implement first)
+
+**Design decision:** Replace the midpoint-distance sort in `Orchestrator._rank_slots` with
+ascending tee_time sort. Prefer 09:00 over 09:10 over 10:30. The midpoint bias (which
+preferred 09:45 in a 09:00-10:30 window) was documented as a placeholder in §19 item 5 and
+was never the stated user preference — "the window bounds acceptable times; within those,
+earlier is better."
+
+This is a one-method change (`_rank_slots`) that affects slot selection globally. It also
+removes the `_window_midpoint_utc` helper that existed solely to support the midpoint sort.
+
+**Reviewer pre-emption (ascending vs midpoint):** The midpoint sort had no user rationale;
+it was a default that was never validated against user preference. The stated use case
+("book earliest morning slot") is directly served by ascending sort. There is no scenario
+where 09:45 is a better tee time than 09:00 for this user.
+
+| ID | Task | Inputs | Outputs | Owner-files | Deps |
+|----|------|--------|---------|-------------|------|
+| M-feature-3.T1 | Write failing tests for ascending-time sort in `tests/test_sort_priority.py` (stub already on disk — remove NotImplementedError from each test and add real assertions, then verify they fail against the midpoint-sort implementation) | `test_sort_priority.py` stub | red test suite for Feature 3 | `tests/test_sort_priority.py` | M1.* done |
+| M-feature-3.T2 | Implement ascending sort in `Orchestrator._rank_slots`; remove `_window_midpoint_utc` | M-feature-3.T1 (red tests) | green tests; `mypy --strict` passes | `src/teetime/core/orchestrator.py` | M-feature-3.T1 |
+| M-feature-3.T3 | Update `tests/test_orchestrator.py` for any assertions that relied on midpoint ordering (e.g. "picked hour=8 when both 7 and 8 exist") | M-feature-3.T2 | all orchestrator tests green | `tests/test_orchestrator.py` | M-feature-3.T2 |
+
+**NOTE:** `_rank_slots` is already updated to ascending sort in the current stub. M-feature-3.T1
+must confirm this by writing real assertions in `test_sort_priority.py` and verifying green.
+
+---
+
+### M-feature-1 — Cancellation Monitor (Watch Job)
+
+**Design decisions:**
+
+**Polling interval:** 10 minutes (600 s), minimum floor 5 minutes (300 s). Rationale: the
+watch job is NOT racing anyone — it monitors for cancellations on a day that has already
+opened at 6 AM. Cancellations at Mangrove Bay are rare; a 10-minute poll is respectful and
+keeps us well within any reasonable rate-limit threshold. PLAN.md §12 ("self-imposed minimum
+250 ms between calls OUTSIDE the T0 race window") sets no upper bound on inter-poll gaps;
+10 minutes is far above the 250 ms floor. At 10 minutes, 144 polls/day — the HTTP footprint
+of a user checking the ForeUP website roughly every 10 minutes, which is unremarkable.
+
+**ACA Job scheduling:** ACA Jobs are batch jobs (start, run, exit). They are NOT long-running
+processes. The watch job runs as a separate ACA Job with cron `*/10 * * * *` (every 10 min).
+Each invocation: check once, exit. This costs ~$0 per run under ACA Consumption pricing (no
+minimum, sub-second execution billed to the sub-cent). A long-running process alternative
+(ACA Container App) would cost ~$5-10/month idle — unacceptable for a twice-weekly use case.
+
+**NOTE on `*/10` cron imprecision (GH Actions):** GH Actions `*/10` may not fire at exactly
+:00/:10/:20 — real-world intervals can be 10-20 minutes depending on runner load. The "144
+polls/day" figure in the polling-interval rationale assumes exact 10-minute intervals and is
+an upper bound. This is acceptable: the watch job is opportunistic (finding cancellations),
+not racing a fixed window. ACA Job crons have better reliability guarantees than GH Actions.
+
+ACA Job execution time limit: the Consumption plan imposes a 10-minute timeout by default
+(configurable up to 600 seconds via `replicaTimeout`). Our invocation takes at most ~5 seconds
+(one search HTTP call), so there is no timeout risk.
+
+**DST for the watch cron:** The watch cron (`*/10 * * * *`) fires every 10 minutes regardless
+of DST. It does not need a DST gate because it is not racing a wall-clock window — it just
+polls whenever it fires. The polling-hours gate (7 AM – 10 PM course-local) inside the
+WatchOrchestrator handles time-of-day filtering correctly using `zoneinfo`. No extra cron
+entries needed.
+
+**GH Actions equivalent:** A separate `watch-tee-time.yml` workflow running `*/10 * * * *`
+during hours 7-22 ET (simplified to avoid hourly gates — the WatchOrchestrator itself gates
+on polling hours). The workflow uses its own concurrency group (`watch-tee-time`) separate
+from `book-tee-time`.
+
+**Race condition with 6 AM run:** Both the watch job and the 6 AM booking job acquire
+`request_lock` before any mutating operation. ACA Jobs run at most one replica simultaneously
+(parallelism=1). The GH Actions `concurrency: group: watch-tee-time` prevents simultaneous
+watch runs. A watch run that fires simultaneously with the 6 AM run will lose the advisory
+lock and exit cleanly (ConcurrentRunError caught, returns None). The next 10-minute poll
+will see the BOOKED terminal and short-circuit.
+
+**Polling hours gate:** Polling is suppressed from 10 PM to 7 AM course-local time. This is
+NOT a security measure — it is anti-bot etiquette (§12). Cancellations at off-peak hours
+are essentially zero; polling then provides no benefit and accumulates unnecessary traffic.
+
+**Watch deadline:** Polling stops when `now > target_date midnight (course-local)`. The round
+has passed; the booking window has closed.
+
+**State management:** The watch job reads the target date from the BookingStore (see §9.2).
+After the 6 AM run completes with any non-BOOKED outcome (NO_INVENTORY, DRY_RUN), the date
+is eligible for watching. The WatchOrchestrator checks `store.get_terminal(request_id, date)`:
+- BOOKED → short-circuit, return that result (nothing to watch for)
+- None / NO_INVENTORY → proceed with check
+
+| ID | Task | Inputs | Outputs | Owner-files | Deps |
+|----|------|--------|---------|-------------|------|
+| M-feature-1.T1 | Add `WatchConfig` to `AppConfig` (pydantic model + TOML section `[watcher]`); `WatchConfig` validation tests; `teetime watch` CLI command stub | `src/teetime/core/config.py` (done), `src/teetime/__main__.py` | `teetime watch --config ... --date YYYY-MM-DD` CLI entry; WatchConfig validation tests green | `src/teetime/core/config.py`, `src/teetime/__main__.py`, `tests/test_config.py` (extended) | M1.* |
+| M-feature-1.T2 | Implement `WatchOrchestrator.check_once` with full §9.1 state machine for any booking POST; polling-hours gate; deadline gate; idempotency guards; error handling contract | `tests/test_watch_orchestrator.py` (red tests on disk) | all watch tests green; `mypy --strict` passes | `src/teetime/core/watch_orchestrator.py`, `tests/test_watch_orchestrator.py` | M-feature-3.T2 |
+| M-feature-1.T3 | GH Actions `watch-tee-time.yml` workflow (cron `*/10 * * * *`; own concurrency group; SHARED cache key `teetime-state-v1` — same as book.yml; shares secrets with book.yml) | M-feature-1.T2 | `gh workflow run watch-tee-time --dry-run true` succeeds | `.github/workflows/watch-tee-time.yml` | M-feature-1.T2 |
+| M-feature-1.T4 | ACA Bicep additions: new `compute-watch.bicep` module with `*/10 * * * *` cron; own `replicaTimeout=30`; no DST gate needed | M-feature-1.T3 | `az deployment group validate` passes | `infra/bicep/modules/compute-watch.bicep`, `infra/bicep/main.bicep` (module ref) | M-feature-1.T3 |
+
+**Reviewer pre-emption (adversarial checklist):**
+
+1. **Race condition on 6 AM open:** WatchOrchestrator does NOT try to race the 6 AM window.
+   It only runs AFTER T0. The `check_once` method has no busy_wait; it simply calls search()
+   once and exits. It cannot accidentally compete with the 6 AM booking run because that run
+   holds the advisory lock for its entire duration.
+
+2. **Anti-bot etiquette on 10-min poll:** 600-second floor enforced in WatchConfig.__post_init__.
+   Polls only during 7 AM – 10 PM. Each poll is a single HTTP GET (same as a search). The
+   ForeUP terms (§12) do not prohibit checking availability; they prohibit bulk booking bots.
+   One GET per 10 minutes is comparable to a human checking the website.
+
+3. **Multiple watch invocations simultaneously (ACA):** Each watch invocation attempts
+   request_lock immediately. If the lock is held (by the 6 AM job or another watch invocation),
+   ConcurrentRunError is caught and the invocation exits cleanly. This is correct — the next
+   10-minute interval will try again.
+
+4. **What if the watch job fires while the 6 AM job is running?** The 6 AM job holds the
+   advisory lock. WatchOrchestrator.check_once attempts the lock at entry and raises
+   ConcurrentRunError, which is caught and returned as None. Safe.
+
+5. **Cache key:** The watch job and the main booking job SHARE the same cache key
+   (`teetime-state-v1`) and the same SQLite file (`state/teetime.db`). This is the
+   simplest correct approach — single source of truth for `booking_history`. SQLite
+   advisory locks serialise concurrent writes. The two GH Actions concurrency groups
+   (`book-tee-time`, `watch-tee-time`) prevent simultaneous cache saves from the
+   same run type. See §20.1 Q1 (resolved).
+
+---
+
+### M-feature-2 — Account Booking Management + One Booking Policy
+
+**Design decisions:**
+
+**cancel_reservation() Protocol addition:** `CourseAdapter` now has a `cancel_reservation()`
+method. This is a Protocol extension — all adapters must implement it. The ForeUP adapter
+stub raises `NotImplementedError` pending Spike S4. The FakeAdapter is fully scripted for
+tests. Existing adapters that do NOT support cancellation should raise `CancelError` with a
+clear message.
+
+**cancel_reservation() idempotency:** A 404 from the cancellation endpoint means the booking
+is already gone — the desired post-condition is satisfied, so 404 MUST NOT raise `CancelError`.
+Any other 4xx or 5xx raises `CancelError` because the booking's status is uncertain.
+
+**"Our" vs "manual" booking detection (Option A — LOCKED IN):** `ForeUpAdapter.book()` stamps
+`"TTB:" + raw_foreup_id` into `BookingResult.confirmation_code`. This is the value stored
+in `booking_history` by `BookingStore.record_terminal`. `ForeUpAdapter.cancel_reservation()`
+strips the `TTB:` prefix before passing the raw id to ForeUP. `list_reservations()` returns
+raw server ids (no prefix) in `ExistingReservation.confirmation_code`, so `is_managed` is
+False for server-sourced reservations — correct, since manual bookings will not have the
+prefix. `FakeAdapter.book()` mirrors this: `BookingResult.confirmation_code` gets the `TTB:`
+prefix; `_existing` stores the raw id (no prefix).
+
+Option B (local `managed_bookings` SQLite table) is NOT needed and NOT implemented. The TTB:
+prefix approach is simpler, requires no new Protocol methods, and is robust across cache
+eviction (the prefix is in `booking_history` which survives). See §20.1 Q3 (resolved).
+
+**Book-before-cancel protocol:** UpgradeOrchestrator ALWAYS books the new slot BEFORE
+cancelling the old one. Rationale: cancelling first risks leaving the user with no booking
+if the rebook fails. Booking first risks a brief dual-booking (milliseconds to seconds).
+The dual-booking window is acceptable; zero-bookings is not. The ForeUP system may itself
+enforce a max-bookings limit — if so, the new booking will fail (not the cancel), and the
+user retains their original slot. This is the correct safe-failure mode.
+
+**Idempotency key on rebook:** After cancel+rebook, the new booking shares the same
+`(RequestId, resolved_date)`. The `BookingStore.delete_terminal()` method (added in this
+milestone) clears the old record before the new one is inserted. This MUST happen under the
+advisory lock to prevent any concurrent run from observing the gap. If the process dies
+between delete and re-insert, the next run's list_reservations check (§9 layer 2) sees the
+new booking and records ALREADY_BOOKED — no phantom booking.
+
+**Priority ranking:** `OneBookingPolicyConfig.priority_slots` is an ordered list where
+`priority=0` is most preferred. Within a single priority index, slots are sorted ascending
+by tee_time (Feature 3). The upgrade only fires when a slot at a LOWER priority index
+(higher preference) is available. Equal-priority slots do not trigger an upgrade.
+
+**Priority default (when priority_slots is empty):** Derived from `course_preferences` order
+in `[request]`, with the same time_window as `time_windows[0]`. This means existing users
+who do not configure `[one_booking_policy]` get the expected behavior: first course in the
+list is the most preferred.
+
+**One booking invariant:** The system ensures at most one MANAGED booking exists at any time
+by acquiring the advisory lock before any cancel+rebook operation. Manual bookings are never
+touched. If the user manually creates a second booking, the system ignores it.
+
+| ID | Task | Inputs | Outputs | Owner-files | Deps |
+|----|------|--------|---------|-------------|------|
+| **S4 (Spike)** | Confirm ForeUP cancellation endpoint. Questions: (1) What HTTP method and path? (2) What identifier does the server expect (pending_reservation_id, confirmation_code, other)? (3) Is there a notes/comments field in list_reservations that echoes user-supplied text from the booking POST? (4) Is 404 returned for already-cancelled reservations? (5) What is the cancellation window (minutes before tee time)? | Browser devtools on ForeUP booking page | Exit criterion: `cancel_endpoint`, `cancel_id_field`, `notes_field_echo`, `cancel_404_on_gone`, `cancel_window_minutes` all confirmed and documented in `docs/foreup-cancel-spike.md` | `docs/foreup-cancel-spike.md` | M5 done |
+| M-feature-2.T1 | Implement `ForeUpAdapter.cancel_reservation()` using confirmed S4 endpoint; handle 404 as success; raise `CancelError` on other 4xx/5xx | S4, `tests/test_foreup_book.py` (add cancel tests) | `ForeUpAdapter.cancel_reservation` passing tests | `src/teetime/courses/foreup/base.py`, `tests/test_foreup_book.py` | S4 |
+| M-feature-2.T2 | Implement `UpgradeOrchestrator._build_priority_list()` and `_current_booking_priority()` | `core/upgrade_orchestrator.py` stub | unit tests for priority list construction | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-3.T2 |
+| M-feature-2.T3 | Implement `UpgradeOrchestrator.maybe_upgrade()` with full book-before-cancel protocol; cancel-failure path; idempotency key handling; notification | `tests/test_upgrade_orchestrator.py` (red tests on disk), M-feature-2.T1, M-feature-2.T2 | all upgrade tests green; state machine correct under FakeAdapter | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-2.T1, M-feature-2.T2 |
+| M-feature-2.T4 | Implement `SqliteStore.delete_terminal()` (M3 prerequisite); add `managed_bookings` table if S4 confirms no echo field | M3.T2 done; S4 | `delete_terminal` tests green; `mypy --strict` passes | `src/teetime/persistence/sqlite_store.py`, `src/teetime/persistence/in_memory_store.py` (done) | M3.T2, S4 |
+| M-feature-2.T5 | Wire `UpgradeOrchestrator` into `WatchOrchestrator.check_once()` — after finding a slot, check if it is higher priority than the current booking; if so, delegate to `UpgradeOrchestrator.maybe_upgrade()` | M-feature-1.T2, M-feature-2.T3 | integration test: watch finds higher-priority slot, triggers upgrade | `src/teetime/core/watch_orchestrator.py` | M-feature-1.T2, M-feature-2.T3 |
+| M-feature-2.T6 | GH Actions + ACA Bicep: the watch workflow already fires UpgradeOrchestrator via WatchOrchestrator — no separate job needed. Update `watch-tee-time.yml` to pass `--one-booking-policy` flag | M-feature-1.T3, M-feature-2.T5 | `gh workflow run watch-tee-time` with one-booking policy enabled works in dry-run | `.github/workflows/watch-tee-time.yml` | M-feature-1.T3, M-feature-2.T5 |
+
+**Reviewer pre-emption (adversarial checklist):**
+
+1. **Race condition on cancel+rebook:** Book-before-cancel protocol (above). If cancel
+   fails after rebook, we persist the new booking and notify the user. If rebook fails,
+   the original booking is untouched. The only unrecoverable failure mode is: rebook
+   succeeds AND cancel succeeds but process dies before `delete_terminal` + `record_terminal`.
+   Recovery: next run's list_reservations sees the new booking and records ALREADY_BOOKED.
+   The old BOOKED terminal in the store will not trigger a re-cancellation because the
+   `is_managed` check is performed on the STORE RECORD (BookingResult from the store,
+   which carries the TTB: prefix), not on the raw ExistingReservation from
+   list_reservations() (which always has a raw server id with no TTB: prefix). If the
+   process died between delete and re-insert, the store has no BOOKED terminal for that
+   (RequestId, date), so maybe_upgrade's lookup returns None and no cancellation fires.
+
+2. **"Our" vs "manual" booking:** `is_managed` is derived from `BookingResult.confirmation_code`
+   prefix (TTB:) as stored in the booking_history by `BookingStore.record_terminal`. The
+   UpgradeOrchestrator receives a `BookingResult` (store record) from `WatchOrchestrator`,
+   not an `ExistingReservation` from `list_reservations()`. It never calls
+   `cancel_reservation` on a booking whose `confirmation_code` lacks the TTB: prefix.
+   Period. No config flag, no override.
+
+3. **Idempotency key collision on rebook:** Handled by `delete_terminal` under advisory lock.
+   See above. The implementation contract is in `store.py` docstring.
+
+4. **Priority tie-breaking:** Only strict priority improvement triggers upgrade. Equal priority
+   = no action. This is verified by `test_upgrade_does_not_upgrade_to_equal_priority`.
+
+5. **ForeUP max-bookings enforcement:** If ForeUP rejects the new booking because a
+   booking already exists, the new booking POST returns a non-200 response. This
+   surfaces as a generic adapter error (not `SlotGoneError`), which is caught by
+   `maybe_upgrade()` and returned as None (no upgrade this pass). The original booking
+   is safe. The watch job tries again on the next 10-minute interval (by which time
+   a human-made booking might have freed the max-booking limit, which is unlikely but
+   harmless to check).
+
+6. **S4 risk: ForeUP has no cancellation API or blocks it:** If Spike S4 reveals that
+   ForeUP does not expose a cancellation API (or restricts it programmatically), Feature 2
+   is not implementable without browser automation (Playwright). That would be a v1 feature
+   and would require re-evaluating the ToS posture (§12). Feature 1 (watch) and Feature 3
+   (sort) remain unaffected.
+
+7. **MANAGED_BOOKING_TAG echo risk:** If ForeUP does not echo a user-supplied field back
+   in `list_reservations` (confirmed in S4), the fallback is a local `managed_bookings`
+   SQLite table keyed on confirmation_code. The table is populated at book() time and
+   consulted by `is_managed`. This approach works correctly even across cache eviction
+   because the booking confirmation_code is also in `booking_history` (so the managed set
+   can be reconstructed from the history table if the managed_bookings table is lost).
+
+---
+
+### 20.1 Open Questions for User Input
+
+These items cannot be resolved without user input or live-system investigation.
+None of them block M-feature-3 (sort). S4 blocks M-feature-2. M-feature-1 can
+proceed to T2 without S4 since WatchOrchestrator.check_once does not call cancel.
+
+| # | Question | Blocks | Exit criterion |
+|---|----------|--------|----------------|
+| ~~Q1~~ | ~~**Shared vs separate SQLite file for watch job.**~~ **RESOLVED**: shared SQLite file (`state/teetime.db`) and shared cache key (`teetime-state-v1`). Rationale: (a) single source of truth for `booking_history` — both jobs read/write the same idempotency table; (b) SQLite advisory locks (`BEGIN IMMEDIATE`) serialise concurrent writes correctly; (c) the `actions/cache` concurrency group (`watch-tee-time` vs `book-tee-time`) means the two jobs cannot simultaneously save to the cache — they run in separate GH Actions concurrency groups, so cache save/restore races are not possible in practice; (d) two cache keys with two SQLite files would require merging booking_history across files to correctly enforce idempotency, which is far more complex. | — | Resolved |
+| ~~Q2~~ | ~~**Watch job enabled by default or opt-in?**~~ **RESOLVED**: When `watcher.enabled = false`, the watch job logs a **warning** (`"Watch job is disabled in config — set watcher.enabled = true to activate"`) and exits cleanly (exit 0). GH Actions run must not show as ❌ for an intentionally disabled feature. | — | Resolved |
+| ~~Q3~~ | ~~**MANAGED_BOOKING_TAG echo.**~~ **RESOLVED**: We use **Option A** (TTB: prefix stored in `BookingResult.confirmation_code`, not echoed to/from server). `is_managed` works by checking the stored `confirmation_code` in `booking_history`, not by reading a notes field from the server. Whether or not ForeUP echoes a notes field is irrelevant. See §20 "MANAGED_BOOKING_TAG implementation (Option A — LOCKED IN)". | — | Resolved |
+| ~~Q4~~ | ~~**Cancellation window.**~~ **RESOLVED**: Use **18-hour safe default** (`cancellation_deadline_hours = 18`). User believes Mangrove Bay permits same-day cancellations but wants 18h as a guard against attempting a cancel+rebook so close to tee time that the player drives to the wrong course. Spike S4 will confirm the actual policy. | — | Resolved (default set; S4 confirms) |
+| ~~Q5~~ | ~~**One-booking policy scope.**~~ **RESOLVED**: **Cross-course upgrades enabled.** The priority list can mix courses (e.g. `mangrove_bay 09:00` → `twin_brooks 08:45` → `mangrove_bay 09:30`). If a higher-ranked (course, time) combination opens, the current booking — regardless of course — is cancelled and the better slot is booked. | — | Resolved |
+
+---
+
+### 20.2 New Spikes
+
+| ID | Question | Exit criterion | Suggested time |
+|----|----------|----------------|----------------|
+| S4 | ForeUP cancellation endpoint. See M-feature-2 §S4 task above for the specific questions. | `docs/foreup-cancel-spike.md` with all 5 questions answered via browser devtools | 1 session |
+| S5 | Does ForeUP rate-limit `GET /times` at 10-minute intervals over an extended period (days)? The 6-AM race testing (S3) tested short bursts; S5 tests sustained low-frequency polling over multiple days. | No 429 or account restriction observed over 3 days of polling at 10-min intervals | 3-day passive observation |
