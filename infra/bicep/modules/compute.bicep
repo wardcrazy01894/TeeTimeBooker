@@ -1,8 +1,10 @@
 // compute.bicep — Container Apps Environment (Consumption) + Container Apps Job.
 //
-// Two scheduled triggers (identical job, two cron entries) handle DST:
-//   50 9 * * *   = 09:50 UTC = 05:50 EDT  (UTC-4, Mar-Nov) — fires 10 min before T0
-//   50 10 * * *  = 10:50 UTC = 05:50 EST  (UTC-5, Nov-Mar) — fires 10 min before T0
+// Four scheduled triggers (identical job, four cron entries) handle Sat+Sun × DST:
+//   50 9 * * 6   = 09:50 UTC = 05:50 EDT Saturday  (UTC-4, Mar-Nov)
+//   50 10 * * 6  = 10:50 UTC = 05:50 EST Saturday  (UTC-5, Nov-Mar)
+//   50 9 * * 0   = 09:50 UTC = 05:50 EDT Sunday    (UTC-4, Mar-Nov)
+//   50 10 * * 0  = 10:50 UTC = 05:50 EST Sunday    (UTC-5, Nov-Mar)
 //
 // The bot's DST gate (wall-clock ET hour == 5 check) ensures the wrong-half
 // cron exits immediately. This is identical to the book.yml pattern.
@@ -71,10 +73,13 @@ param logAnalyticsWorkspaceKey string
 var acaEnvName = 'cae-teetime-${envName}'
 var jobName = 'teetime-job-${envName}'
 
-// DST cron expressions (UTC). Both fire daily; DST gate in bot selects correct half.
+// DST cron expressions (UTC). Four crons: Sat+Sun × EDT+EST.
+// DST gate in bot selects correct half; wrong-half cron exits immediately.
 // See: infra/AZURE_PLAN.md §5.3
-var cronEdtHalf = '50 9 * * *'   // 09:50 UTC = 05:50 EDT
-var cronEstHalf = '50 10 * * *'  // 10:50 UTC = 05:50 EST
+var cronEdtSat = '50 9 * * 6'    // 09:50 UTC = 05:50 EDT Saturday
+var cronEstSat = '50 10 * * 6'   // 10:50 UTC = 05:50 EST Saturday
+var cronEdtSun = '50 9 * * 0'    // 09:50 UTC = 05:50 EDT Sunday
+var cronEstSun = '50 10 * * 0'   // 10:50 UTC = 05:50 EST Sunday
 
 // Hard-coded parallelism settings. See AZURE_PLAN.md §4.
 var replicaTimeout = 900      // 15 minutes in seconds

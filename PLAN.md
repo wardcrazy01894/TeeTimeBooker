@@ -456,7 +456,7 @@ week but the goal is the same. The actual idempotency key in `booking_history` i
 `(RequestId, resolved_date)` — composite primary key. This:
 
 - Lets the weekend cron book day N+7 this weekend and day N+14 next weekend without conflict.
-- Keeps the user's "I always want a Saturday at 8 AM 7 days out" rule a single
+- Keeps the user's "I always want a Saturday at 9:00-10:30 AM 7 days out" rule a single
   RequestId for analytics and §9 layer-5 advisory locking.
 - BOOKED on resolved_date X does NOT block resolved_date Y for the same
   RequestId. (See review failure mode "Two target_dates with overlapping

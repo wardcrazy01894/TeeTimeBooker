@@ -118,7 +118,7 @@ module logs 'modules/logs.bicep' = {
 
 // ---------------------------------------------------------------------------
 // Module: compute
-// Container Apps Environment (Consumption) + Container Apps Job (two crons).
+// Container Apps Environment (Consumption) + Container Apps Job (four crons: Sat+Sun × DST).
 // See: infra/AZURE_PLAN.md §5 (race), §6.2 (parallelism=1)
 // ---------------------------------------------------------------------------
 

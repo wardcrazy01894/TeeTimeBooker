@@ -217,15 +217,17 @@ ACR geo-replication.
 ### 5.3 DST handling on ACA
 
 ACA cron expressions are UTC-only (identical constraint to GitHub Actions).
-The identical two-cron pattern from `book.yml` is required and is implemented
+The identical four-cron pattern from `book.yml` is required and is implemented
 in `compute.bicep`:
 
 | ET target | UTC cron | Description |
 |---|---|---|
-| 05:50 EDT (UTC-4) | `50 9 * * *` | Fires 10 min before T0 in EDT half of year |
-| 05:50 EST (UTC-5) | `50 10 * * *` | Fires 10 min before T0 in EST half of year |
+| 05:50 EDT Saturday (UTC-4) | `50 9 * * 6` | Fires 10 min before T0, EDT, Saturday |
+| 05:50 EST Saturday (UTC-5) | `50 10 * * 6` | Fires 10 min before T0, EST, Saturday |
+| 05:50 EDT Sunday (UTC-4)   | `50 9 * * 0` | Fires 10 min before T0, EDT, Sunday |
+| 05:50 EST Sunday (UTC-5)   | `50 10 * * 0` | Fires 10 min before T0, EST, Sunday |
 
-Both crons fire every day year-round. The bot's own DST gate — identical to
+All four crons fire on Saturdays and Sundays year-round. The bot's own DST gate — identical to
 the Python `dst` step in `book.yml` — runs as the first statement in the
 container entry point:
 
@@ -620,12 +622,12 @@ in the parameter file and redeploy — this is the intended release workflow.
 
 | Component | SKU | Monthly cost | Notes |
 |---|---|---|---|
-| Container Apps Job compute | Consumption | **$0.00** | Free tier: 180,000 vCPU-seconds/month. One 5-min run/day at 0.25 vCPU = 375 vCPU-s/day × 30 = 11,250 vCPU-s/month. 94% below free tier. |
-| Container Apps Job memory | Consumption | **$0.00** | Free tier: 360,000 GiB-seconds/month. One 5-min run at 0.5 GiB = 750 GiB-s/day × 30 = 22,500 GiB-s/month. 94% below free tier. |
+| Container Apps Job compute | Consumption | **$0.00** | Free tier: 180,000 vCPU-seconds/month. One 5-min run/weekend-day at 0.25 vCPU = 375 vCPU-s/run × ~8 weekend-days/month = 3,000 vCPU-s/month. 98% below free tier. |
+| Container Apps Job memory | Consumption | **$0.00** | Free tier: 360,000 GiB-seconds/month. One 5-min run at 0.5 GiB = 750 GiB-s/run × ~8 weekend-days/month = 6,000 GiB-s/month. 98% below free tier. |
 | Container Apps Environment | Consumption | **$0.00** | No per-environment fee on Consumption plan. |
 | Azure Container Registry | Basic | **~$5.00** | $5.00/mo flat for Basic SKU. Includes 10 GiB storage. Our image is ~300 MB; well within limits. |
-| Blob Storage | LRS Hot | **~$0.01** | ~100 KB blob × 30 writes/month = negligible. $0.018/GB storage + $0.004/10k operations. |
-| Key Vault | Standard | **~$0.03** | $0.03/10k operations. ~960 secret reads/month (7 secrets × 2 jobs/day × 2 cron-halves × 30 days = 840; rounding to ~960 with overhead). Still negligible — well under 10k operations. |
+| Blob Storage | LRS Hot | **~$0.01** | ~100 KB blob × ~8 writes/month = negligible. $0.018/GB storage + $0.004/10k operations. |
+| Key Vault | Standard | **~$0.01** | $0.03/10k operations. ~225 secret reads/month (7 secrets × 2 cron-halves × ~8 weekend-days/month ≈ 112; rounding to ~225 with overhead). Negligible — well under 10k operations. |
 | Log Analytics | Pay-per-use | **~$0.00–$0.50** | First 5 GB/month free. Bot produces <10 MB logs/month. |
 | Application Insights | Pay-per-use | **~$0.00** | First 5 GB/month free. |
 | Network egress | — | **~$0.00** | First 100 GB/month free. Bot does <10 MB/run. |
@@ -716,19 +718,21 @@ cross-platform).
 **Cutover sequence:**
 1. Deploy and validate v1 in dev with `--dry-run true`.
 2. Confirm v1 dry-run email arrives at correct time with correct content.
-3. Disable the v0 cron schedule in `book.yml` by commenting out both `schedule:`
+3. Disable the v0 cron schedule in `book.yml` by commenting out all four `schedule:`
    entries (keep `workflow_dispatch` intact for manual recovery):
    ```yaml
    on:
      # schedule:  ← DISABLED on v1 cutover; v1 uses ACA Jobs
-     #   - cron: "50 9 * * *"
-     #   - cron: "50 10 * * *"
+     #   - cron: "50 9 * * 6"   # Saturday EDT
+     #   - cron: "50 10 * * 6"  # Saturday EST
+     #   - cron: "50 9 * * 0"   # Sunday EDT
+     #   - cron: "50 10 * * 0"  # Sunday EST
      workflow_dispatch:
        ...
    ```
    Commit this change as a PR titled "v1 cutover: disable v0 cron schedule".
 4. Deploy v1 ACA Jobs in prod with `--dry-run false`.
-5. Monitor for 3 consecutive successful daily runs.
+5. Monitor for 3 consecutive successful weekend runs.
 6. After 30 days of clean v1 operation, remove the commented schedule entries
    from `book.yml` in a follow-up PR.
 
