@@ -112,8 +112,8 @@ class WatcherConfig(BaseModel):
     enabled: bool = False
     poll_interval_s: int = 600  # 10 minutes; must be >= 300 (anti-bot floor)
     # Wall-clock hours (course-local) bounding when polling is permitted.
-    polling_start_hour: int = 7   # 7 AM
-    polling_end_hour: int = 22    # 10 PM
+    polling_start_hour: int = 7  # 7 AM
+    polling_end_hour: int = 22  # 10 PM
 
     def to_watch_config(self) -> WatchConfig:
         """Translate pydantic WatcherConfig to the frozen WatchConfig dataclass.

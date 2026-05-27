@@ -60,8 +60,7 @@ def _request(
     n_players: int = 1,
 ) -> BookingRequest:
     players = tuple(
-        Player(first_name=f"P{i}", last_name="L", email=f"p{i}@x.test")
-        for i in range(n_players)
+        Player(first_name=f"P{i}", last_name="L", email=f"p{i}@x.test") for i in range(n_players)
     )
     return BookingRequest(
         request_id=RequestId(uuid4()),
@@ -101,7 +100,7 @@ def test_rank_slots_returns_earliest_first() -> None:
     req = _request()
     slots = [
         _slot(10, 30),  # latest in window
-        _slot(9, 0),   # earliest in window
+        _slot(9, 0),  # earliest in window
         _slot(9, 45),  # middle
     ]
     ranked = orch._rank_slots(slots, req)
@@ -128,8 +127,8 @@ def test_rank_slots_excludes_slots_outside_window() -> None:
     # Window is 09:00-10:30
     req = _request()
     slots = [
-        _slot(8, 59),   # just before window — excluded
-        _slot(9, 0),    # exactly at earliest — included
+        _slot(8, 59),  # just before window — excluded
+        _slot(9, 0),  # exactly at earliest — included
         _slot(10, 30),  # exactly at latest — included
         _slot(10, 31),  # just after window — excluded
     ]
@@ -214,9 +213,9 @@ def test_rank_slots_multiple_windows_sorted_globally() -> None:
     req = _request(windows=windows)
     slots = [
         _slot(10, 15),  # in second window
-        _slot(9, 0),    # in first window — earliest overall
-        _slot(9, 30),   # in first window
-        _slot(10, 0),   # in second window
+        _slot(9, 0),  # in first window — earliest overall
+        _slot(9, 30),  # in first window
+        _slot(10, 0),  # in second window
     ]
     ranked = orch._rank_slots(slots, req)
     assert len(ranked) == 4

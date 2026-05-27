@@ -65,12 +65,12 @@ ET = ZoneInfo("America/New_York")
 #   10:00 ET  = 14:00 UTC  (inside polling window 07-22)
 #    6:00 ET  = 10:00 UTC  (before polling_start_hour=7)
 #   11:00 PM ET = 03:00 UTC next day (after polling_end_hour=22)
-DURING_POLLING_UTC = datetime(2026, 5, 9, 14, 0, 0, tzinfo=UTC)   # 10 AM ET
-BEFORE_POLLING_UTC = datetime(2026, 5, 9, 10, 0, 0, tzinfo=UTC)   # 6 AM ET
-AFTER_POLLING_UTC  = datetime(2026, 5, 10, 3, 0, 0, tzinfo=UTC)   # 11 PM ET (prev day)
+DURING_POLLING_UTC = datetime(2026, 5, 9, 14, 0, 0, tzinfo=UTC)  # 10 AM ET
+BEFORE_POLLING_UTC = datetime(2026, 5, 9, 10, 0, 0, tzinfo=UTC)  # 6 AM ET
+AFTER_POLLING_UTC = datetime(2026, 5, 10, 3, 0, 0, tzinfo=UTC)  # 11 PM ET (prev day)
 
 # Past deadline: now is the day AFTER target_date.
-PAST_DEADLINE_UTC = datetime(2026, 5, 17, 14, 0, 0, tzinfo=UTC)   # day after TARGET_DATE
+PAST_DEADLINE_UTC = datetime(2026, 5, 17, 14, 0, 0, tzinfo=UTC)  # day after TARGET_DATE
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +103,12 @@ def _slot(*, hour: int = 9, minute: int = 0) -> TeeTimeSlot:
         course_id=COURSE_ID,
         slot_id=SlotId(f"slot-{hour:02d}{minute:02d}"),
         tee_time=datetime(
-            TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day,
-            hour, minute, tzinfo=ET,
+            TARGET_DATE.year,
+            TARGET_DATE.month,
+            TARGET_DATE.day,
+            hour,
+            minute,
+            tzinfo=ET,
         ),
         holes=18,
         available_spots=4,
@@ -320,16 +324,23 @@ async def test_watch_does_not_rebook_when_list_reservations_has_match() -> None:
     req = _request()
 
     # A reservation that matches target_date + party_size.
-    adapter.set_existing_reservations([
-        ExistingReservation(
-            course_id=COURSE_ID,
-            confirmation_code="manual-abc",
-            tee_time=datetime(
-                TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, 9, 30, tzinfo=ET,
-            ),
-            party_size=1,  # matches len(request.players) == 1
-        )
-    ])
+    adapter.set_existing_reservations(
+        [
+            ExistingReservation(
+                course_id=COURSE_ID,
+                confirmation_code="manual-abc",
+                tee_time=datetime(
+                    TARGET_DATE.year,
+                    TARGET_DATE.month,
+                    TARGET_DATE.day,
+                    9,
+                    30,
+                    tzinfo=ET,
+                ),
+                party_size=1,  # matches len(request.players) == 1
+            )
+        ]
+    )
 
     watch, _, _ = _build(adapter)
     await watch.check_once(req, TARGET_DATE)
@@ -507,19 +518,26 @@ async def test_watch_transient_error_on_first_course_still_tries_second() -> Non
     )
 
     adapter2 = FakeAdapter(course_id=COURSE_ID_2)
-    adapter2.set_search_response([
-        TeeTimeSlot(
-            course_id=COURSE_ID_2,
-            slot_id=SlotId("slot-0930"),
-            tee_time=datetime(
-                TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, 9, 30, tzinfo=ET,
-            ),
-            holes=18,
-            available_spots=4,
-            price_per_player=Decimal("45.00"),
-            cart_included=True,
-        )
-    ])
+    adapter2.set_search_response(
+        [
+            TeeTimeSlot(
+                course_id=COURSE_ID_2,
+                slot_id=SlotId("slot-0930"),
+                tee_time=datetime(
+                    TARGET_DATE.year,
+                    TARGET_DATE.month,
+                    TARGET_DATE.day,
+                    9,
+                    30,
+                    tzinfo=ET,
+                ),
+                holes=18,
+                available_spots=4,
+                price_per_player=Decimal("45.00"),
+                cart_included=True,
+            )
+        ]
+    )
 
     store = InMemoryStore()
     clock = FakeClock(start=DURING_POLLING_UTC)

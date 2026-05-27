@@ -207,14 +207,15 @@ def watch_cmd(
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
         log = logging.getLogger(__name__)
         log.warning(
-            "Watch job is disabled in config (watcher.enabled = false). "
-            "Set to true to activate."
+            "Watch job is disabled in config (watcher.enabled = false). Set to true to activate."
         )
         return  # exit 0
 
-    asyncio.run(_watch(
-        cfg, dry_run=dry_run, target_date_str=target_date_str, use_fake_adapter=use_fake_adapter
-    ))
+    asyncio.run(
+        _watch(
+            cfg, dry_run=dry_run, target_date_str=target_date_str, use_fake_adapter=use_fake_adapter
+        )
+    )
 
 
 async def _watch(

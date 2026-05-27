@@ -250,15 +250,13 @@ class WatchConfig:
     # Earliest and latest wall-clock hour (course-local) during which polling
     # is permitted. Polling outside these hours is suppressed to reduce server
     # load during off-peak times when new cancellations are unlikely.
-    polling_start_hour: int = 7   # 7 AM course-local
-    polling_end_hour: int = 22    # 10 PM course-local
+    polling_start_hour: int = 7  # 7 AM course-local
+    polling_end_hour: int = 22  # 10 PM course-local
 
     def __post_init__(self) -> None:
         _min_poll_s = 300
         if self.poll_interval_s < _min_poll_s:
-            raise ValueError(
-                f"poll_interval_s must be >= {_min_poll_s} (anti-bot etiquette floor)"
-            )
+            raise ValueError(f"poll_interval_s must be >= {_min_poll_s} (anti-bot etiquette floor)")
 
 
 # --- One-booking priority models (M-feature-2) ---------------------------

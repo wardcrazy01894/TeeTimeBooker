@@ -388,7 +388,7 @@ class ForeUpAdapter(CourseAdapter):
         # strips to get the raw id. Implemented here so the caller never has to think
         # about it.
         raw_id = (
-            confirmation_code[len(MANAGED_BOOKING_TAG):]
+            confirmation_code[len(MANAGED_BOOKING_TAG) :]
             if confirmation_code.startswith(MANAGED_BOOKING_TAG)
             else confirmation_code
         )
