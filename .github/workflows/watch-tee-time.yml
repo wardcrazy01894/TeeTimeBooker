@@ -20,17 +20,14 @@
 # a watch run from overlapping with a book run — those use separate groups. The
 # advisory lock inside WatchOrchestrator handles that case correctly.
 #
-# IMPLEMENT IN: M-feature-1.T3. This file is a STUB — teetime watch is not yet
-# implemented. The steps below are placeholders showing the intended shape.
-# Do not enable this workflow until WatchOrchestrator.check_once is implemented.
-
 name: watch-tee-time
 
 on:
-  # TODO (M-feature-1.T3): Uncomment schedule after WatchOrchestrator is implemented.
-  # Fires every 10 minutes. WatchOrchestrator gates on polling hours internally.
-  # schedule:
-  #   - cron: "*/10 * * * *"
+  # Fires every 10 minutes year-round. WatchOrchestrator gates on polling hours
+  # internally (7 AM–10 PM ET) via zoneinfo — no DST-half gate needed here.
+  # See PLAN.md §20 for the polling-hours rationale.
+  schedule:
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -94,13 +91,16 @@ jobs:
       - name: Run watch check
         run: |
           mkdir -p state
-          # TODO (M-feature-1.T3): implement `teetime watch` CLI command.
-          # The command below is a placeholder showing the intended interface.
-          # teetime watch \
-          #   --config config/local.toml \
-          #   --dry-run "${{ github.event.inputs.dry_run || 'true' }}" \
-          #   ${{ github.event.inputs.target_date != '' && format('--date {0}', github.event.inputs.target_date) || '' }}
-          echo "STUB: teetime watch not yet implemented (M-feature-1.T3)"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          TARGET_DATE="${{ github.event.inputs.target_date }}"
+          DATE_ARG=""
+          if [ -n "$TARGET_DATE" ]; then
+            DATE_ARG="--date $TARGET_DATE"
+          fi
+          uv run teetime watch \
+            --config config/local.toml \
+            --dry-run "$DRY_RUN" \
+            $DATE_ARG
 
       - name: Save state cache
         if: always()

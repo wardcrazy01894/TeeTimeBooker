@@ -43,15 +43,17 @@ State management:
        (`teetime watch` CLI) may also pass `--date YYYY-MM-DD` to override.
     2. Whether a booking already exists — `list_reservations` and `get_terminal`
        short-circuit the poll.
-    3. The deadline past which watching is pointless — midnight on target_date
-       (course-local time). Computed from `clock.now_utc()` and `target_date`.
+    3. The deadline past which watching is pointless — after the target_date has
+       passed (local date in scheduler timezone > target_date).
 
     There is NO separate `watch_state` table and no `WatchState` Protocol method.
     The watch job is stateless beyond the existing `booking_history` table.
 
 ADVISORY LOCK OWNERSHIP:
     check_once() does NOT acquire `request_lock` for its read-only availability
-    check. If it finds a higher-priority slot and delegates to
+    check. Once a bookable slot is found, it acquires the lock for the
+    book + record_terminal sequence (matching the main Orchestrator's pattern).
+    If it finds a higher-priority slot and delegates to
     `UpgradeOrchestrator.maybe_upgrade()`, that method acquires the lock itself.
     The caller must NOT hold the lock when calling maybe_upgrade().
     See upgrade_orchestrator.py module docstring for the canonical lock statement.
@@ -69,24 +71,36 @@ How check_once() determines the "current booking" for maybe_upgrade():
     a permanent no-op.
 
 Race condition with the 6 AM booking run:
-    The watch job's read-only search phase is lock-free. If it proceeds to an
-    upgrade attempt, UpgradeOrchestrator.maybe_upgrade() tries to acquire the
-    lock. If the 6 AM booking job holds the lock, ConcurrentRunError is caught
-    and maybe_upgrade returns None. Safe.
+    The watch job's read-only search phase is lock-free. If it proceeds to book,
+    it acquires the lock. If the 6 AM booking job holds the lock, ConcurrentRunError
+    is caught and check_once returns None. Safe.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
+from ..persistence.store import ConcurrentRunError
+from .adapter import (
+    AuthError,
+    CaptchaError,
+    InventoryNotPublishedError,
+    NoInventoryError,
+    SlotGoneError,
+)
 from .models import (
+    BookingOutcome,
     BookingRequest,
     BookingResult,
     CourseCredentials,
     CourseId,
+    TeeTimeSlot,
     WatchConfig,
 )
+from .slot_utils import rank_slots_for_request
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -96,6 +110,8 @@ if TYPE_CHECKING:
     from .adapter import CourseAdapter
     from .clock import Clock
     from .config import SchedulerConfig
+
+log = logging.getLogger(__name__)
 
 
 class WatchOrchestrator:
@@ -111,13 +127,14 @@ class WatchOrchestrator:
     This class does NOT loop internally. Each invocation does one check and exits.
     The polling loop is handled externally by the scheduler (ACA cron / GH Actions).
 
-    LOCK OWNERSHIP: check_once() is READ-only at the search phase and does NOT
-    hold `request_lock`. If it delegates to UpgradeOrchestrator.maybe_upgrade(),
-    that method acquires the lock itself. check_once() must NOT hold the lock
-    when calling maybe_upgrade().
+    LOCK OWNERSHIP: check_once() acquires `request_lock` only for the booking
+    phase (book + record_terminal), matching the Orchestrator pattern. The
+    read-only search phase is lock-free. If check_once delegates to
+    UpgradeOrchestrator.maybe_upgrade(), that method acquires the lock itself;
+    check_once must NOT hold the lock when calling maybe_upgrade().
 
     CURRENT BOOKING RESOLUTION: check_once() retrieves the current managed
-    booking via store.get_booked(request.request_id, target_date) and passes
+    booking via store.get_terminal(request.request_id, target_date) and passes
     the resulting BookingResult (which carries the TTB:-prefixed confirmation_code)
     to UpgradeOrchestrator.maybe_upgrade(). It does NOT pass the ExistingReservation
     from list_reservations(), which would always have is_managed=False (raw server
@@ -157,40 +174,189 @@ class WatchOrchestrator:
             the next invocation via the external cron).
 
         Raises:
-            No exceptions are propagated — all failures are logged and result
-            in a None return so the watch job exits cleanly (the ACA/GH cron
-            will retry on the next interval). The exception is CaptchaError
-            and AuthError which are re-raised after notifying, so the operator
-            can disable the watch job.
-
-        The implementation follows the same §9.1 state machine as Orchestrator
-        for any booking POST it makes, including UNCERTAIN -> RECONCILING.
-
-        See PLAN.md M-feature-1.T2 for the full state machine extension.
+            CaptchaError: re-raised after notifying (operator must disable the job).
+            AuthError: re-raised after notifying (operator must fix credentials).
+            All other exceptions are caught, logged, and result in None return.
         """
-        raise NotImplementedError(
-            "WatchOrchestrator.check_once — implement in M-feature-1.T2. "
-            "See PLAN.md M-feature-1 for the full algorithm."
+        now = self._clock.now_utc()
+
+        # Gate 1: polling hours (course-local wall-clock time).
+        if self._is_outside_polling_hours(now):
+            log.debug(
+                "watch: outside polling hours (%d-%d), skipping",
+                self._watch_config.polling_start_hour,
+                self._watch_config.polling_end_hour,
+            )
+            return None
+
+        # Gate 2: deadline — if target_date is in the past, stop watching.
+        if self._is_past_watch_deadline(now, target_date):
+            log.info("watch: target_date %s has passed, stopping", target_date)
+            return None
+
+        # Gate 3: idempotency — already BOOKED in the store (main job or prior watch run).
+        prior = await self._store.get_terminal(request.request_id, target_date)
+        if prior is not None and prior.outcome == BookingOutcome.BOOKED:
+            log.debug(
+                "watch: store already has BOOKED terminal for (%s, %s), skipping",
+                request.request_id,
+                target_date,
+            )
+            return prior
+
+        # Search phase: lock-free — check each course for available slots.
+        for course_id in request.course_preferences:
+            adapter = self._adapters.get(course_id)
+            if adapter is None:
+                continue
+
+            try:
+                result = await self._check_course(adapter, course_id, request, target_date)
+            except (CaptchaError, AuthError) as exc:
+                # Fatal errors: notify operator and re-raise so the calling
+                # CLI/workflow can disable the watch job.
+                outcome = (
+                    BookingOutcome.CAPTCHA_BLOCKED
+                    if isinstance(exc, CaptchaError)
+                    else BookingOutcome.AUTH_FAILED
+                )
+                error_result = BookingResult(
+                    request_id=request.request_id,
+                    outcome=outcome,
+                    course_id=course_id,
+                    slot=None,
+                    confirmation_code=None,
+                    booked_at=None,
+                    attempts=0,
+                    error_message=str(exc),
+                )
+                try:
+                    await self._notifier.notify(error_result)
+                except Exception:
+                    log.warning("watch: notifier raised during fatal error handling", exc_info=True)
+                raise
+
+            except Exception as exc:
+                # Transient errors (network blips, unexpected HTTP responses).
+                # Return None so the cron can retry on the next interval.
+                log.warning(
+                    "watch: transient error on course %s: %s", course_id, exc, exc_info=True
+                )
+                return None
+
+            if result is not None:
+                return result
+
+        return None
+
+    # --- per-course search + book ----------------------------------------
+
+    async def _check_course(
+        self,
+        adapter: CourseAdapter,
+        course_id: CourseId,
+        request: BookingRequest,
+        target_date: date,
+    ) -> BookingResult | None:
+        """Check one course for available slots. Returns a BOOKED result or None."""
+        creds = self._creds.get(course_id)
+        if creds is not None:
+            await adapter.authenticate(creds)
+
+        # Layer 2: pre-book remote reservation check (§9).
+        existing = await adapter.list_reservations()
+        already = any(
+            r.tee_time.date() == target_date and r.party_size == len(request.players)
+            for r in existing
         )
+        if already:
+            log.debug("watch: existing reservation for %s on %s", course_id, target_date)
+            return None
+
+        # Search for newly available slots.
+        try:
+            slots = await adapter.search(request)
+        except (NoInventoryError, InventoryNotPublishedError):
+            return None  # Nothing on this course; try next.
+
+        candidates = rank_slots_for_request(slots, request)
+        if not candidates:
+            return None
+
+        return await self._book_candidates(adapter, request, target_date, candidates)
+
+    async def _book_candidates(
+        self,
+        adapter: CourseAdapter,
+        request: BookingRequest,
+        target_date: date,
+        candidates: list[TeeTimeSlot],
+    ) -> BookingResult | None:
+        """Acquire the advisory lock and attempt to book the first available candidate.
+
+        Returns a BOOKED BookingResult on success, or None if the lock was
+        contended or all candidates were gone.
+        """
+        try:
+            async with self._store.request_lock(request.request_id):
+                # Re-check inside lock — the 6 AM job or another watch invocation
+                # may have booked between our search and lock acquisition.
+                re_check = await self._store.get_terminal(request.request_id, target_date)
+                if re_check is not None and re_check.outcome == BookingOutcome.BOOKED:
+                    return re_check
+
+                for candidate in candidates:
+                    try:
+                        result = await adapter.book(candidate, request)
+                    except SlotGoneError:
+                        continue  # Race lost on this slot — try next candidate.
+
+                    if result.outcome == BookingOutcome.BOOKED:
+                        # Clear any prior non-BOOKED terminal (e.g., NO_INVENTORY
+                        # from the 6 AM run) before recording the new BOOKED result.
+                        await self._store.delete_terminal(request.request_id, target_date)
+                        await self._store.record_terminal(result, target_date)
+                        await self._notifier.notify(result)
+                        log.info(
+                            "watch: booked %s on %s (confirmation=%s)",
+                            result.course_id,
+                            target_date,
+                            result.confirmation_code,
+                        )
+                        return result
+
+        except ConcurrentRunError:
+            log.debug(
+                "watch: request_lock held by another run for %s — skipping",
+                request.request_id,
+            )
+
+        return None
+
+    # --- time gates -------------------------------------------------------
 
     def _is_outside_polling_hours(self, now: datetime) -> bool:
         """Return True if current wall-clock time is outside polling_start/end hours.
 
         Polling is suppressed outside the configured hours to reduce load
         during nighttime when cancellations are vanishingly rare.
-
-        See PLAN.md M-feature-1 §"Polling hours gate".
+        Hours are checked in the scheduler's timezone (course-local wall clock).
         """
-        raise NotImplementedError(
-            "WatchOrchestrator._is_outside_polling_hours — implement in M-feature-1.T2."
+        tz = ZoneInfo(self._scheduler.timezone)
+        local_hour = now.astimezone(tz).hour
+        return (
+            local_hour < self._watch_config.polling_start_hour
+            or local_hour >= self._watch_config.polling_end_hour
         )
 
     def _is_past_watch_deadline(self, now: datetime, target_date: date) -> bool:
-        """Return True if we have passed the point where watching is useful.
+        """Return True if target_date is in the past (local date > target_date).
 
-        Watching stops at midnight of the target_date (course-local time):
-        the booking is for that day and no slots will open after the round time.
+        Watching stops the day after target_date: the round has happened, no
+        cancellations are relevant.  Within target_date itself (e.g. watching on
+        the morning of the round), polling continues so last-minute cancellations
+        can be caught.
         """
-        raise NotImplementedError(
-            "WatchOrchestrator._is_past_watch_deadline — implement in M-feature-1.T2."
-        )
+        tz = ZoneInfo(self._scheduler.timezone)
+        local_date = now.astimezone(tz).date()
+        return local_date > target_date
