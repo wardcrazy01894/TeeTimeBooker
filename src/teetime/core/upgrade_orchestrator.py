@@ -37,7 +37,6 @@ ADVISORY LOCK OWNERSHIP (MF-2 canonical statement):
 
     The full sequence inside maybe_upgrade():
         async with store.request_lock(request_id):
-            [verify current booking still exists]
             [search for higher-priority slot]
             [book new slot]
             [cancel old slot]
@@ -61,7 +60,7 @@ Ownership detection ("our" vs "manual" bookings):
     NOT on the ExistingReservation from list_reservations.
 
     WatchOrchestrator.check_once retrieves the current managed booking via
-    store.get_booked(request_id, target_date), which returns a BookingResult with
+    store.get_terminal(request_id, target_date), which returns a BookingResult with
     the TTB:-prefixed confirmation_code, and passes that BookingResult to
     maybe_upgrade(). The matching ExistingReservation (from list_reservations) is
     used only to confirm the booking still exists on the server and to supply the
@@ -93,16 +92,23 @@ Priority tie-breaking:
 
 from __future__ import annotations
 
+import logging
+import sys
+from dataclasses import replace as dc_replace
 from datetime import date
 from typing import TYPE_CHECKING
 
 from .models import (
+    MANAGED_BOOKING_TAG,
+    BookingOutcome,
     BookingRequest,
     BookingResult,
     CourseCredentials,
     CourseId,
     PrioritySlot,
+    TimeWindow,
 )
+from .slot_utils import rank_slots_for_request
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -112,6 +118,8 @@ if TYPE_CHECKING:
     from .adapter import CourseAdapter
     from .clock import Clock
     from .config import OneBookingPolicyConfig, SchedulerConfig
+
+log = logging.getLogger(__name__)
 
 
 class UpgradeOrchestrator:
@@ -161,41 +169,178 @@ class UpgradeOrchestrator:
         See the module docstring for the canonical lock ownership statement.
 
         Algorithm:
-            1. Build the priority list for `target_date` from policy.priority_slots.
-            2. Determine the priority of `current_booking` (by matching course_id
-               and time_window). If current_booking.confirmation_code does not start
-               with MANAGED_BOOKING_TAG, return None immediately — never touch manual
-               or unrecognised bookings.
-            3. Acquire request_lock.
-            4. For each priority slot with a lower index (higher priority) than the
-               current booking's priority:
-               a. Search the adapter for available slots in that window.
-               b. If any slots found:
-                  - book the best one (earliest time in window, per Feature 3).
-                  - If book() succeeds: cancel the old booking (strip TTB: prefix
-                    from current_booking.confirmation_code to get the raw server id),
-                    then update state.
-                  - If book() fails: log warning, continue to next candidate.
-               c. If cancel_reservation() fails after successful book():
-                  record the new booking as BOOKED anyway (we have a real
-                  confirmation code). Log a warning that a duplicate booking
-                  may exist and the user must manually cancel the old one.
-                  Notify the user with dual-booking warning.
-            5. Return None if no upgrade was possible (all higher-priority slots
-               still unavailable or all book() attempts failed). Notifier is
-               called with an error-level result when all candidates fail to book
-               so the user receives a signal about the missed upgrade opportunity.
-
-        Raises:
-            No exceptions propagated — all failures logged. CaptchaError and
-            AuthError are re-raised after notification.
-
-        See PLAN.md M-feature-2.T3 for the full implementation contract.
+            1. Managed-booking guard: if current_booking.confirmation_code lacks
+               the TTB: prefix, return None immediately — never touch manual bookings.
+            2. Build priority list; determine current booking's priority index.
+            3. Find priority slots with a strictly lower index (higher priority).
+               If none, return None.
+            4. Acquire request_lock.
+            5. For each higher-priority slot (ascending by priority index):
+               a. Search adapter for available slots in that window.
+               b. If slots found: book the best one (earliest tee_time).
+               c. If book() succeeds: cancel old booking, update store, notify.
+               d. If book() fails: continue to next candidate.
+               e. If cancel() fails after book(): persist new booking anyway,
+                  notify with dual-booking warning.
+            6. Return the new BookingResult, or None if no upgrade was possible.
         """
-        raise NotImplementedError(
-            "UpgradeOrchestrator.maybe_upgrade — implement in M-feature-2.T3. "
-            "See PLAN.md M-feature-2 for the cancel+rebook protocol."
+        # Step 1: Managed-booking guard (pre-lock, no mutation).
+        if not (
+            current_booking.confirmation_code
+            and current_booking.confirmation_code.startswith(MANAGED_BOOKING_TAG)
+        ):
+            log.debug(
+                "upgrade: booking %s has no TTB: prefix — unmanaged, skipping",
+                current_booking.confirmation_code,
+            )
+            return None
+
+        # Step 2: Build priority list + determine current booking's priority.
+        priority_slots = self._build_priority_list(request, target_date)
+        if not priority_slots:
+            return None
+
+        current_priority = self._current_booking_priority(current_booking, priority_slots)
+
+        # Step 3: Collect all slots with strictly lower index (= higher priority).
+        higher = [ps for ps in priority_slots if ps.priority < current_priority]
+        if not higher:
+            log.debug(
+                "upgrade: current booking is already at highest priority (%d), skipping",
+                current_priority,
+            )
+            return None
+
+        # Steps 4-6: Lock, search, book, cancel, update.
+        async with self._store.request_lock(request.request_id):
+            for priority_slot in sorted(higher, key=lambda ps: ps.priority):
+                result = await self._try_upgrade_slot(
+                    request, target_date, current_booking, priority_slot
+                )
+                if result is not None:
+                    return result
+
+        return None
+
+    async def _try_upgrade_slot(
+        self,
+        request: BookingRequest,
+        target_date: date,
+        current_booking: BookingResult,
+        priority_slot: PrioritySlot,
+    ) -> BookingResult | None:
+        """Attempt one upgrade to `priority_slot`. Called while holding request_lock.
+
+        Returns the persisted BookingResult on success (with or without cancel failure),
+        or None if this slot could not be booked (caller should try the next one).
+        """
+        adapter = self._adapters.get(priority_slot.course_id)
+        if adapter is None:
+            log.warning(
+                "upgrade: no adapter registered for course %s, skipping",
+                priority_slot.course_id,
+            )
+            return None
+
+        creds = self._creds.get(priority_slot.course_id)
+        if creds is not None:
+            await adapter.authenticate(creds)
+
+        search_request = dc_replace(
+            request,
+            target_dates=(target_date,),
+            time_windows=(priority_slot.time_window,),
+            course_preferences=(priority_slot.course_id,),
         )
+        try:
+            slots = await adapter.search(search_request)
+        except Exception as exc:
+            log.warning("upgrade: search failed for %s: %s", priority_slot.course_id, exc)
+            return None
+
+        candidates = rank_slots_for_request(slots, search_request)
+        if not candidates:
+            return None
+
+        best = candidates[0]
+        try:
+            new_result = await adapter.book(best, request)
+        except Exception as exc:
+            log.warning(
+                "upgrade: book() failed for slot %s on %s: %s",
+                best.slot_id,
+                priority_slot.course_id,
+                exc,
+            )
+            return None
+
+        if new_result.outcome != BookingOutcome.BOOKED:
+            return None
+
+        # Book succeeded — now cancel the old booking (book-before-cancel protocol).
+        cancel_failed = await self._cancel_old_booking(current_booking)
+        return await self._persist_upgrade(
+            request, target_date, current_booking, new_result, priority_slot, cancel_failed
+        )
+
+    async def _cancel_old_booking(self, current_booking: BookingResult) -> bool:
+        """Cancel the old booking. Returns True if cancel failed (dual-booking situation)."""
+        if current_booking.course_id is None:
+            log.warning("upgrade: current_booking has no course_id — cannot cancel")
+            return True
+        old_adapter = self._adapters.get(current_booking.course_id)
+        if old_adapter is None:
+            log.warning(
+                "upgrade: no adapter for old course %s — cannot cancel old booking",
+                current_booking.course_id,
+            )
+            return True
+        try:
+            await old_adapter.cancel_reservation(current_booking.confirmation_code or "")
+        except Exception as cancel_exc:
+            log.warning(
+                "upgrade: cancel failed after successful rebook — DUAL BOOKING! "
+                "Old booking %s must be cancelled manually. Error: %s",
+                current_booking.confirmation_code,
+                cancel_exc,
+            )
+            return True
+        return False
+
+    async def _persist_upgrade(
+        self,
+        request: BookingRequest,
+        target_date: date,
+        current_booking: BookingResult,
+        new_result: BookingResult,
+        priority_slot: PrioritySlot,
+        cancel_failed: bool,
+    ) -> BookingResult:
+        """Delete old terminal, record new one, and notify. Returns the stored result."""
+        result_to_store = new_result
+        if cancel_failed:
+            result_to_store = dc_replace(
+                new_result,
+                diagnostics={
+                    **new_result.diagnostics,
+                    "dual_booking_warning": True,
+                    "old_confirmation_code": current_booking.confirmation_code or "",
+                },
+            )
+
+        await self._store.delete_terminal(request.request_id, target_date)
+        await self._store.record_terminal(result_to_store, target_date)
+        await self._notifier.notify(result_to_store)
+
+        log.info(
+            "upgrade: %s from %s to %s (priority %d)%s",
+            "upgraded (dual-booking warning)" if cancel_failed else "upgraded",
+            current_booking.course_id,
+            new_result.course_id,
+            priority_slot.priority,
+            " — old booking NOT cancelled, manual action required" if cancel_failed else "",
+        )
+        return result_to_store
 
     def _current_booking_priority(
         self,
@@ -213,9 +358,17 @@ class UpgradeOrchestrator:
         that any configured priority slot is treated as an upgrade over an untracked
         booking — the correct safe default. The caller never needs to handle None.
         """
-        raise NotImplementedError(
-            "UpgradeOrchestrator._current_booking_priority — implement in M-feature-2.T3."
-        )
+        if current.slot is None:
+            return sys.maxsize
+
+        slot_time = current.slot.tee_time.time()
+        for ps in priority_slots:
+            if ps.course_id != current.course_id:
+                continue
+            if ps.time_window.earliest <= slot_time <= ps.time_window.latest:
+                return ps.priority
+
+        return sys.maxsize
 
     def _build_priority_list(
         self,
@@ -233,6 +386,30 @@ class UpgradeOrchestrator:
             target_date: the date being watched (for any date-specific filtering
                 that M-feature-2.T2 may add, e.g. day-of-week windows).
         """
-        raise NotImplementedError(
-            "UpgradeOrchestrator._build_priority_list — implement in M-feature-2.T2."
-        )
+        if self._policy.priority_slots:
+            return [
+                PrioritySlot(
+                    priority=i,
+                    course_id=CourseId(ps.course_id),
+                    time_window=TimeWindow(
+                        earliest=ps.time_window_earliest,
+                        latest=ps.time_window_latest,
+                    ),
+                    target_date=target_date,
+                )
+                for i, ps in enumerate(self._policy.priority_slots)
+            ]
+
+        # Fallback: use course_preferences order with the first time window.
+        if not request.time_windows:
+            return []
+        window = request.time_windows[0]
+        return [
+            PrioritySlot(
+                priority=i,
+                course_id=course_id,
+                time_window=window,
+                target_date=target_date,
+            )
+            for i, course_id in enumerate(request.course_preferences)
+        ]

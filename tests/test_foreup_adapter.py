@@ -17,6 +17,7 @@ import pytest
 import respx
 
 from teetime.core.adapter import (
+    CancelError,
     CaptchaError,
     CourseAdapter,
     RateLimitError,
@@ -387,6 +388,82 @@ async def test_list_reservations_skips_unparseable_items() -> None:
         adapter = _adapter(client)
         reservations = await adapter.list_reservations()
     assert len(reservations) == 1  # bad item skipped, good item kept
+
+
+# --- cancel_reservation --------------------------------------------------
+
+
+CANCEL_RESERVATION_ID = "TTID_05271410334cux8"
+CANCEL_URL = f"{FOREUP_BASE_URL}{RESERVATION_PATH}/{CANCEL_RESERVATION_ID}"
+
+
+@respx.mock
+async def test_authenticate_stores_jwt_from_login_response() -> None:
+    """login response with a 'token' field → stored as _auth_token for cancel auth."""
+    respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        return_value=httpx.Response(200, json={"success": True, "token": "fake-jwt-abc"})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+    assert adapter._auth_token == "fake-jwt-abc"
+
+
+@respx.mock
+async def test_cancel_reservation_success() -> None:
+    """DELETE returning 200 {"success":true,...} returns normally (no exception)."""
+    respx.delete(CANCEL_URL).mock(
+        return_value=httpx.Response(200, json={"success": True, "msg": "Reservation Cancelled"})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._auth_token = "test-token"
+        await adapter.cancel_reservation(CANCEL_RESERVATION_ID)  # must not raise
+
+
+@respx.mock
+async def test_cancel_reservation_404_is_idempotent() -> None:
+    """DELETE returning 404 (already cancelled) returns normally — idempotent."""
+    respx.delete(CANCEL_URL).mock(return_value=httpx.Response(404))
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.cancel_reservation(CANCEL_RESERVATION_ID)  # must not raise
+
+
+@respx.mock
+async def test_cancel_reservation_non404_error_raises_cancel_error() -> None:
+    """DELETE returning a non-404 error status raises CancelError."""
+    respx.delete(CANCEL_URL).mock(return_value=httpx.Response(400, text="Bad Request"))
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with pytest.raises(CancelError):
+            await adapter.cancel_reservation(CANCEL_RESERVATION_ID)
+
+
+@respx.mock
+async def test_cancel_reservation_strips_ttb_prefix() -> None:
+    """TTB:-prefixed confirmation_code is stripped; raw id is used in the DELETE path."""
+    respx.delete(CANCEL_URL).mock(return_value=httpx.Response(200, json={"success": True}))
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        # Pass TTB:-prefixed code as stored in BookingResult.confirmation_code
+        await adapter.cancel_reservation(f"TTB:{CANCEL_RESERVATION_ID}")  # must not raise
+    # Verify the DELETE was called with the raw id (no TTB: prefix)
+    assert respx.calls.last.request.url.path == f"{RESERVATION_PATH}/{CANCEL_RESERVATION_ID}"
+
+
+@respx.mock
+async def test_cancel_reservation_sends_authorization_header() -> None:
+    """When _auth_token is set, DELETE includes x-authorization: Bearer <token>."""
+    respx.delete(CANCEL_URL).mock(return_value=httpx.Response(200, json={"success": True}))
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._auth_token = "my-jwt-token"
+        await adapter.cancel_reservation(CANCEL_RESERVATION_ID)
+    assert respx.calls.last.request.headers["x-authorization"] == "Bearer my-jwt-token"
 
 
 # --- aclose --------------------------------------------------------------

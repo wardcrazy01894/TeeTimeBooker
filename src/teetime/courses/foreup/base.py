@@ -41,6 +41,7 @@ import httpx
 
 from ...core.adapter import (
     AuthError,
+    CancelError,
     CaptchaError,
     CourseAdapter,
     InventoryNotPublishedError,
@@ -70,6 +71,7 @@ _USER_AGENT = "TeeTimeBooker/0.0.0 (+https://github.com/wardcrazy01894/TeeTimeBo
 _MIN_BETWEEN_S = 0.25  # anti-bot courtesy delay between non-booking requests
 _HTTP_RATE_LIMIT = 429
 _HTTP_SLOT_GONE = 409
+_HTTP_NOT_FOUND = 404
 
 
 class ForeUpAdapter(CourseAdapter):
@@ -114,6 +116,10 @@ class ForeUpAdapter(CourseAdapter):
         self._owns_client = http_client is None
         self._logged_in = False  # True only after a successful username/password login
         self._captcha_provider = captcha_provider
+        # JWT extracted from the login response — sent as x-authorization: Bearer <token>
+        # on cancel_reservation() requests. None if login hasn't been called or the
+        # response didn't contain a recognisable token field.
+        self._auth_token: str | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -188,6 +194,19 @@ class ForeUpAdapter(CourseAdapter):
         except ValueError:
             pass
         self._logged_in = True
+        # Extract JWT for use in cancel_reservation() requests.
+        # ForeUP returns the session token in the login response body. Try
+        # several common field paths seen across ForeUP API versions.
+        if isinstance(data, dict):
+            inner: dict[str, object] = data.get("data") or {}
+            raw_tok: object = (
+                data.get("token")
+                or data.get("access_token")
+                or inner.get("token")
+                or inner.get("access_token")
+            )
+            if isinstance(raw_tok, str) and raw_tok:
+                self._auth_token = raw_tok
         _log.info("ForeUP: login successful")
 
     async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
@@ -392,12 +411,35 @@ class ForeUpAdapter(CourseAdapter):
             if confirmation_code.startswith(MANAGED_BOOKING_TAG)
             else confirmation_code
         )
-        # Implementation pending Spike S4 (ForeUP cancel endpoint confirmation).
-        raise NotImplementedError(
-            f"ForeUpAdapter.cancel_reservation(raw_id={raw_id!r}) — implement in "
-            "M-feature-2.T1 after Spike S4 confirms the ForeUP cancellation endpoint. "
-            "See PLAN.md M-feature-2."
+        # Endpoint confirmed via HAR capture (Spike S4):
+        #   DELETE /index.php/api/booking/users/reservations/<id>
+        #   Success: HTTP 200, {"success": true, "msg": "Reservation Cancelled"}
+        #   Already-cancelled: HTTP 404 → treat as success (idempotent post-condition).
+        client = self._c()
+        await asyncio.sleep(_MIN_BETWEEN_S)
+        extra_headers: dict[str, str] = {"x-fu-golfer-location": "foreup"}
+        if self._auth_token:
+            extra_headers["x-authorization"] = f"Bearer {self._auth_token}"
+        _log.info("ForeUP: cancelling reservation %s...", raw_id)
+        r = await client.delete(
+            f"{RESERVATION_PATH}/{raw_id}",
+            headers=extra_headers,
         )
+        if r.status_code == _HTTP_NOT_FOUND:
+            # Already cancelled — the desired post-condition is satisfied.
+            _log.info("ForeUP: reservation %s already cancelled (404), treating as success", raw_id)
+            return
+        if r.status_code == _HTTP_RATE_LIMIT:
+            raise RateLimitError(
+                "Rate limited by ForeUP during cancel",
+                retry_after_s=float(r.headers.get("retry-after", 60)),
+            )
+        self._guard_captcha(r)
+        try:
+            r.raise_for_status()
+        except Exception as exc:
+            raise CancelError(f"Cancel failed ({r.status_code}): {r.text[:300]}") from exc
+        _log.info("ForeUP: reservation %s cancelled successfully", raw_id)
 
     async def aclose(self) -> None:
         if self._client is not None and self._owns_client:
