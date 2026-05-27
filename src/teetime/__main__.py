@@ -267,6 +267,7 @@ async def _watch(
         scheduler=cfg.scheduler,
         watch_config=watch_config,
         creds=creds,
+        policy=cfg.one_booking_policy,
     )
     result = await watch.check_once(request, target_date)
     if result is not None:

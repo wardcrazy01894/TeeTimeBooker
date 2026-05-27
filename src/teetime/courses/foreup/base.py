@@ -132,6 +132,11 @@ class ForeUpAdapter(CourseAdapter):
         # "reservations": false (a lazy-load flag, not actual data). authenticate()
         # populates this; list_reservations() reads from it.
         self._reservations_from_login: list[Any] = []
+        # CAPTCHA token pre-fetched by prepare_book() for use in book().
+        # None means no token has been pre-fetched; book() will solve it inline
+        # (normal booking path). When set, book() consumes and clears it
+        # (single-use) so the token is never silently reused.
+        self._captcha_token: str | None = None
 
     def _make_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -298,6 +303,24 @@ class ForeUpAdapter(CourseAdapter):
 
         return results
 
+    async def prepare_book(self, slot: TeeTimeSlot, request: BookingRequest) -> None:
+        """Pre-solve CAPTCHA and cache the token for use in book().
+
+        Called by UpgradeOrchestrator BEFORE cancel_reservation() so that the
+        cancel-to-book window is ~1-2 seconds (two HTTP round-trips) rather than
+        ~60 seconds (CAPTCHA solve time). After this returns, book(slot, request)
+        will use the cached token instead of calling the CAPTCHA provider.
+
+        If no CAPTCHA provider is configured (dry-run or test), this is a no-op.
+        Raises any exception from the CAPTCHA provider as-is; the caller should
+        abort the upgrade and leave the original booking untouched.
+        """
+        if self._captcha_provider is None:
+            return
+        _log.info("ForeUP: pre-fetching CAPTCHA token for upgrade (this can take 15-30s)...")
+        self._captcha_token = await self._captcha_provider()
+        _log.info("ForeUP: CAPTCHA token pre-fetched — cancel can now proceed.")
+
     async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
         """POST /reservations echoing slot raw fields with overridden player/fee totals."""
         if not self._logged_in:
@@ -331,9 +354,16 @@ class ForeUpAdapter(CourseAdapter):
             "player_list": False,
         }
         if self._captcha_provider is not None:
-            _log.info("ForeUP: requesting CAPTCHA token (this can take 15-30s)...")
-            body["captchaid"] = await self._captcha_provider()
-            _log.info("ForeUP: CAPTCHA token obtained, posting booking...")
+            if self._captcha_token is not None:
+                # Token was pre-fetched by prepare_book() — consume it immediately.
+                # Single-use: clear so it's never silently reused on a retry.
+                _log.info("ForeUP: using pre-fetched CAPTCHA token, posting booking...")
+                body["captchaid"] = self._captcha_token
+                self._captcha_token = None
+            else:
+                _log.info("ForeUP: requesting CAPTCHA token (this can take 15-30s)...")
+                body["captchaid"] = await self._captcha_provider()
+                _log.info("ForeUP: CAPTCHA token obtained, posting booking...")
         else:
             _log.info("ForeUP: posting booking (no CAPTCHA)...")
         _log.info(

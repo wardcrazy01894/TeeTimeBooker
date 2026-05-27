@@ -114,6 +114,25 @@ in `core/` — never directly. This is the cut line for parallel work.
   read-only. If it delegates to `UpgradeOrchestrator.maybe_upgrade`, THAT method
   acquires and releases the lock itself. Never call `maybe_upgrade` while already
   holding the lock — that deadlocks.
+- **`WatchOrchestrator` upgrade wiring**: Gate 3 (store already has BOOKED terminal)
+  and `_check_course()` (live reservation found, no store record) both delegate to
+  `_try_upgrade()` when `one_booking_policy.enabled = true`. `_try_upgrade()` builds
+  a fresh `UpgradeOrchestrator` and calls `maybe_upgrade()`. For the no-store-record
+  path, `_synthesize_managed_booking()` constructs a TTB:-prefixed `BookingResult`
+  from the live `ExistingReservation` so the managed-booking guard in
+  `maybe_upgrade()` passes.
+- **Cancel-before-book protocol** in `UpgradeOrchestrator`: ForeUP rejects a second
+  book POST with HTTP 400 while an existing reservation is live. The orchestrator
+  therefore cancels first, then books. This leaves a ~1-2 second no-booking window
+  (two HTTP round-trips). If book() fails after cancel, the next watch invocation
+  recovers by booking any available slot.
+- **`prepare_book()` on `CourseAdapter` Protocol**: called by `UpgradeOrchestrator`
+  BEFORE `cancel_reservation()` to pre-fetch expensive prerequisites (CAPTCHA token,
+  ~15-60 s). `ForeUpAdapter.prepare_book()` calls the CAPTCHA provider and caches
+  the resulting token in `self._captcha_token`; `book()` consumes it (single-use,
+  cleared after use). Adapters with no pre-fetch cost (FakeAdapter, future
+  Chronogolf) implement it as a no-op. This shrinks the cancel-to-book no-booking
+  window from ~60 s to ~1-2 s.
 - **Watch job shares `teetime-state-v1` cache key** with the main booking job.
   Single SQLite file = single source of truth. Advisory locks serialise concurrent
   writes. See PLAN.md §20.1 Q1 (resolved).

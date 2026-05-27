@@ -32,7 +32,7 @@ import pytest
 
 from teetime.core.adapter import AuthError, CaptchaError, NoInventoryError
 from teetime.core.clock import FakeClock
-from teetime.core.config import SchedulerConfig
+from teetime.core.config import OneBookingPolicyConfig, PrioritySlotConfig, SchedulerConfig
 from teetime.core.models import (
     BookingOutcome,
     BookingRequest,
@@ -140,6 +140,7 @@ def _build(
     *,
     now_utc: datetime = DURING_POLLING_UTC,
     store: InMemoryStore | None = None,
+    policy: OneBookingPolicyConfig | None = None,
 ) -> tuple[WatchOrchestrator, InMemoryStore, FakeClock]:
     store = store or InMemoryStore()
     clock = FakeClock(start=now_utc)
@@ -152,6 +153,7 @@ def _build(
         scheduler=_scheduler(),
         watch_config=_watch_config(),
         creds=creds,
+        policy=policy,
     )
     return watch, store, clock
 
@@ -580,3 +582,211 @@ def test_watch_config_accepts_floor_value() -> None:
     """WatchConfig must accept poll_interval_s == 300 (the floor itself)."""
     cfg = WatchConfig(poll_interval_s=300)
     assert cfg.poll_interval_s == 300
+
+
+# ---------------------------------------------------------------------------
+# Upgrade path — M-feature-2 wired into WatchOrchestrator.check_once()
+#
+# Policy: priority 0 = 14:00-14:05 (best), priority 1 = 14:05-14:30 (fallback).
+# Tests cover both the store-record path (Gate 3) and the live-reservation path
+# (_check_course). Both paths must delegate to UpgradeOrchestrator.maybe_upgrade()
+# when a higher-priority slot is available and policy is enabled.
+# ---------------------------------------------------------------------------
+
+
+def _two_pm_policy() -> OneBookingPolicyConfig:
+    """Two-window afternoon policy for upgrade tests."""
+    return OneBookingPolicyConfig(
+        enabled=True,
+        priority_slots=[
+            PrioritySlotConfig(
+                priority=0,
+                course_id=str(COURSE_ID),
+                time_window_earliest=time(14, 0),
+                time_window_latest=time(14, 5),
+            ),
+            PrioritySlotConfig(
+                priority=1,
+                course_id=str(COURSE_ID),
+                time_window_earliest=time(14, 5),
+                time_window_latest=time(14, 30),
+            ),
+        ],
+    )
+
+
+def _pm_slot(*, hour: int = 14, minute: int = 0) -> TeeTimeSlot:
+    """An afternoon slot at `hour:minute` ET on TARGET_DATE."""
+    return TeeTimeSlot(
+        course_id=COURSE_ID,
+        slot_id=SlotId(f"slot-{hour:02d}{minute:02d}"),
+        tee_time=datetime(
+            TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, hour, minute, tzinfo=ET
+        ),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=True,
+    )
+
+
+async def test_watch_upgrades_from_store_booked_terminal_when_policy_enabled() -> None:
+    """Gate 3 path: when store has BOOKED at a lower-priority slot and a
+    higher-priority slot becomes available, check_once() upgrades and returns
+    the new booking."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    # Higher-priority slot available at 14:00 (priority 0 window: 14:00-14:05).
+    adapter.set_search_response([_pm_slot(hour=14, minute=0)])
+    req = _request()
+    store = InMemoryStore()
+
+    # Existing managed booking at 14:15 → priority 1 (14:05-14:30).
+    prior = BookingResult(
+        request_id=req.request_id,
+        outcome=BookingOutcome.BOOKED,
+        course_id=COURSE_ID,
+        slot=_pm_slot(hour=14, minute=15),
+        confirmation_code="TTB:prior-1415",
+        booked_at=DURING_POLLING_UTC,
+        attempts=1,
+    )
+    await store.record_terminal(prior, TARGET_DATE)
+
+    watch, store, _ = _build(adapter, store=store, policy=_two_pm_policy())
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.confirmation_code != "TTB:prior-1415"
+    assert adapter.book_call_count == 1
+    assert adapter.cancel_call_count == 1
+    # Store must now hold the upgraded booking, not the old one.
+    stored = await store.get_terminal(req.request_id, TARGET_DATE)
+    assert stored is not None
+    assert stored.confirmation_code != "TTB:prior-1415"
+
+
+async def test_watch_does_not_upgrade_when_policy_is_none() -> None:
+    """Without a policy, check_once() returns the prior BOOKED terminal unchanged
+    (backwards-compatible behavior for callers that don't pass a policy)."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_pm_slot(hour=14, minute=0)])
+    req = _request()
+    store = InMemoryStore()
+
+    prior = BookingResult(
+        request_id=req.request_id,
+        outcome=BookingOutcome.BOOKED,
+        course_id=COURSE_ID,
+        slot=_pm_slot(hour=14, minute=15),
+        confirmation_code="TTB:prior-1415",
+        booked_at=DURING_POLLING_UTC,
+        attempts=1,
+    )
+    await store.record_terminal(prior, TARGET_DATE)
+
+    watch, _, _ = _build(adapter, store=store, policy=None)
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None
+    assert result.confirmation_code == "TTB:prior-1415"  # unchanged
+    assert adapter.book_call_count == 0
+    assert adapter.cancel_call_count == 0
+
+
+async def test_watch_already_at_highest_priority_returns_prior_unchanged() -> None:
+    """When the current booking is at priority 0 (highest), no upgrade is
+    attempted and the prior booking is returned unchanged."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_pm_slot(hour=14, minute=0)])
+    req = _request()
+    store = InMemoryStore()
+
+    # Current booking at 14:02 — inside priority 0 window (14:00-14:05).
+    prior = BookingResult(
+        request_id=req.request_id,
+        outcome=BookingOutcome.BOOKED,
+        course_id=COURSE_ID,
+        slot=_pm_slot(hour=14, minute=2),
+        confirmation_code="TTB:prior-1402",
+        booked_at=DURING_POLLING_UTC,
+        attempts=1,
+    )
+    await store.record_terminal(prior, TARGET_DATE)
+
+    watch, _, _ = _build(adapter, store=store, policy=_two_pm_policy())
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None
+    assert result.confirmation_code == "TTB:prior-1402"  # unchanged
+    assert adapter.book_call_count == 0
+    assert adapter.cancel_call_count == 0
+
+
+async def test_watch_no_upgrade_when_higher_priority_slot_unavailable() -> None:
+    """When policy is enabled but no higher-priority slots are returned by search,
+    check_once() returns the prior booking unchanged."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([])  # Nothing in the higher-priority window.
+    req = _request()
+    store = InMemoryStore()
+
+    prior = BookingResult(
+        request_id=req.request_id,
+        outcome=BookingOutcome.BOOKED,
+        course_id=COURSE_ID,
+        slot=_pm_slot(hour=14, minute=15),
+        confirmation_code="TTB:prior-1415",
+        booked_at=DURING_POLLING_UTC,
+        attempts=1,
+    )
+    await store.record_terminal(prior, TARGET_DATE)
+
+    watch, _, _ = _build(adapter, store=store, policy=_two_pm_policy())
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None
+    assert result.confirmation_code == "TTB:prior-1415"  # unchanged
+    assert adapter.book_call_count == 0
+
+
+async def test_watch_upgrades_from_live_reservation_when_no_store_record() -> None:
+    """_check_course() path: when list_reservations() finds a lower-priority
+    booking with no corresponding store record, and a higher-priority slot is
+    available, check_once() synthesizes a managed booking record, upgrades it,
+    and persists the new booking to the store."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    req = _request()
+
+    # Live reservation at 14:15 (priority 1) — no store record.
+    adapter.set_existing_reservations(
+        [
+            ExistingReservation(
+                course_id=COURSE_ID,
+                confirmation_code="live-1415",
+                tee_time=datetime(
+                    TARGET_DATE.year,
+                    TARGET_DATE.month,
+                    TARGET_DATE.day,
+                    14,
+                    15,
+                    tzinfo=ET,
+                ),
+                party_size=len(req.players),
+            )
+        ]
+    )
+    # Higher-priority slot at 14:00 (priority 0 window: 14:00-14:05).
+    adapter.set_search_response([_pm_slot(hour=14, minute=0)])
+
+    watch, store, _ = _build(adapter, policy=_two_pm_policy())
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None
+    assert result.outcome == BookingOutcome.BOOKED
+    assert adapter.book_call_count == 1
+    assert adapter.cancel_call_count == 1
+    # New booking must be persisted in the store.
+    stored = await store.get_terminal(req.request_id, TARGET_DATE)
+    assert stored is not None
+    assert stored.outcome == BookingOutcome.BOOKED

@@ -1,0 +1,77 @@
+# ONE-TIME TEST CONFIG — delete after testing.
+#
+# Tests the upgrade flow: the bot wakes up, sees the existing 14:15 booking on
+# 2026-06-03 (Wednesday), finds the 14:00 slot at priority 0, books 14:00,
+# then cancels the 14:15 booking.
+#
+# After the test, restore production config (Sat/Sun 09:00-10:00 AM window).
+#
+# Usage:
+#   uv run teetime watch --config config/upgrade_demo.toml --dry-run false
+
+[[courses]]
+id = "foreup.mangrove_bay"
+adapter = "foreup.mangrove_bay"
+username_env = "MB_USERNAME"
+password_env = "MB_PASSWORD"
+
+[request]
+# target_offsets = [7] targets 7 days from today (2026-05-27 → 2026-06-03).
+target_offsets = [7]
+course_preferences = ["foreup.mangrove_bay"]
+
+[[request.time_windows]]
+# Primary search window — used if no existing booking is found.
+earliest = "14:00"
+latest = "14:30"
+
+[[request.players]]
+first_name = "Alex"
+last_name = "Lancaster"
+email_env = "PLAYER1_EMAIL"
+
+[[request.players]]
+first_name = "Player"
+last_name = "Two"
+email_env = "PLAYER2_EMAIL"
+
+[[request.players]]
+first_name = "Player"
+last_name = "Three"
+email_env = "PLAYER3_EMAIL"
+
+[[request.players]]
+first_name = "Player"
+last_name = "Four"
+email_env = "PLAYER4_EMAIL"
+
+[scheduler]
+timezone = "America/New_York"
+fire_time = "06:00:00"
+early_arrival_ms = 0
+poll_interval_ms = 10
+max_poll_seconds = 1
+
+[watcher]
+enabled = true
+poll_interval_s = 600
+# Allow polling at any hour so the test works regardless of time of day.
+polling_start_hour = 0
+polling_end_hour = 24
+
+[one_booking_policy]
+enabled = true
+
+# Priority 0 (best): exactly 14:00–14:05 — catches the 14:00 slot.
+[[one_booking_policy.priority_slots]]
+priority = 0
+course_id = "foreup.mangrove_bay"
+time_window_earliest = "14:00"
+time_window_latest = "14:06"
+
+# Priority 1 (fallback): 14:06–14:20 — where the existing 14:15 booking falls.
+[[one_booking_policy.priority_slots]]
+priority = 1
+course_id = "foreup.mangrove_bay"
+time_window_earliest = "14:06"
+time_window_latest = "14:20"

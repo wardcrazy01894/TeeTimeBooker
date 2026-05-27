@@ -44,8 +44,10 @@ class FakeAdapter:
         self._existing: list[ExistingReservation] = []
         self._cancel_exc: CancelError | None = None
         self._cancel_should_succeed: bool = True
+        self._prepare_book_exc: Exception | None = None
         self.authenticate_call_count: int = 0
         self.search_call_count: int = 0
+        self.prepare_book_call_count: int = 0
         self.book_call_count: int = 0
         self.list_reservations_call_count: int = 0
         self.cancel_call_count: int = 0
@@ -84,10 +86,19 @@ class FakeAdapter:
         self._cancel_exc = None
         self._cancel_should_succeed = True
 
+    def set_prepare_book_to_raise(self, exc: Exception) -> None:
+        """Script prepare_book() to raise `exc` (simulates CAPTCHA service failure)."""
+        self._prepare_book_exc = exc
+
     # --- CourseAdapter Protocol -----------------------------------------
 
     async def authenticate(self, creds: CourseCredentials) -> None:
         self.authenticate_call_count += 1
+
+    async def prepare_book(self, slot: TeeTimeSlot, request: BookingRequest) -> None:
+        self.prepare_book_call_count += 1
+        if self._prepare_book_exc is not None:
+            raise self._prepare_book_exc
 
     async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
         self.search_call_count += 1
