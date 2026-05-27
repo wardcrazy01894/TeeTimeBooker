@@ -1,22 +1,26 @@
-"""Feature 3 — Prefer Earlier Times Within the Window (M-feature-3).
+"""Feature 3 — Prefer Slot Closest to Window Midpoint (M-feature-3).
 
-These are REGRESSION GUARD tests, not red-phase stubs. The ascending-time sort
-is already implemented in Orchestrator._rank_slots (see orchestrator.py). These
-tests verify the existing behaviour so any future change to _rank_slots breaks
-loudly here rather than silently.
+Slots are ranked by their distance from the midpoint of the matching time
+window, ascending. The slot whose tee_time is closest to the midpoint of the
+window wins. For equidistant slots, ascending tee_time is the tiebreaker.
+
+Example: window 09:00-10:00, midpoint 09:30.
+  09:37 → distance 7 min  (WINNER over 09:22)
+  09:22 → distance 8 min
+
+The original ascending-time sort (earliest-first) was replaced with this
+midpoint-distance sort. See PLAN.md M-feature-3 for rationale.
 
 Coverage areas:
-- Within-window earliest-wins sort (the headline behavior).
+- Midpoint-wins sort (headline behaviour).
+- Equidistant tie-breaking: ascending tee_time is the secondary key.
 - Filter still applies (out-of-window slots are excluded).
-- Tie on tee_time (same minute, different slots) — stable order.
 - Single-slot case (degenerate, must still return that slot).
 - Empty input returns empty list.
-- Slots from multiple windows: all matching slots sorted ascending globally.
+- Slots from multiple windows: each slot's distance measured against its own
+  window's midpoint; globally sorted by that distance.
 - Slots with insufficient available_spots are excluded.
 - Slots exceeding max_price_per_player are excluded.
-
-NOTE: The midpoint-distance sort from v0 was REPLACED by ascending-time sort.
-See PLAN.md M-feature-3 for rationale.
 """
 
 from __future__ import annotations
@@ -94,21 +98,56 @@ def _make_orchestrator() -> Orchestrator:
 # --- Tests ------------------------------------------------------------------
 
 
-def test_rank_slots_returns_earliest_first() -> None:
-    """Multiple slots in window: earliest tee_time wins (ascending sort)."""
+def test_rank_slots_prefers_slot_closest_to_midpoint() -> None:
+    """Slot closest to the window midpoint wins.
+
+    Window 09:00-10:30 → midpoint 09:45.
+      09:45 → distance 0   (WINNER)
+      09:00 → distance 45 min (tied with 10:30)
+      10:30 → distance 45 min (tied with 09:00; tiebreak: ascending tee_time → 09:00 before 10:30)
+    """
     orch = _make_orchestrator()
+    # Default window is 09:00-10:30, midpoint 09:45.
     req = _request()
     slots = [
-        _slot(10, 30),  # latest in window
-        _slot(9, 0),  # earliest in window
-        _slot(9, 45),  # middle
+        _slot(10, 30),  # distance 45 min
+        _slot(9, 0),  # distance 45 min (ties 10:30; tiebreak → comes first)
+        _slot(9, 45),  # distance  0 min → WINNER
     ]
     ranked = orch._rank_slots(slots, req)
     assert len(ranked) == 3
-    # Ascending by tee_time: 09:00 first, 09:45 second, 10:30 last.
-    assert ranked[0].tee_time.hour == 9 and ranked[0].tee_time.minute == 0
-    assert ranked[1].tee_time.hour == 9 and ranked[1].tee_time.minute == 45
+    # Closest to midpoint first.
+    assert ranked[0].tee_time.hour == 9 and ranked[0].tee_time.minute == 45
+    # Tie at 45 min: ascending tee_time tiebreaker → 09:00 before 10:30.
+    assert ranked[1].tee_time.hour == 9 and ranked[1].tee_time.minute == 0
     assert ranked[2].tee_time.hour == 10 and ranked[2].tee_time.minute == 30
+
+
+def test_rank_slots_midpoint_example_from_spec() -> None:
+    """The spec example: window 09:00-10:00 (midpoint 09:30).
+    09:37 (distance 7) should rank before 09:22 (distance 8)."""
+    orch = _make_orchestrator()
+    req = _request(windows=[TimeWindow(earliest=time(9, 0), latest=time(10, 0))])
+    slots = [_slot(9, 22), _slot(9, 37)]  # presented in reversed order
+    ranked = orch._rank_slots(slots, req)
+    assert len(ranked) == 2
+    # 09:37 is 7 min from midpoint (09:30); 09:22 is 8 min → 09:37 wins.
+    assert ranked[0].tee_time.minute == 37
+    assert ranked[1].tee_time.minute == 22
+
+
+def test_rank_slots_equidistant_tiebreak_ascending_time() -> None:
+    """Two slots equidistant from midpoint: ascending tee_time wins."""
+    orch = _make_orchestrator()
+    # Window 09:00-10:00, midpoint 09:30.
+    req = _request(windows=[TimeWindow(earliest=time(9, 0), latest=time(10, 0))])
+    # 09:15 and 09:45 are both 15 min from midpoint (09:30).
+    slots = [_slot(9, 45), _slot(9, 15)]
+    ranked = orch._rank_slots(slots, req)
+    assert len(ranked) == 2
+    # Tiebreak: ascending tee_time → 09:15 before 09:45.
+    assert ranked[0].tee_time.minute == 15
+    assert ranked[1].tee_time.minute == 45
 
 
 def test_rank_slots_single_slot_returned() -> None:
@@ -202,9 +241,20 @@ def test_rank_slots_respects_max_price() -> None:
     assert ranked[0].slot_id == SlotId("cheap")
 
 
-def test_rank_slots_multiple_windows_sorted_globally() -> None:
-    """With two time windows, all matching slots from both windows are sorted
-    ascending by tee_time globally. Caller picks index 0 for best slot."""
+def test_rank_slots_multiple_windows_sorted_by_per_window_midpoint_distance() -> None:
+    """With two time windows, slots are sorted by distance from their own
+    window's midpoint. A slot at the exact midpoint of window 2 ranks first even
+    though it starts later than all slots in window 1.
+
+    Window 1: 09:00-09:30 → midpoint 09:15
+    Window 2: 10:00-10:30 → midpoint 10:15
+
+    Slots and distances:
+      10:15 → distance 0  (window 2 midpoint — WINNER)
+      09:00 → distance 15 (window 1; tied with 09:30 and 10:00)
+      09:30 → distance 15 (window 1; tiebreak ascending tee_time)
+      10:00 → distance 15 (window 2; tiebreak ascending tee_time)
+    """
     orch = _make_orchestrator()
     windows = [
         TimeWindow(earliest=time(9, 0), latest=time(9, 30)),
@@ -212,26 +262,28 @@ def test_rank_slots_multiple_windows_sorted_globally() -> None:
     ]
     req = _request(windows=windows)
     slots = [
-        _slot(10, 15),  # in second window
-        _slot(9, 0),  # in first window — earliest overall
-        _slot(9, 30),  # in first window
-        _slot(10, 0),  # in second window
+        _slot(10, 15),  # window 2, distance 0
+        _slot(9, 0),  # window 1, distance 15
+        _slot(9, 30),  # window 1, distance 15
+        _slot(10, 0),  # window 2, distance 15
     ]
     ranked = orch._rank_slots(slots, req)
     assert len(ranked) == 4
-    # All four should appear, globally sorted ascending by tee_time.
-    assert ranked[0].tee_time.hour == 9 and ranked[0].tee_time.minute == 0
-    assert ranked[1].tee_time.hour == 9 and ranked[1].tee_time.minute == 30
-    assert ranked[2].tee_time.hour == 10 and ranked[2].tee_time.minute == 0
-    assert ranked[3].tee_time.hour == 10 and ranked[3].tee_time.minute == 15
+    # 10:15 is closest to its window's midpoint.
+    assert ranked[0].tee_time.hour == 10 and ranked[0].tee_time.minute == 15
+    # The remaining three all have distance 15; ascending tee_time tiebreaker.
+    assert ranked[1].tee_time.hour == 9 and ranked[1].tee_time.minute == 0
+    assert ranked[2].tee_time.hour == 9 and ranked[2].tee_time.minute == 30
+    assert ranked[3].tee_time.hour == 10 and ranked[3].tee_time.minute == 0
 
 
 def test_rank_slots_tie_breaking_stable() -> None:
-    """Two slots at identical tee_time: _rank_slots returns both (not just one),
-    and the order is stable across repeated calls with the same input."""
+    """Two slots at identical tee_time (distance 0 from midpoint): _rank_slots
+    returns both, and the order is stable across repeated calls."""
     orch = _make_orchestrator()
-    req = _request()
-    tee_time = datetime(2026, 5, 16, 9, 0, tzinfo=UTC)
+    # Window 09:00-09:30, midpoint 09:15.
+    req = _request(windows=[TimeWindow(earliest=time(9, 0), latest=time(9, 30))])
+    tee_time = datetime(2026, 5, 16, 9, 15, tzinfo=UTC)  # exactly at midpoint
     s1 = TeeTimeSlot(
         course_id=CourseId("fake:c"),
         slot_id=SlotId("alpha"),

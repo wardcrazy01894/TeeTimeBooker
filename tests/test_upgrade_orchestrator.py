@@ -560,9 +560,15 @@ async def test_upgrade_does_not_delete_terminal_if_book_fails() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_upgrade_picks_earliest_slot_within_priority() -> None:
-    """When multiple slots exist at a higher-priority window, the earliest
-    tee_time slot is selected (ascending sort per Feature 3)."""
+async def test_upgrade_picks_slot_closest_to_window_midpoint() -> None:
+    """When multiple slots exist in a higher-priority window, the slot closest
+    to the window midpoint is selected (midpoint-distance sort per Feature 3).
+
+    WINDOW_BETTER is 09:00-09:30, midpoint 09:15.
+    09:25 → distance 10 min from midpoint.
+    09:05 → distance 10 min from midpoint.
+    Both are equidistant → ascending tee_time tiebreaker → 09:05 wins.
+    """
     orc, _fa, fb, st, _nt = _make_orchestrator()
     request = _make_request()
     current = _managed_booking(request=request)

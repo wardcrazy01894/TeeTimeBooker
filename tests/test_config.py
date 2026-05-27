@@ -59,13 +59,12 @@ def test_player_email_env_resolves_to_email_value(env_set: None) -> None:
 
 
 def test_time_windows_parsed_as_time(env_set: None) -> None:
-    """Single morning window: 09:00-10:30 ET. Afternoon window removed when
-    the schedule shifted to weekend-only Saturday/Sunday bookings."""
+    """Single morning window: 08:45-10:00 ET (midpoint 09:22:30)."""
     cfg = load(EXAMPLE_TOML)
     windows = cfg.request.time_windows
     assert len(windows) == 1
-    assert windows[0].earliest == time(9, 0)
-    assert windows[0].latest == time(10, 30)
+    assert windows[0].earliest == time(8, 45)
+    assert windows[0].latest == time(10, 0)
 
 
 def test_missing_required_env_raises_missing_env_error(
