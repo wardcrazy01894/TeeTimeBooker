@@ -891,3 +891,18 @@ proceed to T2 without S4 since WatchOrchestrator.check_once does not call cancel
 |----|----------|----------------|----------------|
 | S4 | ForeUP cancellation endpoint. See M-feature-2 §S4 task above for the specific questions. | `docs/foreup-cancel-spike.md` with all 5 questions answered via browser devtools | 1 session |
 | S5 | Does ForeUP rate-limit `GET /times` at 10-minute intervals over an extended period (days)? The 6-AM race testing (S3) tested short bursts; S5 tests sustained low-frequency polling over multiple days. | No 429 or account restriction observed over 3 days of polling at 10-min intervals | 3-day passive observation |
+
+---
+
+## 21. Post-Azure cutover cleanup
+
+Once the bot is live on Azure (v1), audit and remove any GitHub Actions workflows that are
+no longer needed. At minimum:
+
+- `book.yml` — replaced by ACA Job (two booking jobs, one per DST half)
+- `watch-tee-time.yml` — replaced by ACA Job (watch cron)
+- `ci.yml` — **keep** if it still runs tests/lint on PRs; only remove if CI moves elsewhere
+
+The `.github/workflows/` directory should contain only what still runs. Dead workflows
+generate noise (stale cron emails, confusing run history) and create a false impression
+that something is still running on GitHub when it isn't.
