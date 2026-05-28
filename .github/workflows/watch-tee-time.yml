@@ -10,10 +10,10 @@
 # watch job does not race a fixed wall-clock moment. The polling-hours gate (7 AM–10 PM
 # course-local) is handled INSIDE the WatchOrchestrator via zoneinfo, not by the cron.
 #
-# The */10 cron fires every 10 minutes year-round. The WatchOrchestrator will return
-# None immediately if the current time is outside polling_start_hour/polling_end_hour.
-# This is slightly wasteful (waking up to do nothing) but eliminates the DST complexity
-# of hour-gating in cron syntax.
+# The cron fires on Saturday and Sunday only (cron day 0=Sunday, 6=Saturday).
+# WatchOrchestrator gates on polling hours internally (7 AM–10 PM ET) — no hour-gating
+# in the cron to avoid DST complexity. Weekday runs are not needed; Mangrove Bay slots
+# are only watched on the days they were booked (weekends).
 #
 # CONCURRENCY: Uses its own concurrency group (watch-tee-time) separate from
 # book-tee-time. This prevents two watch runs from overlapping; it does NOT prevent
@@ -23,11 +23,11 @@
 name: watch-tee-time
 
 on:
-  # Fires every 10 minutes year-round. WatchOrchestrator gates on polling hours
-  # internally (7 AM–10 PM ET) via zoneinfo — no DST-half gate needed here.
+  # Fires every 10 minutes on Saturdays and Sundays. WatchOrchestrator gates on
+  # polling hours internally (7 AM–10 PM ET) via zoneinfo — no DST-half gate needed.
   # See PLAN.md §20 for the polling-hours rationale.
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/10 * * * 0,6"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -103,7 +103,7 @@ jobs:
             DATE_ARGS=(--date "$TARGET_DATE")
           fi
           uv run teetime watch \
-            --config config/local.toml \
+            --config config/example.toml \
             --dry-run "$DRY_RUN" \
             "${DATE_ARGS[@]}"
 
