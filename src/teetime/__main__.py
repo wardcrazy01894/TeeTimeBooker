@@ -356,6 +356,16 @@ def _resolve_creds(cfg: AppConfig) -> dict[CourseId, CourseCredentials]:
                 f"Required env var {c.password_env!r} (course {c.id!r}) is unset. "
                 "Run: set -a && source .env && set +a"
             )
+        # Guard: both `card_number` (literal) and `card_number_env` (env ref) in the
+        # same TOML block would produce a silent winner depending on iteration order.
+        # Detect this and fail loudly before any credential is resolved.
+        for key in c.extra:
+            if not key.endswith("_env") and (key + "_env") in c.extra:
+                raise click.ClickException(
+                    f"course {c.id!r} extra has both {key!r} (literal) and "
+                    f"{key + '_env'!r} (env-var ref) — remove one to avoid ambiguity."
+                )
+
         # Resolve any extra key ending in _env (e.g. card_number_env → card_number).
         # Non-_env keys are passed through as literal values (e.g. booking_class_id).
         extra: dict[str, str] = {}

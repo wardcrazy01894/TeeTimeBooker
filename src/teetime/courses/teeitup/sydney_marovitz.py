@@ -15,8 +15,16 @@ Confirmed constants (from three HAR captures):
     holes_per_round          = 9      (9-hole par-3 course; set holes=9 in your TOML config)
 
 Credentials: uses type="basic" (native TeeItUp account, not GolfNow OAuth).
-Required extras (CourseCredentials.extra):
-    cvv: str  — card CVV for POST /reservation (e.g. extra = {cvv = "XXX"})
+Required extras (CourseCredentials.extra) — see TeeItUpAdapter class docstring:
+    card_number:         str  — full credit card number
+    cvv:                 str  — card CVV
+    expiry_month:        str  — expiry month (1-2 digits)
+    expiry_year:         str  — expiry year (4 digits)
+    billing_address:     str  — billing street address
+    billing_postal_code: str  — billing ZIP/postal code
+Optional extras:
+    billing_country:     str  — ISO country code (default "US")
+    name_on_card:        str  — defaults to first+last from auth response
 
 This file is intentionally tiny: all behavior lives in base.py.
 Adding another CPD/TeeItUp course is a sibling file with a new slug + IDs.

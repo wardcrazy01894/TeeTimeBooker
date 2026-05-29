@@ -448,6 +448,8 @@ class TeeItUpAdapter:
             _log.debug("is-bookable 404 — skipping, relying on order-teetime")
         elif r.is_success and not r.json().get("bookable"):
             raise SlotGoneError(f"Slot {slot.slot_id} is no longer bookable")
+        elif not r.is_success and r.status_code != _HTTP_NOT_FOUND:
+            r.raise_for_status()
 
         # dry_run: halt before irreversible GNSVC calls
         if request.dry_run:
@@ -554,6 +556,8 @@ class TeeItUpAdapter:
             "Payment.CC.ExpirationYear": self._expiry_year,
             "Token": tr_token,
         }
+        # follow_redirects=False: a redirect from a payment endpoint is always an
+        # error — never silently re-POST card data to the redirect target.
         r = await self._http.post(
             f"{_GNSVC_BASE}{_ADD_RESERVATION_PATH}",
             data=add_reservation_form,
@@ -563,24 +567,41 @@ class TeeItUpAdapter:
                 "accept": "application/json, text/plain, */*",
             },
             timeout=60.0,  # payment processing can be slow
+            follow_redirects=False,
         )
         r.raise_for_status()
         gnsvc_data: dict[str, Any] = r.json()
         if not gnsvc_data.get("Success"):
+            # Only log safe fields — never echo the full response (may contain card echo).
             raise RuntimeError(
-                f"TeeItUp GNSVC payment failed: {gnsvc_data.get('Message') or gnsvc_data}"
+                f"TeeItUp GNSVC payment failed: "
+                f"status={gnsvc_data.get('StatusCode')!r} "
+                f"message={gnsvc_data.get('Message')!r}"
             )
         reservation_status_id: int = int(gnsvc_data["ReservationStatusID"])
         _log.info("TeeItUp GNSVC payment processed: ReservationStatusID=%d", reservation_status_id)
 
-        # Step 11: PATCH /order-teetime/status/{id} — confirm in Kenna, get gncReservationId
-        r = await self._http.patch(
-            f"{_KENNA_API_BASE}{_ORDER_TEETIME_STATUS_PATH.format(reservation_status_id=reservation_status_id)}",
-            params={"cartId": cart_id, "cartItemId": cart_item_id},
-            json={},
-            headers=h,
-        )
-        r.raise_for_status()
+        # Step 11: PATCH /order-teetime/status/{id} — confirm in Kenna, get gncReservationId.
+        # If this fails, the card has already been charged. Log reservation_status_id so it
+        # can be surfaced to the operator even if the full confirmation code is unavailable.
+        try:
+            r = await self._http.patch(
+                f"{_KENNA_API_BASE}{_ORDER_TEETIME_STATUS_PATH.format(reservation_status_id=reservation_status_id)}",
+                params={"cartId": cart_id, "cartItemId": cart_item_id},
+                json={},
+                headers=h,
+            )
+            r.raise_for_status()
+        except Exception as exc:
+            _log.error(
+                "TeeItUp PATCH /order-teetime/status failed after payment succeeded. "
+                "Card may have been charged. ReservationStatusID=%d. Manual check required.",
+                reservation_status_id,
+            )
+            raise RuntimeError(
+                f"Booking payment succeeded (ReservationStatusID={reservation_status_id}) "
+                f"but Kenna confirmation PATCH failed — manual verification required."
+            ) from exc
         patch_data: dict[str, Any] = r.json()
         gnc_reservation_id: str = ""
         for tt in patch_data.get("teetimes") or []:
@@ -639,6 +660,15 @@ class TeeItUpAdapter:
                 continue
             party_size = int(invoice.get("PlayerCount", 0))
             if party_size == 0:
+                # Active reservation (Status=1) with unknown party size — the
+                # double-booking guard uses party_size to match, so this entry
+                # would not block a re-booking attempt. Log a warning so it's
+                # visible to an operator rather than silently absent.
+                _log.warning(
+                    "list_reservations: skipping Status=1 reservation %s — PlayerCount=0 "
+                    "(unknown party size; double-booking guard will NOT see this reservation)",
+                    res.get("ReservationID"),
+                )
                 continue
             naive = datetime.fromisoformat(time_str)
             tee_time = naive.replace(tzinfo=tz)
@@ -679,6 +709,9 @@ class TeeItUpAdapter:
             raise CancelError(
                 f"TeeItUp cancel failed for {raw_id}: HTTP {r.status_code} {r.text[:200]}"
             )
+
+    def __repr__(self) -> str:
+        return f"<TeeItUpAdapter course={self.course_id!r}>"
 
     async def aclose(self) -> None:
         await self._http.aclose()
