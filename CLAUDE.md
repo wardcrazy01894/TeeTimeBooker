@@ -7,15 +7,18 @@ filenames.
 
 ## What this is
 
-Python 3.12+ bot that books a tee time at **Mangrove Bay Golf Course** (St.
-Petersburg, FL — ForeUP-backed) at 06:00 America/New_York, 7 days in advance.
+Python 3.12+ bot that books tee times at golf courses (ForeUP and TeeItUp
+platforms). Primary target is **Mangrove Bay Golf Course** (St. Petersburg, FL —
+ForeUP-backed) at 06:00 America/New_York, 7 days in advance. Also supports
+**TeeItUp-backed courses** (e.g. Sydney R. Marovitz, Chicago Park District).
 v0 is single-user, GitHub Actions-driven. No frontend.
 
 ## Status
 
-M1 + M2 + M5 complete. ForeUP adapter is fully implemented and a live dry-run
-(`outcome=dry_run`) has been confirmed against Mangrove Bay. M3 (SQLite), M4
-(email notifications), and M6 (first production run) are the remaining v0 tasks.
+M1 + M2 + M5 complete. ForeUP adapter fully implemented; live dry-run confirmed
+against Mangrove Bay. TeeItUp adapter fully implemented; live booking + cancel
+confirmed against Sydney Marovitz (2026-05-29). M3 (SQLite), M4 (email
+notifications), and M6 (first production cron run) are the remaining v0 tasks.
 
 ## Package layout
 
@@ -25,6 +28,7 @@ src/teetime/
   persistence/      # BookingStore Protocol + SqliteStore
   notifications/    # Notifier Protocol + EmailNotifier
   courses/foreup/   # Shared ForeUP HTTP base + per-course IDs
+  courses/teeitup/  # Shared TeeItUp/Kenna HTTP base + per-course IDs
   courses/chronogolf/  # placeholder; not used in v0
 config/             # example.toml; secrets via env-var refs only
 .github/workflows/  # GH Actions cron (4 entries: Sat+Sun × 2 DST seasons)
@@ -130,12 +134,29 @@ in `core/` — never directly. This is the cut line for parallel work.
   BEFORE `cancel_reservation()` to pre-fetch expensive prerequisites (CAPTCHA token,
   ~15-60 s). `ForeUpAdapter.prepare_book()` calls the CAPTCHA provider and caches
   the resulting token in `self._captcha_token`; `book()` consumes it (single-use,
-  cleared after use). Adapters with no pre-fetch cost (FakeAdapter, future
-  Chronogolf) implement it as a no-op. This shrinks the cancel-to-book no-booking
-  window from ~60 s to ~1-2 s.
+  cleared after use). Adapters with no pre-fetch cost (FakeAdapter, TeeItUpAdapter,
+  future Chronogolf) implement it as a no-op. This shrinks the cancel-to-book
+  no-booking window from ~60 s to ~1-2 s.
 - **Watch job shares `teetime-state-v1` cache key** with the main booking job.
   Single SQLite file = single source of truth. Advisory locks serialise concurrent
   writes. See PLAN.md §20.1 Q1 (resolved).
+
+## Sydney R. Marovitz specifics (TeeItUp)
+
+- Booking URL: `https://sydney-r-marovitz-golf-course.book.teeitup.com/`
+- Platform: TeeItUp (NBC Sports Next / Indigo Sports), operated by Chicago Park District
+- `course_slug = "sydney-r-marovitz-golf-course"`, `gn_facility_id = 4014`, `gnc_facility_id = 7218`
+- `kenna_facility_id = "54f14cb60c8ad60378b02bfb"`, `channel_id = "20972"`
+- **15-day advance booking window** (CPD policy). `advance_booking_days = 15`.
+- **9 holes** (`holes = 9`). This is a par-3 course; there is no 18-hole option.
+- **Party size** must include at least 2 players (singles must call the shop).
+- **Payment flow**: TeeItUp native accounts use direct card entry via `POST https://tr.gnsvc.com/AddReservation` (form-encoded). There is no "card on file" wallet — card credentials are passed each booking call. Required `extra` fields in `CourseCredentials`:
+  - `card_number`, `cvv`, `expiry_month`, `expiry_year`, `billing_address`, `billing_postal_code`
+  - Optional: `billing_country` (default `"US"`), `name_on_card` (default: first+last from auth)
+  - In TOML, use the `*_env` convention (e.g. `card_number_env = "SM_CARD_NUMBER"`) so secrets resolve from env vars and never appear in config files.
+- **Cancel returns HTTP 200** (not 404) for already-cancelled reservations — our cancel is idempotent on both (live-confirmed 2026-05-29).
+- **`list_reservations()` uses a live GET** (`/reservation/history`), unlike ForeUP's login-cache approach. Re-authentication before calling is not required.
+- **`tr.gnsvc.com` response time**: payment endpoint takes ~5-10 s. The adapter sets a 60 s timeout for that specific call.
 
 ## Mangrove Bay specifics
 
@@ -216,6 +237,15 @@ the rule is to check and update the ones that are now stale.
   No other code needs to change. Adding a course to `[[courses]]` without
   adding it to `course_preferences` is safe — it won't change the RequestId
   or be tried by the orchestrator.
+- Adding a TeeItUp course? Two steps:
+  1. Drop a sibling file next to `sydney_marovitz.py` (e.g. `diversity_golf.py`).
+     Set `course_slug`, `gn_facility_id`, `gnc_facility_id`, `kenna_facility_id`,
+     `channel_id`, `timezone`, and `advance_booking_days`. Subclass `TeeItUpAdapter`.
+  2. Import it in `__main__.py` and add one line to `_ADAPTER_REGISTRY`:
+     `"teeitup.diversity_golf": DiversityGolfAdapter,`
+  3. Add a `[[courses]]` entry in your TOML config with `*_env` keys for all card
+     credentials, and add the course id to `course_preferences`.
+  No other code needs to change.
 - Adding a Chronogolf course? Stand up `chronogolf/base.py` first (Spike S2).
 - Touching the orchestrator? Make sure FakeAdapter + FakeClock + InMemoryStore
   tests still cover your change. Fixtures live in `tests/conftest.py`. The
