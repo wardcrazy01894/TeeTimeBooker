@@ -103,3 +103,127 @@ def test_show_config_missing_env_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(cli, ["show-config", "--config", str(EXAMPLE_TOML)])
     assert result.exit_code != 0
     assert "PLAYER1_EMAIL" in result.output
+
+
+# ---------------------------------------------------------------------------
+# _resolve_creds(): *_env key resolution and collision detection
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_creds_env_key_resolves_to_env_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """card_number_env = "SM_CARD_NUMBER" resolves to the env var value."""
+    monkeypatch.setenv("SM_CARD_NUMBER", "4111111111111111")
+    toml = tmp_path / "t.toml"
+    toml.write_text(
+        """
+[[courses]]
+id = "teeitup:sydney_marovitz"
+adapter = "teeitup.sydney_marovitz"
+username_env = "MB_USERNAME"
+password_env = "MB_PASSWORD"
+extra = { card_number_env = "SM_CARD_NUMBER" }
+
+[request]
+target_offsets = [7]
+holes = 9
+course_preferences = ["teeitup:sydney_marovitz"]
+
+[[request.players]]
+first_name = "A"
+last_name = "B"
+email_env = "PLAYER1_EMAIL"
+
+[[request.time_windows]]
+earliest = "07:00:00"
+latest   = "10:00:00"
+
+[scheduler]
+timezone = "America/Chicago"
+fire_time = "06:00:00"
+early_arrival_ms = 0
+poll_interval_ms = 100
+max_poll_seconds = 1
+
+[notifier]
+backend = "console"
+email_to = "x@example.test"
+
+[persistence]
+backend = "sqlite"
+path = "./state/t.db"
+
+[watcher]
+enabled = false
+
+[one_booking_policy]
+enabled = false
+"""
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["show-config", "--config", str(toml)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    # card_number_env is an env-var NAME — shown as-is
+    assert payload["courses"][0]["extra"]["card_number_env"] == "SM_CARD_NUMBER"
+    # The resolved card value must NOT appear in show-config output
+    assert "4111111111111111" not in result.output
+
+
+def test_resolve_creds_collision_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Having both card_number (literal) and card_number_env in the same block errors."""
+    monkeypatch.setenv("SM_CARD_NUMBER", "4111111111111111")
+    toml = tmp_path / "t.toml"
+    toml.write_text(
+        """
+[[courses]]
+id = "teeitup:sydney_marovitz"
+adapter = "teeitup.sydney_marovitz"
+username_env = "MB_USERNAME"
+password_env = "MB_PASSWORD"
+[courses.extra]
+card_number = "literal"
+card_number_env = "SM_CARD_NUMBER"
+
+[request]
+target_offsets = [7]
+holes = 9
+course_preferences = ["teeitup:sydney_marovitz"]
+
+[[request.players]]
+first_name = "A"
+last_name = "B"
+email_env = "PLAYER1_EMAIL"
+
+[[request.time_windows]]
+earliest = "07:00:00"
+latest   = "10:00:00"
+
+[scheduler]
+timezone = "America/Chicago"
+fire_time = "06:00:00"
+early_arrival_ms = 0
+poll_interval_ms = 100
+max_poll_seconds = 1
+
+[notifier]
+backend = "console"
+email_to = "x@example.test"
+
+[persistence]
+backend = "sqlite"
+path = "./state/t.db"
+
+[watcher]
+enabled = false
+
+[one_booking_policy]
+enabled = false
+"""
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["run", "--config", str(toml), "--dry-run", "true"])
+    assert result.exit_code != 0
+    assert "card_number" in result.output
+    assert "ambiguity" in result.output

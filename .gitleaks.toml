@@ -1,0 +1,18 @@
+# Gitleaks configuration for TeeTimeBooker.
+# See https://github.com/gitleaks/gitleaks#configuration
+
+title = "TeeTimeBooker gitleaks config"
+
+[extend]
+# Start from the default ruleset.
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures — canonical Visa test PAN and test CVV in tests/"
+paths = [
+    "tests/.*",
+]
+regexes = [
+    # Visa test PAN (4111111111111111) — not a real card; will be declined by any processor.
+    '''4111111111111111''',
+]

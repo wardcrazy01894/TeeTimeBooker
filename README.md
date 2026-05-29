@@ -1,8 +1,8 @@
 # TeeTimeBooker
 
-Python bot that books a tee time at **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Runs unattended via GitHub Actions; emails you the result.
+Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via GitHub Actions; emails you the result.
 
-**Status:** M1 + M2 + M5 + M-feature-3 + M-feature-1 complete. ForeUP adapter implemented and live dry-run confirmed against Mangrove Bay. Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run). Cancellation watch job live (GH Actions `watch-tee-time.yml`); auto-upgrade (M-feature-2) pending Spike S4 (ForeUP cancel endpoint).
+**Status:** M1 + M2 + M5 + M-feature-3 + M-feature-1 complete. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run). Cancellation watch job live (GH Actions `watch-tee-time.yml`); auto-upgrade (M-feature-2) pending Spike S4 (ForeUP cancel endpoint).
 
 **Where to look:**
 - [PLAN.md](./PLAN.md) — full design, milestone roadmap, state machine, DST math, spikes
@@ -232,7 +232,7 @@ uv run ruff format .                 # format
 ## Architecture
 
 ```
-CLI → Orchestrator      → CourseAdapter (ForeUP)
+CLI → Orchestrator      → CourseAdapter (ForeUP / TeeItUp)
    → WatchOrchestrator  → BookingStore  (SQLite)
                         → Notifier      (Email)
 ```
@@ -251,6 +251,7 @@ All subsystems are `Protocol`-typed — orchestrators wire them together; nothin
 | M3 | SQLite persistence | Pending |
 | M4 | Email notifications | Pending |
 | M5 | ForeUP adapter — live dry-run confirmed | Done |
+| Spike S3 | TeeItUp adapter — live booking + cancel confirmed (Sydney Marovitz) | Done |
 | M6 | End-to-end, first production cron run | Pending |
 | M-feature-3 | Prefer earliest slot in time window (ascending sort) | Done |
 | M-feature-1 | Cancellation watch job — poll every 10 min, book on cancellation | Done |
@@ -265,5 +266,6 @@ See [PLAN.md §20](./PLAN.md) for the v0.5 milestone breakdown. See [PLAN.md §1
 
 - Secrets resolved from env vars at runtime — never written to TOML or logs
 - Player PII SHA-256-prefixed before writing to the attempt log
-- No credit-card data handled (ForeUP uses card-on-file)
+- ForeUP: no credit-card data handled (card-on-file at ForeUP)
+- TeeItUp: card credentials passed directly to `tr.gnsvc.com` (GolfNow payment service); stored only in `.env` (gitignored), never in config files or logs
 - Anti-bot etiquette: honest User-Agent, ≥250 ms between requests, automatic 429 backoff

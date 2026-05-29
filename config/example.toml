@@ -9,12 +9,27 @@ username_env = "MB_USERNAME"
 password_env = "MB_PASSWORD"
 extra = { booking_class_id = "2149" }
 
-# Add additional ForeUP-backed St. Pete munis here as siblings:
+# Add additional ForeUP-backed courses here as siblings:
 # [[courses]]
 # id = "foreup:twin_brooks"
 # adapter = "foreup.twin_brooks"
 # username_env = "TB_USERNAME"
 # password_env = "TB_PASSWORD"
+
+# TeeItUp-backed course example (e.g. Sydney R. Marovitz, Chicago Park District).
+# Card credentials are secrets: use the *_env convention so they resolve from env vars.
+# [[courses]]
+# id = "teeitup:sydney_marovitz"
+# adapter = "teeitup.sydney_marovitz"
+# username_env = "SM_USERNAME"
+# password_env = "SM_PASSWORD"
+# [courses.extra]  # all *_env values are resolved from environment variables at startup
+# cvv_env               = "SM_CVV"
+# card_number_env       = "SM_CARD_NUMBER"
+# expiry_month_env      = "SM_EXPIRY_MONTH"
+# expiry_year_env       = "SM_EXPIRY_YEAR"
+# billing_address_env   = "SM_BILLING_ADDRESS"
+# billing_postal_code_env = "SM_BILLING_POSTAL_CODE"
 
 [request]
 # Target dates are computed at run time from offsets (days from today, in the

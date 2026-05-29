@@ -41,11 +41,12 @@ from .core.watch_orchestrator import WatchOrchestrator
 from .courses.foreup.base import ForeUpAdapter
 from .courses.foreup.captcha import make_2captcha_provider, make_captcha_provider
 from .courses.foreup.mangrove_bay import MangroveBayAdapter
+from .courses.teeitup.sydney_marovitz import SydneyMarovitzAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
 from .persistence.in_memory_store import InMemoryStore
 
-# Registry mapping TOML adapter names to their ForeUpAdapter subclass.
+# Registry mapping TOML adapter names to adapter classes.
 # _build_adapters() resolves every [[courses]] entry through this dict.
 #
 # To add a new ForeUP course:
@@ -54,8 +55,17 @@ from .persistence.in_memory_store import InMemoryStore
 #   2. Import the class here and add one line below, e.g.:
 #        "foreup.twin_brooks": TwinBrooksAdapter,
 #   3. Add a [[courses]] entry in your TOML config.
-_ADAPTER_REGISTRY: dict[str, type[ForeUpAdapter]] = {
+#
+# To add a new TeeItUp course (pending Spike S3):
+#   1. Create src/teetime/courses/teeitup/<course_name>.py as a sibling of sydney_marovitz.py.
+#      Set the course_slug, timezone, and booking_page_url.
+#   2. Import the class here and add one line below.
+#   3. Add a [[courses]] entry in your TOML config.
+#
+# type[object] because ForeUpAdapter and TeeItUpAdapter have different base classes.
+_ADAPTER_REGISTRY: dict[str, type[object]] = {
     "foreup.mangrove_bay": MangroveBayAdapter,
+    "teeitup.sydney_marovitz": SydneyMarovitzAdapter,
 }
 
 
@@ -308,23 +318,26 @@ def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, C
                 f"Register it in __main__._ADAPTER_REGISTRY. "
                 f"Known adapters: {sorted(_ADAPTER_REGISTRY)}"
             )
-        if dry_run:
-            cp = None
-        else:
-            # Validate booking_page_url before building the CAPTCHA provider —
-            # an empty URL would silently pass bad input to the CAPTCHA service.
-            if not cls.booking_page_url:
-                raise click.ClickException(
-                    f"Adapter {cls.__name__!r} (for course {c.id!r}) has no booking_page_url. "
-                    "Set booking_page_url = <url> in the adapter class before live use."
-                )
-            if twocaptcha_key:
-                cp = make_2captcha_provider(twocaptcha_key, cls.booking_page_url)
+        if issubclass(cls, ForeUpAdapter):
+            # ForeUP-specific: CAPTCHA solver and booking_page_url validation.
+            if dry_run:
+                cp = None
             else:
-                cp = make_captcha_provider(cls.booking_page_url)
-        # Each registered subclass overrides __init__ to only require captcha_provider;
-        # mypy can't verify this from type[ForeUpAdapter] alone.
-        adapters[CourseId(c.id)] = cls(captcha_provider=cp)  # type: ignore[call-arg]
+                # Validate booking_page_url before building the CAPTCHA provider —
+                # an empty URL would silently pass bad input to the CAPTCHA service.
+                if not cls.booking_page_url:
+                    raise click.ClickException(
+                        f"Adapter {cls.__name__!r} (for course {c.id!r}) has no booking_page_url. "
+                        "Set booking_page_url = <url> in the adapter class before live use."
+                    )
+                if twocaptcha_key:
+                    cp = make_2captcha_provider(twocaptcha_key, cls.booking_page_url)
+                else:
+                    cp = make_captcha_provider(cls.booking_page_url)
+            adapters[CourseId(c.id)] = cls(captcha_provider=cp)  # type: ignore[call-arg]
+        else:
+            # Non-ForeUP adapters (TeeItUp, future platforms): no CAPTCHA, simpler construction.
+            adapters[CourseId(c.id)] = cls()  # type: ignore[assignment]
     return adapters
 
 
@@ -343,9 +356,31 @@ def _resolve_creds(cfg: AppConfig) -> dict[CourseId, CourseCredentials]:
                 f"Required env var {c.password_env!r} (course {c.id!r}) is unset. "
                 "Run: set -a && source .env && set +a"
             )
-        creds[CourseId(c.id)] = CourseCredentials(
-            username=username, password=password, extra=c.extra
-        )
+        # Guard: both `card_number` (literal) and `card_number_env` (env ref) in the
+        # same TOML block would produce a silent winner depending on iteration order.
+        # Detect this and fail loudly before any credential is resolved.
+        for key in c.extra:
+            if not key.endswith("_env") and (key + "_env") in c.extra:
+                raise click.ClickException(
+                    f"course {c.id!r} extra has both {key!r} (literal) and "
+                    f"{key + '_env'!r} (env-var ref) — remove one to avoid ambiguity."
+                )
+
+        # Resolve any extra key ending in _env (e.g. card_number_env → card_number).
+        # Non-_env keys are passed through as literal values (e.g. booking_class_id).
+        extra: dict[str, str] = {}
+        for key, value in c.extra.items():
+            if key.endswith("_env"):
+                resolved = os.environ.get(value)
+                if resolved is None:
+                    raise click.ClickException(
+                        f"Required env var {value!r} (course {c.id!r} extra.{key}) is unset. "
+                        "Run: set -a && source .env && set +a"
+                    )
+                extra[key[:-4]] = resolved  # strip _env suffix: card_number_env → card_number
+            else:
+                extra[key] = value
+        creds[CourseId(c.id)] = CourseCredentials(username=username, password=password, extra=extra)
     return creds
 
 

@@ -200,6 +200,21 @@ def load(path: Path) -> AppConfig:
     return cfg
 
 
+_SENSITIVE_EXTRA_KEYS = frozenset(
+    {
+        "card_number",
+        "cvv",
+        "expiry_month",
+        "expiry_year",
+        "billing_address",
+        "billing_postal_code",
+        "billing_country",
+        "name_on_card",
+        "password",
+    }
+)
+
+
 def redact(cfg: AppConfig) -> AppConfig:
     """Return a deep copy of `cfg` with resolved secrets masked.
 
@@ -215,4 +230,9 @@ def redact(cfg: AppConfig) -> AppConfig:
             p.phone = "***"
         if p.member_number is not None:
             p.member_number = "***"
+    # Redact sensitive literal values in course extra dicts.
+    # Keys ending in _env are env-var *names* (safe to show); resolved literal
+    # values for known sensitive fields are masked.
+    for c in masked.courses:
+        c.extra = {k: ("***" if k in _SENSITIVE_EXTRA_KEYS else v) for k, v in c.extra.items()}
     return masked
