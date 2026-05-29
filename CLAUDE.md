@@ -15,10 +15,18 @@ v0 is single-user, GitHub Actions-driven. No frontend.
 
 ## Status
 
-M1 + M2 + M5 complete. ForeUP adapter fully implemented; live dry-run confirmed
-against Mangrove Bay. TeeItUp adapter fully implemented; live booking + cancel
-confirmed against Sydney Marovitz (2026-05-29). M3 (SQLite), M4 (email
-notifications), and M6 (first production cron run) are the remaining v0 tasks.
+M1 + M5 + M-feature-1 (watch job) + M-feature-3 (slot ranking) complete. M2 is
+PARTIAL — the core orchestrator is done, but M2.T3 (post-mortem reconciliation,
+the UNCERTAIN→RECONCILING→BOOKED/LOST path) is not yet implemented. ForeUP adapter
+fully implemented; live dry-run confirmed against Mangrove Bay. TeeItUp adapter
+fully implemented; live booking + cancel confirmed against Sydney Marovitz
+(2026-05-29). M3 (SQLite), M4 (email notifications), M2.T3 (reconciliation), and
+M6 (first production cron run) are the remaining v0 tasks.
+
+Note: the production CLI currently wires `InMemoryStore` + `ConsoleNotifier`
+unconditionally (SqliteStore/EmailNotifier are stubs). Cross-run durable state
+and the idempotency/advisory-lock layers are therefore NOT active across runs
+until M3 lands — do not run `--dry-run false` on a real cron until then.
 
 ## Package layout
 
@@ -65,8 +73,14 @@ in `core/` — never directly. This is the cut line for parallel work.
   is otherwise untestable.
 - **No secrets in TOML.** Config files reference env vars by name. Loader
   resolves them; missing env raises a clear error.
-- **No credit-card data, ever.** ForeUP keeps card-on-file; we never POST PAN
-  or CVV. If a course requires it, that's a fatal error, not a feature.
+- **Credit-card data is platform-specific.** ForeUP keeps card-on-file; the
+  ForeUP path never POSTs PAN/CVV. TeeItUp has no wallet, so the TeeItUp adapter
+  DOES POST PAN + CVV + expiry + billing to `tr.gnsvc.com` on every booking
+  (sourced from `*_env` vars, never committed). This is a deliberate scope
+  expansion past the original "no card data, ever" rule — see PLAN.md §7.
+  Consequence: handling raw PAN/CVV brings PCI scope; card fields MUST be dropped
+  by `_redact_payload` before any `attempt_log` write (PLAN.md §10.1), and the
+  card POST uses `follow_redirects=False`.
 - **Double-booking defense is layered.** Idempotency check, pre-book remote
   list, single-attempt-per-slot rule, post-mortem reconciliation, advisory
   lock, GH Actions concurrency group. PLAN.md §9 has the full flow; §9.1 has
@@ -237,10 +251,11 @@ the rule is to check and update the ones that are now stale.
   No other code needs to change. Adding a course to `[[courses]]` without
   adding it to `course_preferences` is safe — it won't change the RequestId
   or be tried by the orchestrator.
-- Adding a TeeItUp course? Two steps:
+- Adding a TeeItUp course? Three steps:
   1. Drop a sibling file next to `sydney_marovitz.py` (e.g. `diversity_golf.py`).
      Set `course_slug`, `gn_facility_id`, `gnc_facility_id`, `kenna_facility_id`,
-     `channel_id`, `timezone`, and `advance_booking_days`. Subclass `TeeItUpAdapter`.
+     `channel_id`, and `timezone`. Subclass `TeeItUpAdapter`. (`advance_booking_days`
+     is a documentation-only constant in the course module, not a constructor arg.)
   2. Import it in `__main__.py` and add one line to `_ADAPTER_REGISTRY`:
      `"teeitup.diversity_golf": DiversityGolfAdapter,`
   3. Add a `[[courses]]` entry in your TOML config with `*_env` keys for all card

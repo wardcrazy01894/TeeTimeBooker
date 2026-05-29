@@ -17,7 +17,7 @@ Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). 
 **6 AM booking job** (`book-tee-time.yml`):
 1. A GitHub Actions cron fires ~10 minutes before 6:00 AM ET on Saturday and Sunday (four entries handle both days × both DST seasons)
 2. The bot busy-waits until T0 (±250 ms)
-3. It polls for available slots, picks the **earliest** slot in the 09:00–10:30 ET window, and POSTs the booking
+3. It polls for available slots, picks the slot **closest to the midpoint** of the 08:45–10:00 ET window (midpoint-distance sort), and POSTs the booking
 4. It emails you success or failure, and persists the result to SQLite for idempotency
 
 **Cancellation watch job** (`watch-tee-time.yml`):
