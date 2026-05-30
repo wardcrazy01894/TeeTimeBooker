@@ -27,7 +27,7 @@ dev = [
     "respx>=0.21",          # httpx mock for unit tests
     "freezegun>=1.5",       # clock injection in tests
     "ruff>=0.5",
-    "mypy>=1.10",
+    "mypy>=2.0",            # 2.x strict defaults verified clean against this codebase
     "types-pytz",
     "pip-audit>=2.10",      # dependency vulnerability scanning (CVE check)
 ]
