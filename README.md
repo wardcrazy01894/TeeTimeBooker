@@ -2,7 +2,7 @@
 
 Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via GitHub Actions; emails you the result.
 
-**Status:** M1 + M2 + M5 + M-feature-3 + M-feature-1 complete. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run). Cancellation watch job live (GH Actions `watch-tee-time.yml`); auto-upgrade (M-feature-2) pending Spike S4 (ForeUP cancel endpoint).
+**Status:** M1 + M2 + M5 + M-feature-3 + M-feature-1 + M-azure (IaC) complete. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented; dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run. Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run). Cancellation watch job live (GH Actions `watch-tee-time.yml` + ACA watch job); auto-upgrade (M-feature-2) pending Spike S4 (ForeUP cancel endpoint).
 
 **Where to look:**
 - [PLAN.md](./PLAN.md) — full design, milestone roadmap, state machine, DST math, spikes
@@ -197,18 +197,20 @@ gh workflow run book-tee-time -f dry_run=true
 
 ---
 
-## Azure v1 hosting (in progress)
+## Azure v1 hosting
 
 The v1 upgrade moves off GitHub Actions onto **Azure Container Apps Jobs** — a managed, serverless scheduled job that runs the same Python container on a UTC cron, busy-waits to 6:00 AM ET, and books the tee time. State moves from `actions/cache` to **Azure Blob Storage**; secrets move to **Azure Key Vault**.
 
 **Cost:** ~$5/month (ACR Basic flat; Container Apps compute is within the free tier).
 
-IaC lives in `infra/bicep/`; CI lives in `infra/ci/azure-iac.yml`. See [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md) for the full architecture, cost breakdown, security checklist, and deploy runbook.
+**IaC status: implemented.** All Bicep modules are complete (`identity`, `registry`, `storage`, `keyvault`, `logs`, `compute`, `budget`). The active CI workflow is `.github/workflows/azure-iac.yml` — it runs `bicep build` + `what-if` on PRs and **auto-deploys to dev on merge to main** (no required-reviewer gate for dev; prod requires manual approval). Dev runs in permanent dry-run (`dryRun = true` Bicep param); going live = set `dryRun = false` in the prod parameter file.
 
-**Additional GitHub secrets required for v1 CI** (once OIDC is configured per AZURE_PLAN.md §8.2):
+See [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md) for the full architecture, cost breakdown, security checklist, and deploy runbook.
+
+**GitHub secrets required for v1 CI** (configured per AZURE_PLAN.md §8.2):
 
 ```
-AZURE_CLIENT_ID       # appId from: az ad app create --display-name teetime-iac-ci
+AZURE_CLIENT_ID       # 7a9c17a4-b65b-4028-99db-6a099d2b9524
 AZURE_TENANT_ID       # 5151757e-ef5b-42a5-a09b-6410b40b2186
 AZURE_SUBSCRIPTION_ID # 3f82c7e1-4b1b-4a55-b905-d79f65c6887d
 ```
@@ -256,7 +258,8 @@ All subsystems are `Protocol`-typed — orchestrators wire them together; nothin
 | M-feature-3 | Prefer earliest slot in time window (ascending sort) | Done |
 | M-feature-1 | Cancellation watch job — poll every 10 min, book on cancellation | Done |
 | M-feature-2 | One-booking policy: auto-upgrade to higher-priority slot | Pending (blocked on Spike S4) |
-| M-azure | Azure v1 hosting: Bicep IaC, BlobStateManager, Container Apps Jobs | In design |
+| M-azure (IaC) | Azure v1 Bicep IaC: all modules implemented; dev CI-deployed in dry-run | Done |
+| M-azure (runtime) | BlobStateManager, container entrypoint wiring | Pending |
 
 See [PLAN.md §20](./PLAN.md) for the v0.5 milestone breakdown. See [PLAN.md §16](./PLAN.md) for the core milestone breakdown with owner files and dependencies.
 

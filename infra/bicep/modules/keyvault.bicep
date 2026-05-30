@@ -41,6 +41,13 @@ param kvSku string = 'standard'
 // no chicken-and-egg dependency. See AZURE_PLAN.md §7.2.
 param jobPrincipalId string
 
+@description('Whether to enable purge protection on the Key Vault. Dev passes false so the vault can be torn down and recreated during iteration. Prod must pass true. NOTE: once enabled, purge protection cannot be disabled for the vault\'s lifetime (irreversible). Soft-delete cannot be disabled regardless of this setting.')
+// AZURE_PLAN.md §7.4 and §11: "Key Vault purge protection: EXPLICITLY ENABLED".
+// Parameterised here because AZ will block deletion of a vault with purge
+// protection enabled (soft-delete means it lands in deleted state; purge
+// protection prevents the permanent purge). For dev iteration, pass false.
+param enablePurgeProtection bool = true
+
 // ---------------------------------------------------------------------------
 // Variables
 // ---------------------------------------------------------------------------
@@ -57,38 +64,64 @@ var kvSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 // Resources
 // ---------------------------------------------------------------------------
 
-// TODO(M-azure-T4): implement Key Vault resource.
-// Resource type: Microsoft.KeyVault/vaults
-// Key properties:
-//   sku.name: kvSku
-//   sku.family: 'A'
-//   tenantId: tenant().tenantId
-//   enableRbacAuthorization: true        (RBAC mode, NOT access policies)
-//   enableSoftDelete: true               (default for new vaults; set explicitly)
-//   softDeleteRetentionInDays: 90        (default 90; maximum)
-//   enablePurgeProtection: true          (NOT default — must be explicit; irreversible)
-//   publicNetworkAccess: 'Enabled'       (ACA accesses over public endpoint at container start)
-//   networkAcls.defaultAction: 'Allow'  (no VNet restriction; public access for ACA job MI)
-// Reference: https://learn.microsoft.com/en-us/azure/templates/microsoft.keyvault/vaults
-// See: AZURE_PLAN.md §7, §11
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+  name: kvName
+  location: location
+  tags: {
+    environment: envName
+    managedBy: 'bicep'
+  }
+  properties: {
+    sku: {
+      name: kvSku
+      family: 'A'
+    }
+    tenantId: tenant().tenantId
 
-// TODO(M-azure-T4): implement Key Vault Secrets User role assignment for job MI.
-// Only create if jobPrincipalId is non-empty.
-// Resource type: Microsoft.Authorization/roleAssignments (scoped to the vault)
-// Properties:
-//   roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
-//   principalId: jobPrincipalId
-//   principalType: 'ServicePrincipal'
-// Scope: the Key Vault resource (vault::roleAssignments in Bicep)
-// See: infra/AZURE_PLAN.md §7.2
-// IMPORTANT: Do NOT grant Key Vault Secrets Officer or higher — Secrets User is read-only.
+    // RBAC mode — legacy access policies are NOT used. See file header.
+    enableRbacAuthorization: true
+
+    // Soft-delete: on by default for vaults created since 2019, but set
+    // explicitly so the property is visible in what-if diffs and code review.
+    enableSoftDelete: true
+    softDeleteRetentionInDays: 90
+
+    // Purge protection: NOT on by default — must be explicit. See param comment.
+    // Irreversible once enabled; soft-delete cannot be disabled regardless.
+    enablePurgeProtection: enablePurgeProtection
+
+    // ACA resolves KV secret references over the public endpoint at container
+    // start using the job's managed identity. No VNet integration required for
+    // this plan. See: AZURE_PLAN.md §11.
+    publicNetworkAccess: 'Enabled'
+    networkAcls: {
+      defaultAction: 'Allow'
+      bypass: 'AzureServices'
+    }
+  }
+}
+
+// Key Vault Secrets User for the Container Apps Job MI.
+// Only created when jobPrincipalId is provided (allows staging KV before compute).
+// Role: read-only on secret contents. NOT Secrets Officer or higher.
+// Name: deterministic GUID so re-deploys are idempotent.
+// See: AZURE_PLAN.md §7.2, §7.3
+resource kvSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(jobPrincipalId)) {
+  name: guid(keyVault.id, jobPrincipalId, kvSecretsUserRoleId)
+  scope: keyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
+    principalId: jobPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
 @description('Key Vault URI (https://<name>.vault.azure.net/). Used in compute.bicep for keyVaultUrl secret references.')
-output vaultUri string = 'TODO(M-azure-T4): keyVault.properties.vaultUri'
+output vaultUri string = keyVault.properties.vaultUri
 
 @description('Key Vault resource name.')
 output vaultName string = kvName

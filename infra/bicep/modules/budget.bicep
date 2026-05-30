@@ -15,6 +15,9 @@
 // budget). This is a notification only — it does not stop or throttle Azure
 // resource usage.
 //
+// The budget is filtered to the specific resource group rg-teetime-${envName}
+// via filter.dimensions so it does not alert on unrelated subscription costs.
+//
 // See: infra/AZURE_PLAN.md §9.2 (budget alert), §4 (parameter strategy)
 
 targetScope = 'subscription'
@@ -34,57 +37,81 @@ param budgetAmountUsd int = 10
 @description('Email address for budget alert notifications.')
 param budgetAlertEmail string
 
-@description('Start date for the budget period. Format: YYYY-MM-01T00:00:00Z (first of a month). Must be updated before deployment if deploying after 2026-05-01.')
-// WARNING: '2026-05-01T00:00:00Z' is a hardcoded date. If deployed after this
-// date the budget will silently start mid-period and alert at the wrong threshold
-// until the next month boundary. Before deploying, update this value to the first
-// day of the current deployment month (e.g. '2026-06-01T00:00:00Z').
-// TODO(M-azure-T7): the CI workflow should compute this dynamically:
-//   budgetStartDate=$(date -u +"%Y-%m-01T00:00:00Z")
-// and pass it via --parameters budgetStartDate=$budgetStartDate.
-// Alternatively, use utcNow('yyyy-MM-01') in Bicep — note utcNow() is only
-// valid as a parameter default value (not in a resource body):
-//   param budgetStartDate string = utcNow('yyyy-MM-01T00:00:00Z')
-// The utcNow approach is cleaner and requires no CI-side date computation.
-// The implementor should pick one and document the choice in M-azure-T7.
-param budgetStartDate string = '2026-05-01T00:00:00Z'
+@description('''Start date for the budget period. Format: YYYY-MM-01T00:00:00Z (first of a month).
+utcNow('yyyy-MM-01T00:00:00Z') dynamically sets the first day of the current deployment month
+so the budget starts correctly regardless of when it is deployed.
+utcNow() is only valid as a parameter default value (not in resource body or variables) —
+this placement satisfies that constraint.
+If the Bicep linter rejects the literal characters in the format string, the fallback is:
+  param budgetStartDate string = '${utcNow('yyyy-MM')}-01T00:00:00Z'
+Both forms produce an identical result; the primary form is preferred for readability.''')
+param budgetStartDate string = utcNow('yyyy-MM-01T00:00:00Z')
 
 // ---------------------------------------------------------------------------
 // Variables
 // ---------------------------------------------------------------------------
 
 var budgetName = 'budget-teetime-${envName}'
-var alertThresholdPercent = 80  // fire at 80% of budgetAmountUsd
+
+// Alert threshold as a percentage of the monthly budget amount.
+// 80% means the alert fires at ~$8 for a $10 budget.
+var alertThresholdPercent = 80
 
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
 
-// TODO(M-azure-T7): implement Cost Management budget resource.
-// Resource type: Microsoft.Consumption/budgets
-// Key properties:
-//   amount: budgetAmountUsd
-//   timeGrain: 'Monthly'
-//   timePeriod.startDate: budgetStartDate
-//   category: 'Cost'
-//   filter.dimensions: filter to subscription (no RG filter needed; budget is sub-scoped)
-//     NOTE: to scope the budget to a specific resource group, add:
-//       filter.dimensions.name: 'ResourceGroupName'
-//       filter.dimensions.operator: 'In'
-//       filter.dimensions.values: ['rg-teetime-${envName}']
-//     This is RECOMMENDED to avoid the budget alerting on unrelated subscription costs.
-//   notifications.actual_GreaterThan_alertThresholdPercent:
-//     enabled: true
-//     operator: 'GreaterThan'
-//     threshold: alertThresholdPercent
-//     contactEmails: [budgetAlertEmail]
-//     thresholdType: 'Actual'
+// Microsoft.Consumption/budgets @ 2023-11-01
+// Subscription-scoped; filtered to the rg-teetime-${envName} resource group
+// so this budget only counts costs from this project's resources.
 // Reference: https://learn.microsoft.com/en-us/azure/templates/microsoft.consumption/budgets
-// See: AZURE_PLAN.md §9.2
+resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
+  name: budgetName
+  properties: {
+    // Core budget definition
+    category: 'Cost'
+    amount: budgetAmountUsd
+    timeGrain: 'Monthly'
+    timePeriod: {
+      // startDate must be the first day of a month in ISO-8601 format.
+      // budgetStartDate defaults to the first of the current deployment month
+      // via utcNow() in the param default above.
+      startDate: budgetStartDate
+    }
+
+    // Filter to the project resource group only.
+    // Without this filter the budget would alert on all subscription costs,
+    // including unrelated resources. See: AZURE_PLAN.md §9.2.
+    filter: {
+      dimensions: {
+        name: 'ResourceGroupName'
+        operator: 'In'
+        values: [
+          'rg-teetime-${envName}'
+        ]
+      }
+    }
+
+    // Notifications map: key is an arbitrary identifier for the notification rule.
+    // 'actual_GreaterThan_${alertThresholdPercent}Pct' is a descriptive name that
+    // encodes the trigger condition for human readability in the Azure portal.
+    notifications: {
+      'actual_GreaterThan_${alertThresholdPercent}Pct': {
+        enabled: true
+        operator: 'GreaterThan'
+        threshold: alertThresholdPercent
+        thresholdType: 'Actual'
+        contactEmails: [
+          budgetAlertEmail
+        ]
+      }
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
 @description('Budget resource name.')
-output budgetName string = budgetName
+output budgetName string = budget.name

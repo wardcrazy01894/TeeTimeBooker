@@ -22,3 +22,12 @@ param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime:dev'
 
 param acrSku = 'Basic'
 param kvSku = 'standard'
+
+// Permanent dry-run in dev — the bot performs no real booking POSTs. Dev MUST
+// stay true until production cutover. See AZURE_PLAN.md §10.3.
+param dryRun = true
+
+// Dev disables Key Vault purge protection so the vault (and the whole RG) can be
+// torn down and recreated during iteration. Prod keeps it true (irreversible
+// once enabled). See AZURE_PLAN.md §7.4, §11.
+param enablePurgeProtection = false
