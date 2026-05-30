@@ -1,37 +1,23 @@
 # azure-iac.yml — IaC validation and deployment for TeeTimeBooker v1 Azure infra.
 #
-# THIS is the ACTIVE workflow. GitHub only runs workflows under
-# .github/workflows/, so the prior copy at infra/ci/azure-iac.yml never ran.
-# The infra/ci/ copy has been removed (its content is superseded here). See the
-# task note in the PR; the canonical CI lives here.
+# This is the ACTIVE workflow (GitHub only runs workflows under .github/workflows/).
 #
-# This workflow is SEPARATE from book.yml (v0 booking runner) and ci.yml. It
-# never modifies src/, tests/, or the other workflows.
+# Triggers:
+#   pull_request (matched paths) -> bicep build + what-if (advisory)
+#   push to main (matched paths) -> AUTO-DEPLOY to dev (NO approval gate)
+#   workflow_dispatch (environment=dev|prod) -> deploy chosen env
+#   tag infra/v*                 -> deploy to prod (manual approval via environment)
 #
-# Trigger strategy (see AZURE_PLAN.md §8.1):
-#   pull_request (matched paths) → bicep build lint + what-if (read-only, advisory)
-#   push to main (matched paths) → AUTO-DEPLOY to dev (NO approval gate)
-#   workflow_dispatch (environment=dev|prod) → deploy chosen env
-#   tag infra/v*                 → deploy to prod (manual approval via environment)
+# Auth: OIDC federated credentials (no client secret).
+# Repo secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID.
 #
-# Auth: OIDC federated credential — no client secret stored in GitHub.
-# Required GitHub repo secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-# See: AZURE_PLAN.md §8.2 (OIDC setup), §8.3 (what-if advisory rule).
+# IMPORTANT: parameters are passed INLINE (not via a .bicepparam file). A
+# .bicepparam must NOT be combined with --template-file or an @file reference;
+# doing so makes `az` parse the Bicep params file as JSON and fail. The
+# .bicepparam files under infra/bicep/ remain for manual/local deploys.
 #
-# GITHUB ENVIRONMENT SETTINGS (one-time operator setup):
-#   - 'dev'  environment: NO required reviewers. Push to main must auto-deploy
-#            to dev with no human gate (AZURE_PLAN.md §8.1: "dev auto-deploys
-#            with no approval gate").
-#   - 'prod' environment: Required reviewers ENABLED (manual approval). prod
-#            only deploys via workflow_dispatch(environment=prod) or an
-#            infra/v* tag, and every such run pauses for reviewer sign-off.
-#
-# DRY-RUN: dev is deployed in PERMANENT dry-run. main.bicepparam.dev sets
-# dryRun=true (and main.bicep defaults it true), so no real bookings ever
-# originate from dev. See AZURE_PLAN.md §10.3.
-#
-# SAFETY: az deployment ... create runs ONLY on push-to-main (dev),
-# workflow_dispatch, or an infra/v* tag (prod). It NEVER runs on pull_request.
+# dev:  dryRun=true (no real bookings), enablePurgeProtection=false (iteration).
+# prod: dryRun=false, enablePurgeProtection=true. prod is manual + gated.
 
 name: azure-iac
 
@@ -67,16 +53,12 @@ on:
           - dev
           - prod
 
-# Prevent concurrent IaC deployments to the same ref. Does not cancel
-# in-progress — an in-flight deploy must finish cleanly. Per-ref grouping lets
-# two PRs on different branches run their advisory what-if concurrently; the
-# protection that matters is against two deploys on the SAME branch/tag at once.
 concurrency:
   group: azure-iac-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  id-token: write   # Required for OIDC token exchange with Entra
+  id-token: write
   contents: read
 
 env:
@@ -84,52 +66,39 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # validate — runs on every PR touching the matched paths.
-  # Read-only: bicep build (the only PR gate) + advisory what-if.
+  # validate — PR only. Read-only: bicep build (the gate) + advisory what-if.
   # ---------------------------------------------------------------------------
   validate:
     name: Bicep build + what-if (advisory)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # PRs always what-if against the dev RG/params (read-only; no deploy).
     env:
       RESOURCE_GROUP: rg-teetime-dev
-      PARAM_FILE: infra/bicep/main.bicepparam.dev
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Bicep build (lint) — PR gate
-        # Fails the PR on Bicep syntax/type errors. This is the ONLY hard gate.
-        # See AZURE_PLAN.md §8.3.
         run: az bicep build --file infra/bicep/main.bicep
-
       - name: Deployment what-if (advisory, never fails the PR)
-        # Informational only. The Container Apps `secrets` array always reports
-        # as a change (known Azure quirk), so what-if would always show drift.
-        # We print it but swallow non-zero exit so the PR is never blocked on it.
-        # See AZURE_PLAN.md §8.3.
-        # NOTE: the RG may not exist yet on a first-ever run; what-if is allowed
-        # to fail for any reason here without failing the PR (|| true).
         run: |
           az deployment group what-if \
             --resource-group "${RESOURCE_GROUP}" \
             --template-file infra/bicep/main.bicep \
-            --parameters "@${PARAM_FILE}" || true
+            --parameters envName=dev location="${AZURE_LOCATION}" \
+                         acrSku=Basic kvSku=standard dryRun=true \
+                         enablePurgeProtection=false \
+                         containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest' \
+            || true
 
   # ---------------------------------------------------------------------------
-  # deploy-dev — AUTO-DEPLOY on push to main, OR manual dispatch (environment=dev).
-  #
-  # The GitHub Environment 'dev' must have NO required reviewers so this runs
-  # with no manual gate (AZURE_PLAN.md §8.1). Targets rg-teetime-dev in
-  # PERMANENT dry-run (main.bicepparam.dev sets dryRun=true).
+  # deploy-dev — AUTO-DEPLOY on push to main, or workflow_dispatch(environment=dev).
+  # The 'dev' GitHub Environment must have NO required reviewers (auto-deploy).
+  # Permanent dry-run: dryRun=true.
   # ---------------------------------------------------------------------------
   deploy-dev:
     name: Deploy to dev
@@ -140,103 +109,65 @@ jobs:
     environment: dev
     env:
       RESOURCE_GROUP: rg-teetime-dev
-      PARAM_FILE: infra/bicep/main.bicepparam.dev
+      ENVNAME: dev
+      DRY_RUN: "true"
+      PURGE_PROT: "false"
       BUDGET_ALERT_EMAIL: alanc3939@gmail.com
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Ensure resource group (idempotent)
         run: az group create -n "${RESOURCE_GROUP}" -l "${AZURE_LOCATION}"
-
       - name: Bicep build (lint)
         run: az bicep build --file infra/bicep/main.bicep
-
-      # -----------------------------------------------------------------------
-      # Two-pass deploy resolves the ACR chicken-and-egg: the ACR name is
-      # derived via uniqueString() and is unknown before the first deploy, so we
-      # cannot push an image to it until it exists.
-      #
-      #   Pass 1: deploy main.bicep overriding containerImage with a PUBLIC
-      #           bootstrap image so every resource (incl. the ACR) is created
-      #           and the template validates. Then read acrLoginServer from the
-      #           deployment outputs and `az acr build` our real image into it.
-      #   Pass 2: deploy main.bicep again, overriding containerImage with the
-      #           freshly-built private image (<acrLoginServer>/teetime:<sha>).
-      #
-      # On subsequent runs the ACR already exists, so both passes use the real
-      # image and the whole thing is idempotent. Each pass always supplies the
-      # dev paramfile plus the inline containerImage override.
-      # -----------------------------------------------------------------------
+      # Two-pass deploy: pass 1 with a public bootstrap image creates the ACR
+      # (its name uses uniqueString, unknown until it exists); then we build our
+      # real image into it and redeploy. Idempotent on subsequent runs.
       - name: Deploy pass 1 (bootstrap image — creates ACR + all resources)
         run: |
           az deployment group create \
+            --name "teetime-${ENVNAME}" \
             --resource-group "${RESOURCE_GROUP}" \
             --template-file infra/bicep/main.bicep \
-            --parameters "@${PARAM_FILE}" \
-            --parameters containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
-
-      - name: Resolve ACR login server from deployment outputs
+            --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
+                         acrSku=Basic kvSku=standard \
+                         dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
+      - name: Resolve ACR login server (direct query, timing-independent)
         run: |
-          ACR_LOGIN_SERVER=$(az deployment group show \
-            --resource-group "${RESOURCE_GROUP}" \
-            --name main \
-            --query properties.outputs.acrLoginServer.value -o tsv)
+          ACR_LOGIN_SERVER=$(az acr list -g "${RESOURCE_GROUP}" --query "[0].loginServer" -o tsv)
+          test -n "${ACR_LOGIN_SERVER}" || { echo "::error::No ACR in ${RESOURCE_GROUP}"; exit 1; }
           echo "ACR_LOGIN_SERVER=${ACR_LOGIN_SERVER}" >> "$GITHUB_ENV"
-          # ACR resource name is the hostname minus the .azurecr.io suffix.
           echo "ACR_NAME=${ACR_LOGIN_SERVER%%.*}" >> "$GITHUB_ENV"
-
       - name: Build + push image to ACR
-        run: |
-          az acr build \
-            -r "${ACR_NAME}" \
-            -t "teetime:${{ github.sha }}" \
-            .
-
+        run: az acr build -r "${ACR_NAME}" -t "teetime:${{ github.sha }}" .
       - name: Deploy pass 2 (real image)
         run: |
           az deployment group create \
+            --name "teetime-${ENVNAME}" \
             --resource-group "${RESOURCE_GROUP}" \
             --template-file infra/bicep/main.bicep \
-            --parameters "@${PARAM_FILE}" \
-            --parameters containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
-
-      - name: Deploy budget (subscription-scoped, separate; non-fatal)
-        # Budget is subscription-scoped, so it is a separate sub-scope deploy
-        # from the RG-scoped main deploy. See AZURE_PLAN.md §9.2.
-        # The CI service principal is RG-scoped by design (least privilege), so
-        # this step may fail with AuthorizationFailed. That MUST NOT fail the
-        # infra deploy — the budget is an optional cost alert. Activate it later
-        # via an operator-approved subscription-scope cost role, or create it
-        # once manually. The trailing guard keeps the job green either way.
+            --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
+                         acrSku=Basic kvSku=standard \
+                         dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
+      - name: Deploy budget (subscription-scoped; non-fatal)
         run: |
           az deployment sub create \
             --location "${AZURE_LOCATION}" \
             --template-file infra/bicep/modules/budget.bicep \
-            --parameters envName=dev \
-                         budgetAmountUsd=10 \
+            --parameters envName="${ENVNAME}" budgetAmountUsd=10 \
                          budgetAlertEmail="${BUDGET_ALERT_EMAIL}" \
             || echo "::warning::Budget deploy skipped (SP lacks subscription-scope permission). Infra deploy unaffected."
 
   # ---------------------------------------------------------------------------
-  # deploy-prod — MANUAL ONLY.
-  #
-  # Reachable two ways, BOTH gated by the 'prod' GitHub Environment (which the
-  # operator MUST configure with required reviewers):
-  #   1. workflow_dispatch with environment=prod
-  #   2. pushing an infra/v* tag
-  # There is NO push-to-main path into prod. The required-reviewers gate on the
-  # 'prod' environment pauses this job for manual approval before any az runs.
-  #
-  # Mirrors the dev steps against rg-teetime-prod / main.bicepparam.prod.
-  # (prod paramfile sets dryRun=false — real bookings — by design.)
+  # deploy-prod — MANUAL ONLY (workflow_dispatch environment=prod, or infra/v* tag).
+  # The 'prod' GitHub Environment has required reviewers (manual approval gate).
   # ---------------------------------------------------------------------------
   deploy-prod:
     name: Deploy to prod (manual approval)
@@ -244,68 +175,58 @@ jobs:
       (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'prod') ||
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/infra/v'))
     runs-on: ubuntu-latest
-    environment: prod   # required-reviewers gate enforces manual approval
+    environment: prod
     env:
       RESOURCE_GROUP: rg-teetime-prod
-      PARAM_FILE: infra/bicep/main.bicepparam.prod
+      ENVNAME: prod
+      DRY_RUN: "false"
+      PURGE_PROT: "true"
       BUDGET_ALERT_EMAIL: alanc3939@gmail.com
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Ensure resource group (idempotent)
         run: az group create -n "${RESOURCE_GROUP}" -l "${AZURE_LOCATION}"
-
       - name: Bicep build (lint)
         run: az bicep build --file infra/bicep/main.bicep
-
-      # Same two-pass ACR bootstrap rationale as deploy-dev (see comment above).
       - name: Deploy pass 1 (bootstrap image — creates ACR + all resources)
         run: |
           az deployment group create \
+            --name "teetime-${ENVNAME}" \
             --resource-group "${RESOURCE_GROUP}" \
             --template-file infra/bicep/main.bicep \
-            --parameters "@${PARAM_FILE}" \
-            --parameters containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
-
-      - name: Resolve ACR login server from deployment outputs
+            --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
+                         acrSku=Basic kvSku=standard \
+                         dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
+      - name: Resolve ACR login server (direct query, timing-independent)
         run: |
-          ACR_LOGIN_SERVER=$(az deployment group show \
-            --resource-group "${RESOURCE_GROUP}" \
-            --name main \
-            --query properties.outputs.acrLoginServer.value -o tsv)
+          ACR_LOGIN_SERVER=$(az acr list -g "${RESOURCE_GROUP}" --query "[0].loginServer" -o tsv)
+          test -n "${ACR_LOGIN_SERVER}" || { echo "::error::No ACR in ${RESOURCE_GROUP}"; exit 1; }
           echo "ACR_LOGIN_SERVER=${ACR_LOGIN_SERVER}" >> "$GITHUB_ENV"
           echo "ACR_NAME=${ACR_LOGIN_SERVER%%.*}" >> "$GITHUB_ENV"
-
       - name: Build + push image to ACR
-        run: |
-          az acr build \
-            -r "${ACR_NAME}" \
-            -t "teetime:${{ github.sha }}" \
-            .
-
+        run: az acr build -r "${ACR_NAME}" -t "teetime:${{ github.sha }}" .
       - name: Deploy pass 2 (real image)
         run: |
           az deployment group create \
+            --name "teetime-${ENVNAME}" \
             --resource-group "${RESOURCE_GROUP}" \
             --template-file infra/bicep/main.bicep \
-            --parameters "@${PARAM_FILE}" \
-            --parameters containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
-
-      - name: Deploy budget (subscription-scoped, separate; non-fatal)
-        # Non-fatal for the same reason as deploy-dev (RG-scoped SP). See above.
+            --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
+                         acrSku=Basic kvSku=standard \
+                         dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
+      - name: Deploy budget (subscription-scoped; non-fatal)
         run: |
           az deployment sub create \
             --location "${AZURE_LOCATION}" \
             --template-file infra/bicep/modules/budget.bicep \
-            --parameters envName=prod \
-                         budgetAmountUsd=10 \
+            --parameters envName="${ENVNAME}" budgetAmountUsd=10 \
                          budgetAlertEmail="${BUDGET_ALERT_EMAIL}" \
             || echo "::warning::Budget deploy skipped (SP lacks subscription-scope permission). Infra deploy unaffected."
