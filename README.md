@@ -149,13 +149,19 @@ set -a && source .env && set +a
 docker run --rm \
   -e MB_USERNAME -e MB_PASSWORD \
   -e PLAYER1_EMAIL -e PLAYER1_PHONE -e PLAYER1_MB_MEMBER \
-  -e PLAYER2_EMAIL \
-  -e PLAYER3_EMAIL \
-  -e PLAYER4_EMAIL \
+  -e TWOCAPTCHA_API_KEY \
   -e AZURE_TENANT_ID -e AZURE_SUBSCRIPTION_ID -e AZURE_CLIENT_ID \
   teetime:dev \
   uv run teetime run --config /app/config/container.toml --dry-run true
 ```
+
+The container always books a full foursome (4 player slots), but only **Player 1**
+(the account holder) needs contact details. ForeUP's booking request transmits
+only the player *count* — never per-guest name/email/phone (same as the website,
+which never asks for guest emails) — so guests 2–4 in `config/container.toml` are
+name-only and require no `PLAYER2/3/4_EMAIL` secrets. A CI test
+(`tests/test_container_config_parity.py`) fails the build if `container.toml` ever
+references an env var that isn't wired in `compute.bicep`.
 
 The container notifier defaults to `console` (stdout) until SMTP credentials are wired. SQLite state is written to `/tmp/teetime-state/teetime.db`; the v1 `BlobStateManager` handles upload/download to Azure Blob Storage automatically in production.
 
