@@ -801,7 +801,7 @@ The following items cannot be resolved without operator input. The stubs in
 | 1 | ~~**Azure AD tenant ID**~~ — **RESOLVED: `5151757e-ef5b-42a5-a09b-6410b40b2186`** | `azure-iac.yml` AZURE_TENANT_ID secret; OIDC setup |
 | 2 | ~~**Azure subscription ID**~~ — **RESOLVED: `3f82c7e1-4b1b-4a55-b905-d79f65c6887d`** | `azure-iac.yml` AZURE_SUBSCRIPTION_ID secret; budget.bicep deploy |
 | 3 | ~~**Preferred environment names**~~ — **RESOLVED: `dev`/`prod`** confirmed | `main.bicepparam.*` filenames and resource name suffixes |
-| 4 | **Budget alert email address** — `alanc3939+claude@gmail.com` from config/container.toml is a reasonable default; confirm or override | `budget.bicep` parameter |
+| 4 | **Budget alert email address** — set to the operator's real email at deploy time (passed as a `budget.bicep` parameter / bicepparam value, not committed in plaintext); confirm or override | `budget.bicep` parameter |
 | 5 | ~~**GitHub repo owner/name**~~ — **RESOLVED: `wardcrazy01894/TeeTimeBooker`**. OIDC subject claims updated. | OIDC federated credential `subject` field |
 | 6 | ~~**Dockerfile needed?**~~ — **RESOLVED: created at `Dockerfile` + `config/container.toml` + `.dockerignore`**. SMTP backend set to `console` until credentials are wired. SQLite path set to `/tmp/teetime-state/teetime.db` for BlobStateManager. | `registry.bicep` + `azure-iac.yml` build step |
 | 7 | **ACR name** must be globally unique in Azure. Proposed: `teetime{envName}{shortId}` where `shortId` is a 4-char hash of the subscription ID. Confirm or override. | `registry.bicep` |
