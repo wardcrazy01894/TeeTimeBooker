@@ -427,9 +427,20 @@ the blob manager opt-in via env var, keeping backward compatibility.
 |---|---|---|
 | `MB-USERNAME` | Mangrove Bay / ForeUP login username | Bot env var `MB_USERNAME` |
 | `MB-PASSWORD` | Mangrove Bay / ForeUP login password | Bot env var `MB_PASSWORD` |
-| `PLAYER1-EMAIL` | Player 1 email (PII) | Bot env var `PLAYER1_EMAIL` |
-| `PLAYER1-PHONE` | Player 1 phone (PII) | Bot env var `PLAYER1_PHONE` |
+| `PLAYER1-EMAIL` | Player 1 (account holder) email (PII) | Bot env var `PLAYER1_EMAIL` |
+| `PLAYER1-PHONE` | Player 1 (account holder) phone (PII) | Bot env var `PLAYER1_PHONE` |
+| `PLAYER1-MB-MEMBER` | Player 1 Mangrove Bay member number | Bot env var `PLAYER1_MB_MEMBER` |
 | `TWOCAPTCHA-API-KEY` | 2captcha.com API key for CAPTCHA solving | Bot env var `TWOCAPTCHA_API_KEY` |
+
+**Only Player 1 needs secrets — guests do not.** The bot books a full foursome
+(4 player slots), but ForeUP's booking POST transmits only the player *count*,
+not per-guest name/email/phone (verified in `courses/foreup/base.py` `book()`;
+matches the website, which never collects guest emails). So guests 2–4 in
+`config/container.toml` are name-only and require **no** `PLAYER2/3/4-EMAIL`
+secrets. `tests/test_container_config_parity.py` enforces that every `*_env`
+referenced by `container.toml` is wired in `compute.bicep` (and that the listed
+runtime vars — `TWOCAPTCHA_API_KEY`, `AZURE_CLIENT_ID`,
+`AZURE_STORAGE_ACCOUNT_NAME` — are present), so this set can't silently drift.
 
 **SMTP secrets are OMITTED for now.** `config/container.toml` uses
 `backend = "console"` — notifications are written to stdout/Log Analytics.
@@ -442,9 +453,9 @@ and update the ACA job `secretRef` bindings and the container TOML.
 | `SMTP-USER` | SMTP login username | Bot env var `SMTP_USER` | **Deferred** |
 | `SMTP-PASS` | SMTP login password | Bot env var `SMTP_PASS` | **Deferred** |
 
-Additional `PLAYER*` secrets follow the same pattern. The set of secrets is
-determined by the config file (`config/local.toml`) which references env var
-names; the Key Vault must contain matching secrets.
+The set of secrets is determined by `config/container.toml` (the image's runtime
+config), which references env var names; the Key Vault must contain matching
+secrets. The parity test in §7.1 keeps this in sync automatically.
 
 **`STORAGE-CONN-STR` is NOT stored in Key Vault.** Storage connection strings
 contain a shared account key — a long-lived credential with full account access.
@@ -719,7 +730,9 @@ az keyvault secret set --vault-name kv-teetime-dev --name MB-USERNAME --value "<
 az keyvault secret set --vault-name kv-teetime-dev --name MB-PASSWORD --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-EMAIL --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-PHONE --value "<value>"
+az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-MB-MEMBER --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name TWOCAPTCHA-API-KEY --value "<value>"
+# Guests 2-4 need NO secrets — ForeUP books by player count only. See §7.1.
 # SMTP-HOST / SMTP-USER / SMTP-PASS are intentionally OMITTED — notifications
 # use console (stdout) until SMTP is wired. See §7.1.
 # NOTE: No STORAGE-CONN-STR. Blob Storage access uses DefaultAzureCredential
