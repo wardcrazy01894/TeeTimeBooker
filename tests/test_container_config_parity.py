@@ -27,8 +27,21 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent
 _CONTAINER_TOML = _REPO / "config" / "container.toml"
-_LOCAL_TOML = _REPO / "config" / "local.toml"
+_EXAMPLE_TOML = _REPO / "config" / "example.toml"
 _COMPUTE_BICEP = _REPO / "infra" / "bicep" / "modules" / "compute.bicep"
+
+# Runtime env vars the container needs that are NOT config ``*_env`` references,
+# so ``_referenced_env_vars`` can't discover them — they must be asserted by name.
+#   TWOCAPTCHA_API_KEY: read via os.environ directly in __main__ (CAPTCHA solve).
+#     Critically, its absence does NOT crash at config load, so a dropped wiring
+#     would fail SILENTLY at the 6 AM booking — the worst failure mode.
+#   AZURE_CLIENT_ID / AZURE_STORAGE_ACCOUNT_NAME: required for DefaultAzureCredential
+#     to pick the user-assigned MI and reach the SQLite state blob.
+_REQUIRED_RUNTIME_ENV_VARS = {
+    "TWOCAPTCHA_API_KEY",
+    "AZURE_CLIENT_ID",
+    "AZURE_STORAGE_ACCOUNT_NAME",
+}
 
 
 def _load(path: Path) -> dict:
@@ -109,20 +122,40 @@ def test_booking_is_a_full_foursome() -> None:
     )
 
 
-def test_container_and_local_party_size_match() -> None:
-    """Local dry-runs and the Azure container must book the same party size.
+def test_critical_runtime_env_vars_are_wired_in_compute_bicep() -> None:
+    """Non-``*_env`` runtime vars must still be wired in compute.bicep.
 
-    The most common drift (and the one that bit us): local books 4 but the
-    container books fewer. Other request params (price, windows) are allowed to
-    differ per environment, but party size is the booking's defining shape.
+    ``_referenced_env_vars`` only finds config ``*_env`` references. Some env vars
+    the container needs are read directly (not via a config ref) — most
+    importantly ``TWOCAPTCHA_API_KEY``, whose absence fails SILENTLY at booking
+    time rather than crashing at load, so the generic guard above can't catch it.
+    Assert them by name. See ``_REQUIRED_RUNTIME_ENV_VARS``.
     """
-    if not _LOCAL_TOML.exists():
-        return  # local.toml is gitignored in some checkouts; skip if absent.
-    local = _load(_LOCAL_TOML)
+    provided = _bicep_env_var_names(_COMPUTE_BICEP.read_text())
+    missing = _REQUIRED_RUNTIME_ENV_VARS - provided
+    assert not missing, (
+        f"compute.bicep is missing critical runtime env var(s): {sorted(missing)}. "
+        "These are not config *_env refs, so dropping them fails silently at run "
+        "time. Re-add them to commonEnv (and the matching jobSecrets) in "
+        "infra/bicep/modules/compute.bicep."
+    )
+
+
+def test_container_and_example_party_size_match() -> None:
+    """The committed reference config and the Azure container must agree on size.
+
+    The drift that bit us: the canonical config books 4 but the container booked
+    2. ``config/local.toml`` is gitignored (absent in CI), so we anchor to the
+    committed ``config/example.toml`` instead — this test is therefore live in
+    CI, not silently skipped. Other request params (price, windows) may differ
+    per environment; party size is the booking's defining shape and must match.
+    """
+    assert _EXAMPLE_TOML.exists(), "config/example.toml (committed reference) is missing"
+    example = _load(_EXAMPLE_TOML)
     container = _load(_CONTAINER_TOML)
-    n_local = len(local.get("request", {}).get("players", []))
+    n_example = len(example.get("request", {}).get("players", []))
     n_container = len(container.get("request", {}).get("players", []))
-    assert n_local == n_container, (
-        f"party-size drift: local.toml has {n_local} players, container.toml has "
-        f"{n_container}. Keep them in sync so Azure books what local books."
+    assert n_example == n_container, (
+        f"party-size drift: example.toml has {n_example} players, container.toml "
+        f"has {n_container}. Keep them in sync so Azure books the intended party."
     )
