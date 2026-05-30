@@ -201,6 +201,14 @@ resource acaEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
 // Four booking jobs (Sat EDT, Sat EST, Sun EDT, Sun EST) via a loop over the
 // bookingJobs table. Each is an independent Microsoft.App/jobs resource sharing
 // the same image, identity, registries, secrets, and env — only name + cron vary.
+//
+// @batchSize(1) serializes their creation (one at a time, not all four at once).
+// On a freshly-created Consumption environment the ACA control plane times out
+// ("ContainerAppOperationError: Operation expired") when several job revisions
+// are provisioned simultaneously against the still-cold env. Serial creation
+// keeps concurrent provisioning load to one and makes first-deploy reliable;
+// it costs a little wall-clock on the initial deploy only (redeploys are fast).
+@batchSize(1)
 resource bookingJob 'Microsoft.App/jobs@2024-03-01' = [for job in bookingJobs: {
   name: job.name
   location: location
@@ -261,6 +269,10 @@ resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
   name: watchJobName
   location: location
   tags: tags
+  // Provision the watch job AFTER the four booking jobs (not concurrently) for
+  // the same cold-environment reason as @batchSize(1) above — avoids the
+  // "Operation expired" control-plane timeout on first deploy.
+  dependsOn: [bookingJob]
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
