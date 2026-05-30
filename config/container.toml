@@ -17,9 +17,12 @@ max_price_per_player = "60.00"
 cart                 = "either"
 course_preferences   = ["foreup:mangrove_bay"]
 
-# Always book a full foursome — matches the local config. All four player slots
-# are required; each email_env must resolve (config.py raises on a missing ref),
-# so the matching KV secrets (PLAYER1-EMAIL..PLAYER4-EMAIL) must exist.
+# Always book a full foursome (4 slots) — matches how it ran locally.
+# NOTE: ForeUP's booking POST only sends the player COUNT, not per-guest contact
+# info (verified in courses/foreup/base.py book(): no email/name fields in the
+# payload — same as the website, which never asks for guest emails). So the three
+# guests are name-only; only Player 1 (the account holder) needs contact details.
+# This means NO PLAYER2/3/4 KV secrets are required.
 [[request.players]]
 first_name        = "Alex"
 last_name         = "Lancaster"
@@ -30,17 +33,14 @@ member_number_env = "PLAYER1_MB_MEMBER"
 [[request.players]]
 first_name = "Guest"
 last_name  = "Player"
-email_env  = "PLAYER2_EMAIL"
 
 [[request.players]]
 first_name = "Guest"
 last_name  = "Player"
-email_env  = "PLAYER3_EMAIL"
 
 [[request.players]]
 first_name = "Guest"
 last_name  = "Player"
-email_env  = "PLAYER4_EMAIL"
 
 [[request.time_windows]]
 earliest = 08:45:00
