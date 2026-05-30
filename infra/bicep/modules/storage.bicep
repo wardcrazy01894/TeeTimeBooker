@@ -50,58 +50,92 @@ var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 // Resources
 // ---------------------------------------------------------------------------
 
-// TODO(M-azure-T3): implement storage account resource.
-// Resource type: Microsoft.Storage/storageAccounts
-// Key properties:
-//   kind: 'StorageV2'
-//   sku.name: 'Standard_LRS'
-//   accessTier: 'Hot'
-//   minimumTlsVersion: 'TLS1_2'
-//   supportsHttpsTrafficOnly: true
-//   allowBlobPublicAccess: false  (no public blob access)
-//   publicNetworkAccess: 'Enabled'  (ACA accesses over public endpoint)
-// Reference: https://learn.microsoft.com/en-us/azure/templates/microsoft.storage/storageaccounts
+// Storage account — LRS Hot, StorageV2, no public blob access.
+// publicNetworkAccess is 'Enabled' because ACA accesses over the public
+// endpoint; no VNet integration in v1. See: AZURE_PLAN.md §11.
+resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
+  name: storageAccountName
+  location: location
+  kind: 'StorageV2'
+  sku: {
+    name: 'Standard_LRS'
+  }
+  properties: {
+    accessTier: 'Hot'
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+    allowBlobPublicAccess: false
+    // The bot authenticates with the user-assigned MI via DefaultAzureCredential.
+    // No connection string / account key is ever used (AZURE_PLAN.md §7.1), so
+    // shared-key auth is disabled — a leaked key would otherwise bypass all RBAC
+    // scoping. Security review H2.
+    allowSharedKeyAccess: false
+    // ACA Consumption has no static egress IP to allow-list, so the account stays
+    // on the public endpoint gated by AAD RBAC. Accepted risk (security review H1).
+    publicNetworkAccess: 'Enabled'
+  }
+}
 
-// TODO(M-azure-T3): implement blob service properties child resource.
-// Resource type: Microsoft.Storage/storageAccounts/blobServices
-// Key properties:
-//   deleteRetentionPolicy.enabled: true
-//   deleteRetentionPolicy.days: 7
-//     (This enables blob soft-delete for the 7-day DR window — AZURE_PLAN.md §6.3)
-//   containerDeleteRetentionPolicy.enabled: true
-//   containerDeleteRetentionPolicy.days: 7
-//     IMPORTANT: blob soft-delete and container soft-delete are SEPARATE properties.
-//     deleteRetentionPolicy protects individual blobs (e.g. teetime.db deleted).
-//     containerDeleteRetentionPolicy protects the container itself (e.g. teetime-state
-//     deleted). Both must be set; only blob soft-delete is insufficient for full
-//     DR coverage. If the container is deleted, blob soft-delete cannot recover it.
-//     See: AZURE_PLAN.md §6.3 (SF3 resolution)
-// Note: blob versioning is disabled (adds cost; soft-delete is sufficient).
+// Blob service configuration — enables BOTH blob soft-delete AND container
+// soft-delete with 7-day retention. These are separate properties:
+//   deleteRetentionPolicy: protects individual blobs (e.g. teetime.db deleted).
+//   containerDeleteRetentionPolicy: protects the container itself (e.g.
+//     teetime-state accidentally deleted). Blob soft-delete alone cannot
+//     recover a deleted container; both must be set for full DR coverage.
+// Versioning is disabled — soft-delete is sufficient and versioning adds cost.
+// See: AZURE_PLAN.md §6.3 (SF3 resolution)
+resource blobServices 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
+  parent: storageAccount
+  name: 'default'
+  properties: {
+    deleteRetentionPolicy: {
+      enabled: true
+      days: 7
+    }
+    containerDeleteRetentionPolicy: {
+      enabled: true
+      days: 7
+    }
+    isVersioningEnabled: false
+  }
+}
 
-// TODO(M-azure-T3): implement blob container child resource.
-// Resource type: Microsoft.Storage/storageAccounts/blobServices/containers
-// Name: blobContainerName ('teetime-state')
-// Key properties:
-//   publicAccess: 'None'
+// Blob container 'teetime-state' — no public access.
+// Hard-coded name matches the constant the bot reads from the env/config.
+resource blobContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
+  parent: blobServices
+  name: blobContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
 
-// TODO(M-azure-T3): implement role assignment for job MI.
-// Only create if jobPrincipalId is non-empty.
-// Resource type: Microsoft.Authorization/roleAssignments (on storage account scope)
-// Role: Storage Blob Data Contributor (storageBlobDataContributorRoleId)
-// principalType: 'ServicePrincipal'
-// See: infra/AZURE_PLAN.md §7.2
-// NOTE: Storage Blob Data Contributor is required (not Storage Blob Data Reader)
-// because the bot needs to acquire a blob lease and upload (write) the blob.
+// Storage Blob Data Contributor role assignment for the Container Apps Job MI.
+// Scoped to the storage account (not subscription/RG) for minimum privilege.
+// Required for: blob download, blob upload, and exclusive blob lease operations.
+// Only created when jobPrincipalId is non-empty — allows staging this module
+// before identity.bicep has resolved a real principalId.
+// Name is a deterministic GUID so re-deploys are fully idempotent.
+// See: AZURE_PLAN.md §7.2
+resource roleAssignmentStorageBlobDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(jobPrincipalId)) {
+  name: guid(storageAccount.id, jobPrincipalId, storageBlobDataContributorRoleId)
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
+    principalId: jobPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
 @description('Storage account name. Passed as a plain (non-secret) env var AZURE_STORAGE_ACCOUNT_NAME to the ACA job. The bot uses DefaultAzureCredential for access; no connection string is stored in Key Vault.')
-output storageAccountName string = storageAccountName
+output storageAccountName string = storageAccount.name
 
 @description('Blob container name. Hard-coded to teetime-state; exposed for reference.')
 output blobContainerName string = blobContainerName
 
 @description('Storage account resource ID. Used for role assignment scope in other modules.')
-output storageAccountResourceId string = 'TODO(M-azure-T3): storageAccount.id'
+output storageAccountResourceId string = storageAccount.id

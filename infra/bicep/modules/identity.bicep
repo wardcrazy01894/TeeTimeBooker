@@ -29,21 +29,20 @@ param location string
 // Resources
 // ---------------------------------------------------------------------------
 
-// TODO(M-azure-T1): implement user-assigned managed identity resource.
-// Resource type: Microsoft.ManagedIdentity/userAssignedIdentities
-// Name convention: mi-teetime-{envName}
-// See: infra/AZURE_PLAN.md §7.2
-// Reference: https://learn.microsoft.com/en-us/azure/templates/microsoft.managedidentity/userassignedidentities
+resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'mi-teetime-${envName}'
+  location: location
+}
 
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
 @description('Resource ID of the user-assigned managed identity.')
-output identityResourceId string = 'TODO(M-azure-T1)'
+output identityResourceId string = managedIdentity.id
 
 @description('Principal ID of the user-assigned managed identity (for role assignments).')
-output principalId string = 'TODO(M-azure-T1)'
+output principalId string = managedIdentity.properties.principalId
 
 @description('Client ID of the user-assigned managed identity.')
-output clientId string = 'TODO(M-azure-T1)'
+output clientId string = managedIdentity.properties.clientId

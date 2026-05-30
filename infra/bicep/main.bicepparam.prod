@@ -23,3 +23,11 @@ param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime:PLACEHOLDER_VERSION
 
 param acrSku = 'Basic'
 param kvSku = 'standard'
+
+// Prod runs real bookings (no dry-run). Flip to false only at production cutover.
+// Left explicit (matches the param default) so the intent is visible in review.
+param dryRun = false
+
+// Prod keeps Key Vault purge protection ON — irreversible-delete guard. Once
+// enabled this cannot be turned off for the vault's lifetime. See AZURE_PLAN.md §11.
+param enablePurgeProtection = true

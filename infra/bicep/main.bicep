@@ -37,6 +37,12 @@ param acrSku string = 'Basic'
 @allowed(['standard', 'premium'])
 param kvSku string = 'standard'
 
+@description('Permanent dry-run flag for the ACA jobs. Defaults true (no real bookings). Dev MUST stay true until production cutover (AZURE_PLAN.md §10.3).')
+param dryRun bool = true
+
+@description('Key Vault purge protection. Defaults true (safe). Prod MUST stay true; dev passes false so the vault can be torn down and recreated during iteration. See AZURE_PLAN.md §7.4, §11.')
+param enablePurgeProtection bool = true
+
 // ---------------------------------------------------------------------------
 // Module: identity
 // User-assigned managed identity — the SINGLE principalId for all RBAC.
@@ -98,6 +104,7 @@ module keyvault 'modules/keyvault.bicep' = {
     location: location
     kvSku: kvSku
     jobPrincipalId: identity.outputs.principalId
+    enablePurgeProtection: enablePurgeProtection
   }
 }
 
@@ -139,8 +146,15 @@ module compute 'modules/compute.bicep' = {
     storageAccountName: storage.outputs.storageAccountName
     logAnalyticsWorkspaceId: logs.outputs.workspaceId
     logAnalyticsWorkspaceKey: logs.outputs.workspaceKey
+    dryRun: dryRun
   }
-  dependsOn: [keyvault, logs, registry, storage]
+  // keyvault, logs, and storage are already implicit dependencies via their
+  // outputs consumed above (vaultUri, workspaceId/Key, storageAccountName), so
+  // they are NOT listed here (Bicep no-unnecessary-dependson). registry IS
+  // listed: compute derives the ACR login server from the containerImage string
+  // (not a registry output), so there is no implicit edge — but the job's AcrPull
+  // role assignment in registry.bicep must exist before the job can pull.
+  dependsOn: [registry]
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,12 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 (2026-05-29). M3 (SQLite), M4 (email notifications), M2.T3 (reconciliation), and
 M6 (first production cron run) are the remaining v0 tasks.
 
+**Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
+`registry`, `storage`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys
+on merge to main via `.github/workflows/azure-iac.yml` with `dryRun = true` —
+no real bookings fire in dev. Remaining Azure work: `BlobStateManager` runtime
+module (Python SDK integration) and container entrypoint wiring (M-azure runtime).
+
 Note: the production CLI currently wires `InMemoryStore` + `ConsoleNotifier`
 unconditionally (SqliteStore/EmailNotifier are stubs). Cross-run durable state
 and the idempotency/advisory-lock layers are therefore NOT active across runs

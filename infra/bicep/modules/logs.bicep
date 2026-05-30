@@ -37,35 +37,56 @@ var appInsightsName = 'ai-teetime-${envName}'
 // Resources
 // ---------------------------------------------------------------------------
 
-// TODO(M-azure-T5): implement Log Analytics Workspace resource.
-// Resource type: Microsoft.OperationalInsights/workspaces
-// Key properties:
-//   sku.name: 'PerGB2018'   (pay-per-GB; no commitment tier needed at this volume)
-//   retentionInDays: retentionDays
-//   publicNetworkAccessForIngestion: 'Enabled'
-//   publicNetworkAccessForQuery: 'Enabled'
-// Reference: https://learn.microsoft.com/en-us/azure/templates/microsoft.operationalinsights/workspaces
+resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: workspaceName
+  location: location
+  tags: {
+    environment: envName
+    managedBy: 'bicep'
+    project: 'teetime'
+  }
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: retentionDays
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
+}
 
-// TODO(M-azure-T5): implement Application Insights resource (linked to workspace).
-// Resource type: Microsoft.Insights/components
-// Key properties:
-//   kind: 'other'           (not web; this is a background job)
-//   applicationType: 'other'
-//   workspaceResourceId: workspace.id
-//   publicNetworkAccessForIngestion: 'Enabled'
-//   publicNetworkAccessForQuery: 'Enabled'
-// Reference: https://learn.microsoft.com/en-us/azure/templates/microsoft.insights/components
+// Application Insights linked to the Log Analytics workspace.
+// kind/Application_Type 'other' is correct for background jobs — not 'web'.
+// IngestionMode 'LogAnalytics' routes telemetry through the workspace so all
+// observability data lands in a single place (no classic AI storage).
 // NOTE: App Insights is an extension point for v1 structured metrics
 // (PLAN.md §10 "Metric surface v1"). It is provisioned but not wired into
 // the bot code in v1.0 — wire APPLICATIONINSIGHTS_CONNECTION_STRING into the
 // job env vars when the bot adds SDK-level telemetry.
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: appInsightsName
+  location: location
+  kind: 'other'
+  tags: {
+    environment: envName
+    managedBy: 'bicep'
+    project: 'teetime'
+  }
+  properties: {
+    Application_Type: 'other'
+    WorkspaceResourceId: workspace.id
+    IngestionMode: 'LogAnalytics'
+    publicNetworkAccessForIngestion: 'Enabled'
+    publicNetworkAccessForQuery: 'Enabled'
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
 @description('Log Analytics Workspace resource ID. Required by compute.bicep for ACA environment diagnostics config.')
-output workspaceId string = 'TODO(M-azure-T5): workspace.id'
+output workspaceId string = workspace.id
 
 @description('Log Analytics Workspace primary shared key. Required by ACA environment to send logs.')
 // NOTE: the workspace key is a sensitive value. In Bicep, use
@@ -75,8 +96,8 @@ output workspaceId string = 'TODO(M-azure-T5): workspace.id'
 // Mark output as @secure() as done here.
 // See: https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/outputs#secure-outputs
 @secure()
-output workspaceKey string = 'TODO(M-azure-T5): listKeys(workspace.id, workspace.apiVersion).primarySharedKey'
+output workspaceKey string = workspace.listKeys().primarySharedKey
 
 @description('Application Insights connection string. For future bot SDK telemetry integration.')
 @secure()
-output appInsightsConnectionString string = 'TODO(M-azure-T5): appInsights.properties.ConnectionString'
+output appInsightsConnectionString string = appInsights.properties.ConnectionString

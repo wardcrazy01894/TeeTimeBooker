@@ -97,6 +97,8 @@ platform using the same user-assigned MI.
 
 ## 3. Module layout
 
+**Status: ALL modules implemented (M-azure-T1 through M-azure-T7 DONE).**
+
 ```
 infra/
   AZURE_PLAN.md                # this file
@@ -105,15 +107,15 @@ infra/
     main.bicepparam.dev        # dev environment parameter values
     main.bicepparam.prod       # prod environment parameter values
     modules/
-      identity.bicep           # system-assigned managed identity for the Container Apps Job
+      identity.bicep           # user-assigned managed identity for the Container Apps Jobs
       registry.bicep           # ACR Basic; grants AcrPull to the job MI
       storage.bicep            # Blob Storage account (LRS Hot) + container 'teetime-state'; soft-delete 7d
       keyvault.bicep           # Key Vault Standard; grants Key Vault Secrets User to the job MI; soft-delete 90d
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
-      compute.bicep            # Container Apps Environment (Consumption) + Container Apps Job (four cron entries: Sat+Sun × 2 DST seasons)
+      compute.bicep            # ACA Environment (Consumption) + 2× booking ACA Jobs (DST crons) + watch ACA Job
       budget.bicep             # Cost Management budget ($10/mo at 80% alert); subscription-scoped
-  ci/
-    azure-iac.yml              # GH Actions workflow: bicep build + what-if on PR; deploy on tag push
+.github/workflows/
+  azure-iac.yml                # ACTIVE CI: bicep build + what-if on PR; deploy on merge to main (dev) / tag (prod)
 ```
 
 **Dependency order for `az deployment group create` (RG-scoped):**
@@ -271,8 +273,8 @@ only for the booking phase (if a cancellation slot is found), matching the
 booking jobs' lock discipline. The `WatchOrchestrator.check_once` module
 docstring is the canonical reference for lock ownership rules.
 
-`compute.bicep` needs one additional `Microsoft.App/jobs` resource for the
-watch job (task M-azure-T1 tracks this).
+`compute.bicep` includes the watch job `Microsoft.App/jobs` resource
+(implemented as part of M-azure-T1, now DONE).
 
 ---
 
@@ -419,16 +421,26 @@ the blob manager opt-in via env var, keeping backward compatibility.
 
 ### 7.1 Key Vault secret tree
 
+**Active secrets (current scope — notifications backend = console):**
+
 | Secret name | Contains | Used by |
 |---|---|---|
 | `MB-USERNAME` | Mangrove Bay / ForeUP login username | Bot env var `MB_USERNAME` |
 | `MB-PASSWORD` | Mangrove Bay / ForeUP login password | Bot env var `MB_PASSWORD` |
-| `SMTP-HOST` | SMTP relay hostname | Bot env var `SMTP_HOST` |
-| `SMTP-USER` | SMTP login username | Bot env var `SMTP_USER` |
-| `SMTP-PASS` | SMTP login password | Bot env var `SMTP_PASS` |
 | `PLAYER1-EMAIL` | Player 1 email (PII) | Bot env var `PLAYER1_EMAIL` |
 | `PLAYER1-PHONE` | Player 1 phone (PII) | Bot env var `PLAYER1_PHONE` |
 | `TWOCAPTCHA-API-KEY` | 2captcha.com API key for CAPTCHA solving | Bot env var `TWOCAPTCHA_API_KEY` |
+
+**SMTP secrets are OMITTED for now.** `config/container.toml` uses
+`backend = "console"` — notifications are written to stdout/Log Analytics.
+When SMTP is ready, add `SMTP-HOST`, `SMTP-USER`, `SMTP-PASS` to the vault
+and update the ACA job `secretRef` bindings and the container TOML.
+
+| Secret name | Contains | Used by | Status |
+|---|---|---|---|
+| `SMTP-HOST` | SMTP relay hostname | Bot env var `SMTP_HOST` | **Deferred** |
+| `SMTP-USER` | SMTP login username | Bot env var `SMTP_USER` | **Deferred** |
+| `SMTP-PASS` | SMTP login password | Bot env var `SMTP_PASS` | **Deferred** |
 
 Additional `PLAYER*` secrets follow the same pattern. The set of secrets is
 determined by the config file (`config/local.toml`) which references env var
@@ -519,43 +531,54 @@ az containerapp job start --name teetime-job-<envName> --resource-group rg-teeti
 This triggers a manual execution that will pick up the new secret.
 
 **CRITICAL:** purge protection is NOT enabled by default on new Key Vaults
-(soft-delete IS enabled by default with 90-day retention). We explicitly set
-`enablePurgeProtection: true` in `keyvault.bicep`. This prevents permanent
-secret deletion during the purge protection period and is a one-way operation
-— once enabled, it cannot be disabled for the vault's lifetime.
+(soft-delete IS enabled by default with 90-day retention).
+
+**Dev vs prod purge protection policy:**
+- `dev`: `enablePurgeProtection: false` — allows vault deletion/recreation
+  during iteration without waiting out the soft-delete period. Safe because
+  dev runs in permanent dry-run and holds no production credentials.
+- `prod`: `enablePurgeProtection: true` — prevents permanent secret deletion
+  during the soft-delete period. This is a one-way operation; once enabled on
+  a vault it cannot be disabled for that vault's lifetime. The prod param file
+  sets this explicitly.
 
 ---
 
 ## 8. CI validation pipeline (pre-emption item 9)
 
-The file `infra/ci/azure-iac.yml` is a new GitHub Actions workflow separate
+The file `.github/workflows/azure-iac.yml` is the active CI workflow, separate
 from `book.yml`. It never touches `book.yml` or any v0 workflow.
 
 ### 8.1 Trigger strategy
 
 | Trigger | Action |
 |---|---|
-| `pull_request` touching `infra/**` | `bicep build` lint + `az deployment group what-if` (read-only) |
-| `push` to `main` touching `infra/**` | Same as PR + deploy to `dev` (requires manual approval — see below) |
+| `pull_request` touching `infra/**` or `.github/workflows/azure-iac.yml` | `bicep build` lint + `az deployment group what-if` (read-only) |
+| `push` to `main` touching `infra/**` or `.github/workflows/azure-iac.yml` | Same as PR + **auto-deploy to `dev` (no required-reviewer gate — intentional; see below)** |
 | `push` tag matching `infra/v*` | Deploy to `prod` (requires manual approval) |
-| `workflow_dispatch` | Manual deploy to chosen env (requires manual approval) |
+| `workflow_dispatch` | Manual deploy to chosen env |
 
-**GitHub Environment protection rules (operator must configure once):**
-Both `dev` and `prod` GitHub environments require a manual approval gate.
-Auto-deploy-on-merge-to-main without approval is inconsistent with the
-CLAUDE.md rule that agents must not run `az deployment ... create` without
-explicit user approval. The GitHub UI enforces this outside of code.
+**GitHub Environment protection rules — dev vs prod:**
+`dev` auto-deploys on merge to main with NO required-reviewer gate. This is a
+deliberate relaxation of the general CLAUDE.md agent rule for the dev
+environment only, per operator request — iteration speed matters more than a
+gate when no real credentials or bookings are at stake (`dryRun` defaults
+`true`; see §8.1a below). `prod` retains a manual approval gate.
 
-Setup steps:
-1. GitHub repo > Settings > Environments > New environment > name: `dev`
+Setup steps for prod environment (one-time):
+1. GitHub repo > Settings > Environments > New environment > name: `prod`
 2. Under "Deployment protection rules" > enable "Required reviewers"
 3. Add the operator GitHub account as required reviewer
-4. Save. Repeat for `prod` environment.
+4. Save.
 
-Once configured, every merge to `main` that touches `infra/**` will pause at
-the `Deploy to dev` step and wait for the operator to click "Approve" in the
-GitHub UI before `az deployment group create` runs. This applies to both
-human-initiated merges and any agent-initiated PRs.
+The `dev` environment (if configured in GitHub) should have NO required
+reviewers — any push to `main` that touches `infra/**` deploys automatically.
+
+**§8.1a `dryRun` Bicep parameter:** `main.bicep` accepts a `dryRun` bool
+parameter that defaults to `true`. The dev parameter file sets `dryRun = true`
+explicitly — all ACA Job container commands in dev include `--dry-run true`,
+so no real bookings ever fire in dev. To go live on prod, set `dryRun = false`
+in `main.bicepparam.prod` and deploy via a prod tag push.
 
 ### 8.2 OIDC federated credential setup (one-time, operator)
 
@@ -694,11 +717,11 @@ az deployment group create \
 # 3. Populate Key Vault secrets (operator, NOT in automation)
 az keyvault secret set --vault-name kv-teetime-dev --name MB-USERNAME --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name MB-PASSWORD --value "<value>"
-az keyvault secret set --vault-name kv-teetime-dev --name SMTP-HOST --value "<value>"
-az keyvault secret set --vault-name kv-teetime-dev --name SMTP-USER --value "<value>"
-az keyvault secret set --vault-name kv-teetime-dev --name SMTP-PASS --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-EMAIL --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-PHONE --value "<value>"
+az keyvault secret set --vault-name kv-teetime-dev --name TWOCAPTCHA-API-KEY --value "<value>"
+# SMTP-HOST / SMTP-USER / SMTP-PASS are intentionally OMITTED — notifications
+# use console (stdout) until SMTP is wired. See §7.1.
 # NOTE: No STORAGE-CONN-STR. Blob Storage access uses DefaultAzureCredential
 # via the user-assigned MI. The storage account name is resolved from IaC
 # output (az deployment group show --query properties.outputs.storageAccountName).
@@ -722,6 +745,8 @@ az deployment sub create \
 
 ### 10.2 Ongoing deploy (CI-driven)
 
+The active CI workflow is `.github/workflows/azure-iac.yml`.
+
 For image-only updates (new bot code, same IaC):
 1. CI builds and pushes `teetime:<tag>` to ACR.
 2. Update `containerImage` in `main.bicepparam.dev` (or `prod`).
@@ -731,8 +756,9 @@ For image-only updates (new bot code, same IaC):
 
 For IaC changes (Bicep edits):
 1. PR opens → `azure-iac.yml` runs `bicep build` + `what-if`.
-2. Merge → `azure-iac.yml` deploys to dev.
-3. Tag `infra/v*` → `azure-iac.yml` deploys to prod.
+2. Merge to `main` → `azure-iac.yml` **auto-deploys to dev** (no reviewer gate; see §8.1).
+   Dev always runs in dry-run (`dryRun = true` in parameter file).
+3. Tag `infra/v*` → `azure-iac.yml` deploys to prod (requires manual approval).
 
 ### 10.3 v0 → v1 cutover
 
@@ -776,7 +802,7 @@ by un-commenting the schedule lines, run a manual booking, then re-disable.
 | No plaintext secrets in Bicep | Required | All secrets via Key Vault reference; `main.bicepparam.*` files contain no secret values |
 | No secrets in container env vars (direct) | Required | All env vars are `secretRef:` pointing to Key Vault references |
 | Key Vault soft-delete | On (90 days, default) | Confirmed default for new vaults created since 2019 |
-| Key Vault purge protection | **Explicitly enabled in `keyvault.bicep`** | NOT on by default; must be set; irreversible |
+| Key Vault purge protection | **Dev: disabled (fast iteration); Prod: enabled** | NOT on by default; must be set for prod; irreversible once enabled |
 | Blob soft-delete | Enabled (7 days) | Set in `storage.bicep` |
 | Blob versioning | Disabled | Versioning adds cost and complexity; soft-delete is sufficient |
 | ACA Job has no public ingress | By design | ACA Jobs (scheduled trigger type) do NOT expose HTTP ingress — unlike Container Apps services, which can have HTTP listeners. There is no public endpoint, no port binding, and no inbound network surface for the job resources. |
