@@ -123,16 +123,23 @@ var acrLoginServer = split(containerImage, '/')[0]
 // (not the client ID) in the `identity` field. The platform uses that MI to fetch
 // the secret value at container start.
 //
-// Only five secrets are wired here. SMTP-* secrets are intentionally OMITTED:
-// the notifications backend is 'console' (config/container.toml) until email is
-// enabled. When switching to backend = 'email', add smtp-host / smtp-user /
-// smtp-pass secretRefs here (and matching SMTP_* env vars below) plus the KV
-// secrets. See AZURE_PLAN.md §12 Q10.
+// Seven secrets are wired here — they MUST exactly cover every *_env name the
+// bot resolves from config/container.toml. config.py:_resolve_env RAISES on any
+// referenced env var that is missing, so an under-wired job crashes at config
+// load before doing anything. The set: course creds (MB-*), player1 contact +
+// member number, the guest player2 email, and the 2captcha key.
+//
+// SMTP-* secrets are intentionally OMITTED: the notifications backend is
+// 'console' (config/container.toml) until email is enabled. When switching to
+// backend = 'email', add smtp-host / smtp-user / smtp-pass secretRefs here (and
+// matching SMTP_* env vars below) plus the KV secrets. See AZURE_PLAN.md §12 Q10.
 var jobSecrets = [
   { name: 'mb-username',        keyVaultUrl: '${keyVaultUri}secrets/MB-USERNAME',        identity: userAssignedIdentityResourceId }
   { name: 'mb-password',        keyVaultUrl: '${keyVaultUri}secrets/MB-PASSWORD',        identity: userAssignedIdentityResourceId }
   { name: 'player1-email',      keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-EMAIL',      identity: userAssignedIdentityResourceId }
   { name: 'player1-phone',      keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-PHONE',      identity: userAssignedIdentityResourceId }
+  { name: 'player1-mb-member',  keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-MB-MEMBER',  identity: userAssignedIdentityResourceId }
+  { name: 'player2-email',      keyVaultUrl: '${keyVaultUri}secrets/PLAYER2-EMAIL',      identity: userAssignedIdentityResourceId }
   { name: 'twocaptcha-api-key', keyVaultUrl: '${keyVaultUri}secrets/TWOCAPTCHA-API-KEY', identity: userAssignedIdentityResourceId }
 ]
 
@@ -151,6 +158,8 @@ var commonEnv = [
   { name: 'MB_PASSWORD',                secretRef: 'mb-password' }
   { name: 'PLAYER1_EMAIL',              secretRef: 'player1-email' }
   { name: 'PLAYER1_PHONE',              secretRef: 'player1-phone' }
+  { name: 'PLAYER1_MB_MEMBER',          secretRef: 'player1-mb-member' }
+  { name: 'PLAYER2_EMAIL',              secretRef: 'player2-email' }
   { name: 'TWOCAPTCHA_API_KEY',         secretRef: 'twocaptcha-api-key' }
   { name: 'AZURE_STORAGE_ACCOUNT_NAME', value: storageAccountName }
   { name: 'AZURE_CLIENT_ID',            value: userAssignedIdentityClientId }
