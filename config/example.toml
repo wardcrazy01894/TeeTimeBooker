@@ -83,7 +83,7 @@ max_poll_seconds = 30                    # give up polling after this
 
 [notifier]
 backend         = "email"
-email_to        = "alanc3939+claude@gmail.com"
+email_to        = "you@example.com"          # the address that receives booking results
 smtp_host_env   = "SMTP_HOST"
 smtp_user_env   = "SMTP_USER"
 smtp_pass_env   = "SMTP_PASS"

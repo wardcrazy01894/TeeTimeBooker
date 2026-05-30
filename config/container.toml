@@ -44,7 +44,7 @@ max_poll_seconds = 30
 # SMTP is deferred — use console until SMTP_HOST is provisioned in Key Vault.
 # Switch to backend = "email" once SMTP credentials are wired.
 backend  = "console"
-email_to = "alanc3939+claude@gmail.com"
+email_to = "you@example.com"   # set to the real recipient when switching backend to "email"
 
 [persistence]
 backend = "sqlite"
