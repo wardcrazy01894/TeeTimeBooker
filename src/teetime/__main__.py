@@ -56,7 +56,7 @@ from .persistence.in_memory_store import InMemoryStore
 #        "foreup.twin_brooks": TwinBrooksAdapter,
 #   3. Add a [[courses]] entry in your TOML config.
 #
-# To add a new TeeItUp course (pending Spike S3):
+# To add a new TeeItUp course:
 #   1. Create src/teetime/courses/teeitup/<course_name>.py as a sibling of sydney_marovitz.py.
 #      Set the course_slug, timezone, and booking_page_url.
 #   2. Import the class here and add one line below.

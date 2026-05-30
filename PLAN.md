@@ -74,30 +74,42 @@ TeeTimeBooker/
   config/example.toml           # template; secrets via env-var refs
   src/teetime/
     __init__.py                 # version
-    __main__.py                 # CLI entry (Click)
+    __main__.py                 # CLI entry (Click): run + watch + show-config
     core/
       __init__.py
       models.py                 # @dataclass: BookingRequest, TeeTimeSlot, BookingResult, ...
       adapter.py                # CourseAdapter Protocol + adapter exceptions
-      orchestrator.py           # main flow
+      orchestrator.py           # main 6 AM booking flow
+      watch_orchestrator.py     # M-feature-1: cancellation-monitor flow (read-only check)
+      upgrade_orchestrator.py   # M-feature-2: cancel-before-book rebook to a better slot
+      slot_utils.py             # shared slot ranking (midpoint-distance sort)
       config.py                 # TOML loader (pydantic)
       clock.py                  # Clock Protocol + busy_wait_until
     persistence/
       __init__.py
       store.py                  # BookingStore Protocol + ConcurrentRunError
-      sqlite_store.py           # v0 default
+      in_memory_store.py        # default for CLI/tests; SqliteStore (M3) pending
+      sqlite_store.py           # v0 durable store (M3 — currently stubbed)
     notifications/
       __init__.py
       notifier.py               # Notifier Protocol + Noop / Console
-      email_notifier.py         # SMTP impl
+      email_notifier.py         # SMTP impl (M4 — currently stubbed)
     courses/
       __init__.py
       foreup/
         __init__.py
         base.py                 # shared HTTP, auth, rate limit, error mapping
+        captcha.py              # reCAPTCHA token harvest (2captcha + Playwright)
         mangrove_bay.py         # course IDs only
+      teeitup/
+        __init__.py
+        base.py                 # shared TeeItUp/Kenna HTTP + card payment flow
+        sydney_marovitz.py      # course IDs only
       chronogolf/
         __init__.py             # README-only placeholder (Spike S2)
+    dev/
+      __init__.py
+      fake_adapter.py           # FakeAdapter for orchestrator tests
   tests/
     __init__.py
     test_adapter_stub.py        # reference pattern; per-module tests added by tasks
@@ -132,13 +144,13 @@ See `config/example.toml`. Schema enforced by `core/config.py` via pydantic v2. 
 
 ## 5. Persistence layer
 
-**Decision: SQLite (single file) for v0; swap to Cloud SQL / Firestore at v1.**
+**Decision: SQLite (single file) for v0; keep SQLite at v1, backed by an Azure Blob–stored file (see `infra/AZURE_PLAN.md`).**
 
 **Why SQLite:**
 - One process, one file. No service to run, no IAM. Fits GH Actions + local dev identically.
 - ACID transactions and a real advisory-lock primitive (`BEGIN IMMEDIATE`) — we need both for the double-book defense (§9).
 - Plain-JSON would lose us atomicity across the three tables we need.
-- Cloud KV is overkill until v1 introduces concurrent users.
+- A managed DB is overkill until/unless v1 introduces concurrent users.
 
 **What we persist:**
 
@@ -149,7 +161,7 @@ See `config/example.toml`. Schema enforced by `core/config.py` via pydantic v2. 
 | `session_cache`   | Adapter-supplied opaque blobs (cookies, JWT) per course. | TTL on each blob.    |
 | `request_locks`   | Advisory locks for concurrent-run defense.               | Lifetime of run.     |
 
-**v1 swap path:** the `BookingStore` Protocol is the cut line. `SqliteStore` becomes a sibling of e.g. `FirestoreStore`. The orchestrator never sees SQLite directly. Add a config knob (`persistence.backend = "firestore"`) in M-future.
+**v1 path (Azure):** v1 keeps `SqliteStore` but stores the single SQLite file in Azure Blob Storage. A `BlobStateManager` downloads the blob before the run (acquiring a renewable lease as the cross-process lock) and uploads it on exit — mirroring the v0 `actions/cache` pattern. The `BookingStore` Protocol remains the cut line, so a fully managed store (e.g. a future `CosmosStore`) could still slot in behind `persistence.backend` if concurrency ever demands it. See `infra/AZURE_PLAN.md` §6.
 
 ---
 
@@ -189,7 +201,7 @@ Bot:
 GH Actions cron is documented as best-effort with potentially **15+ minute** delays under load. Mitigations:
 - **Schedule 10 min early.** Both DST entries fire at `:50` past the hour preceding 06:00 ET.
 - **Bot does its own busy-wait.** The cron only needs to land the runner with at least 1–2 minutes of slack before T0; the bot itself nails the second.
-- **If the runner isn't scheduled at all that day** (rare but real): we lose the race. This is a known v0 risk, accepted, and is the headline reason the v1 upgrade is Cloud Run + Cloud Scheduler (which has SLA-backed firing). Documented in §15.
+- **If the runner isn't scheduled at all that day** (rare but real): we lose the race. This is a known v0 risk, accepted, and is the headline reason for the v1 upgrade to Azure Container Apps Jobs (more reliable cron firing than GH Actions). Note ACA cron is still cron — better than GH Actions, but not a sub-second-precise scheduler; the bot's own busy-wait is what nails T0. Documented in §15 and `infra/AZURE_PLAN.md`.
 
 ### 6.3 DST math (showing the work)
 
@@ -215,9 +227,13 @@ The bot itself uses `zoneinfo` to compute T0 — that handles the ambiguous-hour
 |--------|------------------------------------------|-------|
 | v0     | GitHub Actions repo secrets              | One per credential; loaded into env in `book.yml`. |
 | v0 dev | `.envrc` / direnv (gitignored)           | Same names as Actions secrets. |
-| v1     | GCP Secret Manager (Cloud Run service account) | Rotation via Workload Identity. |
+| v1     | Azure Key Vault (user-assigned managed identity) | Secrets injected as env via native `keyVaultUrl` references; MI has KV Secrets User. See `infra/AZURE_PLAN.md`. |
 
-**Credit card data: NEVER stored or transmitted by us.** ForeUP keeps card-on-file per user account; the booking POST does not include a CVV/PAN. If a course requires re-entering a card, that is an explicit out-of-scope failure mode — bot reports CAPTCHA-equivalent error and stops.
+**Credit card data — by platform (updated; original v0 plan was "never, for any platform"):**
+- **ForeUP (Mangrove Bay):** no card data handled. ForeUP keeps card-on-file per user account; the booking POST includes no PAN/CVV.
+- **TeeItUp (Sydney Marovitz):** card data **is** handled. TeeItUp native accounts have no card-on-file wallet, so the adapter passes PAN + CVV + expiry + billing to the payment endpoint (`tr.gnsvc.com/AddReservation`) on every booking. Card fields are sourced from env vars (`*_env` convention), never committed. **PCI note:** handling raw PAN/CVV brings PCI-DSS scope; the credentials transit GitHub Actions secrets / Azure Key Vault and must be added to the §10.1 redaction list so they never reach `attempt_log`. The card POST sets `follow_redirects=False` to prevent re-POSTing card data to an attacker-controlled redirect target.
+
+This is a deliberate scope expansion past the original "no card data, ever" posture, made to support TeeItUp booking. The higher ToS/PCI exposure is accepted for single-user personal use.
 
 ---
 
@@ -344,7 +360,7 @@ next run starts with an empty DB and `get_terminal` returns `None` for an
 already-booked RequestId. Layer 2 (`list_reservations`) catches this: pre-book remote
 check sees the existing reservation and the orchestrator records `ALREADY_BOOKED`
 without POSTing again. So cache loss = one extra round-trip on the next run,
-NOT a phantom booking. Documented as accepted v0 risk. v1 moves to S3/GCS.
+NOT a phantom booking. Documented as accepted v0 risk. v1 moves to Azure Blob Storage.
 
 ---
 
@@ -369,11 +385,18 @@ from `BookingRequest.players` or `CourseCredentials`, the orchestrator MUST:
   chars of the digest) — enough to correlate two log rows referring to the
   same user, not enough to recover the value.
 - NEVER persist `password` (raw or hashed). It does not belong in attempt_log.
+- NEVER persist TeeItUp **card fields** — `card_number`, `cvv`, `expiry_month`,
+  `expiry_year`, `billing_address`, `billing_postal_code`. These must be dropped
+  entirely (not hashed). Raw PAN/CVV in a downloadable artifact is a PCI incident.
 - Confirmation codes ARE persisted (we need them for reconciliation).
 
-A helper `_redact_payload(d: dict) -> dict` lives in `core/orchestrator.py`
-(M2.T1). Adapters that build payloads must call it before passing to
-`store.append_attempt`.
+A helper `_redact_payload(d: dict) -> dict` lives in `core/orchestrator.py`.
+Adapters that build payloads must call it before passing to
+`store.append_attempt`. **Status:** this helper is NOT yet implemented (see M3 /
+SqliteStore); it must land before `attempt_log` writes reach disk. Until then,
+the production CLI uses `InMemoryStore`, so nothing is persisted — but the
+helper (and a test asserting email/PAN never appear in `attempt_log`) is a
+hard prerequisite for M3.
 
 ### 10.2 Cross-run state location
 
@@ -402,23 +425,30 @@ caught by §9 layer 2 — never produces a phantom booking.
 
 ## 12. Anti-bot etiquette & ToS posture
 
+> **Posture changed since the original plan.** The original v0 plan stated the
+> bot would NOT solve captchas, would NOT impersonate a browser, and would NOT
+> handle card data. Supporting live ForeUP and TeeItUp booking required all
+> three, and the implementation now does them. This section documents reality;
+> the higher ToS/detection/PCI exposure is accepted for single-user personal use.
+
 What we DO:
-- Honest `User-Agent: TeeTimeBooker/0.0.0 (+contact)`. No browser impersonation beyond what ForeUP's API actually requires.
+- For **API calls**, an honest `User-Agent: TeeTimeBooker/0.0.0 (+contact)` (`foreup/base.py`).
 - Self-imposed minimum 250 ms between calls outside the T0 race window.
-- Honor `Retry-After`.
-- Cap polling at 30 s after T0.
+- Honor `Retry-After`. Cap polling at 30 s after T0.
 - One booking per request, ever (idempotency + reconciliation).
+- **Solve the ForeUP reCAPTCHA** on the booking step via a third-party human-solver service (2captcha) with a headless-Playwright fallback (`foreup/captcha.py`). The Playwright path uses a spoofed Chrome UA and `--disable-blink-features=AutomationControlled` specifically to pass reCAPTCHA's automation scoring — i.e. it is browser impersonation for the purpose of clearing a technical control.
+- **Handle card data** for TeeItUp (PAN/CVV passed to the payment endpoint each booking; see §7).
 
-What we DO NOT:
-- Solve captchas.
+What we still DO NOT:
 - Rotate IPs / use residential proxies.
-- Create multiple ForeUP accounts.
+- Create multiple accounts.
 - Hammer login on auth failure.
+- Bulk-book-and-cancel (the scalper pattern). One booking per request.
 
-**ToS posture (stated explicitly).** The user has a legitimate account at Mangrove Bay and is automating a booking they are eligible to make. ForeUP's public stance ([zendesk article](https://foreup.zendesk.com/hc/en-us/articles/34034774453403-Preventing-Bots-From-Making-Tee-Times)) is that bot-driven bookings are unwelcome and they may add countermeasures. Risk areas the user accepts:
-- ForeUP may add captcha at any time. We will not bypass; bot will surface a notification and stop.
-- The municipal course may revoke the user's online booking privileges if they detect bot activity. The user has accepted this risk for v0.
-- We will NOT advise or implement evasions of technical controls.
+**ToS posture (stated explicitly).** The user has a legitimate account and is automating a booking they are eligible to make. ForeUP's public stance ([zendesk article](https://foreup.zendesk.com/hc/en-us/articles/34034774453403-Preventing-Bots-From-Making-Tee-Times)) is that bot-driven bookings are unwelcome and they may add countermeasures. Risk areas the user accepts:
+- Solving the captcha and impersonating a browser to do so are evasions of a technical control; this materially raises ToS/detection risk versus the original notify-and-stop design.
+- The course may revoke the user's online booking privileges if they detect bot activity. Accepted for v0.
+- ForeUP's new "One-Time Booking Code" countermeasure (announced 2025) could break the booking POST without warning; the bot should fail loudly, not attempt to defeat it.
 
 ---
 
@@ -489,12 +519,13 @@ week but the goal is the same. The actual idempotency key in `booking_history` i
 5. On `CAPTCHA_BLOCKED` or repeated `AUTH_FAILED`: `gh workflow disable book-tee-time`. Investigate manually. Re-enable with `gh workflow enable book-tee-time`. NO auto-re-enable — a human MUST confirm the cause is resolved.
 6. If the `actions/cache` entry is evicted (rare): the next run treats history as empty, but §9 layer 2 (`list_reservations`) catches any phantom booking before re-POSTing. One extra round-trip; no double-book risk.
 
-**v1 upgrade path** (when jitter / cold-start matters):
-- Cloud Run job + Cloud Scheduler (sub-second precision) for the trigger.
-- Cloud SQL / Firestore for the BookingStore.
-- GCP Secret Manager for credentials.
-- Logs/metrics into Cloud Logging.
-- AWS Lambda is **not recommended for this workload** because (a) cold-start variance fights the 6:00 AM race, and (b) if we ever fall back to Playwright, Lambda's package-size and binary ergonomics for headless browsers are notably worse than Cloud Run.
+**v1 upgrade path — Azure** (ratified; see `infra/AZURE_PLAN.md` for the authoritative design):
+- **Azure Container Apps Jobs** (Consumption) on cron for the trigger — more reliable firing than GH Actions cron, though still cron, not a sub-second scheduler. Two booking jobs (DST halves) + one watch job.
+- **SQLite on Azure Blob Storage** for the BookingStore, via a `BlobStateManager` (download-before-run / upload-on-exit, with a renewable blob lease as the cross-process lock). The `BookingStore` Protocol still allows a fully managed store later if needed.
+- **Azure Key Vault** for credentials, injected via native `keyVaultUrl` secret references resolved by a user-assigned managed identity.
+- Logs/metrics into **Log Analytics + Application Insights**.
+- IaC in **Bicep**; CI deploy via **OIDC federated credential** (no client secret).
+- *Rejected:* Azure Functions (cold-start variance fights the race), Cosmos/Table (overkill), service-principal secrets (rotation burden). See `infra/AZURE_PLAN.md` §2 for the full comparison.
 
 ---
 
@@ -514,7 +545,7 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 | M1.T2 | Implement `core/config.py::load` (incl. `PlayerConfig`, `target_offsets` -> resolved-date helper, env-var ref resolution for player PII) | `config/example.toml`        | TOML round-trip; secret-env resolution; clear errors on missing env; PlayerConfig.email_env -> Player.email | `core/config.py`, `tests/test_config.py` | M1.T1, M1.T3 |
 | M1.T3 | Wire CLI (`teetime run`, `teetime show-config`) via Click | `core/config.py` shape       | `__main__.py` real impl              | `src/teetime/__main__.py`, `tests/test_cli.py`    | M1.T1, M1.T2 |
 
-### M2 — Orchestrator core (DONE)
+### M2 — Orchestrator core (PARTIAL — M2.T3 reconciliation pending)
 | ID    | Task                                                | Inputs                  | Outputs                                                              | Owner-files                                | Deps        |
 |-------|-----------------------------------------------------|-------------------------|----------------------------------------------------------------------|--------------------------------------------|-------------|
 | M2.T1 | Implement `Orchestrator.run` with FakeAdapter, **InMemoryStore** (already a stub in `persistence/in_memory_store.py`), NoopNotifier; encode the §9.1 state machine | M1, all stubs           | end-to-end happy path, fallback path, idempotency path passing; state machine transitions match §9.1 diagram exactly | `core/orchestrator.py`, `persistence/in_memory_store.py`, `tests/test_orchestrator.py`, `tests/conftest.py` | M1.*  |
@@ -581,9 +612,9 @@ Each item from the brief, addressed:
 - **GH Actions cron jitter (~1–15 min):** §6.2. Fire 10 min early; bot's busy-wait nails T0. Worst case (no run that day) is accepted; v1 mitigation is Cloud Scheduler.
 - **DST and 6:00 AM ET:** §6.3. Two crons + DST-half check + `zoneinfo` for actual T0 computation. Math shown.
 - **Double-booking risk:** §9. Six layers of defense; reconciliation is the load-bearing one.
-- **ForeUP captcha:** §8 row "Captcha challenge"; §12. We do not solve. Bot stops, notifies. Spike S1 will tell us if captcha is on the booking step (treatable) vs login (fatal).
+- **ForeUP captcha:** §8 row "Captcha challenge"; §12. The booking step is gated by an invisible reCAPTCHA, which the bot solves via 2captcha (Playwright fallback) — see `foreup/captcha.py`. S1 confirmed no login captcha. Caveat: a synchronous solve (~15–30 s) in the booking POST can blow the T0 race window — see §19 / `infra/AZURE_PLAN.md` for the pre-fetch consideration.
 - **Account lockout:** §8.1. Three auth failures → 24 h cooldown stored in DB + notify.
-- **Credit-card storage:** §7. **None.** ForeUP keeps card on file; we never see PAN/CVV. If a course requires re-entry, we surface as fatal error.
+- **Credit-card storage:** §7. **By platform.** ForeUP: none (card-on-file). TeeItUp: PAN/CVV/expiry/billing are passed to `tr.gnsvc.com` on each booking (no wallet); sourced from env vars, never committed, and must be dropped by `_redact_payload` before any `attempt_log` write (§10.1).
 - **ForeUP ToS:** §12, stated honestly. Risks accepted by user.
 - **Concurrency / accidental double trigger:** §9 layers 5 & 6. Workflow concurrency group + DB advisory lock. `ConcurrentRunError` fails fast.
 - **Mid-run runner kill:** Recovery via `attempt_log` + post-mortem reconciliation (§9, §8 row "Mid-run runner kill"). Worst case: a phantom booking we don't know about — caught on next run's pre-flight `list_reservations`.
@@ -600,7 +631,7 @@ Each item from the brief, addressed:
 3. ~~**`api-key: no_limits` is a known-bot signal.**~~ Resolved in S1: login uses `api_key=""` (empty); search uses `api_key="no_limits"`. No adverse response observed.
 4. **The user's ForeUP account gets restricted.** §12. Accepted v0 risk; would invalidate v0 entirely until manual unlock.
 5. **Time-window picker logic ("best slot")** is under-specified. v0 picks the slot whose `tee_time` is closest to the midpoint of the user's window. Revisit in v1 with explicit ranking config.
-6. **Cross-run cache eviction** (review item 9). Mitigation: §9 layer 2 (`list_reservations`) catches the missing-history case — see §9.2. v1 moves to S3/GCS.
+6. **Cross-run cache eviction** (review item 9). Mitigation: §9 layer 2 (`list_reservations`) catches the missing-history case — see §9.2. v1 moves to Azure Blob Storage.
 7. **DST spring-forward day** (review failure mode). 06:00 ET still exists on 2nd Sunday of March (the skipped hour is 02:00–03:00). Add `tests/test_dst_edge.py::test_spring_forward_t0_resolves` in M1.T1: assert `zoneinfo` returns 06:00 EDT on March 8 2026 with no ambiguity exception.
 8. **Workflow disabled by `gh workflow disable` after CAPTCHA_BLOCKED** (review failure mode). No automation re-enables it. Documented runbook step §15: after manual investigation, run `gh workflow enable book-tee-time`. We do NOT auto-re-enable — a human MUST verify the cause is gone.
 9. ~~**`api-key: no_limits` is a community-observed magic string.**~~ Resolved in S1: search header confirmed; login uses empty string. Behaviour stable as of 2026-04-29.
@@ -631,21 +662,19 @@ M-feature-1.T2 (WatchOrchestrator.check_once must exist for UpgradeOrchestrator 
 
 ---
 
-### M-feature-3 — Prefer Earlier Times Within the Window (SIMPLEST; implement first)
+### M-feature-3 — Slot Ranking Within the Window (DONE)
 
-**Design decision:** Replace the midpoint-distance sort in `Orchestrator._rank_slots` with
-ascending tee_time sort. Prefer 09:00 over 09:10 over 10:30. The midpoint bias (which
-preferred 09:45 in a 09:00-10:30 window) was documented as a placeholder in §19 item 5 and
-was never the stated user preference — "the window bounds acceptable times; within those,
-earlier is better."
+**Design decision (as shipped, commit dc3ae48):** rank slots by **distance from the
+window midpoint**, tie-broken by ascending tee_time. For the 08:45–10:00 ET window
+(midpoint 09:22:30) the slot closest to 09:22:30 wins. The ranking lives in
+`core/slot_utils.py::rank_slots_for_request` and is shared by all three orchestrators.
 
-This is a one-method change (`_rank_slots`) that affects slot selection globally. It also
-removes the `_window_midpoint_utc` helper that existed solely to support the midpoint sort.
-
-**Reviewer pre-emption (ascending vs midpoint):** The midpoint sort had no user rationale;
-it was a default that was never validated against user preference. The stated use case
-("book earliest morning slot") is directly served by ascending sort. There is no scenario
-where 09:45 is a better tee time than 09:00 for this user.
+> **History / correction:** an earlier draft of this milestone proposed replacing
+> midpoint with a plain ascending tee_time sort. That pivot was reversed in commit
+> dc3ae48, which re-adopted midpoint-distance (and widened the window to 08:45–10:00).
+> The code and CLAUDE.md use midpoint-distance; this section was stale and is now
+> corrected. The shared ranking also moved out of `Orchestrator._rank_slots` into
+> `slot_utils.py` so the watch/upgrade orchestrators reuse it.
 
 | ID | Task | Inputs | Outputs | Owner-files | Deps |
 |----|------|--------|---------|-------------|------|
@@ -653,12 +682,12 @@ where 09:45 is a better tee time than 09:00 for this user.
 | M-feature-3.T2 | Implement ascending sort in `Orchestrator._rank_slots`; remove `_window_midpoint_utc` | M-feature-3.T1 (red tests) | green tests; `mypy --strict` passes | `src/teetime/core/orchestrator.py` | M-feature-3.T1 |
 | M-feature-3.T3 | Update `tests/test_orchestrator.py` for any assertions that relied on midpoint ordering (e.g. "picked hour=8 when both 7 and 8 exist") | M-feature-3.T2 | all orchestrator tests green | `tests/test_orchestrator.py` | M-feature-3.T2 |
 
-**NOTE:** `_rank_slots` is already updated to ascending sort in the current stub. M-feature-3.T1
-must confirm this by writing real assertions in `test_sort_priority.py` and verifying green.
+**NOTE:** shipped as midpoint-distance sort in `core/slot_utils.py` with coverage in
+`tests/test_sort_priority.py`. Tasks below are retained for history.
 
 ---
 
-### M-feature-1 — Cancellation Monitor (Watch Job)
+### M-feature-1 — Cancellation Monitor (Watch Job) (DONE)
 
 **Design decisions:**
 
@@ -781,12 +810,15 @@ Option B (local `managed_bookings` SQLite table) is NOT needed and NOT implement
 prefix approach is simpler, requires no new Protocol methods, and is robust across cache
 eviction (the prefix is in `booking_history` which survives). See §20.1 Q3 (resolved).
 
-**Book-before-cancel protocol:** UpgradeOrchestrator ALWAYS books the new slot BEFORE
-cancelling the old one. Rationale: cancelling first risks leaving the user with no booking
-if the rebook fails. Booking first risks a brief dual-booking (milliseconds to seconds).
-The dual-booking window is acceptable; zero-bookings is not. The ForeUP system may itself
-enforce a max-bookings limit — if so, the new booking will fail (not the cancel), and the
-user retains their original slot. This is the correct safe-failure mode.
+**Cancel-before-book protocol (as shipped — reversed from the original draft):**
+UpgradeOrchestrator cancels the old slot BEFORE booking the new one. The original plan
+called for book-before-cancel (to avoid a no-booking window), but **Spike S4 found ForeUP
+rejects a second `book` POST with HTTP 400 while an existing reservation is live** — it
+enforces one active booking per user per day server-side. Booking-first is therefore
+impossible. To minimise the resulting ~1–2 s no-booking window, `prepare_book()` pre-fetches
+the expensive CAPTCHA token (~15–60 s) BEFORE the cancel, so the cancel→book gap is just two
+HTTP round-trips. If `book()` fails after the cancel, the next watch invocation recovers by
+booking any available slot. See `upgrade_orchestrator.py` module docstring.
 
 **Idempotency key on rebook:** After cancel+rebook, the new booking shares the same
 `(RequestId, resolved_date)`. The `BookingStore.delete_terminal()` method (added in this
@@ -796,8 +828,8 @@ between delete and re-insert, the next run's list_reservations check (§9 layer 
 new booking and records ALREADY_BOOKED — no phantom booking.
 
 **Priority ranking:** `OneBookingPolicyConfig.priority_slots` is an ordered list where
-`priority=0` is most preferred. Within a single priority index, slots are sorted ascending
-by tee_time (Feature 3). The upgrade only fires when a slot at a LOWER priority index
+`priority=0` is most preferred. Within a single priority index, slots are ranked by
+midpoint-distance, tie-broken by tee_time (Feature 3). The upgrade only fires when a slot at a LOWER priority index
 (higher preference) is available. Equal-priority slots do not trigger an upgrade.
 
 **Priority default (when priority_slots is empty):** Derived from `course_preferences` order
@@ -814,14 +846,14 @@ touched. If the user manually creates a second booking, the system ignores it.
 | **S4 (Spike)** | Confirm ForeUP cancellation endpoint. Questions: (1) What HTTP method and path? (2) What identifier does the server expect (pending_reservation_id, confirmation_code, other)? (3) Is there a notes/comments field in list_reservations that echoes user-supplied text from the booking POST? (4) Is 404 returned for already-cancelled reservations? (5) What is the cancellation window (minutes before tee time)? | Browser devtools on ForeUP booking page | Exit criterion: `cancel_endpoint`, `cancel_id_field`, `notes_field_echo`, `cancel_404_on_gone`, `cancel_window_minutes` all confirmed and documented in `docs/foreup-cancel-spike.md` | `docs/foreup-cancel-spike.md` | M5 done |
 | M-feature-2.T1 | Implement `ForeUpAdapter.cancel_reservation()` using confirmed S4 endpoint; handle 404 as success; raise `CancelError` on other 4xx/5xx | S4, `tests/test_foreup_book.py` (add cancel tests) | `ForeUpAdapter.cancel_reservation` passing tests | `src/teetime/courses/foreup/base.py`, `tests/test_foreup_book.py` | S4 |
 | M-feature-2.T2 | Implement `UpgradeOrchestrator._build_priority_list()` and `_current_booking_priority()` | `core/upgrade_orchestrator.py` stub | unit tests for priority list construction | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-3.T2 |
-| M-feature-2.T3 | Implement `UpgradeOrchestrator.maybe_upgrade()` with full book-before-cancel protocol; cancel-failure path; idempotency key handling; notification | `tests/test_upgrade_orchestrator.py` (red tests on disk), M-feature-2.T1, M-feature-2.T2 | all upgrade tests green; state machine correct under FakeAdapter | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-2.T1, M-feature-2.T2 |
+| M-feature-2.T3 | Implement `UpgradeOrchestrator.maybe_upgrade()` with full cancel-before-book protocol (ForeUP enforces one active booking/day, so the new slot cannot be booked while the old one is live; `prepare_book()` pre-fetches the CAPTCHA token to shrink the cancel→book gap); cancel-failure path; idempotency key handling; notification | `tests/test_upgrade_orchestrator.py` (red tests on disk), M-feature-2.T1, M-feature-2.T2 | all upgrade tests green; state machine correct under FakeAdapter | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-2.T1, M-feature-2.T2 |
 | M-feature-2.T4 | Implement `SqliteStore.delete_terminal()` (M3 prerequisite); add `managed_bookings` table if S4 confirms no echo field | M3.T2 done; S4 | `delete_terminal` tests green; `mypy --strict` passes | `src/teetime/persistence/sqlite_store.py`, `src/teetime/persistence/in_memory_store.py` (done) | M3.T2, S4 |
 | M-feature-2.T5 | Wire `UpgradeOrchestrator` into `WatchOrchestrator.check_once()` — after finding a slot, check if it is higher priority than the current booking; if so, delegate to `UpgradeOrchestrator.maybe_upgrade()` | M-feature-1.T2, M-feature-2.T3 | integration test: watch finds higher-priority slot, triggers upgrade | `src/teetime/core/watch_orchestrator.py` | M-feature-1.T2, M-feature-2.T3 |
 | M-feature-2.T6 | GH Actions + ACA Bicep: the watch workflow already fires UpgradeOrchestrator via WatchOrchestrator — no separate job needed. Update `watch-tee-time.yml` to pass `--one-booking-policy` flag | M-feature-1.T3, M-feature-2.T5 | `gh workflow run watch-tee-time` with one-booking policy enabled works in dry-run | `.github/workflows/watch-tee-time.yml` | M-feature-1.T3, M-feature-2.T5 |
 
 **Reviewer pre-emption (adversarial checklist):**
 
-1. **Race condition on cancel+rebook:** Book-before-cancel protocol (above). If cancel
+1. **Race condition on cancel+rebook:** Cancel-before-book protocol (above). If cancel
    fails after rebook, we persist the new booking and notify the user. If rebook fails,
    the original booking is untouched. The only unrecoverable failure mode is: rebook
    succeeds AND cancel succeeds but process dies before `delete_terminal` + `record_terminal`.
