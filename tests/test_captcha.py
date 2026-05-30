@@ -11,7 +11,11 @@ import httpx
 import pytest
 import respx
 
-from teetime.courses.foreup.captcha import get_foreup_captcha_token_2captcha
+from teetime.courses.foreup.captcha import (
+    FOREUP_RECAPTCHA_SITE_KEY,
+    get_foreup_captcha_token_2captcha,
+    resolve_invisible_site_key,
+)
 
 _SUBMIT_URL = "https://2captcha.com/in.php"
 _RESULT_URL = "https://2captcha.com/res.php"
@@ -90,3 +94,40 @@ async def test_2captcha_raises_on_error_response() -> None:
             page_url=_PAGE_URL,
             poll_interval_s=0.0,
         )
+
+
+# ---------------------------------------------------------------------------
+# resolve_invisible_site_key — drift protection against ForeUP key rotation
+# ---------------------------------------------------------------------------
+
+
+@respx.mock
+async def test_resolve_site_key_returns_known_key_when_page_matches() -> None:
+    """When the page still carries the hardcoded key, return it (no drift)."""
+    html = f'<script>var CAPTCHA_INVISIBLE_SITE_KEY = "{FOREUP_RECAPTCHA_SITE_KEY}";</script>'
+    respx.get(_PAGE_URL).mock(return_value=httpx.Response(200, text=html))
+    assert await resolve_invisible_site_key(_PAGE_URL) == FOREUP_RECAPTCHA_SITE_KEY
+
+
+@respx.mock
+async def test_resolve_site_key_returns_live_key_on_rotation() -> None:
+    """If ForeUP rotated the key, return the live value extracted from the page."""
+    new_key = "6LeNEWKEY00000000000000000000000000000000"
+    respx.get(_PAGE_URL).mock(
+        return_value=httpx.Response(200, text=f"CAPTCHA_INVISIBLE_SITE_KEY: '{new_key}'")
+    )
+    assert await resolve_invisible_site_key(_PAGE_URL) == new_key
+
+
+@respx.mock
+async def test_resolve_site_key_falls_back_when_key_absent() -> None:
+    """If the page has no recognizable key, fall back to the hardcoded constant."""
+    respx.get(_PAGE_URL).mock(return_value=httpx.Response(200, text="<html>no key</html>"))
+    assert await resolve_invisible_site_key(_PAGE_URL) == FOREUP_RECAPTCHA_SITE_KEY
+
+
+@respx.mock
+async def test_resolve_site_key_falls_back_on_http_error() -> None:
+    """A network/HTTP failure must never raise — fall back to the hardcoded key."""
+    respx.get(_PAGE_URL).mock(side_effect=httpx.ConnectError("boom"))
+    assert await resolve_invisible_site_key(_PAGE_URL) == FOREUP_RECAPTCHA_SITE_KEY

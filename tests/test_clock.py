@@ -10,7 +10,13 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from teetime.core.clock import Clock, FakeClock, RealClock, busy_wait_until
+from teetime.core.clock import (
+    Clock,
+    FakeClock,
+    RealClock,
+    busy_wait_until,
+    measure_ntp_offset,
+)
 
 # --- Structural Protocol contract ----------------------------------------
 
@@ -37,6 +43,48 @@ def test_real_clock_now_is_close_to_system_time() -> None:
     rc_now = RealClock().now_utc()
     after = datetime.now(tz=UTC)
     assert before - timedelta(seconds=1) <= rc_now <= after + timedelta(seconds=1)
+
+
+# --- NTP offset correction (resilience) ----------------------------------
+
+
+def test_real_clock_applies_offset() -> None:
+    """RealClock(offset=...) shifts now_utc() by the measured NTP offset."""
+    offset = timedelta(seconds=5)
+    base = datetime.now(tz=UTC)
+    got = RealClock(offset=offset).now_utc()
+    assert base + offset - timedelta(seconds=1) <= got <= base + offset + timedelta(seconds=1)
+
+
+def test_real_clock_default_offset_is_zero() -> None:
+    """Default RealClock (no offset) tracks system time, unchanged behaviour."""
+    before = datetime.now(tz=UTC)
+    got = RealClock().now_utc()
+    after = datetime.now(tz=UTC)
+    assert before - timedelta(seconds=1) <= got <= after + timedelta(seconds=1)
+
+
+def test_measure_ntp_offset_returns_timedelta_from_response() -> None:
+    """measure_ntp_offset returns the NTP server's reported offset as a timedelta."""
+
+    class _Resp:
+        offset = 3.0
+
+    class _FakeClient:
+        def request(self, server: str, version: int = 3, timeout: float = 2.0) -> _Resp:
+            return _Resp()
+
+    assert measure_ntp_offset(_client_factory=_FakeClient) == timedelta(seconds=3.0)
+
+
+def test_measure_ntp_offset_returns_zero_on_failure() -> None:
+    """Any NTP failure (blocked UDP, timeout) degrades to a zero offset, never raises."""
+
+    class _BoomClient:
+        def request(self, *args: object, **kwargs: object) -> object:
+            raise OSError("ntp unreachable")
+
+    assert measure_ntp_offset(_client_factory=_BoomClient) == timedelta(0)
 
 
 async def test_real_clock_sleep_actually_sleeps() -> None:

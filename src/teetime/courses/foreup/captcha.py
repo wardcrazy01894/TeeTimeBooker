@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -34,6 +35,11 @@ from playwright.async_api import async_playwright
 _log = logging.getLogger(__name__)
 
 FOREUP_RECAPTCHA_SITE_KEY = "6Le0bf4pAAAAALufPGSllYP0-QN79MW_XTUa-24h"
+
+# ForeUP's booking page defines `CAPTCHA_INVISIBLE_SITE_KEY = "<key>"` in inline JS.
+# We extract it at pre-flight to detect a key rotation (which would otherwise make
+# every solve fail with an invalid-key error from Google).
+_INVISIBLE_SITE_KEY_RE = re.compile(r"""CAPTCHA_INVISIBLE_SITE_KEY\s*[=:]\s*['"]([^'"]+)['"]""")
 
 _USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -111,11 +117,56 @@ async def get_foreup_captcha_token(
     return str(raw)
 
 
-def make_captcha_provider(booking_page_url: str) -> Callable[[], Awaitable[str]]:
+async def resolve_invisible_site_key(
+    booking_page_url: str,
+    *,
+    fallback: str = FOREUP_RECAPTCHA_SITE_KEY,
+    timeout_s: float = 15.0,
+) -> str:
+    """Fetch the booking page and return the live invisible reCAPTCHA site key.
+
+    Guards against ForeUP silently rotating the key (which would make every solve
+    fail with an invalid-key error). Returns ``fallback`` on any error or if no key
+    is found, and logs a WARNING when the live key differs from the hardcoded one.
+
+    Best-effort and network-touching: **call this as a pre-flight, before the T0
+    busy-wait — never in the race path.**
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                booking_page_url,
+                headers={"User-Agent": _USER_AGENT},
+                timeout=timeout_s,
+            )
+            r.raise_for_status()
+            match = _INVISIBLE_SITE_KEY_RE.search(r.text)
+    except Exception as exc:
+        _log.warning("Site-key resolve failed for %s (%s); using fallback", booking_page_url, exc)
+        return fallback
+    if match is None:
+        _log.warning(
+            "Invisible reCAPTCHA site key not found on %s; using fallback", booking_page_url
+        )
+        return fallback
+    live = match.group(1)
+    if live != fallback:
+        _log.warning(
+            "ForeUP reCAPTCHA invisible site key changed: %s -> %s; using live key",
+            fallback,
+            live,
+        )
+    return live
+
+
+def make_captcha_provider(
+    booking_page_url: str,
+    site_key: str = FOREUP_RECAPTCHA_SITE_KEY,
+) -> Callable[[], Awaitable[str]]:
     """Return a zero-argument async callable that fetches a fresh Playwright token."""
 
     async def _provider() -> str:
-        return await get_foreup_captcha_token(booking_page_url=booking_page_url)
+        return await get_foreup_captcha_token(booking_page_url=booking_page_url, site_key=site_key)
 
     return _provider
 
@@ -190,10 +241,13 @@ async def get_foreup_captcha_token_2captcha(
 def make_2captcha_provider(
     api_key: str,
     page_url: str,
+    site_key: str = FOREUP_RECAPTCHA_SITE_KEY,
 ) -> Callable[[], Awaitable[str]]:
     """Return a zero-argument async callable that solves reCAPTCHA via 2captcha.com."""
 
     async def _provider() -> str:
-        return await get_foreup_captcha_token_2captcha(api_key=api_key, page_url=page_url)
+        return await get_foreup_captcha_token_2captcha(
+            api_key=api_key, page_url=page_url, site_key=site_key
+        )
 
     return _provider
