@@ -123,11 +123,12 @@ var acrLoginServer = split(containerImage, '/')[0]
 // (not the client ID) in the `identity` field. The platform uses that MI to fetch
 // the secret value at container start.
 //
-// Seven secrets are wired here — they MUST exactly cover every *_env name the
+// Nine secrets are wired here — they MUST exactly cover every *_env name the
 // bot resolves from config/container.toml. config.py:_resolve_env RAISES on any
 // referenced env var that is missing, so an under-wired job crashes at config
-// load before doing anything. The set: course creds (MB-*), player1 contact +
-// member number, the guest player2 email, and the 2captcha key.
+// load before doing anything. The set: course creds (MB-*), all four players'
+// emails (a full foursome is always booked), player1 contact + member number,
+// and the 2captcha key.
 //
 // SMTP-* secrets are intentionally OMITTED: the notifications backend is
 // 'console' (config/container.toml) until email is enabled. When switching to
@@ -140,6 +141,8 @@ var jobSecrets = [
   { name: 'player1-phone',      keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-PHONE',      identity: userAssignedIdentityResourceId }
   { name: 'player1-mb-member',  keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-MB-MEMBER',  identity: userAssignedIdentityResourceId }
   { name: 'player2-email',      keyVaultUrl: '${keyVaultUri}secrets/PLAYER2-EMAIL',      identity: userAssignedIdentityResourceId }
+  { name: 'player3-email',      keyVaultUrl: '${keyVaultUri}secrets/PLAYER3-EMAIL',      identity: userAssignedIdentityResourceId }
+  { name: 'player4-email',      keyVaultUrl: '${keyVaultUri}secrets/PLAYER4-EMAIL',      identity: userAssignedIdentityResourceId }
   { name: 'twocaptcha-api-key', keyVaultUrl: '${keyVaultUri}secrets/TWOCAPTCHA-API-KEY', identity: userAssignedIdentityResourceId }
 ]
 
@@ -160,6 +163,8 @@ var commonEnv = [
   { name: 'PLAYER1_PHONE',              secretRef: 'player1-phone' }
   { name: 'PLAYER1_MB_MEMBER',          secretRef: 'player1-mb-member' }
   { name: 'PLAYER2_EMAIL',              secretRef: 'player2-email' }
+  { name: 'PLAYER3_EMAIL',              secretRef: 'player3-email' }
+  { name: 'PLAYER4_EMAIL',              secretRef: 'player4-email' }
   { name: 'TWOCAPTCHA_API_KEY',         secretRef: 'twocaptcha-api-key' }
   { name: 'AZURE_STORAGE_ACCOUNT_NAME', value: storageAccountName }
   { name: 'AZURE_CLIENT_ID',            value: userAssignedIdentityClientId }
