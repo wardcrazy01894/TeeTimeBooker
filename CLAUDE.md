@@ -5,6 +5,11 @@ Operator/agent notes for working in this repo. The authoritative design doc is
 shape, common commands, and architectural notes that aren't obvious from
 filenames.
 
+Situational detail lives in nested `CLAUDE.md` files that load automatically when
+you work in those subtrees: [`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md)
+(per-course IDs/quirks + adding a course) and [`infra/CLAUDE.md`](./infra/CLAUDE.md)
+(Azure infra + deploy safety rules).
+
 ## What this is
 
 Python 3.12+ bot that books tee times at golf courses (ForeUP and TeeItUp
@@ -155,33 +160,12 @@ in `core/` — never directly. This is the cut line for parallel work.
   Single SQLite file = single source of truth. Advisory locks serialise concurrent
   writes. See PLAN.md §20.1 Q1 (resolved).
 
-## Sydney R. Marovitz specifics (TeeItUp)
+## Per-course specifics → `src/teetime/courses/CLAUDE.md`
 
-- Booking URL: `https://sydney-r-marovitz-golf-course.book.teeitup.com/`
-- Platform: TeeItUp (NBC Sports Next / Indigo Sports), operated by Chicago Park District
-- `course_slug = "sydney-r-marovitz-golf-course"`, `gn_facility_id = 4014`, `gnc_facility_id = 7218`
-- `kenna_facility_id = "54f14cb60c8ad60378b02bfb"`, `channel_id = "20972"`
-- **15-day advance booking window** (CPD policy). `advance_booking_days = 15`.
-- **9 holes** (`holes = 9`). This is a par-3 course; there is no 18-hole option.
-- **Party size** must include at least 2 players (singles must call the shop).
-- **Payment flow**: TeeItUp native accounts use direct card entry via `POST https://tr.gnsvc.com/AddReservation` (form-encoded). There is no "card on file" wallet — card credentials are passed each booking call. Required `extra` fields in `CourseCredentials`:
-  - `card_number`, `cvv`, `expiry_month`, `expiry_year`, `billing_address`, `billing_postal_code`
-  - Optional: `billing_country` (default `"US"`), `name_on_card` (default: first+last from auth)
-  - In TOML, use the `*_env` convention (e.g. `card_number_env = "SM_CARD_NUMBER"`) so secrets resolve from env vars and never appear in config files.
-- **Cancel returns HTTP 200** (not 404) for already-cancelled reservations — our cancel is idempotent on both (live-confirmed 2026-05-29).
-- **`list_reservations()` uses a live GET** (`/reservation/history`), unlike ForeUP's login-cache approach. Re-authentication before calling is not required.
-- **`tr.gnsvc.com` response time**: payment endpoint takes ~5-10 s. The adapter sets a 60 s timeout for that specific call.
-
-## Mangrove Bay specifics
-
-- Booking URL: `https://foreupsoftware.com/index.php/booking/19671/2149#/teetimes`
-- `course_pk = 19671`, `booking_class_id = 2149` (teesheet/URL ID), `schedule_id = 2149`
-- `public_booking_class_id = 12239` — the "Public" booking class from the page's `SCHEDULES` JSON; used in the login POST and is distinct from the teesheet URL ID
-- Login uses `api_key=""` (empty); search uses `api_key="no_limits"` — confirmed by browser capture
-- 7-day window opens 06:00 America/New_York exactly; minimum 2 players required
-- **Party size is 4** (configured in `config/example.toml` + `config/local.toml` as 4 `[[request.players]]` entries). The idempotency layer-2 guard (`list_reservations`) matches on `party_size == len(request.players)` exactly — if you change party size between production runs an existing booking with the old party size will NOT block a new attempt. Cancel any conflicting reservation before deploying a party-size change.
-- **Schedule is Saturday + Sunday only.** The cron runs at 6:00 AM ET on weekends; `target_offsets = [7]` books the same weekday 7 days out (Sat→Sat, Sun→Sun). For ad-hoc mid-week bookings use `workflow_dispatch` and adjust `target_offsets` in `config/local.toml` before triggering.
-- **Time window is 08:45–10:00 ET** (single morning window). Midpoint is 09:22:30; the slot closest to that midpoint wins (midpoint-distance sort). For mid-week or afternoon bookings, add a second `[[request.time_windows]]` entry in `config/local.toml` for that run only.
+Course-specific IDs, URLs, and quirks (Mangrove Bay / ForeUP, Sydney R. Marovitz /
+TeeItUp) and the step-by-step for adding a new course live in
+[`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md) — a nested
+guide that loads automatically when you work on an adapter.
 
 ## How we write code in this repo: red-green TDD
 
@@ -240,95 +224,22 @@ the rule is to check and update the ones that are now stale.
 ## When in doubt
 
 - Implementing a new milestone task? Read PLAN.md §16 for inputs/outputs/deps.
-- Adding a new ForeUP course? Three steps:
-  1. Drop a sibling file next to `mangrove_bay.py` (e.g. `twin_brooks.py`).
-     Set all four IDs (`course_pk`, `booking_class_id`, `schedule_id`,
-     `public_booking_class_id`) and override `booking_page_url`.
-  2. Import it in `__main__.py` and add one line to `_ADAPTER_REGISTRY`:
-     `"foreup.twin_brooks": TwinBrooksAdapter,`
-  3. Add a `[[courses]]` entry in your TOML config and add `"foreup:twin_brooks"`
-     to `course_preferences` in the desired priority position.
-  No other code needs to change. Adding a course to `[[courses]]` without
-  adding it to `course_preferences` is safe — it won't change the RequestId
-  or be tried by the orchestrator.
-- Adding a TeeItUp course? Three steps:
-  1. Drop a sibling file next to `sydney_marovitz.py` (e.g. `diversity_golf.py`).
-     Set `course_slug`, `gn_facility_id`, `gnc_facility_id`, `kenna_facility_id`,
-     `channel_id`, and `timezone`. Subclass `TeeItUpAdapter`. (`advance_booking_days`
-     is a documentation-only constant in the course module, not a constructor arg.)
-  2. Import it in `__main__.py` and add one line to `_ADAPTER_REGISTRY`:
-     `"teeitup.diversity_golf": DiversityGolfAdapter,`
-  3. Add a `[[courses]]` entry in your TOML config with `*_env` keys for all card
-     credentials, and add the course id to `course_preferences`.
-  No other code needs to change.
-- Adding a Chronogolf course? Stand up `chronogolf/base.py` first (Spike S2).
+- Adding a new course (ForeUP / TeeItUp / Chronogolf)? See the step-by-step and
+  per-course IDs in [`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md).
 - Touching the orchestrator? Make sure FakeAdapter + FakeClock + InMemoryStore
   tests still cover your change. Fixtures live in `tests/conftest.py`. The
   race-window test is the canary.
 - Modifying anti-bot etiquette? Re-read PLAN.md §12 first. ToS posture is not
   ours to negotiate around.
 
-## v1 Azure infra
+## v1 Azure infra → `infra/CLAUDE.md`
 
-The Azure serverless hosting design lives in `infra/AZURE_PLAN.md`. Read it
-before touching anything under `infra/`. The v0 files (`src/`, `tests/`,
-`.github/workflows/book.yml`) are v0 territory — do not modify them as part
-of Azure infra work.
+The Azure hosting work (Bicep layout, `az login` runbook, the **agent deploy
+safety rules**, and the open-questions pointer) lives in
+[`infra/CLAUDE.md`](./infra/CLAUDE.md), with the authoritative design in
+`infra/AZURE_PLAN.md`. Both load automatically when you work under `infra/`.
 
-### Bicep location
-
-```
-infra/
-  AZURE_PLAN.md              # authoritative Azure design doc
-  bicep/
-    main.bicep               # entry point (RG-scoped)
-    main.bicepparam.dev      # dev parameter values
-    main.bicepparam.prod     # prod parameter values
-    modules/
-      identity.bicep         # optional user-assigned MI stub
-      registry.bicep         # ACR Basic
-      storage.bicep          # Blob Storage + teetime-state container
-      keyvault.bicep         # Key Vault Standard
-      logs.bicep             # Log Analytics + App Insights
-      compute.bicep          # ACA Environment + 2x ACA Jobs (DST crons)
-      budget.bicep           # Cost Management budget (subscription-scoped)
-  ci/
-    azure-iac.yml            # IaC validation + deploy workflow
-```
-
-### Logging in for local Azure CLI work
-
-```bash
-az login                                      # browser-based login
-az account set --subscription <SUBSCRIPTION_ID>
-az account show                               # confirm correct subscription
-```
-
-For CI, authentication uses OIDC federated credentials (no client secret).
-See AZURE_PLAN.md §8.2 for the one-time federated credential setup steps.
-
-### Agent rules for Azure deployments
-
-**CRITICAL: An agent MUST NOT run `az deployment group create` or
-`az deployment sub create` without explicit user approval.** These commands
-create or modify live Azure resources.
-
-What agents CAN run autonomously:
-- `az bicep build` (lint only; no network calls)
-- `az deployment group validate` (validates template; no resource changes)
-- `az deployment group what-if` (read-only; shows planned changes)
-- `az keyvault secret list` (read-only; lists secret names, not values)
-- `az containerapp job list` / `az containerapp job show` (read-only)
-
-What agents MUST NOT run without explicit user instruction:
-- `az deployment group create` / `az deployment sub create`
-- `az containerapp job start` (triggers live job execution)
-- `az keyvault secret set` / `az keyvault secret delete`
-- `az group delete`
-- Any `az` command that modifies, creates, or deletes Azure resources
-
-### Pointer to open questions
-
-Before first deploy, answer the 10 questions in AZURE_PLAN.md §12. Key
-blockers: Azure AD tenant ID, subscription ID, ACR/KV/storage naming
-uniqueness, and whether a Dockerfile exists (AZURE_PLAN.md §12 Q6).
+**Safety rule that always applies (also enforced by `.claude/hooks/az-deploy-guard.sh`):**
+an agent MUST NOT run `az deployment … create`, `az containerapp job start`,
+`az keyvault secret set/delete`, or `az group delete` without explicit user
+approval. Read-only `az` (list/show/validate/what-if) and `az bicep build` are fine.
