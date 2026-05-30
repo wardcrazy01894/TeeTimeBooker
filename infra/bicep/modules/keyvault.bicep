@@ -88,7 +88,10 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
 
     // Purge protection: NOT on by default — must be explicit. See param comment.
     // Irreversible once enabled; soft-delete cannot be disabled regardless.
-    enablePurgeProtection: enablePurgeProtection
+    // Azure rejects enablePurgeProtection=false explicitly ("cannot be set to
+    // false … irreversible action"). The property accepts only `true` or being
+    // ABSENT, so emit true when enabled and null (Bicep omits it) otherwise.
+    enablePurgeProtection: enablePurgeProtection ? true : null
 
     // ACA resolves KV secret references over the public endpoint at container
     // start using the job's managed identity. No VNet integration required for
