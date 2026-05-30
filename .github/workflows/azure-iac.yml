@@ -208,16 +208,22 @@ jobs:
             --parameters "@${PARAM_FILE}" \
             --parameters containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
 
-      - name: Deploy budget (subscription-scoped, separate)
-        # Budget is subscription-scoped, so it is a separate `az deployment sub
-        # create` from the RG-scoped main deploy. See AZURE_PLAN.md §9.2.
+      - name: Deploy budget (subscription-scoped, separate; non-fatal)
+        # Budget is subscription-scoped, so it is a separate sub-scope deploy
+        # from the RG-scoped main deploy. See AZURE_PLAN.md §9.2.
+        # The CI service principal is RG-scoped by design (least privilege), so
+        # this step may fail with AuthorizationFailed. That MUST NOT fail the
+        # infra deploy — the budget is an optional cost alert. Activate it later
+        # via an operator-approved subscription-scope cost role, or create it
+        # once manually. The trailing guard keeps the job green either way.
         run: |
           az deployment sub create \
             --location "${AZURE_LOCATION}" \
             --template-file infra/bicep/modules/budget.bicep \
             --parameters envName=dev \
                          budgetAmountUsd=10 \
-                         budgetAlertEmail="${BUDGET_ALERT_EMAIL}"
+                         budgetAlertEmail="${BUDGET_ALERT_EMAIL}" \
+            || echo "::warning::Budget deploy skipped (SP lacks subscription-scope permission). Infra deploy unaffected."
 
   # ---------------------------------------------------------------------------
   # deploy-prod — MANUAL ONLY.
@@ -293,11 +299,13 @@ jobs:
             --parameters "@${PARAM_FILE}" \
             --parameters containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
 
-      - name: Deploy budget (subscription-scoped, separate)
+      - name: Deploy budget (subscription-scoped, separate; non-fatal)
+        # Non-fatal for the same reason as deploy-dev (RG-scoped SP). See above.
         run: |
           az deployment sub create \
             --location "${AZURE_LOCATION}" \
             --template-file infra/bicep/modules/budget.bicep \
             --parameters envName=prod \
                          budgetAmountUsd=10 \
-                         budgetAlertEmail="${BUDGET_ALERT_EMAIL}"
+                         budgetAlertEmail="${BUDGET_ALERT_EMAIL}" \
+            || echo "::warning::Budget deploy skipped (SP lacks subscription-scope permission). Infra deploy unaffected."
