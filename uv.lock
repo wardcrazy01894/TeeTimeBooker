@@ -496,6 +496,15 @@ wheels = [
 ]
 
 [[package]]
+name = "ntplib"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/14/6b018fb602602d9f6cc7485cbad7c1be3a85d25cea18c233854f05284aed/ntplib-0.4.0.tar.gz", hash = "sha256:899d8fb5f8c2555213aea95efca02934c7343df6ace9d7628a5176b176906267", size = 7135, upload-time = "2021-05-28T19:08:54.394Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/8c/41da70f6feaca807357206a376b6de2001b439c7f78f53473a914a6dbd1e/ntplib-0.4.0-py2.py3-none-any.whl", hash = "sha256:8d27375329ed7ff38755f7b6d4658b28edc147cadf40338a63a0da8133469d60", size = 6849, upload-time = "2021-05-28T19:08:53.323Z" },
+]
+
+[[package]]
 name = "packageurl-python"
 version = "0.17.6"
 source = { registry = "https://pypi.org/simple" }
@@ -933,6 +942,7 @@ dependencies = [
     { name = "click" },
     { name = "httpx" },
     { name = "idna" },
+    { name = "ntplib" },
     { name = "playwright" },
     { name = "pydantic" },
     { name = "structlog" },
@@ -959,6 +969,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "idna", specifier = ">=3.15" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "ntplib", specifier = ">=0.4" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.10" },
     { name = "playwright", specifier = ">=1.37" },
     { name = "pydantic", specifier = ">=2.7" },

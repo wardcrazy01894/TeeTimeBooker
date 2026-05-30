@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import click
 
 from .core.adapter import CourseAdapter
-from .core.clock import RealClock
+from .core.clock import RealClock, measure_ntp_offset
 from .core.config import (
     AppConfig,
     MissingEnvVarError,
@@ -39,7 +39,12 @@ from .core.models import (
 from .core.orchestrator import Orchestrator
 from .core.watch_orchestrator import WatchOrchestrator
 from .courses.foreup.base import ForeUpAdapter
-from .courses.foreup.captcha import make_2captcha_provider, make_captcha_provider
+from .courses.foreup.captcha import (
+    FOREUP_RECAPTCHA_SITE_KEY,
+    make_2captcha_provider,
+    make_captcha_provider,
+    resolve_invisible_site_key,
+)
 from .courses.foreup.mangrove_bay import MangroveBayAdapter
 from .courses.teeitup.sydney_marovitz import SydneyMarovitzAdapter
 from .dev.fake_adapter import FakeAdapter
@@ -145,7 +150,10 @@ async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None
         }
         creds: dict[CourseId, CourseCredentials] = {}
     else:
-        adapters = _build_adapters(cfg, dry_run=dry_run)
+        # Pre-flight (off the race path): resolve the live reCAPTCHA site key so a
+        # ForeUP key rotation is detected before T0, not after every solve fails.
+        site_keys = await _resolve_site_keys(cfg) if not dry_run else {}
+        adapters = _build_adapters(cfg, dry_run=dry_run, site_keys=site_keys)
         creds = _resolve_creds(cfg)
 
     store = InMemoryStore()
@@ -155,11 +163,14 @@ async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None
     # when invoked by the cron in book.yml.
     scheduler = _local_demo_scheduler(cfg.scheduler)
 
+    # One-shot NTP offset for the T0 race (live runs only; best-effort, 0 on failure).
+    clock_offset = measure_ntp_offset() if not use_fake_adapter and not dry_run else timedelta(0)
+
     orch = Orchestrator(
         adapters=adapters,
         store=store,
         notifier=ConsoleNotifier(),
-        clock=RealClock(),
+        clock=RealClock(offset=clock_offset),
         scheduler=scheduler,
         creds=creds,
     )
@@ -262,18 +273,21 @@ async def _watch(
         }
         creds: dict[CourseId, CourseCredentials] = {}
     else:
-        adapters = _build_adapters(cfg, dry_run=dry_run)
+        site_keys = await _resolve_site_keys(cfg) if not dry_run else {}
+        adapters = _build_adapters(cfg, dry_run=dry_run, site_keys=site_keys)
         creds = _resolve_creds(cfg)
 
     store = InMemoryStore()
     await store.initialize()
+
+    clock_offset = measure_ntp_offset() if not use_fake_adapter and not dry_run else timedelta(0)
 
     watch_config = cfg.watcher.to_watch_config()
     watch = WatchOrchestrator(
         adapters=adapters,
         store=store,
         notifier=ConsoleNotifier(),
-        clock=RealClock(),
+        clock=RealClock(offset=clock_offset),
         scheduler=cfg.scheduler,
         watch_config=watch_config,
         creds=creds,
@@ -286,7 +300,27 @@ async def _watch(
         )
 
 
-def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, CourseAdapter]:
+async def _resolve_site_keys(cfg: AppConfig) -> dict[CourseId, str]:
+    """Pre-flight: resolve the live invisible reCAPTCHA site key per ForeUP course.
+
+    Best-effort per course (degrades to the hardcoded key on any failure). Run this
+    BEFORE the T0 busy-wait so a ForeUP key rotation is caught up front rather than
+    surfacing as an invalid-key error on every booking solve.
+    """
+    site_keys: dict[CourseId, str] = {}
+    for c in cfg.courses:
+        cls = _ADAPTER_REGISTRY.get(c.adapter)
+        if cls is not None and issubclass(cls, ForeUpAdapter) and cls.booking_page_url:
+            site_keys[CourseId(c.id)] = await resolve_invisible_site_key(cls.booking_page_url)
+    return site_keys
+
+
+def _build_adapters(
+    cfg: AppConfig,
+    *,
+    dry_run: bool = True,
+    site_keys: dict[CourseId, str] | None = None,
+) -> dict[CourseId, CourseAdapter]:
     """Build a CourseAdapter for each [[courses]] entry via _ADAPTER_REGISTRY.
 
     In dry_run mode, captcha_provider is always None (no CAPTCHA solving needed
@@ -295,7 +329,10 @@ def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, C
 
     The booking_page_url on each ForeUpAdapter subclass determines which page
     the captcha provider targets — every course has its own booking page.
+    `site_keys` (from `_resolve_site_keys`) overrides the hardcoded reCAPTCHA key
+    per course when present; absent entries use the hardcoded default.
     """
+    site_keys = site_keys or {}
     twocaptcha_key = None if dry_run else os.environ.get("TWOCAPTCHA_API_KEY")
 
     # Validate: every course_preferences entry must have a [[courses]] entry.
@@ -330,10 +367,11 @@ def _build_adapters(cfg: AppConfig, *, dry_run: bool = True) -> dict[CourseId, C
                         f"Adapter {cls.__name__!r} (for course {c.id!r}) has no booking_page_url. "
                         "Set booking_page_url = <url> in the adapter class before live use."
                     )
+                site_key = site_keys.get(CourseId(c.id), FOREUP_RECAPTCHA_SITE_KEY)
                 if twocaptcha_key:
-                    cp = make_2captcha_provider(twocaptcha_key, cls.booking_page_url)
+                    cp = make_2captcha_provider(twocaptcha_key, cls.booking_page_url, site_key)
                 else:
-                    cp = make_captcha_provider(cls.booking_page_url)
+                    cp = make_captcha_provider(cls.booking_page_url, site_key)
             adapters[CourseId(c.id)] = cls(captcha_provider=cp)  # type: ignore[call-arg]
         else:
             # Non-ForeUP adapters (TeeItUp, future platforms): no CAPTCHA, simpler construction.

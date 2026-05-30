@@ -9,8 +9,14 @@ FakeClock.
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+import ntplib
+
+_log = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -27,13 +33,45 @@ class Clock(Protocol):
 
 
 class RealClock:
-    """Production clock backed by `datetime.now(UTC)` and `asyncio.sleep`."""
+    """Production clock backed by `datetime.now(UTC)` and `asyncio.sleep`.
+
+    An optional `offset` (a measured NTP correction; see `measure_ntp_offset`)
+    is added to every `now_utc()` reading so the T0 busy-wait targets true time
+    rather than a drifted system clock. Defaults to zero — unchanged behaviour.
+    """
+
+    def __init__(self, *, offset: timedelta = timedelta(0)) -> None:
+        self._offset = offset
 
     def now_utc(self) -> datetime:
-        return datetime.now(tz=UTC)
+        return datetime.now(tz=UTC) + self._offset
 
     async def sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
+
+
+def measure_ntp_offset(
+    server: str = "pool.ntp.org",
+    *,
+    timeout: float = 2.0,
+    _client_factory: Callable[[], Any] | None = None,
+) -> timedelta:
+    """Best-effort one-shot NTP offset (server_time minus local_time) as a timedelta.
+
+    The race against a 06:00:00 booking-window open can be lost to a system clock
+    that drifts even a second; a one-time NTP correction at startup closes that gap.
+    This is an OPTIMISATION, never a hard dependency: any failure — blocked UDP:123
+    (common in locked-down cloud egress), DNS error, or timeout — degrades to a
+    zero offset and logs a warning, never raises. Call once at startup, before the
+    busy-wait; pass the result to `RealClock(offset=...)`.
+    """
+    factory = _client_factory if _client_factory is not None else ntplib.NTPClient
+    try:
+        response = factory().request(server, version=3, timeout=timeout)
+        return timedelta(seconds=float(response.offset))
+    except Exception as exc:
+        _log.warning("NTP offset measurement failed (%s); using zero offset", exc)
+        return timedelta(0)
 
 
 class FakeClock:
