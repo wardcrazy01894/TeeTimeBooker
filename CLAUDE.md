@@ -114,6 +114,13 @@ in `core/` — never directly. This is the cut line for parallel work.
   fire_time, hard-refused unless `--dry-run true`. It makes an on-demand `--wait`
   busy-wait reachable at any wall-clock hour (it cannot shift a real booking). See
   `_with_fire_time_override` and AZURE_PLAN §6.5.
+- **Watcher is ENABLED in the v1 configs** (`config/container.toml` +
+  `config/local.toml`, `watcher.enabled = true`, M6 PR4). Under `--dry-run true` (dev)
+  it does ALL the looking/ranking/logging and suppresses ONLY the final POST
+  (`WatchOrchestrator` returns `DRY_RUN` before the lock+POST). `one_booking_policy`
+  (cancel+rebook upgrade) stays DISABLED in M6 — daily-watch + policy-on needs a
+  target-date design fix first (M6_PLAN §4.4). The watch cron stays daily: a Sunday
+  booking is upgradeable all week, so polling every day is what catches a better slot.
 - **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
   This lets `target_offsets = [7]` produce one stable RequestId within a run
   while still targeting a fresh date each week. The key is held in-process
