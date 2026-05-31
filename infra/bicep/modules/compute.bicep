@@ -65,6 +65,9 @@ param dryRun bool = true
 @description('True when containerImage is a PUBLIC bootstrap image (deploy pass 1). Drops the registries[] auth block so ACA pulls anonymously — listing a public registry (MCR) with the MI causes "Operation expired" at job provisioning. Set false on pass 2 (real ACR image) so the MI + AcrPull engage.')
 param usePublicBootstrapImage bool = false
 
+@description('When true (default), the booking + watch jobs use Schedule triggers (crons). When false, they are created with a Manual trigger (no cron) so they NEVER auto-fire — used to silence a non-primary environment (e.g. dev) once prod is live, avoiding two environments hitting ForeUP with the same credentials / concurrent logins. See AZURE_PLAN.md §10.3.')
+param enableSchedules bool = true
+
 // ---------------------------------------------------------------------------
 // Variables
 // ---------------------------------------------------------------------------
@@ -226,9 +229,13 @@ resource bookingJob 'Microsoft.App/jobs@2024-03-01' = [for job in bookingJobs: {
   properties: {
     environmentId: acaEnv.id
     configuration: {
-      triggerType: 'Schedule'
-      scheduleTriggerConfig: {
+      triggerType: enableSchedules ? 'Schedule' : 'Manual'
+      scheduleTriggerConfig: enableSchedules ? {
         cronExpression: job.cron
+        parallelism: parallelism
+        replicaCompletionCount: replicaCompletionCount
+      } : null
+      manualTriggerConfig: enableSchedules ? null : {
         parallelism: parallelism
         replicaCompletionCount: replicaCompletionCount
       }
@@ -287,9 +294,13 @@ resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
   properties: {
     environmentId: acaEnv.id
     configuration: {
-      triggerType: 'Schedule'
-      scheduleTriggerConfig: {
+      triggerType: enableSchedules ? 'Schedule' : 'Manual'
+      scheduleTriggerConfig: enableSchedules ? {
         cronExpression: watchCron
+        parallelism: parallelism
+        replicaCompletionCount: replicaCompletionCount
+      } : null
+      manualTriggerConfig: enableSchedules ? null : {
         parallelism: parallelism
         replicaCompletionCount: replicaCompletionCount
       }

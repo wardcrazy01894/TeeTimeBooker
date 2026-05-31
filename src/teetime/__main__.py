@@ -248,6 +248,16 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
         )
         return
 
+    if wait:
+        # Verification surface (M6 PR6): confirms the REAL scheduler was selected (not
+        # the immediate demo path) and shows the NTP correction the busy-wait applies.
+        log.info(
+            "run: real-timing path (--wait); fire_time=%s %s, NTP offset_ms=%.1f",
+            cfg.scheduler.fire_time,
+            cfg.scheduler.timezone,
+            clock_offset.total_seconds() * 1000.0,
+        )
+
     orch = Orchestrator(
         adapters=adapters,
         store=store,

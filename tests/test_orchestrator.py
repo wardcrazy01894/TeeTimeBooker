@@ -8,6 +8,7 @@ already-booked paths.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -441,3 +442,23 @@ async def test_run_busy_waits_until_t0() -> None:
     # Should have stopped at ~early_arrival_ms before T0 (= 100ms),
     # within fine_step tolerance (1ms).
     assert -0.05 <= delta <= 0.15, f"clock landed {delta * 1000:.1f}ms before T0"
+
+
+async def test_run_logs_race_complete_at_t0(caplog: pytest.LogCaptureFixture) -> None:
+    """M6 PR6 verification surface: run() emits a 'race: busy-wait complete' INFO line
+    when the busy-wait returns, so a dev dry-run log PROVES the bot fired at T0 (the
+    final POST is suppressed under dry-run, so the log is the only evidence)."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    clock = FakeClock(start=t0 - timedelta(seconds=2))
+    orch, _, _ = _build({cid: fa}, clock=clock)
+
+    with caplog.at_level(logging.INFO):
+        await orch.run(_request(course_ids=(cid,)))
+
+    race = [r.message for r in caplog.records if "race: busy-wait complete" in r.message]
+    assert race, "race-complete verification log not emitted"
+    assert "drift_ms" in race[0]  # firing-vs-target drift is logged for the runbook

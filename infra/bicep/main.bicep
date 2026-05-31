@@ -46,6 +46,9 @@ param enablePurgeProtection bool = true
 @description('True when containerImage is a PUBLIC bootstrap image (deploy pass 1). The CI workflow sets this true for pass 1 and false for pass 2 (real ACR image). Drops the ACA registries[] auth block for the public pass — listing a public registry (MCR) with the MI causes job provisioning to hang ("Operation expired"). See compute.bicep.')
 param usePublicBootstrapImage bool = false
 
+@description('When true (default), booking + watch jobs use Schedule (cron) triggers. Set false to deploy an environment with the jobs present but on Manual triggers (never auto-fire) — used to silence dev once prod is live so two envs do not hit ForeUP on the same credentials. See AZURE_PLAN.md §10.3.')
+param enableSchedules bool = true
+
 // ---------------------------------------------------------------------------
 // Module: identity
 // User-assigned managed identity — the SINGLE principalId for all RBAC.
@@ -129,6 +132,7 @@ module compute 'modules/compute.bicep' = {
     logAnalyticsWorkspaceKey: logs.outputs.workspaceKey
     dryRun: dryRun
     usePublicBootstrapImage: usePublicBootstrapImage
+    enableSchedules: enableSchedules
   }
   // keyvault and logs are already implicit dependencies via their outputs
   // consumed above (vaultUri, workspaceId/Key), so they are NOT listed here

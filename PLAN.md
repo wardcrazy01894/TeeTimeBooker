@@ -561,9 +561,9 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 ### M6 — End-to-end (depends on M2 + M5)
 | ID    | Task                                              | Inputs           | Outputs                                              | Owner-files                          | Deps        |
 |-------|---------------------------------------------------|------------------|------------------------------------------------------|--------------------------------------|-------------|
-| M6.T1 | Workflow `book.yml` real impl (DST gate, secrets) | all stubs done   | `gh workflow run` succeeds in dry-run mode           | `.github/workflows/book.yml`         | M5.*        |
-| M6.T2 | First production dry-run against Mangrove Bay     | M6.T1            | dry-run log output at 6:00:00 ± 1 s ET on first cron | runbook entry                      | M6.T1       |
-| M6.T3 | First live booking                                | M6.T2 green      | a real reservation; course confirmation email to user | runbook entry                       | M6.T2       |
+| M6.T1 | Real-timing booker wiring + DST gate + watcher enable + Sunday-only + anchored target (PRs 1–7). **DONE.** | all stubs done | `run --wait` busy-waits to 06:00:00 ET (`core/dst_gate.py`, `bookingReplicaTimeout=1200`); watcher enabled; Sunday-only crons; target anchored to `target_weekday` (`core/target_date.py`). Full suite green. | `__main__.py`, `core/dst_gate.py`, `core/target_date.py`, `compute.bicep`, configs | M5.* |
+| M6.T2 | First production dry-run against Mangrove Bay     | M6.T1            | dry-run log proof (AZURE_PLAN §10.4): `race: busy-wait complete` + watcher `Watch check`/`DRY_RUN`; one clean dev dry-run Sunday | runbook §10.4 | M6.T1 |
+| M6.T3 | First live booking (prod cutover §10.5)           | M6.T2 green      | a real reservation; course confirmation email. PENDING operator: set prod secrets, funded 2captcha, tag `infra/v1.0.0`, silence dev (`enableSchedules=false`) | runbook §10.5 | M6.T2 |
 
 **Parallel-execution map (post M1):**
 ```

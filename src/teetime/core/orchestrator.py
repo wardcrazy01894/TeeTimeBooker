@@ -15,6 +15,7 @@ add the reconciliation branch in one place.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -45,6 +46,8 @@ if TYPE_CHECKING:
     from .clock import Clock
     from .config import SchedulerConfig
 
+log = logging.getLogger(__name__)
+
 
 class Orchestrator:
     """Runs one BookingRequest end-to-end. Single-use; build a new one per request."""
@@ -73,7 +76,18 @@ class Orchestrator:
             if prior is not None:
                 return prior
 
-            await busy_wait_until(self._compute_t0_minus_early(), self._clock)
+            t0_target = self._compute_t0_minus_early()
+            await busy_wait_until(t0_target, self._clock)
+            fired = self._clock.now_utc()
+            # Verification surface (M6 PR6): proves the bot busy-waited and fired at T0.
+            # Under dry-run the final POST is suppressed, so this log line is the only
+            # evidence the race fired on time. See AZURE_PLAN §10 (dev verification).
+            log.info(
+                "race: busy-wait complete; firing at %s (target=%s, drift_ms=%.1f)",
+                fired.isoformat(),
+                t0_target.isoformat(),
+                (fired - t0_target).total_seconds() * 1000.0,
+            )
 
             result: BookingResult | None = None
             for course_id in request.course_preferences:
