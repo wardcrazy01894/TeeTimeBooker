@@ -224,20 +224,19 @@ in `compute.bicep`:
 | 05:50 EDT Sunday (UTC-4)   | `50 9 * * 0` | Fires 10 min before T0, EDT, Sunday |
 | 05:50 EST Sunday (UTC-5)   | `50 10 * * 0` | Fires 10 min before T0, EST, Sunday |
 
-All four crons fire on Saturdays and Sundays year-round. The bot's own DST gate — identical to
-the Python `dst` step in `book.yml` — runs as the first statement in the
-container entry point:
+All four crons fire on Saturdays and Sundays year-round. The bot's own DST gate — re-homed
+from the deleted `book.yml` `dst` step into `core/dst_gate.py` (`should_proceed`, M6 PR2) —
+is evaluated in `_run` on the `--wait` path, BEFORE the busy-wait:
 
 ```python
-# Pseudocode — same logic as book.yml:dst step
-now = datetime.now(ZoneInfo("America/New_York"))
-if now.hour != 5:          # wrong cron half; container exits 0 immediately
-    sys.exit(0)
+# core/dst_gate.py — should_proceed(clock, timezone, fire_time)
+et_hour = clock.now_utc().astimezone(ZoneInfo("America/New_York")).hour
+return et_hour == fire_time.hour - 1   # 5 for a 06:00 drop; wrong-season cron -> exit 0
 ```
 
-This gate is already part of the `teetime run` CLI in v0 (the orchestrator
-checks wall-clock ET before entering busy-wait). No new code is required for
-v1; only the scheduling primitive changes from GH Actions to ACA.
+It is a pure function (clock-injectable, FakeClock-tested). `_run` calls it only on the
+real-timing `--wait` path (the ACA booking job passes `--wait`, M6 PR3); `--no-wait`
+(manual/local) bypasses it, matching the old `workflow_dispatch` always-proceed.
 
 **The gate is not optional.** Without it, all four crons would fire the full
 booking logic, and the wrong-half run would arrive at T0 ± 1 hour, bypassing
