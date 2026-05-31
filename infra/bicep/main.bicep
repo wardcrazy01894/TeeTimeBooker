@@ -49,6 +49,23 @@ param usePublicBootstrapImage bool = false
 @description('When true (default), booking + watch jobs use Schedule (cron) triggers. Set false to deploy an environment with the jobs present but on Manual triggers (never auto-fire) — used to silence dev once prod is live so two envs do not hit ForeUP on the same credentials. See AZURE_PLAN.md §10.3.')
 param enableSchedules bool = true
 
+@description('''Cost-killswitch-fired safety bit. Defaults false. When the $50 budget killswitch
+fires, the operator sets this to true in BOTH param files and pushes to main. CI will then
+deploy with effectiveEnableSchedules=false regardless of the enableSchedules value — preventing
+any subsequent infra/** merge from re-arming the cron schedules until this bit is explicitly
+cleared. This is the checked-in safety latch that survives across PR merges. To re-enable
+schedules after a killswitch event: fix the root cause, set killswitchFired=false AND
+verify enableSchedules=true, then push. See COST_KILLSWITCH_PLAN.md §2/Item2 for full runbook.
+IMPORTANT: do NOT clear this param until the overspend root cause is diagnosed and resolved.
+''')
+param killswitchFired bool = false
+
+// When the killswitch has fired, force schedules off regardless of enableSchedules.
+// This ensures that any CI deploy — even one that does not touch the killswitchFired
+// param — cannot silently re-arm the jobs. The enableSchedules param retains its value
+// so the intent is preserved; only the effective value passed to compute is changed.
+var effectiveEnableSchedules = enableSchedules && !killswitchFired
+
 // ---------------------------------------------------------------------------
 // Module: identity
 // User-assigned managed identity — the SINGLE principalId for all RBAC.
@@ -132,7 +149,7 @@ module compute 'modules/compute.bicep' = {
     logAnalyticsWorkspaceKey: logs.outputs.workspaceKey
     dryRun: dryRun
     usePublicBootstrapImage: usePublicBootstrapImage
-    enableSchedules: enableSchedules
+    enableSchedules: effectiveEnableSchedules
   }
   // keyvault and logs are already implicit dependencies via their outputs
   // consumed above (vaultUri, workspaceId/Key), so they are NOT listed here
