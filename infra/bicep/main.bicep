@@ -203,8 +203,9 @@ output keyVaultUri string = keyvault.outputs.vaultUri
 output identityPrincipalId string = identity.outputs.principalId
 
 @description('ARM resource ID of the killswitch Action Group. Empty string when the killswitch module is not deployed (enableKillswitch=false, killswitchRbacRoleId empty, or envName!=dev). Pass to budget.bicep as killswitchActionGroupId in PR-KS2 to wire the $50 budget threshold.')
-// BCP318: Bicep's type system cannot prove the ternary prevents null access on a conditional
-// module. This is a known limitation for conditional modules in Bicep — the runtime evaluation
-// is correct (the ternary condition matches the module deploy condition exactly). Using any()
-// to bypass the static null-check; the ARM engine evaluates the ternary safely at deploy time.
-output killswitchActionGroupId string = (enableKillswitch && !empty(killswitchRbacRoleId) && envName == 'dev') ? any(killswitch).outputs.actionGroupId : ''
+// Use the safe-dereference operator (.?) + null-coalesce (??) rather than an any()-cast: when
+// the killswitch module is not deployed, `killswitch.?outputs` is null and we fall back to ''.
+// When it IS deployed, this resolves to the actionGroupId STRING (Bicep's normal module-output
+// `.value` unwrapping is preserved). The previous any()-cast approach returned the raw
+// {value,type} object and failed output evaluation at deploy time (DeploymentOutputEvaluationFailed).
+output killswitchActionGroupId string = killswitch.?outputs.actionGroupId ?? ''
