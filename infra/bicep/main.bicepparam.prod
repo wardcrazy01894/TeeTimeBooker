@@ -43,5 +43,16 @@ param killswitchFired = false
 // Killswitch module enabled on deploy (true = Logic App + Action Group + RBAC deployed).
 // Enabled by default per operator decision (2026-05-31): full killswitch chain deploys
 // to prod on the next infra/v* tag push. Requires killswitchRbacRoleId to be set.
-// See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1
+// NOTE: the killswitch Logic App lives ONLY in rg-teetime-dev (dev deploy). This
+// param is read by main.bicep but the killswitch module is gated to envName=='dev',
+// so prod deploys never create a second Logic App. The prod param is kept in sync
+// for parity and future reference.
+// See: infra/COST_KILLSWITCH_PLAN.md §2/Item3, §3/PR-KS1
 param enableKillswitch = true
+
+// GUID of the pre-created "ACA Job Schedule Manager" custom role.
+// Same value as dev param file — the custom role is subscription-scoped (usable across both RGs).
+// OPERATOR: fill in the same GUID here after creating the custom role (see dev param file comment).
+// Until the GUID is filled in, the module is a clean no-op regardless of enableKillswitch.
+// See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
+param killswitchRbacRoleId = ''

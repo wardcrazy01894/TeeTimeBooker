@@ -51,20 +51,16 @@ param logicAppId string
 // Resources
 // ---------------------------------------------------------------------------
 
-// TODO(PR-KS1): Implement the role assignment resource below.
-// The resource is commented out in the stub because killswitch.bicep's
-// TODO(PR-KS1) module call is also commented out — both land together in PR-KS1.
-//
-// resource rbacProd 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-//   // GUID deterministic from deployment-scope inputs: rg().id + roleId + logicAppId.
-//   // logicAppPrincipalId is a param (not resourceGroup().id), so it can appear here
-//   // without the "run-time value in resource name" restriction — params are resolved
-//   // before the name expression is evaluated.
-//   name: guid(resourceGroup().id, killswitchRbacRoleId, logicAppId)
-//   scope: resourceGroup()   // rg-teetime-prod (set by the outer scope expression)
-//   properties: {
-//     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', killswitchRbacRoleId)
-//     principalId: logicAppPrincipalId
-//     principalType: 'ServicePrincipal'
-//   }
-// }
+resource rbacProd 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  // GUID deterministic from deployment-scope inputs: rg().id + roleId + logicAppId.
+  // logicAppPrincipalId is a param (not resourceGroup().id), so it can appear here
+  // without the "run-time value in resource name" restriction — params are resolved
+  // before the name expression is evaluated.
+  name: guid(resourceGroup().id, killswitchRbacRoleId, logicAppId)
+  scope: resourceGroup()   // rg-teetime-prod (set by the outer scope expression)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', killswitchRbacRoleId)
+    principalId: logicAppPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}

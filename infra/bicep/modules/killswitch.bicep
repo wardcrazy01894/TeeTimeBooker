@@ -233,43 +233,168 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
         }
       }
       actions: {
-        // TODO(PR-KS1): Replace with 12 parallel HTTP actions (6 PATCH + 6 POST /stop).
-        // Variables referenced in action URIs (use string interpolation in the
-        // Logic App ARM expression language: @{variables('subscriptionId')} etc.):
-        //   subscriptionId  = ${subscriptionId}
-        //   devRg           = ${devRgName}
-        //   prodRg          = ${prodRgName}
-        //   Job names (dev): ${bookingJobEdtSun}, ${bookingJobEstSun}, ${watchJob}
-        //   Job names (prod): ${bookingJobEdtSunProd}, ${bookingJobEstSunProd}, ${watchJobProd}
-        //   patchBodyDisable: (see var above — serialize as JSON in the Logic App action inputs)
-        //
-        // LEVER (a) PATCH example (replicate for all 6 jobs):
-        //   Patch_booking_edt_sun_dev: {
-        //     type: 'Http'
-        //     inputs: {
-        //       method: 'PATCH'
-        //       uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSun}?api-version=2024-03-01'
-        //       body: patchBodyDisable
-        //       authentication: { type: 'ManagedServiceIdentity', audience: 'https://management.azure.com/' }
-        //     }
-        //     runAfter: {}
-        //   }
-        //
-        // LEVER (b) POST /stop example (replicate for all 6 jobs):
-        //   Stop_booking_edt_sun_dev: {
-        //     type: 'Http'
-        //     inputs: {
-        //       method: 'POST'
-        //       uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSun}/stop?api-version=2024-03-01'
-        //       body: {}
-        //       authentication: { type: 'ManagedServiceIdentity', audience: 'https://management.azure.com/' }
-        //     }
-        //     runAfter: {}
-        //   }
-        Stub_placeholder: {
-          type: 'Terminate'
+        // Lever (a) — 6 PATCH calls: Schedule → Manual (disable future fires).
+        // All 12 actions run in parallel (runAfter: {}). URIs are Bicep string
+        // interpolations resolved at deploy time — they embed the subscription ID,
+        // RG names, and job names from Bicep variables, producing static strings
+        // in the ARM deployment output. The Logic App then calls these literal
+        // endpoints at runtime.
+        Patch_booking_edt_sun_dev: {
+          type: 'Http'
           inputs: {
-            runStatus: 'Succeeded'
+            method: 'PATCH'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSun}?api-version=2024-03-01'
+            body: patchBodyDisable
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Patch_booking_est_sun_dev: {
+          type: 'Http'
+          inputs: {
+            method: 'PATCH'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEstSun}?api-version=2024-03-01'
+            body: patchBodyDisable
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Patch_watch_dev: {
+          type: 'Http'
+          inputs: {
+            method: 'PATCH'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${watchJob}?api-version=2024-03-01'
+            body: patchBodyDisable
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Patch_booking_edt_sun_prod: {
+          type: 'Http'
+          inputs: {
+            method: 'PATCH'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSunProd}?api-version=2024-03-01'
+            body: patchBodyDisable
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Patch_booking_est_sun_prod: {
+          type: 'Http'
+          inputs: {
+            method: 'PATCH'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEstSunProd}?api-version=2024-03-01'
+            body: patchBodyDisable
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Patch_watch_prod: {
+          type: 'Http'
+          inputs: {
+            method: 'PATCH'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${watchJobProd}?api-version=2024-03-01'
+            body: patchBodyDisable
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        // Lever (b) — 6 POST /stop calls: stop all in-flight executions.
+        // Runs in parallel with lever (a). Idempotent: returns 200 + empty list
+        // when no executions are running (not an error). See COST_KILLSWITCH_PLAN §1.
+        Stop_booking_edt_sun_dev: {
+          type: 'Http'
+          inputs: {
+            method: 'POST'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSun}/stop?api-version=2024-03-01'
+            body: {}
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Stop_booking_est_sun_dev: {
+          type: 'Http'
+          inputs: {
+            method: 'POST'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEstSun}/stop?api-version=2024-03-01'
+            body: {}
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Stop_watch_dev: {
+          type: 'Http'
+          inputs: {
+            method: 'POST'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${watchJob}/stop?api-version=2024-03-01'
+            body: {}
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Stop_booking_edt_sun_prod: {
+          type: 'Http'
+          inputs: {
+            method: 'POST'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSunProd}/stop?api-version=2024-03-01'
+            body: {}
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Stop_booking_est_sun_prod: {
+          type: 'Http'
+          inputs: {
+            method: 'POST'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEstSunProd}/stop?api-version=2024-03-01'
+            body: {}
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Stop_watch_prod: {
+          type: 'Http'
+          inputs: {
+            method: 'POST'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${watchJobProd}/stop?api-version=2024-03-01'
+            body: {}
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
           }
           runAfter: {}
         }
@@ -369,17 +494,19 @@ resource rbacDev 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 // (AZURE_PLAN.md §10.1.1 step 2, DONE 2026-05-31 — §8.2 only covers the dev RG)
 // so this is deployable without operator intervention.
 //
-// TODO(PR-KS1): Uncomment and wire the nested module once killswitch-rbac-prod.bicep exists.
-//
-// module rbacProd 'killswitch-rbac-prod.bicep' = {
-//   name: 'rbac-killswitch-prod'
-//   scope: resourceGroup(subscriptionId, prodRgName)
-//   params: {
-//     killswitchRbacRoleId: killswitchRbacRoleId
-//     logicAppPrincipalId: logicApp.identity.principalId
-//     logicAppId: logicApp.id
-//   }
-// }
+// Nested module: cross-RG role assignment for rg-teetime-prod.
+// scope: resourceGroup(subscriptionId, prodRgName) causes Bicep to emit a nested
+// ARM deployment that the ARM engine places in rg-teetime-prod. The CI SP has
+// User Access Administrator on rg-teetime-prod (AZURE_PLAN §10.1.1, DONE 2026-05-31).
+module rbacProd 'killswitch-rbac-prod.bicep' = {
+  name: 'rbac-killswitch-prod'
+  scope: resourceGroup(subscriptionId, prodRgName)
+  params: {
+    killswitchRbacRoleId: killswitchRbacRoleId
+    logicAppPrincipalId: logicApp.identity.principalId
+    logicAppId: logicApp.id
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Outputs

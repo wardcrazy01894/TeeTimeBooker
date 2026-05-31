@@ -12,11 +12,12 @@ now run as ACA Jobs defined in `compute.bicep`.
 
 ## Bicep location
 
-**All modules are implemented (M-azure-T1 through M-azure-T7 DONE; storage module removed — state is in-process only).**
+**All modules are implemented (M-azure-T1 through M-azure-T7 DONE; storage module removed — state is in-process only). Cost killswitch (PR-KS1) implemented.**
 
 ```
 infra/
   AZURE_PLAN.md              # authoritative Azure design doc
+  COST_KILLSWITCH_PLAN.md    # verified design for the $50 automated killswitch chain
   bicep/
     main.bicep               # entry point (RG-scoped); dryRun param defaults true
     main.bicepparam.dev      # dev parameter values (dryRun=true, enablePurgeProtection=false)
@@ -32,7 +33,29 @@ infra/
                              #   + 1× watch ACA Job (*/10 * * * *)
                              #   all jobs: --dry-run passed via dryRun param
       budget.bicep           # Cost Management budget (subscription-scoped)
+      killswitch.bicep       # Cost killswitch: Logic App (Consumption) + Action Group + RBAC
+                             #   DEPLOYED TO rg-teetime-dev ONLY (envName=='dev' gate in main.bicep)
+                             #   manages BOTH envs via 12 HTTP actions: 6 PATCH + 6 POST /stop
+                             #   cross-RG RBAC for rg-teetime-prod via nested module below
+                             #   requires operator to pre-create "ACA Job Schedule Manager" custom role
+                             #   gate: enableKillswitch && !empty(killswitchRbacRoleId) && envName=='dev'
+      killswitch-rbac-prod.bicep  # companion: Microsoft.Authorization/roleAssignments in rg-teetime-prod
+                             #   deployed as nested module by killswitch.bicep
+                             #   scope: resourceGroup(subscriptionId, prodRgName) → nested ARM deployment
 ```
+
+**Killswitch deploy notes:**
+- The killswitch Logic App lives ONLY in `rg-teetime-dev`. It calls ACA Job APIs in BOTH
+  `rg-teetime-dev` and `rg-teetime-prod` via cross-RG RBAC. A prod deploy MUST NOT create a
+  second Logic App — the `envName == 'dev'` gate in `main.bicep` prevents this.
+- The `enableKillswitch = true` param is set in both param files but the `!empty(killswitchRbacRoleId)`
+  guard means the deploy is a clean no-op until the operator creates the custom role and fills in
+  the GUID. Safe to merge and auto-deploy without the role GUID in place.
+- After creating the custom role (see AZURE_PLAN.md §9.2), fill the GUID into both param files
+  and merge. The killswitch chain deploys automatically on the next dev auto-deploy.
+- RBAC role assignments: Logic App system-assigned MI → "ACA Job Schedule Manager" custom role,
+  assigned on BOTH `rg-teetime-dev` (inline resource in killswitch.bicep) and `rg-teetime-prod`
+  (via `killswitch-rbac-prod.bicep` nested module).
 
 The IaC validation + deploy workflow lives at `.github/workflows/azure-iac.yml`
 (GitHub only runs workflows under `.github/workflows/`). It is the ACTIVE
