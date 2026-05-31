@@ -18,7 +18,9 @@ Invisible site key confirmed from ForeUP's booking page source (CAPTCHA_INVISIBL
 The page also defines CAPTCHA_VISIBLE_SITE_KEY (6LfZGS0q...) — that is the wrong key;
 the booking widget callback uses the invisible key.
 
-Tokens expire in ~2 minutes; providers are called immediately before book().
+Tokens expire in ~2 minutes. In the normal booking path the provider is called inline by
+book(); in the upgrade path prepare_book() pre-fetches it just before cancel_reservation()
+to shrink the cancel-to-book no-booking window (the cancel round-trip is ~1-2 s).
 """
 
 from __future__ import annotations

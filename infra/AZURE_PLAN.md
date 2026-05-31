@@ -30,7 +30,7 @@
   │  └──────────┬──────────┘    │  ┌────────────────────────┐  │  │
   │             │ image pull    │  │  Container Apps Job     │  │  │
   │             └───────────────┼─►│  Booking Jobs (×2)      │  │  │
-  │                             │  │  4 DST cron entries     │  │  │
+  │                             │  │  2 Sunday crons (EDT/EST)│  │  │
   │                             │  ├────────────────────────┤  │  │
   │                             │  │  Watch Job (×1)         │  │  │
   │                             │  │  cron: */10 * * * *     │  │  │
@@ -54,7 +54,7 @@
   │                                                                │
   │  ┌──────────────────────┐                                       │
   │  │  Cost Management     │                                       │
-  │  │  Budget ($10/mo)     │                                       │
+  │  │  Budget ($20/mo)     │                                       │
   │  │  (subscription scope)│                                       │
   │  └──────────────────────┘                                       │
   └────────────────────────────────────────────────────────────────┘
@@ -575,7 +575,7 @@ in the parameter file and redeploy — this is the intended release workflow.
 | Log Analytics | Pay-per-use | **~$0.00–$0.50** | First 5 GB/month free. Bot produces <10 MB logs/month. |
 | Application Insights | Pay-per-use | **~$0.00** | First 5 GB/month free. |
 | Network egress | — | **~$0.00** | First 100 GB/month free. Bot does <10 MB/run. |
-| **Total (dev or prod)** | | **~$5.01–$5.51/mo** | Well within $10/mo ceiling. |
+| **Total (dev or prod)** | | **~$5.01–$5.51/mo per env** | Well within the $20/mo budget ceiling (covers both envs). |
 
 ### 9.2 Budget alert
 
@@ -791,11 +791,12 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
    - The `enableSchedules=false` param remains available as an explicit kill-switch (jobs go
      Manual-trigger, never auto-fire) if you ever DO need to fully silence an environment.
 3. **Prod bootstrap done** (§10.1.1): `rg-teetime-prod` + SP roles (DONE 2026-05-31).
-4. **Prerequisites ready:** a FUNDED 2captcha key, valid Mangrove Bay creds, and acceptance of
-   the ForeUP IP-allowlist risk (§12 Q11).
+4. **Prerequisites ready:** a FUNDED 2captcha key + valid Mangrove Bay creds. (The ForeUP
+   IP-allowlist risk, §12 Q11, is RESOLVED — Azure IPs are not blocked.) (DONE 2026-05-31.)
 5. **First deploy:** push tag `infra/v1.0.0` (manual-approval `prod` environment). It creates the
    ACR/KV/identity/env but **FAILS at the jobs step** because the vault is empty (ACA validates
-   `keyVaultUrl` secrets at job creation — see §10.1.1). Expected; the vault is created.
+   `keyVaultUrl` secrets at job creation — see §10.1.1). Expected; the vault is created. (DONE
+   2026-05-31 — failed-then-recovered exactly as described.)
 6. **Grant yourself KV access + set the 6 secrets** (§10.1.1 steps 5b–6), then **re-run the
    deploy** (`workflow_dispatch` env=prod, approve) — now job creation succeeds and the 3 jobs
    land. (Done 2026-05-31.)
@@ -835,7 +836,7 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
 | RBAC minimum privilege | Key Vault Secrets User (read only), AcrPull (read only) | Each role is scoped to the specific resource, not subscription. Both roles are assigned to the single user-assigned MI (not per-job system-assigned MIs). No storage RBAC needed — bot makes no Azure SDK calls at runtime. |
 | CI service principal | Contributor + User Access Admin, RG-scoped | Not subscription-level Contributor |
 | OIDC auth (no client secrets in GitHub) | Required | GitHub stores only AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID |
-| No credit card data | By design (inherited from v0) | ForeUP keeps card on file; bot never sees PAN/CVV |
+| Credit-card data | Platform-specific | ForeUP keeps card on file → bot never sends PAN/CVV. **TeeItUp has no wallet → the TeeItUp adapter DOES POST PAN/CVV/expiry/billing to tr.gnsvc.com** (from env vars, never committed); card fields are dropped by `_redact_payload` before any attempt_log write (PLAN.md §10.1), and the card POST uses `follow_redirects=False`. |
 | PII redaction in logs | Inherited from v0 | PLAN.md §10.1 rules apply; attempt_log is in Log Analytics (stdout) |
 
 ---

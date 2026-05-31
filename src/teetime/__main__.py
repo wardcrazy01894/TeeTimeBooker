@@ -134,8 +134,8 @@ def show_config_cmd(config_path: Path) -> None:
     "--use-fake-adapter",
     is_flag=True,
     default=False,
-    help="Use the in-process FakeAdapter (v0 demo). Real ForeUP adapter "
-    "lands in M5 (gated behind Spike S1).",
+    help="Use the in-process FakeAdapter instead of the real adapter (testing/demo "
+    "only). Omit it to use the live ForeUP/TeeItUp adapter.",
 )
 def run_cmd(
     config_path: Path,
@@ -290,7 +290,8 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
     "target_date_str",
     type=str,
     default="",
-    help="Date to watch (YYYY-MM-DD). Defaults to today + target_offsets[0] days.",
+    help="Date to watch (YYYY-MM-DD). Defaults to the booking target date — "
+    "(most-recent target_weekday) + target_offsets[0], same anchor as the booking job.",
 )
 @click.option(
     "--use-fake-adapter",

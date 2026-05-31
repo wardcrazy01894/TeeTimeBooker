@@ -38,8 +38,9 @@ ADVISORY LOCK OWNERSHIP (MF-2 canonical statement):
     The full sequence inside maybe_upgrade():
         async with store.request_lock(request_id):
             [search for higher-priority slot]
+            [prepare_book — pre-fetch CAPTCHA, off the no-booking window]
+            [cancel old slot]   # cancel BEFORE book: ForeUP rejects a 2nd live book POST
             [book new slot]
-            [cancel old slot]
             [delete_terminal + record_terminal]
 
     All mutation is contained inside the lock block. WatchOrchestrator.check_once
@@ -358,7 +359,9 @@ class UpgradeOrchestrator:
         )
 
     async def _cancel_old_booking(self, current_booking: BookingResult) -> bool:
-        """Cancel the old booking. Returns True if cancel failed (dual-booking situation)."""
+        """Cancel the old booking (BEFORE the rebook). Returns True if cancel failed —
+        in which case the upgrade is aborted and the original booking is preserved
+        (no rebook is attempted), so there is no dual-booking."""
         if current_booking.course_id is None:
             log.warning("upgrade: current_booking has no course_id — cannot cancel")
             return True
@@ -373,8 +376,8 @@ class UpgradeOrchestrator:
             await old_adapter.cancel_reservation(current_booking.confirmation_code or "")
         except Exception as cancel_exc:
             log.warning(
-                "upgrade: cancel failed after successful rebook — DUAL BOOKING! "
-                "Old booking %s must be cancelled manually. Error: %s",
+                "upgrade: cancel of old booking %s failed — aborting upgrade; the original "
+                "booking is preserved (no rebook attempted). Error: %s",
                 current_booking.confirmation_code,
                 cancel_exc,
             )

@@ -34,20 +34,21 @@ ACA Job scheduling (ACA Jobs are not long-running):
     a wall-clock window — it just polls whenever it fires.
 
 State management:
-    The watch job reads from the same SQLite store (or Blob Storage in v1) as
-    the main booking job. It needs to know:
-    1. What date to watch — derived from `clock.today() + target_offsets[0] days`
-       (same formula as the main booking job). No separate `watch_state` store
-       table is required; the target date is computed from Clock at invocation
-       time, matching the same date the main job was targeting. The caller
-       (`teetime watch` CLI) may also pass `--date YYYY-MM-DD` to override.
+    The watch job shares the same in-process `InMemoryStore` as the main booking
+    job (single ACA Job invocation; durable SQLite/Blob state was cut — see PLAN.md
+    M3). It needs to know:
+    1. What date to watch — `resolve_target_dates(today, target_offsets, target_weekday)[0]`,
+       anchored to the most-recent booking weekday (Sunday), NOT a rolling
+       `today + offset`. Same anchor as the booking job. The caller (`teetime watch`
+       CLI) may also pass `--date YYYY-MM-DD` to override.
     2. Whether a booking already exists — `list_reservations` and `get_terminal`
        short-circuit the poll.
     3. The deadline past which watching is pointless — after the target_date has
        passed (local date in scheduler timezone > target_date).
 
-    There is NO separate `watch_state` table and no `WatchState` Protocol method.
-    The watch job is stateless beyond the existing `booking_history` table.
+    There is NO durable `watch_state` and no `WatchState` Protocol method. The watch
+    job is stateless across runs beyond the live `list_reservations` check; the
+    cross-run source of truth is the remote reservation list, not a local store.
 
 ADVISORY LOCK OWNERSHIP:
     check_once() does NOT acquire `request_lock` for its read-only availability
@@ -120,14 +121,16 @@ log = logging.getLogger(__name__)
 
 
 class WatchOrchestrator:
-    """Single-invocation watch check. Called once per ACA Job / GH Actions step.
+    """Single-invocation watch check. Called once per ACA Job invocation (or a direct
+    `teetime watch` CLI call in dev).
 
     The caller (CLI command `teetime watch`) is responsible for:
-    - Starting the process on each poll interval (via ACA Job cron or GH workflow).
-    - Passing the `target_date` to watch. The date is computed by the CLI from
-      `clock.today() + target_offsets[0]` (same as the main booking job), or
-      overridden via `--date YYYY-MM-DD`. There is no `watch_state` store table;
-      the watch job is stateless beyond the existing `booking_history` table.
+    - Starting the process on each poll interval (via the ACA Job cron).
+    - Passing the `target_date` to watch. The date is computed by the CLI via
+      `resolve_target_dates(...)` — anchored to the most-recent booking weekday
+      (Sunday) + offset, same as the booking job — or overridden via `--date
+      YYYY-MM-DD`. There is no durable `watch_state`; the watch job is stateless
+      across runs beyond the live `list_reservations` check.
 
     This class does NOT loop internally. Each invocation does one check and exits.
     The polling loop is handled externally by the scheduler (ACA cron / GH Actions).

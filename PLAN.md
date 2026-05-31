@@ -167,8 +167,8 @@ Nothing is persisted to disk. The `BookingStore` Protocol remains the cut line �
 T0 = today + target_offset days, 06:00:00.000 America/New_York
      (target_offset comes from RequestConfig.target_offsets; default [7])
 
-GH Actions cron fires ~T0 - 10 min  (jitter is 1–15 min in our experience)
-    -> step "DST-half check" reads ZoneInfo("America/New_York") wall-clock
+ACA Job cron fires ~T0 - 10 min  (v1; was GH Actions cron in v0. jitter is best-effort)
+    -> "DST-half check" reads ZoneInfo("America/New_York") wall-clock
        and short-circuits the rest of the job if not in 5:xx ET. NOT a TODO;
        the gate now lives in core/dst_gate.py (was the book.yml dst step; M6 PR2).
     -> uv sync; bot starts ~T0 - 8 min in steady state
@@ -190,7 +190,9 @@ Bot:
     6. Persist terminal result; notify.
 ```
 
-### 6.2 GH Actions cron jitter
+### 6.2 Cron jitter
+
+> Historical note: this section was written for v0's GitHub Actions cron. v1 runs on **ACA Job crons** (also best-effort/UTC; see AZURE_PLAN §5.1). The mitigations below carried over to ACA unchanged — fire 10 min early + the bot's own busy-wait nails the second.
 
 GH Actions cron is documented as best-effort with potentially **15+ minute** delays under load. Mitigations:
 - **Schedule 10 min early.** Both DST entries fire at `:50` past the hour preceding 06:00 ET.
@@ -568,7 +570,7 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 |-------|---------------------------------------------------|------------------|------------------------------------------------------|--------------------------------------|-------------|
 | M6.T1 | Real-timing booker wiring + DST gate + watcher enable + Sunday-only + anchored target (PRs 1–7). **DONE.** | all stubs done | `run --wait` busy-waits to 06:00:00 ET (`core/dst_gate.py`, `bookingReplicaTimeout=1200`); watcher enabled; Sunday-only crons; target anchored to `target_weekday` (`core/target_date.py`). Full suite green. | `__main__.py`, `core/dst_gate.py`, `core/target_date.py`, `compute.bicep`, configs | M5.* |
 | M6.T2 | First production dry-run against Mangrove Bay     | M6.T1            | dry-run log proof (AZURE_PLAN §10.4): `race: busy-wait complete` + watcher `Watch check`/`DRY_RUN`; one clean dev dry-run Sunday | runbook §10.4 | M6.T1 |
-| M6.T3 | First live booking (prod cutover §10.5)           | M6.T2 green      | a real reservation; course confirmation email. PENDING operator: set prod secrets, funded 2captcha, tag `infra/v1.0.0`, silence dev (`enableSchedules=false`) | runbook §10.5 | M6.T2 |
+| M6.T3 | First live booking (prod cutover §10.5)           | M6.T2 green      | **Prod DEPLOYED 2026-05-31** (tag `infra/v1.0.0`; jobs live, `dryRun=false`, secrets set, watcher + auto-upgrade on). Dev isolated via a separate ForeUP account (no silencing needed). The first real Sunday booking-job race lands 2026-06-14. | runbook §10.5 | M6.T2 |
 
 **Parallel-execution map (post M1):**
 ```
