@@ -31,8 +31,11 @@ M6 (first production cron run) are the remaining v0 tasks.
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `storage`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys
 on merge to main via `.github/workflows/azure-iac.yml` with `dryRun = true` —
-no real bookings fire in dev. Remaining Azure work: `BlobStateManager` runtime
-module (Python SDK integration) and container entrypoint wiring (M-azure runtime).
+no real bookings fire in dev. The `BlobStateManager` runtime module (Python SDK
+integration) and container entrypoint wiring (`_state_context()` in `__main__.py`)
+are also implemented (M-azure runtime). Caveat: the downloaded/uploaded blob path
+is not exercised by a durable store until M3's `SqliteStore` lands — the CLI still
+wires `InMemoryStore` (see the note below), so cross-run state is not yet active.
 
 Note: the production CLI currently wires `InMemoryStore` + `ConsoleNotifier`
 unconditionally (SqliteStore/EmailNotifier are stubs). Cross-run durable state

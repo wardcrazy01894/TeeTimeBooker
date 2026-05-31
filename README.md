@@ -2,7 +2,7 @@
 
 Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via GitHub Actions; emails you the result.
 
-**Status:** M1 + M2 + M5 + M-feature-3 + M-feature-1 + M-azure (IaC) complete. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented; dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run. Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run). Cancellation watch job live (GH Actions `watch-tee-time.yml` + ACA watch job); auto-upgrade (M-feature-2) pending Spike S4 (ForeUP cancel endpoint).
+**Status:** M1 + M5 + M-feature-1 + M-feature-2 + M-feature-3 + M-azure complete. M2 core (orchestrator, idempotency) is done; only M2.T3 (post-mortem reconciliation) remains. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented and dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run; the `BlobStateManager` runtime + container entrypoint wiring are also in place. Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M2.T3 (reconciliation), M6 (first production cron run). Cancellation watch job live (GH Actions `watch-tee-time.yml` + ACA watch job); auto-upgrade (M-feature-2) shipped — cancel-before-book + CAPTCHA pre-fetch, Spike S4 resolved.
 
 **Where to look:**
 - [PLAN.md](./PLAN.md) — full design, milestone roadmap, state machine, DST math, spikes
@@ -14,7 +14,7 @@ Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). 
 
 ## How it works
 
-**6 AM booking job** (`book-tee-time.yml`):
+**6 AM booking job** (`book.yml`):
 1. A GitHub Actions cron fires ~10 minutes before 6:00 AM ET on Saturday and Sunday (four entries handle both days × both DST seasons)
 2. The bot busy-waits until T0 (±250 ms)
 3. It polls for available slots, picks the slot **closest to the midpoint** of the 08:45–10:00 ET window (midpoint-distance sort), and POSTs the booking
@@ -255,7 +255,7 @@ All subsystems are `Protocol`-typed — orchestrators wire them together; nothin
 |---|---|---|
 | M0 | Repo skeleton, stubs, plan | Done |
 | M1 | Foundations: `Clock`, config loader, CLI | Done |
-| M2 | Orchestrator core, state machine, idempotency | Done |
+| M2 | Orchestrator core, state machine, idempotency | Core done; M2.T3 (reconciliation) pending |
 | M3 | SQLite persistence | Pending |
 | M4 | Email notifications | Pending |
 | M5 | ForeUP adapter — live dry-run confirmed | Done |
@@ -263,9 +263,9 @@ All subsystems are `Protocol`-typed — orchestrators wire them together; nothin
 | M6 | End-to-end, first production cron run | Pending |
 | M-feature-3 | Prefer earliest slot in time window (ascending sort) | Done |
 | M-feature-1 | Cancellation watch job — poll every 10 min, book on cancellation | Done |
-| M-feature-2 | One-booking policy: auto-upgrade to higher-priority slot | Pending (blocked on Spike S4) |
+| M-feature-2 | One-booking policy: auto-upgrade to higher-priority slot (cancel-before-book + CAPTCHA pre-fetch) | Done |
 | M-azure (IaC) | Azure v1 Bicep IaC: all modules implemented; dev CI-deployed in dry-run | Done |
-| M-azure (runtime) | BlobStateManager, container entrypoint wiring | Pending |
+| M-azure (runtime) | BlobStateManager, container entrypoint wiring | Done |
 
 See [PLAN.md §20](./PLAN.md) for the v0.5 milestone breakdown. See [PLAN.md §16](./PLAN.md) for the core milestone breakdown with owner files and dependencies.
 

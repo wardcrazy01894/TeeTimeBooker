@@ -789,9 +789,9 @@ is eligible for watching. The WatchOrchestrator checks `store.get_terminal(reque
 
 **cancel_reservation() Protocol addition:** `CourseAdapter` now has a `cancel_reservation()`
 method. This is a Protocol extension — all adapters must implement it. The ForeUP adapter
-stub raises `NotImplementedError` pending Spike S4. The FakeAdapter is fully scripted for
-tests. Existing adapters that do NOT support cancellation should raise `CancelError` with a
-clear message.
+implements it (Spike S4 resolved — endpoint confirmed; see the cancel-before-book note below).
+The FakeAdapter is fully scripted for tests. Existing adapters that do NOT support
+cancellation should raise `CancelError` with a clear message.
 
 **cancel_reservation() idempotency:** A 404 from the cancellation endpoint means the booking
 is already gone — the desired post-condition is satisfied, so 404 MUST NOT raise `CancelError`.
