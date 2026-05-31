@@ -101,8 +101,9 @@ class CartPreference(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Player:
-    """A single golfer participating in the booking. v0 has 1 (the user); group support
-    later. Email/phone are pass-through for the adapter; we don't share PII unnecessarily.
+    """A single golfer participating in the booking. v0 books a foursome (4 players —
+    the account holder + 3 guests); variable party sizes are future work. Email/phone are
+    pass-through for the adapter; we don't share PII unnecessarily.
     """
 
     first_name: str

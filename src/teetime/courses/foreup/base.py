@@ -442,14 +442,10 @@ class ForeUpAdapter(CourseAdapter):
         return out
 
     async def cancel_reservation(self, confirmation_code: str) -> None:
-        """DELETE or POST-cancel an existing reservation by confirmation_code.
+        """Cancel an existing reservation by confirmation_code.
 
-        ForeUP cancellation endpoint is not yet confirmed via browser capture.
-        This is a Spike S4 task (see PLAN.md M-feature-2 §"Spike S4").
-
-        Expected endpoint candidates (to be confirmed in S4):
-            DELETE /index.php/api/booking/users/reservations/<id>
-            POST   /index.php/api/booking/users/reservations/<id>/cancel
+        Endpoint confirmed via HAR capture (Spike S4, resolved): the implementation below
+        uses `DELETE /index.php/api/booking/users/reservations/<id>`.
 
         Behaviour contract:
         - If the endpoint returns 404 (already cancelled), this method MUST

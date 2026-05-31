@@ -16,7 +16,7 @@ Python 3.12+ bot that books tee times at golf courses (ForeUP and TeeItUp
 platforms). Primary target is **Mangrove Bay Golf Course** (St. Petersburg, FL —
 ForeUP-backed) at 06:00 America/New_York, 7 days in advance. Also supports
 **TeeItUp-backed courses** (e.g. Sydney R. Marovitz, Chicago Park District).
-v0 is single-user, GitHub Actions-driven. No frontend.
+v0 is single-user, run as Azure Container Apps Jobs (GitHub Actions is CI/deploy only). No frontend.
 
 ## Status
 
@@ -32,10 +32,13 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled (look-but-don't-book
 under dry-run); Sunday-only crons (`bookingReplicaTimeout=1200`); target anchored to
 `target_weekday` via `core/target_date.py` (daily watcher no longer drifts); the
-`enableSchedules` bicep param can silence dev at prod cutover. Verification + cutover
-runbook in AZURE_PLAN §10.4/§10.5. Remaining v0 tasks: a clean dev dry-run Sunday
-(M6.T2) → prod cutover (M6.T3, operator: prod secrets + funded 2captcha + tag), and
-M2.T3 (reconciliation, independent).
+`enableSchedules` bicep param can silence an env. Verification + cutover runbook in
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (tag `infra/v1.0.0`, 2026-05-31): the 3 jobs
+are live with `dryRun=false`, secrets set, watcher + auto-upgrade (`one_booking_policy`)
+enabled; the watcher logs into ForeUP from Azure successfully (Q11 resolved). The first
+real Sunday booking-job race lands **2026-06-14** (June 7's drop already passed). Remaining
+v0 task: **M2.T3** (post-mortem reconciliation, `UNCERTAIN→RECONCILING→BOOKED/LOST`) — still
+unimplemented and independent of M6.
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
@@ -103,8 +106,8 @@ in `core/` — never directly. This is the cut line for parallel work.
   implements. `list_reservations` is on the `CourseAdapter` Protocol from
   M0 — it is NOT optional.
 - **DST handled by `zoneinfo`** (the bot computes T0 in `America/New_York`,
-  which resolves the ambiguous/skipped-hour edge cases) + four ACA Job crons
-  (two per day, one per DST half) in `infra/bicep/modules/compute.bicep`. Math
+  which resolves the ambiguous/skipped-hour edge cases) + two Sunday ACA Job
+  booking crons (one per DST half) in `infra/bicep/modules/compute.bicep`. Math
   in PLAN.md §6.3. The booking and watch schedules run as ACA Jobs;
   `book.yml`/`watch-tee-time.yml` have been removed. The precise T0 busy-wait is
   wired (M6 PR1): `teetime run --wait` uses the real `cfg.scheduler` (busy-waits to
@@ -130,7 +133,7 @@ in `core/` — never directly. This is the cut line for parallel work.
   (closer to the 8:45–10:00 midpoint) opens for the booked Sunday, the watcher cancels
   and rebooks it. Safe because the watch target is anchored to that Sunday (PR7), so it
   only ever upgrades the intended date; real effect is prod-only (dry-run suppresses the
-  POSTs). The watch cron stays daily: a Sunday booking is upgradeable all week.
+  POSTs). The watch cron runs every 10 min year-round (not Sunday-gated): a Sunday booking is upgradeable all week.
 - **Target date anchors to `target_weekday` (default Sunday), NOT a rolling `today+7`**
   (M6 PR7, `core/target_date.py`). `_build_request` computes `target = most-recent
   target_weekday(today) + offset`, so the DAILY watch job locks onto the upcoming target

@@ -82,5 +82,6 @@ What agents MUST NOT run without explicit user instruction:
 ## Pointer to open questions
 
 See AZURE_PLAN.md §12. Most questions are now resolved (tenant ID, subscription ID,
-repo identity, Dockerfile). Remaining items: budget alert email (§12 Q4) and
-ForeUP IP allowlist risk acceptance (§12 Q11).
+repo identity, Dockerfile, and Q11 — ForeUP does NOT block Azure IPs, observed in dev+prod).
+The budget alert email (§12 Q4) is set at deploy time (`budgetAlertEmail` param). No blocking
+open questions remain for v1.
