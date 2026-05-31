@@ -154,8 +154,10 @@ resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
 // Single notification: Actual >= 100% (= $50), contactGroups wired to the
 // killswitch Action Group. No contactEmails — the Tier-1 budget handles email.
 //
-// PR-KS2 deploys this by passing killswitchActionGroupId from killswitch.outputs.actionGroupId.
-// Operator manual step: re-run az deployment sub create with the new params after PR-KS1 lands.
+// This resource is implemented (merged in PR-KS2). To arm the $50 tier, the operator
+// runs az deployment sub create with killswitchActionGroupId (obtain from killswitch.outputs.actionGroupId
+// via: az deployment group show -g rg-teetime-dev -n teetime-dev --query properties.outputs.killswitchActionGroupId.value -o tsv).
+// See infra/AZURE_PLAN.md §9.2 for the full deploy command.
 resource killswitchBudget 'Microsoft.Consumption/budgets@2023-11-01' = if (!empty(killswitchActionGroupId)) {
   name: killswitchBudgetName
   properties: {

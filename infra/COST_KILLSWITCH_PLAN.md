@@ -1,6 +1,6 @@
 # Cost Killswitch Plan — Automated ACA Job Schedule Disable on Budget Overrun
 
-> **Status:** DESIGN PHASE (this branch: `infra/cost-killswitch-plan`)
+> **Status:** IMPLEMENTED + DEPLOYED to dev (PR-KS1 + PR-KS2 merged 2026-05-31). See `infra/AZURE_PLAN.md §9.2`.
 > Authoritative Azure infra reference: `infra/AZURE_PLAN.md`. This plan adds a
 > second budget tier ($50) with an automated enforcement chain on top of the
 > existing $20 notify-only budget. The $20 budget is NOT replaced — it stays
@@ -218,8 +218,8 @@ infra PR merges. Once `killswitchFired=true` is merged, the CI latch closes
 permanently until explicitly cleared. The ~24-hour gap is the known worst-case
 only if the operator does NOT merge promptly AND a concurrent infra deploy fires.
 
-Note: `killswitchFired` and `effectiveEnableSchedules` are ALREADY implemented
-in `main.bicep` and both `main.bicepparam.*` files on this branch.
+Note: `killswitchFired` and `effectiveEnableSchedules` are implemented
+in `main.bicep` and both `main.bicepparam.*` files (in main).
 
 **Why not use an ARM tag as the guard instead?** A tag on the ACA jobs would
 require the CI workflow to read ARM state before deploying, adding live Azure
@@ -483,7 +483,7 @@ identical. `budgetAmountUsd` remains `20`. Its two notifications remain:
 No text in this plan should say the $16 email threshold moves to $40 or that
 `budgetAmountUsd` changes to 50. That approach was evaluated and rejected.
 
-**Tier 2 (`budget-teetime-killswitch`, $50, killswitch-trigger — NEW in PR-KS2):**
+**Tier 2 (`budget-teetime-killswitch`, $50, killswitch-trigger — implemented in PR-KS2):**
 A SEPARATE, INDEPENDENT second `Microsoft.Consumption/budgets` resource with a
 distinct name (`budget-teetime-killswitch`). Same two-RG filter as Tier 1.
 Single notification: Actual >= 100% (= $50), `contactGroups` wired to the
@@ -523,13 +523,13 @@ Both PRs are IaC-only (no Python/src changes). Neither affects the bot
 behaviour. They can be merged independently of M2.T3.
 
 Note: `main.bicep` and both `main.bicepparam.*` files already have the
-`killswitchFired` param wired on this branch (see `effectiveEnableSchedules`
-in `main.bicep`). PR-KS1 adds the `enableKillswitch` + `killswitchRbacRoleId`
+`killswitchFired` param wired in main (see `effectiveEnableSchedules`
+in `main.bicep`). PR-KS1 added the `enableKillswitch` + `killswitchRbacRoleId`
 params and the module call.
 
 ---
 
-### PR-KS1 — killswitch.bicep: Logic App + Action Group + RBAC assignment
+### PR-KS1 — killswitch.bicep: Logic App + Action Group + RBAC assignment — DONE (merged 2026-05-31)
 
 **Scope.** Complete the `infra/bicep/modules/killswitch.bicep` module. Declares:
 1. `Microsoft.Logic/workflows` (Consumption) with system-assigned MI, an HTTP
@@ -544,17 +544,16 @@ params and the module call.
    `rg-teetime-prod` (via `infra/bicep/modules/killswitch-rbac-prod.bicep`
    nested module with `scope: resourceGroup(subscriptionId, prodRgName)`).
 
-Wire into `main.bicep` as a new optional module (gated by
+Wired into `main.bicep` as an optional module (gated by
 `enableKillswitch bool = false` param in main.bicep). Both param files set
-`enableKillswitch = true` — the full chain deploys automatically on merge to main
-(dev) and on the next `infra/v*` tag push (prod). Operator must supply
-`killswitchRbacRoleId` (custom role GUID) before deploying.
+`enableKillswitch = true`. The custom role GUID (`3e2d5a14-96bd-4469-9f96-b9c3270aa9e6`) is set
+in both param files and in `azure-iac.yml` — the full chain deploys automatically on merge to main
+(dev) and on the next `infra/v*` tag push (prod). The killswitch is live in dev.
 
 **Files touched.**
 - `infra/bicep/modules/killswitch.bicep` — stub already on branch; implement
   the TODO(PR-KS1) bodies: 6 PATCH + 6 POST workflow actions, Action Group, RBAC.
-- `infra/bicep/modules/killswitch-rbac-prod.bicep` — NEW companion module
-  (stub on this branch; TODO body in implementation PR).
+- `infra/bicep/modules/killswitch-rbac-prod.bicep` — companion module (implemented in main).
 - `infra/bicep/main.bicep` — add optional `killswitch` module reference +
   `enableKillswitch` / `killswitchRbacRoleId` params.
 - `infra/bicep/main.bicepparam.dev` — add `enableKillswitch = true`,
@@ -652,7 +651,7 @@ killswitch plan), §11 (security — note custom role added). Root `CLAUDE.md`
 
 ---
 
-### PR-KS2 — budget.bicep: add separate $50 killswitch budget resource
+### PR-KS2 — budget.bicep: add separate $50 killswitch budget resource — DONE (merged 2026-05-31)
 
 **Scope.** Add a SEPARATE, INDEPENDENT `Microsoft.Consumption/budgets` resource
 (`budget-teetime-killswitch`) at $50 to `budget.bicep`. The existing
@@ -711,7 +710,7 @@ alerting). `budget-teetime` is not modified. No `budgetAmountUsd` change.
 - `test_budget_killswitch_budget_amount_param_exists` — assert
   `param killswitchBudgetAmountUsd int` is in `budget.bicep`.
 
-**Stub signature (bicep params already added to budget.bicep on this branch):**
+**Implemented params in budget.bicep (in main):**
 ```bicep
 @description('ARM resource ID of the killswitch Action Group. When non-empty, the separate $50 killswitch budget resource is created. Get from killswitch.outputs.actionGroupId after PR-KS1 deploys.')
 param killswitchActionGroupId string = ''

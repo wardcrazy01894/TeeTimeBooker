@@ -6,7 +6,7 @@ These tests assert structural properties of the Bicep source text.
 All tests are GREEN after PR-KS1 implementation:
   - test_killswitch_patches_all_six_jobs: GREEN — 6 PATCH actions wired
   - test_killswitch_stops_all_six_jobs:   GREEN — 6 POST /stop actions wired
-  - test_killswitch_rbac_prod_nested_module_present: GREEN — module unwired
+  - test_killswitch_rbac_prod_nested_module_present: GREEN — nested module wired
   - test_main_bicep_killswitch_module_gated: GREEN — dev-only conditional deploy
   - test_main_bicep_killswitch_output_present: GREEN — killswitchActionGroupId output
 
@@ -122,7 +122,7 @@ def test_stop_action_in_custom_role(ks: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Workflow action assertions (RED on stub — GREEN after PR-KS1 implementation)
+# Workflow action assertions (GREEN — PR-KS1 implemented)
 # ---------------------------------------------------------------------------
 
 
@@ -170,7 +170,7 @@ def test_killswitch_stops_all_six_jobs(ks_non_comment_lines: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Nested module assertions (RED on stub — GREEN after PR-KS1 implementation)
+# Nested module assertions (GREEN — PR-KS1 implemented)
 # ---------------------------------------------------------------------------
 
 
@@ -287,11 +287,11 @@ def test_main_bicep_killswitch_output_present(main_bicep: str) -> None:
 
 
 def test_param_files_have_killswitch_rbac_role_id(param_dev: str, param_prod: str) -> None:
-    """Both param files must declare killswitchRbacRoleId (empty GUID placeholder).
+    """Both param files must declare killswitchRbacRoleId.
 
-    The value starts empty — the operator fills it in after creating the custom role.
-    Until filled in, the !empty() gate in main.bicep makes the killswitch module
-    a clean no-op, so the dev auto-deploy is safe even before the role is created.
+    Both param files contain the operator-created role GUID
+    (3e2d5a14-96bd-4469-9f96-b9c3270aa9e6, created 2026-05-31). The killswitch
+    arms automatically on every dev auto-deploy.
     """
     assert "killswitchRbacRoleId" in param_dev, (
         "main.bicepparam.dev must contain killswitchRbacRoleId (operator fills GUID)"

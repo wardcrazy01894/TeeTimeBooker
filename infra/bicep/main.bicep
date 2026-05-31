@@ -129,7 +129,6 @@ module keyvault 'modules/keyvault.bicep' = {
 // ---------------------------------------------------------------------------
 
 module logs 'modules/logs.bicep' = {
-  // TODO(M-azure-T5): output workspaceId to compute.bicep for ACA env config
   name: 'logs-${envName}'
   params: {
     envName: envName
@@ -139,7 +138,7 @@ module logs 'modules/logs.bicep' = {
 
 // ---------------------------------------------------------------------------
 // Module: compute
-// Container Apps Environment (Consumption) + Container Apps Job (four crons: Sat+Sun × DST).
+// Container Apps Environment (Consumption) + Container Apps Job (two booking crons: Sunday × DST (EDT+EST)).
 // See: infra/AZURE_PLAN.md §5 (race), §6.2 (parallelism=1)
 // ---------------------------------------------------------------------------
 
@@ -202,7 +201,7 @@ output keyVaultUri string = keyvault.outputs.vaultUri
 @description('User-assigned managed identity principal ID. Used to verify RBAC assignments post-deploy.')
 output identityPrincipalId string = identity.outputs.principalId
 
-@description('ARM resource ID of the killswitch Action Group. Empty string when the killswitch module is not deployed (enableKillswitch=false, killswitchRbacRoleId empty, or envName!=dev). Pass to budget.bicep as killswitchActionGroupId in PR-KS2 to wire the $50 budget threshold.')
+@description('ARM resource ID of the killswitch Action Group. Empty string when the killswitch module is not deployed (enableKillswitch=false, killswitchRbacRoleId empty, or envName!=dev). Pass to budget.bicep as killswitchActionGroupId to arm the $50 budget threshold (budget.bicep already has the killswitchBudget resource wired, conditional on this param).')
 // Use the safe-dereference operator (.?) + null-coalesce (??) rather than an any()-cast: when
 // the killswitch module is not deployed, `killswitch.?outputs` is null and we fall back to ''.
 // When it IS deployed, this resolves to the actionGroupId STRING (Bicep's normal module-output

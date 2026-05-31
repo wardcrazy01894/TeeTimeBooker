@@ -9,12 +9,12 @@
 
 using 'main.bicep'
 
-// TODO(M-azure-T0): fill in actual values. See AZURE_PLAN.md §12.
 param envName = 'prod'
 param location = 'eastus2'
 
-// TODO(M-azure-T6): update on each prod release. Pin to explicit image tag,
-// not :latest, in prod. Format: <acrLoginServer>/teetime:<semver>
+// containerImage is a placeholder for local/manual deploy only — CI injects containerImage
+// inline (resolved from the ACR login server after ACR creation); this placeholder is never
+// read by CI. Pin to explicit image tag (not :latest) in prod. Format: <acrLoginServer>/teetime:<semver>
 // AZURE_PLAN.md §10.2 — image tag is the release artifact.
 param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime:PLACEHOLDER_VERSION'
 

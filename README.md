@@ -171,11 +171,13 @@ The container notifier is `console` (stdout); booking confirmations come from th
 
 The booking and watch schedules run as **Azure Container Apps Jobs** — managed, serverless scheduled jobs that run the same Python container on a UTC cron. Secrets live in **Azure Key Vault**; the bot makes no authenticated Azure SDK calls at runtime (state is in-process only for the duration of each run).
 
-The former GitHub Actions booking and watch workflows (`book.yml`, `watch-tee-time.yml`) have been removed — they are superseded by the ACA Jobs. The only remaining GitHub Actions workflows are `ci.yml` (lint/test) and `azure-iac.yml` (Bicep deploy).
+The former GitHub Actions booking and watch workflows (`book.yml`, `watch-tee-time.yml`) have been removed — they are superseded by the ACA Jobs. The only remaining GitHub Actions workflows are `ci.yml` (lint / type-check / test / docker-smoke / secret-scan / bicep-lint) and `azure-iac.yml` (Bicep deploy).
 
 **Cost:** ~$5/month (ACR Basic flat; Container Apps compute is within the free tier).
 
-**IaC status: implemented.** All Bicep modules are complete (`identity`, `registry`, `keyvault`, `logs`, `compute`, `budget`). The active CI workflow is `.github/workflows/azure-iac.yml` — it runs `bicep build` + `what-if` on PRs and **auto-deploys to dev on merge to main** (no required-reviewer gate for dev; prod requires manual approval). Dev runs in permanent dry-run (`dryRun = true`); **prod is live** (`dryRun = false`, deployed at tag `infra/v1.0.0`).
+**IaC status: implemented.** All Bicep modules are complete (`identity`, `registry`, `keyvault`, `logs`, `compute`, `budget`, `killswitch` + `killswitch-rbac-prod`). The active CI workflow is `.github/workflows/azure-iac.yml` — it runs `bicep build` + `what-if` on PRs and **auto-deploys to dev on merge to main** (no required-reviewer gate for dev; prod requires manual approval). Dev runs in permanent dry-run (`dryRun = true`); **prod is live** (`dryRun = false`, deployed at tag `infra/v1.0.0`).
+
+**Cost killswitch:** a $50 actual-spend budget fires a Logic App that disables and stops all ACA Jobs (live in dev). The $20 email-only budget remains the early-warning tier.
 
 See [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md) for the full architecture, cost breakdown, security checklist, and deploy runbook.
 
