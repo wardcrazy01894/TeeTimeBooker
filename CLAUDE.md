@@ -118,9 +118,16 @@ in `core/` — never directly. This is the cut line for parallel work.
   `config/local.toml`, `watcher.enabled = true`, M6 PR4). Under `--dry-run true` (dev)
   it does ALL the looking/ranking/logging and suppresses ONLY the final POST
   (`WatchOrchestrator` returns `DRY_RUN` before the lock+POST). `one_booking_policy`
-  (cancel+rebook upgrade) stays DISABLED in M6 — daily-watch + policy-on needs a
-  target-date design fix first (M6_PLAN §4.4). The watch cron stays daily: a Sunday
-  booking is upgradeable all week, so polling every day is what catches a better slot.
+  (cancel+rebook upgrade) stays DISABLED in M6 (a separate, higher-blast-radius change).
+  The watch cron stays daily: a Sunday booking is upgradeable all week, so polling every
+  day catches a better slot.
+- **Target date anchors to `target_weekday` (default Sunday), NOT a rolling `today+7`**
+  (M6 PR7, `core/target_date.py`). `_build_request` computes `target = most-recent
+  target_weekday(today) + offset`, so the DAILY watch job locks onto the upcoming target
+  Sunday and holds it all week (instead of drifting — from a Wednesday `today+7` isn't even
+  a Sunday). On the booking weekday the anchor is `today`, so the 6 AM Sunday booker's
+  `today+7` is unchanged. A manual non-Sunday `teetime run` now targets the upcoming Sunday
+  (not `today+7`) — intended. `--date` still overrides for the watch command.
 - **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
   This lets `target_offsets = [7]` produce one stable RequestId within a run
   while still targeting a fresh date each week. The key is held in-process

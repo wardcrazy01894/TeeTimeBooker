@@ -22,7 +22,7 @@ Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). 
 
 **Cancellation watch job** (ACA Job — `compute.bicep`):
 1. A third ACA Job fires every 10 minutes, year-round
-2. Each run performs one availability check for the target date (7 days out)
+2. Each run performs one availability check for the upcoming target Sunday (anchored to `target_weekday` + offset, so it holds that date all week — it does not drift daily)
 3. If a slot opens in the preferred window, it books immediately
 4. Polling is suppressed outside 7 AM – 10 PM ET (handled internally — no DST gate needed)
 
@@ -123,7 +123,7 @@ uv run teetime watch --config config/local.toml --dry-run true
 # Live check — book immediately if a slot is found.
 uv run teetime watch --config config/local.toml --dry-run false
 
-# Watch a specific date instead of the default (today + 7 days).
+# Watch a specific date instead of the default (the upcoming target Sunday + offset).
 uv run teetime watch --config config/local.toml --dry-run true --date 2026-06-07
 ```
 
