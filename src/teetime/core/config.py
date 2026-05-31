@@ -12,9 +12,10 @@ from datetime import time
 from decimal import Decimal
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .models import CartPreference, WatchConfig
+from .target_date import weekday_from_name
 
 
 class MissingEnvVarError(RuntimeError):
@@ -69,6 +70,17 @@ class RequestConfig(BaseModel):
     max_price_per_player: Decimal | None = None
     cart: CartPreference = CartPreference.EITHER
     course_preferences: list[str]
+    # Booking weekday the offsets anchor to. The target is computed as
+    # (most-recent <target_weekday>) + offset, so the daily watch job locks onto the
+    # upcoming target date all week instead of drifting with `today + offset`. The
+    # 6 AM booker (which only runs on this weekday) is unaffected. See target_date.py.
+    target_weekday: str = "sunday"
+
+    @field_validator("target_weekday")
+    @classmethod
+    def _validate_target_weekday(cls, v: str) -> str:
+        weekday_from_name(v)  # raises ValueError on an invalid name
+        return v
 
 
 class SchedulerConfig(BaseModel):

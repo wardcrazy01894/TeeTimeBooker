@@ -38,6 +38,7 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
+from .core.target_date import resolve_target_dates, weekday_from_name
 from .core.watch_orchestrator import WatchOrchestrator
 from .courses.foreup.base import ForeUpAdapter
 from .courses.foreup.captcha import (
@@ -524,7 +525,15 @@ def _local_demo_scheduler(base: SchedulerConfig) -> SchedulerConfig:
 def _build_request(cfg: AppConfig, *, dry_run: bool) -> BookingRequest:
     tz = ZoneInfo(cfg.scheduler.timezone)
     today = datetime.now(tz=tz).date()
-    target_dates = tuple(today + timedelta(days=o) for o in sorted(cfg.request.target_offsets))
+    # Anchor on the most-recent booking weekday (default Sunday) so the daily watch
+    # job locks onto the upcoming target date all week instead of drifting with
+    # `today + offset`. On the booking weekday this equals `today + offset`, so the
+    # 6 AM booker is unchanged. See core/target_date.py.
+    target_dates = resolve_target_dates(
+        today,
+        cfg.request.target_offsets,
+        weekday_from_name(cfg.request.target_weekday),
+    )
 
     # Use course_preferences (not cfg.courses) for the fingerprint.
     # cfg.courses may contain standby/disabled courses not in course_preferences;

@@ -129,3 +129,45 @@ def test_redact_strips_secrets(env_set: None) -> None:
     assert p1_dump["email"] == "***"
     assert p1_dump["phone"] == "***"
     assert p1_dump["member_number"] == "***"
+
+
+def test_target_weekday_defaults_to_sunday(env_set: None) -> None:
+    # M6 PR7: offsets anchor to this weekday so the daily watcher tracks the upcoming
+    # target date instead of drifting. Default Sunday matches the booking cron.
+    cfg = load(EXAMPLE_TOML)
+    assert cfg.request.target_weekday == "sunday"
+
+
+def test_invalid_target_weekday_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for k, v in _REQUIRED_ENV.items():
+        monkeypatch.setenv(k, v)
+    toml = tmp_path / "bad.toml"
+    toml.write_text(
+        """
+[[courses]]
+id = "foreup:mangrove_bay"
+adapter = "foreup.mangrove_bay"
+username_env = "MB_USERNAME"
+password_env = "MB_PASSWORD"
+
+[request]
+target_offsets = [7]
+target_weekday = "someday"
+course_preferences = ["foreup:mangrove_bay"]
+
+[[request.players]]
+first_name = "A"
+last_name = "B"
+email_env = "PLAYER1_EMAIL"
+
+[[request.time_windows]]
+earliest = "08:45:00"
+latest = "10:00:00"
+
+[scheduler]
+timezone = "America/New_York"
+fire_time = "06:00:00"
+"""
+    )
+    with pytest.raises(Exception, match="invalid weekday"):
+        load(toml)
