@@ -69,6 +69,9 @@ param logAnalyticsWorkspaceKey string
 @description('Permanent dry-run flag. When true (the dev default), the bot performs no real booking POSTs. Dev MUST stay in dry-run until production cutover (AZURE_PLAN.md §10.3).')
 param dryRun bool = true
 
+@description('True when containerImage is a PUBLIC bootstrap image (deploy pass 1). Drops the registries[] auth block so ACA pulls anonymously — listing a public registry (MCR) with the MI causes "Operation expired" at job provisioning. Set false on pass 2 (real ACR image) so the MI + AcrPull engage.')
+param usePublicBootstrapImage bool = false
+
 // ---------------------------------------------------------------------------
 // Variables
 // ---------------------------------------------------------------------------
@@ -148,7 +151,15 @@ var jobSecrets = [
 
 // Registry block: the job pulls the image from ACR using the user-assigned MI
 // (AcrPull granted in registry.bicep). Identity here is the MI resource ID.
-var jobRegistries = [
+//
+// CRITICAL: when containerImage is a PUBLIC bootstrap image (deploy pass 1, e.g.
+// mcr.microsoft.com/k8se/quickstart-jobs), this MUST be empty. ACA attempts MI
+// auth against every server listed here; MCR (and other public registries) do
+// NOT accept managed-identity bearer tokens, so the pull hangs until the control
+// plane returns "ContainerAppOperationError: Operation expired" and the job fails
+// to provision. usePublicBootstrapImage=true drops the block so the public image
+// pulls anonymously. Pass 2 (real ACR image) sets it false → MI + AcrPull engage.
+var jobRegistries = usePublicBootstrapImage ? [] : [
   { server: acrLoginServer, identity: userAssignedIdentityResourceId }
 ]
 
