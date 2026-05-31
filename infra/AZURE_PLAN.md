@@ -64,7 +64,7 @@
 ```
 
 **One-line summary.** Three ACA Jobs: two booking jobs (one per DST half) fire 10 minutes before
-6:00 AM ET on Saturdays and Sundays; one watch job fires every 10 minutes year-round to monitor for
+6:00 AM ET every **Sunday**; one watch job fires every 10 minutes year-round to monitor for
 cancellation slots. Each job is fully stateless — it pulls the bot image from ACR using a
 user-assigned managed identity, runs the booking or watch logic entirely in process memory
 (`InMemoryStore`), and exits. There is no durable state blob; the live `list_reservations()`
@@ -219,12 +219,11 @@ in `compute.bicep`:
 
 | ET target | UTC cron | Description |
 |---|---|---|
-| 05:50 EDT Saturday (UTC-4) | `50 9 * * 6` | Fires 10 min before T0, EDT, Saturday |
-| 05:50 EST Saturday (UTC-5) | `50 10 * * 6` | Fires 10 min before T0, EST, Saturday |
 | 05:50 EDT Sunday (UTC-4)   | `50 9 * * 0` | Fires 10 min before T0, EDT, Sunday |
 | 05:50 EST Sunday (UTC-5)   | `50 10 * * 0` | Fires 10 min before T0, EST, Sunday |
 
-All four crons fire on Saturdays and Sundays year-round. The bot's own DST gate — re-homed
+Both Sunday crons fire year-round (one tee time per Sunday; M6 Sunday-only schedule — the
+Saturday crons were dropped in M6 PR5). The bot's own DST gate — re-homed
 from the deleted `book.yml` `dst` step into `core/dst_gate.py` (`should_proceed`, M6 PR2) —
 is evaluated in `_run` on the `--wait` path, BEFORE the busy-wait:
 

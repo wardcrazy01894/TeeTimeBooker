@@ -26,6 +26,7 @@ on:
     paths:
       - 'infra/**'
       - 'src/**'
+      - 'config/**'
       - 'Dockerfile'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -36,6 +37,7 @@ on:
     paths:
       - 'infra/**'
       - 'src/**'
+      - 'config/**'
       - 'Dockerfile'
       - 'pyproject.toml'
       - 'uv.lock'
