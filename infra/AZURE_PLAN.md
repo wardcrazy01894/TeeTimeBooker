@@ -109,7 +109,7 @@ infra/
       keyvault.bicep           # Key Vault Standard; grants Key Vault Secrets User to the job MI; soft-delete 90d
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
       compute.bicep            # ACA Environment (Consumption) + 2× booking ACA Jobs (DST crons) + watch ACA Job
-      budget.bicep             # Cost Management budget ($10/mo at 80% alert); subscription-scoped
+      budget.bicep             # Cost Management budget ($20/mo, both RGs; Actual 80% + Forecasted 100%); subscription-scoped
 .github/workflows/
   azure-iac.yml                # ACTIVE CI: bicep build + what-if on PR; deploy on merge to main (dev) / tag (prod)
 ```
@@ -142,7 +142,7 @@ before module B references the resource.
 | `envName` | string | `dev` | `prod` | Resource name suffix; also tags |
 | `location` | string | `eastus2` | `eastus2` | Allow future multi-region |
 | `containerImage` | string | `teetime.azurecr.io/teetime:dev` | `teetime.azurecr.io/teetime:v1.0.0` | Decoupled from IaC |
-| `budgetAmountUsd` | int | `10` | `10` | Cost ceiling per env |
+| `budgetAmountUsd` | int | `20` | `20` | Monthly cost ceiling (project-wide, both RGs) |
 | `budgetAlertEmail` | string | operator email | operator email | Cost alert recipient |
 | `acrSku` | string | `Basic` | `Basic` | Allow upgrade to Standard later |
 | `kvSku` | string | `standard` | `standard` | Allow upgrade if HSM needed |
@@ -589,8 +589,16 @@ deployment invoked from `azure-iac.yml` with `--scope /subscriptions/<id>`
 after the RG deployment. Alternatively, create the budget manually once via
 the Azure portal (Cost Management > Budgets) and document it in the runbook.
 
-Budget parameters: `$10/mo`, 80% threshold alert, email to `budgetAlertEmail`.
-The alert fires at ~$8 in a given month.
+Budget parameters: **`$20/mo`** covering **both** teetime RGs (dev + prod = the total project
+bill), emailing `budgetAlertEmail` on two thresholds: **Actual ≥ 80% ($16)** (early warning) and
+**Forecasted ≥ 100% ($20)** (Azure projects the month will exceed $20). Notification only — it
+does not stop/throttle usage.
+
+**Deploy note:** the `azure-iac.yml` budget step is **skipped** in CI because the CI service
+principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission).
+So deploy it once manually as the operator: `az deployment sub create --location eastus2
+--template-file infra/bicep/modules/budget.bicep --parameters budgetAmountUsd=20
+budgetAlertEmail=<email>`.
 
 ---
 
@@ -632,7 +640,7 @@ az containerapp job start \
 az deployment sub create \
   --location eastus2 \
   --template-file infra/bicep/modules/budget.bicep \
-  --parameters envName=dev budgetAmountUsd=10 budgetAlertEmail=<email>
+  --parameters budgetAmountUsd=20 budgetAlertEmail=<email>
 ```
 
 ### 10.1.1 Prod first-time bootstrap (run once, before the first `infra/v*` tag)
@@ -800,10 +808,10 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
 **Notes on two non-blocking observations:**
 - **Budget deploy is skipped** by design here: the `Deploy budget` step (`az deployment sub
   create`) is **subscription-scoped**, but the CI service principal is **RG-scoped only**
-  (least-privilege), so it fails and the step swallows it as a `::warning::`. No Cost
-  Management budget/alert is created. It does NOT affect the bot. If you want the $10/mo alert,
-  create it manually (Portal → Cost Management → Budgets, or `az consumption budget create`) —
-  preferable to granting the SP subscription-scope. Real spend is ~$5/mo (ACR flat) + free-tier
+  (least-privilege), so it fails and the step swallows it as a `::warning::`. So the $20/mo
+  budget (`budget.bicep` — both RGs, Actual 80% + Forecasted 100%, §9.2) is NOT auto-created;
+  deploy it ONCE manually as the operator (command in §9.2 / budget.bicep header). This is a
+  notification only — it does NOT affect the bot. Real spend is ~$5/mo per ACR + free-tier
   compute.
 - **"Application Insights Smart Detection"** (a Failure-Anomalies smart-detector alert rule) is
   **auto-created by the Azure platform** alongside App Insights — it is NOT in our Bicep. It
@@ -849,4 +857,4 @@ The following items cannot be resolved without operator input. The stubs in
 | 8 | ~~**Storage account name**~~ — **MOOT (storage module removed).** No storage account is provisioned. State is in-process only. | N/A |
 | 9 | **Key Vault name** must be globally unique, 3–24 chars. Proposed: `kv-teetime-{envName}-{shortId}`. Confirm or override. | `keyvault.bicep` |
 | 10 | ~~**SMTP credentials**~~ — **CUT.** Email notifications removed from scope. Console (stdout) is the only notifier. The golf course sends booking confirmations directly to the player. | N/A |
-| 11 | **ForeUP IP allowlist / bot-detection risk** — **ACCEPTED RISK for now.** Bot can be run locally via `uv run teetime run --config config/local.toml --dry-run true` while v1 ACA is still being built. Test from Azure before v1 cutover (§10.3 step 2b). Mitigations if blocked: NAT Gateway with static IP, or keep v0 GH Actions as primary. | v1 cutover; §10.3 |
+| ~~11~~ | ~~**ForeUP IP allowlist / bot-detection risk**~~ — **RESOLVED / OBSERVED (2026-05-31): ForeUP does NOT block the Azure (East US 2) egress IPs.** Both the dev and prod watch jobs log into ForeUP from ACA every 10 min and succeed (`POST .../login "HTTP/1.1 200 OK"`, `ForeUP: login successful`, tee-time fetch returns slots). No 403 / block / challenge observed. Residual: sustained-polling rate-limit over many days is still worth a passive eye (Spike S5), but the IP-block concern is empirically cleared. Fallback if it ever changes: NAT Gateway with a static egress IP. | Resolved (observed in dev + prod) |

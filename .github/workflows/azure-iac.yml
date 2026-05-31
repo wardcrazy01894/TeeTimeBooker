@@ -165,7 +165,7 @@ jobs:
           az deployment sub create \
             --location "${AZURE_LOCATION}" \
             --template-file infra/bicep/modules/budget.bicep \
-            --parameters envName="${ENVNAME}" budgetAmountUsd=10 \
+            --parameters budgetAmountUsd=20 \
                          budgetAlertEmail="${BUDGET_ALERT_EMAIL}" \
             || echo "::warning::Budget deploy skipped (SP lacks subscription-scope permission). Infra deploy unaffected."
 
@@ -233,6 +233,6 @@ jobs:
           az deployment sub create \
             --location "${AZURE_LOCATION}" \
             --template-file infra/bicep/modules/budget.bicep \
-            --parameters envName="${ENVNAME}" budgetAmountUsd=10 \
+            --parameters budgetAmountUsd=20 \
                          budgetAlertEmail="${BUDGET_ALERT_EMAIL}" \
             || echo "::warning::Budget deploy skipped (SP lacks subscription-scope permission). Infra deploy unaffected."
