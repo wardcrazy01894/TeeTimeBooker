@@ -28,9 +28,6 @@ _REQUIRED_ENV = {
     "PLAYER2_EMAIL": "guest@example.test",
     "PLAYER3_EMAIL": "guest3@example.test",
     "PLAYER4_EMAIL": "guest4@example.test",
-    "SMTP_HOST": "smtp.example.test",
-    "SMTP_USER": "smtp-user",
-    "SMTP_PASS": "smtp-secret",
 }
 
 
@@ -148,11 +145,6 @@ max_poll_seconds = 1
 
 [notifier]
 backend = "console"
-email_to = "x@example.test"
-
-[persistence]
-backend = "sqlite"
-path = "./state/t.db"
 
 [watcher]
 enabled = false
@@ -209,11 +201,6 @@ max_poll_seconds = 1
 
 [notifier]
 backend = "console"
-email_to = "x@example.test"
-
-[persistence]
-backend = "sqlite"
-path = "./state/t.db"
 
 [watcher]
 enabled = false

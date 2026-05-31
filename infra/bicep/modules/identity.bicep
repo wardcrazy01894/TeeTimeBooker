@@ -2,14 +2,14 @@
 //
 // A single user-assigned MI is created first in the dependency chain. Its
 // principalId is known before compute.bicep runs, which breaks the
-// chicken-and-egg cycle: keyvault/registry/storage can all receive the
+// chicken-and-egg cycle: keyvault/registry can both receive the
 // principalId for RBAC assignments without waiting for the ACA job to exist.
-// The ACA job then references this identity by resource ID and client ID.
+// The ACA job then references this identity by resource ID.
 //
 // There is NO system-assigned MI path in this plan. System-assigned MI was
 // rejected because its principalId is unavailable until after the job resource
-// is created, making it impossible to pre-stage RBAC assignments for KV,
-// ACR, and Storage in the same Bicep deployment without a two-pass workaround.
+// is created, making it impossible to pre-stage RBAC assignments for KV and
+// ACR in the same Bicep deployment without a two-pass workaround.
 //
 // See: infra/AZURE_PLAN.md §7.2
 

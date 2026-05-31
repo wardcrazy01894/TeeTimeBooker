@@ -82,15 +82,10 @@ poll_interval_ms = 250
 max_poll_seconds = 30                    # give up polling after this
 
 [notifier]
-backend         = "email"
-email_to        = "you@example.com"          # the address that receives booking results
-smtp_host_env   = "SMTP_HOST"
-smtp_user_env   = "SMTP_USER"
-smtp_pass_env   = "SMTP_PASS"
-
-[persistence]
-backend = "sqlite"
-path    = "./state/teetime.db"
+# Console only. The bot does not send email — booking confirmations come from
+# the course directly (see PLAN.md §16, M4 removed). Results also print to the
+# run log.
+backend = "console"
 
 # Cancellation-monitor job (M-feature-1). Disabled by default.
 # When enabled, `teetime watch` polls for newly available slots on the target

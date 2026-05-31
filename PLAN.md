@@ -22,7 +22,7 @@ This plan is structured for parallel execution. Milestones are sequential; tasks
                  v                 v                      v
         +-----------------+  +-----------+        +----------------+
         |  Config (TOML)  |  |  Clock    |        |  Notifier       |
-        |  pydantic-load  |  |  (Real /  |        |  (Email v0,     |
+        |  pydantic-load  |  |  (Real /  |        |  (Console;      |
         +-----------------+  |   Fake)   |        |   pluggable)    |
                              +-----------+        +----------------+
                                     |
@@ -39,7 +39,7 @@ This plan is structured for parallel execution. Milestones are sequential; tasks
               v                                         v
    +-------------------+                       +----------------------+
    |   BookingStore    |                       |   CourseAdapter      |
-   |   (SqliteStore)   |                       |   (Protocol)         |
+   |   (InMemoryStore) |                       |   (Protocol)         |
    |   - history       |                       +----------+-----------+
    |   - attempt log   |                                  |
    |   - session cache |                                  |
@@ -59,7 +59,7 @@ This plan is structured for parallel execution. Milestones are sequential; tasks
                                        +-----------------+
 ```
 
-**One-line summary:** an Orchestrator drives one or more CourseAdapters at T0, persists state via BookingStore (SQLite v0), and reports via Notifier. Every component except the orchestrator is a Protocol so we can swap impls (cloud KV, Slack, Playwright fallback) without rewiring.
+**One-line summary:** an Orchestrator drives one or more CourseAdapters at T0, persists in-run state via BookingStore (InMemoryStore — not persisted across runs), and reports via Notifier. Every component except the orchestrator is a Protocol so we can swap impls (cloud KV, Slack, Playwright fallback) without rewiring.
 
 ---
 
@@ -88,12 +88,10 @@ TeeTimeBooker/
     persistence/
       __init__.py
       store.py                  # BookingStore Protocol + ConcurrentRunError
-      in_memory_store.py        # default for CLI/tests; SqliteStore (M3) pending
-      sqlite_store.py           # v0 durable store (M3 — currently stubbed)
+      in_memory_store.py        # production + test store (in-process only; not persisted)
     notifications/
       __init__.py
       notifier.py               # Notifier Protocol + Noop / Console
-      email_notifier.py         # SMTP impl (M4 — currently stubbed)
     courses/
       __init__.py
       foreup/
@@ -115,7 +113,7 @@ TeeTimeBooker/
     test_adapter_stub.py        # reference pattern; per-module tests added by tasks
 ```
 
-**Why this layout:** `core/` is the only package that depends on nothing else. `persistence/`, `notifications/`, and `courses/` all depend on `core/` and never on each other. The orchestrator is the only thing that knows about all four — every other coupling is through a Protocol. This means M3 (persistence), M4 (notifications), and M5 (ForeUP) can be developed in parallel branches against frozen stubs.
+**Why this layout:** `core/` is the only package that depends on nothing else. `persistence/`, `notifications/`, and `courses/` all depend on `core/` and never on each other. The orchestrator is the only thing that knows about all four — every other coupling is through a Protocol.
 
 ---
 
@@ -144,24 +142,19 @@ See `config/example.toml`. Schema enforced by `core/config.py` via pydantic v2. 
 
 ## 5. Persistence layer
 
-**Decision: SQLite (single file) for v0; keep SQLite at v1, backed by an Azure Blob–stored file (see `infra/AZURE_PLAN.md`).**
+**Decision: `InMemoryStore` for all runs (v0 and v1).** A durable cross-run store was considered and deliberately cut. The single-user, low-frequency bot does not benefit from a local record of past bookings: the live `list_reservations()` pre-book check (§9 layer 2) already prevents double-booking, and a stale in-process record of a prior booking risks MISSING a real booking more than it prevents anything. Cross-PROCESS serialization is handled at the scheduler level (ACA Job parallelism=1, GH Actions concurrency groups) — no advisory DB lock is needed across processes.
 
-**Why SQLite:**
-- One process, one file. No service to run, no IAM. Fits GH Actions + local dev identically.
-- ACID transactions and a real advisory-lock primitive (`BEGIN IMMEDIATE`) — we need both for the double-book defense (§9).
-- Plain-JSON would lose us atomicity across the three tables we need.
-- A managed DB is overkill until/unless v1 introduces concurrent users.
+**What `InMemoryStore` tracks within a single run:**
 
-**What we persist:**
+| Method / concept      | Purpose                                                  | Scope                |
+|-----------------------|----------------------------------------------------------|----------------------|
+| `get_terminal` / `record_terminal` | Terminal `BookingResult` per `(RequestId, date)` (in-process idempotency). | This run only. |
+| `delete_terminal`     | Clear an idempotency record before cancel+rebook (UpgradeOrchestrator). | This run only. |
+| `append_attempt`      | Append-only in-memory audit log (never written to disk). | This run only. |
+| `cache_session` / `load_session` | Adapter session blobs (cookies, JWT) per course. | This run only. |
+| `request_lock`        | In-process advisory lock; prevents two concurrent code paths in the same run from double-booking. | This run only. |
 
-| Table             | Purpose                                                  | Retention            |
-|-------------------|----------------------------------------------------------|----------------------|
-| `booking_history` | Terminal `BookingResult` per `RequestId` (idempotency).  | Forever (small).     |
-| `attempt_log`     | Append-only audit: every search/book attempt, ms-stamped | 90 days, then prune. |
-| `session_cache`   | Adapter-supplied opaque blobs (cookies, JWT) per course. | TTL on each blob.    |
-| `request_locks`   | Advisory locks for concurrent-run defense.               | Lifetime of run.     |
-
-**v1 path (Azure):** v1 keeps `SqliteStore` but stores the single SQLite file in Azure Blob Storage. A `BlobStateManager` downloads the blob before the run (acquiring a renewable lease as the cross-process lock) and uploads it on exit — mirroring the v0 `actions/cache` pattern. The `BookingStore` Protocol remains the cut line, so a fully managed store (e.g. a future `CosmosStore`) could still slot in behind `persistence.backend` if concurrency ever demands it. See `infra/AZURE_PLAN.md` §6.
+Nothing is persisted to disk. The `BookingStore` Protocol remains the cut line — a durable store can slot in without touching the orchestrator.
 
 ---
 
@@ -181,7 +174,7 @@ GH Actions cron fires ~T0 - 10 min  (jitter is 1–15 min in our experience)
 Bot:
     1. Resolve T0 in tz-aware datetime via `zoneinfo.ZoneInfo("America/New_York")`.
        Resolved date = today + target_offset.
-    2. Load config; idempotency check on (RequestId, resolved_date); build
+    2. Load config; in-process idempotency check on (RequestId, resolved_date); build
        adapter; PRE-AUTH (login NOW so the race window is just GET /times +
        POST /reservations).
     3. busy_wait_until(T0 - 500ms): coarse asyncio.sleep down to ~2s, then a
@@ -250,11 +243,11 @@ This is a deliberate scope expansion past the original "no card data, ever" post
 | Auth failed                      | 401/403 on login                          | One retry after 2s (transient JWT). Then `AUTH_FAILED`, **lock cooldown** (§8.1). |
 | Account lockout risk             | Three login failures in 1 hour            | Halt all runs for 24 h; record in store; notify.  |
 | Partial-book state (booked but no confirmation) | book() raised but POST may have landed | See §9. |
-| Mid-run runner kill              | Process gone                              | Next run reads `attempt_log`, sees outstanding attempt, queries adapter for confirmation; cf. §9. |
-| Already booked                   | `booking_history` has a terminal BOOKED for this RequestId | Return cached result; no network calls. |
+| Mid-run runner kill              | Process gone                              | Next run has no in-memory state; §9 layer 2 (`list_reservations`) detects any existing reservation before re-POSTing. |
+| Already booked (same run)        | In-process `booking_history` has a terminal BOOKED for this (RequestId, date) | Return cached result; no network calls. |
 
 ### 8.1 Account-lockout cooldown
-Three consecutive `AuthError` outcomes for the same course within 1 hour triggers a 24 h cooldown stored in `booking_history` with a synthetic key. The orchestrator checks for this row before any login attempt and short-circuits to a notify-only run.
+Three consecutive `AuthError` outcomes for the same course within 1 hour triggers a 24 h cooldown. Because state is in-process only, the cooldown cannot persist across runs — repeated failures in separate runs will each retry login. The orchestrator halts the current run and notifies; a human must disable the workflow before re-enabling.
 
 ---
 
@@ -264,18 +257,18 @@ This is the subtlest correctness property. Scenario: bot calls `POST /reservatio
 
 **Defense, in order:**
 
-1. **Pre-flight idempotency.** Before any work: `store.get_terminal(request_id)`. If a terminal `BOOKED` exists, return it.
-2. **Pre-book remote check.** Right before POST, the adapter calls a "list my reservations" endpoint (ForeUP exposes this — confirm in Spike S1) and aborts if a reservation already exists for the target date.
+1. **Pre-flight in-process idempotency.** Before any work: `store.get_terminal(request_id, date)`. If a terminal `BOOKED` exists in this run's in-memory store, return it. (Guards against re-entrant calls within the same process — unlikely but cheap.)
+2. **Pre-book remote check.** Right before POST, the adapter calls `list_reservations()` and aborts if a reservation already exists for the target date. **This is the load-bearing double-booking guard** — it works regardless of whether a prior run's history is available.
 3. **Single attempt per slot, by default.** `book()` is non-retryable EXCEPT on `SlotGoneError`. Anything else raises and the orchestrator reaches the post-mortem path:
 4. **Post-mortem reconciliation.** Any failure during/after POST that didn't return a clean adapter error triggers: wait 5 s, list reservations again, match by tee_time + party_size. If found, treat as success and persist the confirmation. If not, treat as no-op and try next course.
-5. **Advisory lock.** `BookingStore.request_lock(request_id)` is held for the duration of `Orchestrator.run`. Attempting a second concurrent run on the same RequestId raises `ConcurrentRunError` immediately (no waiting).
-6. **GH Actions concurrency group.** `concurrency: { group: book-tee-time, cancel-in-progress: false }` in the workflow stops two cron-fired runs from overlapping at all.
+5. **In-process advisory lock.** `BookingStore.request_lock(request_id)` is held for the duration of `Orchestrator.run`. Attempting a second concurrent code path in the same process raises `ConcurrentRunError` immediately (no waiting).
+6. **ACA Job / GH Actions concurrency group.** ACA Jobs run with `parallelism=1`; `concurrency: { group: book-tee-time, cancel-in-progress: false }` in the workflow stops two cron-fired runs from overlapping at all. This is the cross-PROCESS serialization layer — it replaces any need for a cross-run durable lock.
 
 This is belt-and-suspenders by design. The single most important rule: **after any POST whose result is uncertain, ALWAYS reconcile via list-reservations before doing anything else.**
 
 ### 9.1 Booking state machine (M2 implementation contract)
 
-The orchestrator's per-(course, slot) booking attempt is a state machine with explicit write-to-DB-first transitions. Implementers MUST encode these states verbatim — no derived enum, no "happy path skips a state":
+The orchestrator's per-(course, slot) booking attempt is a state machine with explicit write-to-store-first transitions (in-memory). Implementers MUST encode these states verbatim — no derived enum, no "happy path skips a state":
 
 ```
                       +-------------+
@@ -331,9 +324,11 @@ The orchestrator's per-(course, slot) booking attempt is a state machine with ex
    layer 2). Two concurrent `POSTING` states for the same RequestId are
    impossible because `request_lock` (layer 5) is held for the whole run AND
    the orchestrator is single-threaded within a run.
-2. Every state transition writes to `attempt_log` BEFORE the next await. If
-   the runner is killed between two states, the next run reads `attempt_log`,
-   sees the dangling state, and resumes via `RECONCILING` — never re-POST.
+2. Every state transition appends to the in-memory `attempt_log`. If the
+   runner is killed between two states, the in-memory log is lost; the next
+   run has no UNCERTAIN state to resume from — instead it re-runs `PRE_BOOK`,
+   hits `list_reservations` (layer 2), and discovers any existing booking
+   before ever POSTing again. Never re-POST without going through PRE_BOOK.
 3. From `UNCERTAIN`, the only legal next state is `RECONCILING`. The
    orchestrator MUST NOT call `book()` again before reconcile completes.
 4. `LOST` is terminal for THIS slot. The orchestrator may pick another
@@ -342,67 +337,48 @@ The orchestrator's per-(course, slot) booking attempt is a state machine with ex
 The Protocol's `book()` docstring references this diagram. `list_reservations`
 is part of the Protocol from M0 (review item 3) — not deferred to M2.T3.
 
-### 9.2 Cross-run state (review item 9)
+### 9.2 Cross-run double-booking defense
 
-Idempotency layer 1 (`get_terminal`) requires the SQLite file to survive across
-runs. GH Actions runners are ephemeral, so we restore/save via `actions/cache`
-in `book.yml`:
+`InMemoryStore` does not persist across runs — each run starts with no booking history.
+The SINGLE source of truth for "do I already have a booking on this date?" is the live
+`list_reservations()` call at PRE_BOOK (layer 2). This is by design: a stale local
+record can go wrong in both directions (false "already booked" OR false "nothing booked"),
+while the live remote check is always authoritative.
 
-- **Restore step** at the start of the job: `actions/cache/restore@v4` with key
-  `teetime-state-v1` (no `restore-keys`; partial matches are worse than empty).
-- **Save step** at the end (`if: always()`) so attempt_log persists on failure.
-- **Forensic upload** still happens via `upload-artifact` for human review.
+Cross-PROCESS serialization is enforced at the scheduler level:
+- **ACA Jobs:** `parallelism=1` — at most one replica runs at a time.
+- **GH Actions:** `concurrency: { group: book-tee-time, cancel-in-progress: false }`.
 
-**Risk: catastrophic cache eviction.** If the cache entry is evicted (GH
-retains for 7 days of inactivity; the weekend-only cron runs at most 6 days
-apart so eviction is rare but not impossible if a weekend run is skipped), the
-next run starts with an empty DB and `get_terminal` returns `None` for an
-already-booked RequestId. Layer 2 (`list_reservations`) catches this: pre-book remote
-check sees the existing reservation and the orchestrator records `ALREADY_BOOKED`
-without POSTing again. So cache loss = one extra round-trip on the next run,
-NOT a phantom booking. Documented as accepted v0 risk. v1 moves to Azure Blob Storage.
+A mid-run runner kill leaves no UNCERTAIN state on disk. The next run re-authenticates,
+calls `list_reservations`, and sees any booking that landed — no phantom booking risk.
 
 ---
 
 ## 10. Observability
 
-- **Structured logs** via `structlog` -> JSON to stderr. Every log line carries `request_id`, `course_id`, `attempt`. Captured by GH Actions; tailed locally.
-- **Event log** in `attempt_log` table. Every state transition (per §9.1 state machine) gets a row: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `RECONCILING`, `BOOKED`, `LOST`, etc. Useful for retroactive timing analysis.
-- **Notify-on-failure** is the alert. Non-`BOOKED` outcomes always email. v1 adds a Slack webhook backend.
+- **Structured logs** via `structlog` -> JSON to stderr. Every log line carries `request_id`, `course_id`, `attempt`. Captured by GH Actions / ACA Job logs; tailed locally.
+- **In-memory event log** (`attempt_log`). Every state transition (per §9.1 state machine) gets an entry: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `RECONCILING`, `BOOKED`, `LOST`, etc. Lives in process memory only; useful for within-run correlation and structured-log emission.
+- **Notify-on-failure** is the alert. Non-`BOOKED` outcomes print to console (ConsoleNotifier). The golf course sends booking confirmation emails directly to the user's account email.
 - **Metric surface (v1):** count + duration of each event keyed by course; alert if `T_RACE_BEGIN -> BOOK_OK` latency exceeds 5s for two consecutive runs.
 
 ### 10.1 PII handling (review failure mode "Player PII in attempt_log")
 
-`attempt_log.payload` is a JSON blob written by the orchestrator. The SQLite
-file is uploaded as a workflow artifact AND saved in `actions/cache`. Both
-are scoped to the repo, but artifacts are downloadable by anyone with read
-access.
+`attempt_log` entries are written by the orchestrator into the in-memory store (never to disk). Even so, the redaction rule is mandatory — structured log output goes to GH Actions / ACA Job logs, which can be visible to anyone with repo read access.
 
-**Rule: redact before write.** Before persisting any payload that originated
+**Rule: redact before write.** Before appending any payload that originated
 from `BookingRequest.players` or `CourseCredentials`, the orchestrator MUST:
 
 - Replace `email`, `phone`, `member_number` with SHA-256 prefixes (first 8 hex
   chars of the digest) — enough to correlate two log rows referring to the
   same user, not enough to recover the value.
-- NEVER persist `password` (raw or hashed). It does not belong in attempt_log.
-- NEVER persist TeeItUp **card fields** — `card_number`, `cvv`, `expiry_month`,
+- NEVER write `password` (raw or hashed). It does not belong in attempt_log.
+- NEVER write TeeItUp **card fields** — `card_number`, `cvv`, `expiry_month`,
   `expiry_year`, `billing_address`, `billing_postal_code`. These must be dropped
-  entirely (not hashed). Raw PAN/CVV in a downloadable artifact is a PCI incident.
+  entirely (not hashed). Raw PAN/CVV in any log is a PCI incident.
 - Confirmation codes ARE persisted (we need them for reconciliation).
 
 A helper `_redact_payload(d: dict) -> dict` lives in `core/orchestrator.py`.
-Adapters that build payloads must call it before passing to
-`store.append_attempt`. **Status:** this helper is NOT yet implemented (see M3 /
-SqliteStore); it must land before `attempt_log` writes reach disk. Until then,
-the production CLI uses `InMemoryStore`, so nothing is persisted — but the
-helper (and a test asserting email/PAN never appear in `attempt_log`) is a
-hard prerequisite for M3.
-
-### 10.2 Cross-run state location
-
-See §9.2. SQLite file lives in `state/teetime.db`, restored from
-`actions/cache` at job start, saved at job end. Catastrophic cache loss is
-caught by §9 layer 2 — never produces a phantom booking.
+Adapters that build payloads must call it before passing to `store.append_attempt`.
 
 ---
 
@@ -462,8 +438,8 @@ The orchestrator stops the current run when ANY of:
 5. Wall-clock budget exceeds 5 minutes from T0 (hard ceiling — runner timeout is 15 min, leaves slack for notifier).
 
 Across runs (multiple days):
-- A `BOOKED` record blocks future runs for the same `(RequestId, resolved_date)` pair.
-- A 24 h auth cooldown (§8.1) blocks runs against that course only.
+- There is no durable cross-run record. Each run's pre-book `list_reservations` check (§9 layer 2) detects an already-booked slot and aborts before POSTing again — this is the cross-run idempotency guard.
+- A 24 h auth cooldown (§8.1) is enforced within a run only; there is no persistent cooldown across runs.
 
 ### 13.1 RequestId derivation rule (review item 5)
 
@@ -484,14 +460,14 @@ Across runs (multiple days):
 
 **Resolved dates are excluded from the fingerprint.** The reason: `target_offsets = [7]`
 firing on Saturday books the Saturday 7 days out; the resolved date changes each
-week but the goal is the same. The actual idempotency key in `booking_history` is
-`(RequestId, resolved_date)` — composite primary key. This:
+week but the goal is the same. The in-process idempotency key is
+`(RequestId, resolved_date)` — composite. This:
 
-- Lets the weekend cron book day N+7 this weekend and day N+14 next weekend without conflict.
+- Lets the weekend cron book day N+7 this weekend and day N+14 next weekend without conflict within a run.
 - Keeps the user's "I always want a Saturday at 9:00-10:30 AM 7 days out" rule a single
-  RequestId for analytics and §9 layer-5 advisory locking.
-- BOOKED on resolved_date X does NOT block resolved_date Y for the same
-  RequestId. (See review failure mode "Two target_dates with overlapping
+  RequestId for the §9 layer-5 in-process advisory lock.
+- A BOOKED terminal for resolved_date X does NOT block resolved_date Y for the same
+  RequestId within the same run. (See review failure mode "Two target_dates with overlapping
   windows" — explicitly NOT closing all dates.)
 
 ---
@@ -503,8 +479,8 @@ week but the goal is the same. The actual idempotency key in `booking_history` i
 | User-Agent        | `TeeTimeBooker/0.0.0 (+https://github.com/alanc3939/TeeTimeBooker)` |
 | `api-key` header  | `no_limits` for search; `""` (empty) for login POST — confirmed by browser capture (S1) |
 | Accept-Language   | `en-US,en;q=0.9`                                                 |
-| Session lifetime  | One HTTP session per orchestrator run; reused across search+book. JWT is **NOT** cached cross-run in v0 — the weekend-only cron runs at least every few days, far exceeding any reasonable JWT TTL, and `workflow_dispatch` testing happens rarely enough that re-login is cheap. The `session_cache` table exists but `cache_session`/`load_session` are deferred to v1 (review item 10). |
-| Cookies           | PHPSESSID + ForeUP JWT, persisted via `session_cache` blob.      |
+| Session lifetime  | One HTTP session per orchestrator run; reused across search+book. JWT is NOT cached across runs — the weekend-only cron runs at least every few days, far exceeding any reasonable JWT TTL, and re-login is cheap. `cache_session`/`load_session` exist on the Protocol but are deferred to v1 (review item 10). |
+| Cookies           | PHPSESSID + ForeUP JWT, held in `session_cache` in-memory for the duration of the run. |
 | Concurrency       | At most 1 in-flight HTTP request per adapter at a time.          |
 
 ---
@@ -512,20 +488,19 @@ week but the goal is the same. The actual idempotency key in `booking_history` i
 ## 15. Deployment / runbook
 
 **v0:**
-1. Set GH Actions repo secrets: `MB_USERNAME`, `MB_PASSWORD`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, plus per-player `PLAYER1_EMAIL`, `PLAYER1_PHONE` etc. as referenced by `config/local.toml`.
+1. Set GH Actions repo secrets: `MB_USERNAME`, `MB_PASSWORD`, plus per-player `PLAYER1_EMAIL`, `PLAYER1_PHONE` etc. as referenced by `config/local.toml`.
 2. Commit `config/local.toml` to a private fork OR pass via `workflow_dispatch` input file.
 3. Cron fires on Saturday and Sunday at 6:00 AM ET; the workflow's `dst` step gates downstream steps on ET wall-clock hour == 5 (see book.yml). Wrong DST-half cron exits early as success.
-4. After each run, check email. State is restored/saved via `actions/cache` (key `teetime-state-v1`). The SQLite file is also uploaded as a workflow artifact for forensic review (downloadable for 90 days; PII redacted per §10.1).
+4. After each run, check the GH Actions log output (ConsoleNotifier). No state is preserved between runs — each run begins fresh and relies on `list_reservations` to detect any existing booking (§9.2).
 5. On `CAPTCHA_BLOCKED` or repeated `AUTH_FAILED`: `gh workflow disable book-tee-time`. Investigate manually. Re-enable with `gh workflow enable book-tee-time`. NO auto-re-enable — a human MUST confirm the cause is resolved.
-6. If the `actions/cache` entry is evicted (rare): the next run treats history as empty, but §9 layer 2 (`list_reservations`) catches any phantom booking before re-POSTing. One extra round-trip; no double-book risk.
 
 **v1 upgrade path — Azure** (ratified; see `infra/AZURE_PLAN.md` for the authoritative design):
 - **Azure Container Apps Jobs** (Consumption) on cron for the trigger — more reliable firing than GH Actions cron, though still cron, not a sub-second scheduler. Two booking jobs (DST halves) + one watch job.
-- **SQLite on Azure Blob Storage** for the BookingStore, via a `BlobStateManager` (download-before-run / upload-on-exit, with a renewable blob lease as the cross-process lock). The `BookingStore` Protocol still allows a fully managed store later if needed.
+- **Same `InMemoryStore`** at runtime — no Azure SDK calls needed for state. Cross-process serialization is handled by ACA Job `parallelism=1`.
 - **Azure Key Vault** for credentials, injected via native `keyVaultUrl` secret references resolved by a user-assigned managed identity.
 - Logs/metrics into **Log Analytics + Application Insights**.
 - IaC in **Bicep**; CI deploy via **OIDC federated credential** (no client secret).
-- *Rejected:* Azure Functions (cold-start variance fights the race), Cosmos/Table (overkill), service-principal secrets (rotation burden). See `infra/AZURE_PLAN.md` §2 for the full comparison.
+- *Rejected:* Azure Functions (cold-start variance fights the race), service-principal secrets (rotation burden). See `infra/AZURE_PLAN.md` §2 for the full comparison.
 
 ---
 
@@ -552,20 +527,17 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 | M2.T2 | Implement the `derive_request_id` helper body (the signature already exists in `core/models.py`); fingerprint per §13.1 | M1.T2                   | given identical config, identical RequestId across processes         | `core/models.py` (helper body), `tests/test_request_id.py` | M1.T2 |
 | M2.T3 | Implement post-mortem reconciliation: orchestrator calls the **already-defined** `adapter.list_reservations()` on UNCERTAIN, drives RECONCILING → BOOKED/LOST per §9.1 | M2.T1                   | reconciliation works against a scripted FakeAdapter that simulates connection-drop after server-side commit | `core/orchestrator.py` (no Protocol changes — `list_reservations` already on Protocol) | M2.T1 |
 
-### M3 — Persistence (parallel with M2 once M1 lands)
-| ID    | Task                                          | Inputs                            | Outputs                                  | Owner-files                                                | Deps  |
-|-------|-----------------------------------------------|-----------------------------------|------------------------------------------|------------------------------------------------------------|-------|
-| M3.T1 | Schema + migrations + `initialize`            | DDL in `sqlite_store.py` docstring| schema applied; idempotent re-init       | `persistence/sqlite_store.py`, `tests/test_sqlite_schema.py` | M1.T2 |
-| M3.T2 | `record_terminal`, `get_terminal`, idempotent guard against conflicting outcome | M3.T1 | tests: writing a different outcome for an existing RequestId raises | `persistence/sqlite_store.py`, `tests/test_sqlite_history.py` | M3.T1 |
-| M3.T3 | `request_lock` via `BEGIN IMMEDIATE` + holder PID row | M3.T1                            | second concurrent acquisition raises `ConcurrentRunError` immediately | `persistence/sqlite_store.py`, `tests/test_sqlite_lock.py` | M3.T1 |
-| ~~M3.T4~~ | ~~`cache_session` / `load_session` with TTL~~ DEFERRED to v1 (review item 10): weekend cron cadence makes a 12 h JWT cache pointless. Stubs remain in `SqliteStore` to keep the Protocol shape stable. | — | — | — | — |
+### M3 — Persistence — **DROPPED**
 
-### M4 — Notifications (parallel with M2/M3)
-| ID    | Task                                       | Inputs            | Outputs                       | Owner-files                                           | Deps  |
-|-------|--------------------------------------------|-------------------|-------------------------------|-------------------------------------------------------|-------|
-| M4.T1 | Implement `EmailNotifier` (smtplib + STARTTLS) | NotifierConfig | sends one email per outcome; templates per outcome | `notifications/email_notifier.py`, `tests/test_email_notifier.py` (smtpd fake) | M1.T2 |
-| M4.T2 | Implement `ConsoleNotifier`                | —                 | prints structured outcome to stdout | `notifications/notifier.py`                          | —     |
-| M4.T3 | Render templates (success / failure / no inventory) | M4.T1     | clean subject + body per outcome | `notifications/email_notifier.py` (templates module) | M4.T1 |
+> Dropped. `SqliteStore` and `sqlite_store.py` were removed from the codebase. The project
+> uses `InMemoryStore` permanently. Cross-run idempotency is handled by `list_reservations`
+> (§9 layer 2), not a durable store. No tasks remaining.
+
+### M4 — Notifications — **DROPPED**
+
+> Dropped. `EmailNotifier` / SMTP were removed from the codebase. The only notifier is
+> `ConsoleNotifier` (already done). The golf course emails booking confirmations directly
+> to the user's account. No tasks remaining.
 
 ### M5 — ForeUP adapter (DONE — live dry-run confirmed)
 | ID    | Task                                                        | Inputs              | Outputs                                                          | Owner-files                                                          | Deps         |
@@ -577,18 +549,17 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 | M5.T4 | Captcha + rate-limit detection                              | S1                  | adapter raises `CaptchaError` / `RateLimitError` from canned responses | `courses/foreup/base.py`, `tests/test_foreup_protection.py`           | M5.T1        |
 | M5.T5 | Wire `MangroveBayAdapter` and confirm `schedule_id`         | S1                  | end-to-end dry-run against live ForeUP succeeds                 | `courses/foreup/mangrove_bay.py`                                     | M5.T1..T4    |
 
-### M6 — End-to-end (depends on M2 + M3 + M4 + M5)
+### M6 — End-to-end (depends on M2 + M5)
 | ID    | Task                                              | Inputs           | Outputs                                              | Owner-files                          | Deps        |
 |-------|---------------------------------------------------|------------------|------------------------------------------------------|--------------------------------------|-------------|
 | M6.T1 | Workflow `book.yml` real impl (DST gate, secrets) | all stubs done   | `gh workflow run` succeeds in dry-run mode           | `.github/workflows/book.yml`         | M5.*        |
-| M6.T2 | First production dry-run against Mangrove Bay     | M6.T1            | dry-run email arrives at 6:00:00 ± 1 s ET on first cron | runbook entry                     | M6.T1       |
-| M6.T3 | First live booking                                | M6.T2 green      | a real reservation; email confirmation; SQLite history persisted | runbook entry              | M6.T2       |
+| M6.T2 | First production dry-run against Mangrove Bay     | M6.T1            | dry-run log output at 6:00:00 ± 1 s ET on first cron | runbook entry                      | M6.T1       |
+| M6.T3 | First live booking                                | M6.T2 green      | a real reservation; course confirmation email to user | runbook entry                       | M6.T2       |
 
 **Parallel-execution map (post M1):**
 ```
 M2.T1 ─┐
-M3.T1 ─┼─► M3.T2,T3,T4 ─┐
-M4.T1 ─┘                ├─► M6.T1 ─► M6.T2 ─► M6.T3
+        ├─► M6.T1 ─► M6.T2 ─► M6.T3
 S1    ──► M5.T1 ─► M5.T2 ─► M5.T3 ─► M5.T5 ─┘
                        └─► M5.T4 ─┘
 ```
@@ -613,11 +584,11 @@ Each item from the brief, addressed:
 - **DST and 6:00 AM ET:** §6.3. Two crons + DST-half check + `zoneinfo` for actual T0 computation. Math shown.
 - **Double-booking risk:** §9. Six layers of defense; reconciliation is the load-bearing one.
 - **ForeUP captcha:** §8 row "Captcha challenge"; §12. The booking step is gated by an invisible reCAPTCHA, which the bot solves via 2captcha (Playwright fallback) — see `foreup/captcha.py`. S1 confirmed no login captcha. Caveat: a synchronous solve (~15–30 s) in the booking POST can blow the T0 race window — see §19 / `infra/AZURE_PLAN.md` for the pre-fetch consideration.
-- **Account lockout:** §8.1. Three auth failures → 24 h cooldown stored in DB + notify.
+- **Account lockout:** §8.1. Three auth failures → halt current run + notify (in-run only; no durable cooldown across runs).
 - **Credit-card storage:** §7. **By platform.** ForeUP: none (card-on-file). TeeItUp: PAN/CVV/expiry/billing are passed to `tr.gnsvc.com` on each booking (no wallet); sourced from env vars, never committed, and must be dropped by `_redact_payload` before any `attempt_log` write (§10.1).
 - **ForeUP ToS:** §12, stated honestly. Risks accepted by user.
-- **Concurrency / accidental double trigger:** §9 layers 5 & 6. Workflow concurrency group + DB advisory lock. `ConcurrentRunError` fails fast.
-- **Mid-run runner kill:** Recovery via `attempt_log` + post-mortem reconciliation (§9, §8 row "Mid-run runner kill"). Worst case: a phantom booking we don't know about — caught on next run's pre-flight `list_reservations`.
+- **Concurrency / accidental double trigger:** §9 layers 5 & 6. ACA Job `parallelism=1` / workflow concurrency group + in-process advisory lock. `ConcurrentRunError` fails fast.
+- **Mid-run runner kill:** Next run has no prior state; §9 layer 2 (`list_reservations`) catches any existing booking before re-POSTing. See §9.2.
 - **Testing the 6 AM race without waiting 7 days:** §11. `FakeClock` + `clock.busy_wait_until` test asserts ±50 ms.
 - **Stop conditions:** §13.
 - **Bot identity:** §14 + §12.
@@ -631,7 +602,7 @@ Each item from the brief, addressed:
 3. ~~**`api-key: no_limits` is a known-bot signal.**~~ Resolved in S1: login uses `api_key=""` (empty); search uses `api_key="no_limits"`. No adverse response observed.
 4. **The user's ForeUP account gets restricted.** §12. Accepted v0 risk; would invalidate v0 entirely until manual unlock.
 5. **Time-window picker logic ("best slot")** is under-specified. v0 picks the slot whose `tee_time` is closest to the midpoint of the user's window. Revisit in v1 with explicit ranking config.
-6. **Cross-run cache eviction** (review item 9). Mitigation: §9 layer 2 (`list_reservations`) catches the missing-history case — see §9.2. v1 moves to Azure Blob Storage.
+6. ~~**Cross-run cache eviction.**~~ N/A — there is no cross-run state cache. Each run relies on `list_reservations` (§9 layer 2) as the authoritative source of booking state.
 7. **DST spring-forward day** (review failure mode). 06:00 ET still exists on 2nd Sunday of March (the skipped hour is 02:00–03:00). Add `tests/test_dst_edge.py::test_spring_forward_t0_resolves` in M1.T1: assert `zoneinfo` returns 06:00 EDT on March 8 2026 with no ambiguity exception.
 8. **Workflow disabled by `gh workflow disable` after CAPTCHA_BLOCKED** (review failure mode). No automation re-enables it. Documented runbook step §15: after manual investigation, run `gh workflow enable book-tee-time`. We do NOT auto-re-enable — a human MUST verify the cause is gone.
 9. ~~**`api-key: no_limits` is a community-observed magic string.**~~ Resolved in S1: search header confirmed; login uses empty string. Behaviour stable as of 2026-04-29.
@@ -646,7 +617,7 @@ Each item from the brief, addressed:
 
 ## 20. Feature milestones (v0.5 — watch, one-booking, sort)
 
-These three features build on the completed v0 foundation (M1–M5 done, M3/M4/M6 in progress).
+These three features build on the completed v0 foundation (M1, M2 partial, M5 done; M3/M4 dropped; M6 pending).
 They share a dependency: M-feature-3 (sort) is a prerequisite for both M-feature-1 and
 M-feature-2 because those features select slots and must use the same ranking logic.
 
@@ -740,9 +711,9 @@ are essentially zero; polling then provides no benefit and accumulates unnecessa
 **Watch deadline:** Polling stops when `now > target_date midnight (course-local)`. The round
 has passed; the booking window has closed.
 
-**State management:** The watch job reads the target date from the BookingStore (see §9.2).
+**State management:** The watch job queries the live course via `list_reservations` to determine booking state — it does not rely on a persisted BookingStore record across runs.
 After the 6 AM run completes with any non-BOOKED outcome (NO_INVENTORY, DRY_RUN), the date
-is eligible for watching. The WatchOrchestrator checks `store.get_terminal(request_id, date)`:
+is eligible for watching. Within a run, the WatchOrchestrator checks `store.get_terminal(request_id, date)`:
 - BOOKED → short-circuit, return that result (nothing to watch for)
 - None / NO_INVENTORY → proceed with check
 
@@ -750,7 +721,7 @@ is eligible for watching. The WatchOrchestrator checks `store.get_terminal(reque
 |----|------|--------|---------|-------------|------|
 | M-feature-1.T1 | Add `WatchConfig` to `AppConfig` (pydantic model + TOML section `[watcher]`); `WatchConfig` validation tests; `teetime watch` CLI command stub | `src/teetime/core/config.py` (done), `src/teetime/__main__.py` | `teetime watch --config ... --date YYYY-MM-DD` CLI entry; WatchConfig validation tests green | `src/teetime/core/config.py`, `src/teetime/__main__.py`, `tests/test_config.py` (extended) | M1.* |
 | M-feature-1.T2 | Implement `WatchOrchestrator.check_once` with full §9.1 state machine for any booking POST; polling-hours gate; deadline gate; idempotency guards; error handling contract | `tests/test_watch_orchestrator.py` (red tests on disk) | all watch tests green; `mypy --strict` passes | `src/teetime/core/watch_orchestrator.py`, `tests/test_watch_orchestrator.py` | M-feature-3.T2 |
-| M-feature-1.T3 | GH Actions `watch-tee-time.yml` workflow (cron `*/10 * * * *`; own concurrency group; SHARED cache key `teetime-state-v1` — same as book.yml; shares secrets with book.yml) | M-feature-1.T2 | `gh workflow run watch-tee-time --dry-run true` succeeds | `.github/workflows/watch-tee-time.yml` | M-feature-1.T2 |
+| M-feature-1.T3 | GH Actions `watch-tee-time.yml` workflow (cron `*/10 * * * *`; own concurrency group; shares secrets with book.yml) | M-feature-1.T2 | `gh workflow run watch-tee-time --dry-run true` succeeds | `.github/workflows/watch-tee-time.yml` | M-feature-1.T2 |
 | M-feature-1.T4 | ACA Bicep additions: new `compute-watch.bicep` module with `*/10 * * * *` cron; own `replicaTimeout=30`; no DST gate needed | M-feature-1.T3 | `az deployment group validate` passes | `infra/bicep/modules/compute-watch.bicep`, `infra/bicep/main.bicep` (module ref) | M-feature-1.T3 |
 
 **Reviewer pre-emption (adversarial checklist):**
@@ -774,12 +745,7 @@ is eligible for watching. The WatchOrchestrator checks `store.get_terminal(reque
    advisory lock. WatchOrchestrator.check_once attempts the lock at entry and raises
    ConcurrentRunError, which is caught and returned as None. Safe.
 
-5. **Cache key:** The watch job and the main booking job SHARE the same cache key
-   (`teetime-state-v1`) and the same SQLite file (`state/teetime.db`). This is the
-   simplest correct approach — single source of truth for `booking_history`. SQLite
-   advisory locks serialise concurrent writes. The two GH Actions concurrency groups
-   (`book-tee-time`, `watch-tee-time`) prevent simultaneous cache saves from the
-   same run type. See §20.1 Q1 (resolved).
+5. **No shared state file:** The watch job and the main booking job each start with a fresh `InMemoryStore`. The single source of truth for booking state is the live `list_reservations()` call. The two GH Actions concurrency groups (`book-tee-time`, `watch-tee-time`) prevent simultaneous runs of the same type. See §20.1 Q1 (resolved — the shared-cache approach was superseded when the durable store was dropped).
 
 ---
 
@@ -789,9 +755,9 @@ is eligible for watching. The WatchOrchestrator checks `store.get_terminal(reque
 
 **cancel_reservation() Protocol addition:** `CourseAdapter` now has a `cancel_reservation()`
 method. This is a Protocol extension — all adapters must implement it. The ForeUP adapter
-stub raises `NotImplementedError` pending Spike S4. The FakeAdapter is fully scripted for
-tests. Existing adapters that do NOT support cancellation should raise `CancelError` with a
-clear message.
+implements it (Spike S4 resolved — endpoint confirmed; see the cancel-before-book note below).
+The FakeAdapter is fully scripted for tests. Existing adapters that do NOT support
+cancellation should raise `CancelError` with a clear message.
 
 **cancel_reservation() idempotency:** A 404 from the cancellation endpoint means the booking
 is already gone — the desired post-condition is satisfied, so 404 MUST NOT raise `CancelError`.
@@ -847,7 +813,7 @@ touched. If the user manually creates a second booking, the system ignores it.
 | M-feature-2.T1 | Implement `ForeUpAdapter.cancel_reservation()` using confirmed S4 endpoint; handle 404 as success; raise `CancelError` on other 4xx/5xx | S4, `tests/test_foreup_book.py` (add cancel tests) | `ForeUpAdapter.cancel_reservation` passing tests | `src/teetime/courses/foreup/base.py`, `tests/test_foreup_book.py` | S4 |
 | M-feature-2.T2 | Implement `UpgradeOrchestrator._build_priority_list()` and `_current_booking_priority()` | `core/upgrade_orchestrator.py` stub | unit tests for priority list construction | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-3.T2 |
 | M-feature-2.T3 | Implement `UpgradeOrchestrator.maybe_upgrade()` with full cancel-before-book protocol (ForeUP enforces one active booking/day, so the new slot cannot be booked while the old one is live; `prepare_book()` pre-fetches the CAPTCHA token to shrink the cancel→book gap); cancel-failure path; idempotency key handling; notification | `tests/test_upgrade_orchestrator.py` (red tests on disk), M-feature-2.T1, M-feature-2.T2 | all upgrade tests green; state machine correct under FakeAdapter | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-2.T1, M-feature-2.T2 |
-| M-feature-2.T4 | Implement `SqliteStore.delete_terminal()` (M3 prerequisite); add `managed_bookings` table if S4 confirms no echo field | M3.T2 done; S4 | `delete_terminal` tests green; `mypy --strict` passes | `src/teetime/persistence/sqlite_store.py`, `src/teetime/persistence/in_memory_store.py` (done) | M3.T2, S4 |
+| ~~M-feature-2.T4~~ | ~~Implement `SqliteStore.delete_terminal()`~~ **DONE / DROPPED**: `delete_terminal` is implemented on `InMemoryStore` (M3 is dropped; `SqliteStore` removed). No further work needed. | — | — | — | — |
 | M-feature-2.T5 | Wire `UpgradeOrchestrator` into `WatchOrchestrator.check_once()` — after finding a slot, check if it is higher priority than the current booking; if so, delegate to `UpgradeOrchestrator.maybe_upgrade()` | M-feature-1.T2, M-feature-2.T3 | integration test: watch finds higher-priority slot, triggers upgrade | `src/teetime/core/watch_orchestrator.py` | M-feature-1.T2, M-feature-2.T3 |
 | M-feature-2.T6 | GH Actions + ACA Bicep: the watch workflow already fires UpgradeOrchestrator via WatchOrchestrator — no separate job needed. Update `watch-tee-time.yml` to pass `--one-booking-policy` flag | M-feature-1.T3, M-feature-2.T5 | `gh workflow run watch-tee-time` with one-booking policy enabled works in dry-run | `.github/workflows/watch-tee-time.yml` | M-feature-1.T3, M-feature-2.T5 |
 
@@ -893,11 +859,13 @@ touched. If the user manually creates a second booking, the system ignores it.
    (sort) remain unaffected.
 
 7. **MANAGED_BOOKING_TAG echo risk:** If ForeUP does not echo a user-supplied field back
-   in `list_reservations` (confirmed in S4), the fallback is a local `managed_bookings`
-   SQLite table keyed on confirmation_code. The table is populated at book() time and
-   consulted by `is_managed`. This approach works correctly even across cache eviction
-   because the booking confirmation_code is also in `booking_history` (so the managed set
-   can be reconstructed from the history table if the managed_bookings table is lost).
+   in `list_reservations` (confirmed in S4), the chosen approach is Option A (TTB: prefix in
+   `BookingResult.confirmation_code` — see §20 "MANAGED_BOOKING_TAG implementation"). No
+   separate `managed_bookings` table is needed. `is_managed` is derived from the TTB: prefix
+   in the in-memory booking_history record. A mid-run crash loses the in-memory record; on
+   the next run the pre-book `list_reservations` check catches any existing booking and records
+   ALREADY_BOOKED — the managed/non-managed question does not arise until there is a booking
+   to upgrade.
 
 ---
 
@@ -909,7 +877,7 @@ proceed to T2 without S4 since WatchOrchestrator.check_once does not call cancel
 
 | # | Question | Blocks | Exit criterion |
 |---|----------|--------|----------------|
-| ~~Q1~~ | ~~**Shared vs separate SQLite file for watch job.**~~ **RESOLVED**: shared SQLite file (`state/teetime.db`) and shared cache key (`teetime-state-v1`). Rationale: (a) single source of truth for `booking_history` — both jobs read/write the same idempotency table; (b) SQLite advisory locks (`BEGIN IMMEDIATE`) serialise concurrent writes correctly; (c) the `actions/cache` concurrency group (`watch-tee-time` vs `book-tee-time`) means the two jobs cannot simultaneously save to the cache — they run in separate GH Actions concurrency groups, so cache save/restore races are not possible in practice; (d) two cache keys with two SQLite files would require merging booking_history across files to correctly enforce idempotency, which is far more complex. | — | Resolved |
+| ~~Q1~~ | ~~**Shared vs separate SQLite file for watch job.**~~ **SUPERSEDED**: the durable store (M3) was dropped entirely. Both jobs use `InMemoryStore` and start each run fresh. The single source of truth for booking state is `list_reservations()`. Concurrent-run serialization is handled by ACA Job `parallelism=1` and GH Actions concurrency groups — no shared file needed. | — | Resolved/superseded |
 | ~~Q2~~ | ~~**Watch job enabled by default or opt-in?**~~ **RESOLVED**: When `watcher.enabled = false`, the watch job logs a **warning** (`"Watch job is disabled in config — set watcher.enabled = true to activate"`) and exits cleanly (exit 0). GH Actions run must not show as ❌ for an intentionally disabled feature. | — | Resolved |
 | ~~Q3~~ | ~~**MANAGED_BOOKING_TAG echo.**~~ **RESOLVED**: We use **Option A** (TTB: prefix stored in `BookingResult.confirmation_code`, not echoed to/from server). `is_managed` works by checking the stored `confirmation_code` in `booking_history`, not by reading a notes field from the server. Whether or not ForeUP echoes a notes field is irrelevant. See §20 "MANAGED_BOOKING_TAG implementation (Option A — LOCKED IN)". | — | Resolved |
 | ~~Q4~~ | ~~**Cancellation window.**~~ **RESOLVED**: Use **18-hour safe default** (`cancellation_deadline_hours = 18`). User believes Mangrove Bay permits same-day cancellations but wants 18h as a guard against attempting a cancel+rebook so close to tee time that the player drives to the wrong course. Spike S4 will confirm the actual policy. | — | Resolved (default set; S4 confirms) |

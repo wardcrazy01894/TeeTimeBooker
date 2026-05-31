@@ -1,8 +1,8 @@
 # TeeTimeBooker
 
-Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via GitHub Actions; emails you the result.
+Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via GitHub Actions; the golf course sends booking confirmations directly.
 
-**Status:** M1 + M2 + M5 + M-feature-3 + M-feature-1 + M-azure (IaC) complete. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented; dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run. Remaining v0 tasks: M3 (SQLite persistence), M4 (email notifications), M6 (first production cron run). Cancellation watch job live (GH Actions `watch-tee-time.yml` + ACA watch job); auto-upgrade (M-feature-2) pending Spike S4 (ForeUP cancel endpoint).
+**Status:** M1 + M5 + M-feature-1 + M-feature-2 + M-feature-3 + M-azure complete. M2 core (orchestrator, idempotency) is done; only M2.T3 (post-mortem reconciliation) remains. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented and dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run. Remaining v0 tasks: M2.T3 (reconciliation), M6 (first production cron run). M3 (SQLite persistence) and M4 (email notifications) were intentionally cut — the live `list_reservations()` pre-book check is the double-booking guard, and the golf course sends confirmations directly. Cancellation watch job live (GH Actions `watch-tee-time.yml` + ACA watch job); auto-upgrade (M-feature-2) shipped — cancel-before-book + CAPTCHA pre-fetch, Spike S4 resolved.
 
 **Where to look:**
 - [PLAN.md](./PLAN.md) — full design, milestone roadmap, state machine, DST math, spikes
@@ -14,11 +14,11 @@ Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). 
 
 ## How it works
 
-**6 AM booking job** (`book-tee-time.yml`):
+**6 AM booking job** (`book.yml`):
 1. A GitHub Actions cron fires ~10 minutes before 6:00 AM ET on Saturday and Sunday (four entries handle both days × both DST seasons)
 2. The bot busy-waits until T0 (±250 ms)
 3. It polls for available slots, picks the slot **closest to the midpoint** of the 08:45–10:00 ET window (midpoint-distance sort), and POSTs the booking
-4. It emails you success or failure, and persists the result to SQLite for idempotency
+4. A live `list_reservations()` check immediately before the book POST guards against double-booking; the golf course sends the booking confirmation directly
 
 **Cancellation watch job** (`watch-tee-time.yml`):
 1. A second GitHub Actions cron fires every 10 minutes, year-round
@@ -150,7 +150,6 @@ docker run --rm \
   -e MB_USERNAME -e MB_PASSWORD \
   -e PLAYER1_EMAIL -e PLAYER1_PHONE -e PLAYER1_MB_MEMBER \
   -e TWOCAPTCHA_API_KEY \
-  -e AZURE_TENANT_ID -e AZURE_SUBSCRIPTION_ID -e AZURE_CLIENT_ID \
   teetime:dev \
   uv run teetime run --config /app/config/container.toml --dry-run true
 ```
@@ -163,7 +162,7 @@ name-only and require no `PLAYER2/3/4_EMAIL` secrets. A CI test
 (`tests/test_container_config_parity.py`) fails the build if `container.toml` ever
 references an env var that isn't wired in `compute.bicep`.
 
-The container notifier defaults to `console` (stdout) until SMTP credentials are wired. SQLite state is written to `/tmp/teetime-state/teetime.db`; the v1 `BlobStateManager` handles upload/download to Azure Blob Storage automatically in production.
+The container notifier is `console` (stdout); booking confirmations come from the golf course directly. The bot is stateless — no state file is written or read between runs.
 
 ---
 
@@ -190,10 +189,9 @@ PLAYER1_EMAIL, PLAYER1_PHONE, PLAYER1_MB_MEMBER
 PLAYER2_EMAIL
 PLAYER3_EMAIL
 PLAYER4_EMAIL
-SMTP_HOST, SMTP_USER, SMTP_PASS
 ```
 
-State persists between runs via `actions/cache` (key `teetime-state-v1`), storing `state/teetime.db`. Cache loss is safe — a `list_reservations()` check prevents double-booking even on a cold cache.
+There is no cross-run state cache — the bot is stateless between runs. A live `list_reservations()` call immediately before each book POST is the double-booking guard.
 
 **Manual trigger:**
 
@@ -205,11 +203,11 @@ gh workflow run book-tee-time -f dry_run=true
 
 ## Azure v1 hosting
 
-The v1 upgrade moves off GitHub Actions onto **Azure Container Apps Jobs** — a managed, serverless scheduled job that runs the same Python container on a UTC cron, busy-waits to 6:00 AM ET, and books the tee time. State moves from `actions/cache` to **Azure Blob Storage**; secrets move to **Azure Key Vault**.
+The v1 upgrade moves off GitHub Actions onto **Azure Container Apps Jobs** — a managed, serverless scheduled job that runs the same Python container on a UTC cron, busy-waits to 6:00 AM ET, and books the tee time. Secrets move to **Azure Key Vault**; the bot makes no authenticated Azure SDK calls at runtime (state is in-process only for the duration of each run).
 
 **Cost:** ~$5/month (ACR Basic flat; Container Apps compute is within the free tier).
 
-**IaC status: implemented.** All Bicep modules are complete (`identity`, `registry`, `storage`, `keyvault`, `logs`, `compute`, `budget`). The active CI workflow is `.github/workflows/azure-iac.yml` — it runs `bicep build` + `what-if` on PRs and **auto-deploys to dev on merge to main** (no required-reviewer gate for dev; prod requires manual approval). Dev runs in permanent dry-run (`dryRun = true` Bicep param); going live = set `dryRun = false` in the prod parameter file.
+**IaC status: implemented.** All Bicep modules are complete (`identity`, `registry`, `keyvault`, `logs`, `compute`, `budget`). The active CI workflow is `.github/workflows/azure-iac.yml` — it runs `bicep build` + `what-if` on PRs and **auto-deploys to dev on merge to main** (no required-reviewer gate for dev; prod requires manual approval). Dev runs in permanent dry-run (`dryRun = true` Bicep param); going live = set `dryRun = false` in the prod parameter file.
 
 See [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md) for the full architecture, cost breakdown, security checklist, and deploy runbook.
 
@@ -241,8 +239,8 @@ uv run ruff format .                 # format
 
 ```
 CLI → Orchestrator      → CourseAdapter (ForeUP / TeeItUp)
-   → WatchOrchestrator  → BookingStore  (SQLite)
-                        → Notifier      (Email)
+   → WatchOrchestrator  → BookingStore  (InMemoryStore — in-process only)
+                        → Notifier      (ConsoleNotifier — stdout)
 ```
 
 All subsystems are `Protocol`-typed — orchestrators wire them together; nothing else crosses subsystem boundaries. `WatchOrchestrator` is single-invocation: it checks once and exits; the cron loop is external. See [`PLAN.md`](./PLAN.md) for the full design, milestone roadmap, and DST math. See [`CLAUDE.md`](./CLAUDE.md) for agent/contributor notes.
@@ -255,17 +253,17 @@ All subsystems are `Protocol`-typed — orchestrators wire them together; nothin
 |---|---|---|
 | M0 | Repo skeleton, stubs, plan | Done |
 | M1 | Foundations: `Clock`, config loader, CLI | Done |
-| M2 | Orchestrator core, state machine, idempotency | Done |
-| M3 | SQLite persistence | Pending |
-| M4 | Email notifications | Pending |
+| M2 | Orchestrator core, state machine, idempotency | Core done; M2.T3 (reconciliation) pending |
+| M3 | SQLite persistence | Dropped — live `list_reservations()` check is the guard; durable store not needed for single-user low-frequency bot |
+| M4 | Email notifications | Dropped — golf course sends confirmations directly; `ConsoleNotifier` (stdout) is sufficient |
 | M5 | ForeUP adapter — live dry-run confirmed | Done |
 | Spike S3 | TeeItUp adapter — live booking + cancel confirmed (Sydney Marovitz) | Done |
 | M6 | End-to-end, first production cron run | Pending |
 | M-feature-3 | Prefer earliest slot in time window (ascending sort) | Done |
 | M-feature-1 | Cancellation watch job — poll every 10 min, book on cancellation | Done |
-| M-feature-2 | One-booking policy: auto-upgrade to higher-priority slot | Pending (blocked on Spike S4) |
+| M-feature-2 | One-booking policy: auto-upgrade to higher-priority slot (cancel-before-book + CAPTCHA pre-fetch) | Done |
 | M-azure (IaC) | Azure v1 Bicep IaC: all modules implemented; dev CI-deployed in dry-run | Done |
-| M-azure (runtime) | BlobStateManager, container entrypoint wiring | Pending |
+| M-azure (runtime) | Container entrypoint wiring; in-process `InMemoryStore` + `ConsoleNotifier` | Done |
 
 See [PLAN.md §20](./PLAN.md) for the v0.5 milestone breakdown. See [PLAN.md §16](./PLAN.md) for the core milestone breakdown with owner files and dependencies.
 

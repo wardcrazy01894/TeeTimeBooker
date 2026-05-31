@@ -1,6 +1,6 @@
-"""BookingStore: durable state between runs.
+"""BookingStore: in-run state for a single orchestrator invocation.
 
-Stores three things — kept in one backend so we get atomic cross-table writes:
+Stores three things behind one Protocol:
 
     1. booking_history     — terminal BookingResult per RequestId (idempotency)
     2. attempt_log         — append-only event log per (RequestId, attempt)
@@ -8,8 +8,15 @@ Stores three things — kept in one backend so we get atomic cross-table writes:
 
 Anything else (e.g. course metadata) belongs in code, not the store.
 
-Concurrency: the store MUST expose an advisory lock on RequestId so two concurrent
-runs of the same request can't double-book. v0 uses SQLite's BEGIN IMMEDIATE.
+v0 has a single implementation, `InMemoryStore`: state is per-process and does
+NOT persist across runs. A durable SQLite/blob backend was considered and
+deliberately dropped (PLAN.md §16, M3 removed) — the live `list_reservations()`
+pre-book check is the cross-run source of truth, so durable local state earns
+its keep nowhere in this design.
+
+Concurrency: the store exposes an advisory lock on RequestId so two coroutines in
+the same process can't double-book. Cross-process serialization is handled by the
+ACA Job / GitHub Actions concurrency groups, not the store.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from ..core.models import BookingResult, CourseId, RequestId
 
 @runtime_checkable
 class BookingStore(Protocol):
-    """Persistence contract. Implementations: SqliteStore (v0), CloudStore (v1)."""
+    """Persistence contract. Implementation: InMemoryStore (v0, non-durable)."""
 
     async def initialize(self) -> None:
         """Create schema if missing. Idempotent. Called once at process start."""

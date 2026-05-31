@@ -80,16 +80,9 @@ class SchedulerConfig(BaseModel):
 
 
 class NotifierConfig(BaseModel):
-    backend: str = "email"
-    email_to: str | None = None
-    smtp_host_env: str | None = None
-    smtp_user_env: str | None = None
-    smtp_pass_env: str | None = None
-
-
-class PersistenceConfig(BaseModel):
-    backend: str = "sqlite"
-    path: Path = Path("./state/teetime.db")
+    # Console is the only notifier in v0. Email/SMTP was dropped — booking
+    # confirmations come from the course directly. See PLAN.md §16 (M4 removed).
+    backend: str = "console"
 
 
 class WatcherConfig(BaseModel):
@@ -165,7 +158,6 @@ class AppConfig(BaseModel):
     request: RequestConfig
     scheduler: SchedulerConfig = SchedulerConfig()
     notifier: NotifierConfig = NotifierConfig()
-    persistence: PersistenceConfig = PersistenceConfig()
     watcher: WatcherConfig = WatcherConfig()
     one_booking_policy: OneBookingPolicyConfig = OneBookingPolicyConfig()
 

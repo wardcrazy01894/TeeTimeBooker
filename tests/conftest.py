@@ -33,7 +33,7 @@ def fake_clock(t0_utc: datetime) -> Clock:
 
 @pytest.fixture
 def in_memory_store() -> BookingStore:
-    """A fresh InMemoryStore. Behavioral parity with SqliteStore for tests."""
+    """A fresh InMemoryStore — the v0 production store (non-durable)."""
     return InMemoryStore()
 
 

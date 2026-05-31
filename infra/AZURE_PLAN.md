@@ -39,16 +39,16 @@
   │                                         │                       │
   │  ┌──────────────────────┐               │ RBAC: KV Secrets User │
   │  │  Azure Key Vault     │◄──────────────┘                       │
-  │  │  (Standard)          │               ┌───────────────────┐   │
-  │  │  MB_USERNAME         │               │  Blob Storage     │   │
-  │  │  MB_PASSWORD         │               │  (LRS, Hot)       │   │
-  │  │  SMTP_HOST/USER/PASS │               │  container:       │   │
-  │  │  PLAYER* secrets     │               │    teetime-state  │   │
-  │  └──────────────────────┘               │  blob:            │   │
-  │                                         │    teetime.db     │   │
-  │  ┌──────────────────────┐               │  (blob lease held │   │
-  │  │  Log Analytics WS    │               │   during run)     │   │
-  │  │  + App Insights      │               └───────────────────┘   │
+  │  │  (Standard)          │                                       │
+  │  │  MB_USERNAME         │                                       │
+  │  │  MB_PASSWORD         │                                       │
+  │  │  PLAYER* secrets     │                                       │
+  │  │  TWOCAPTCHA-API-KEY  │                                       │
+  │  └──────────────────────┘                                       │
+  │                                                                 │
+  │  ┌──────────────────────┐                                       │
+  │  │  Log Analytics WS    │                                       │
+  │  │  + App Insights      │                                       │
   │  └──────────────────────┘                                       │
   │                                                                │
   │  ┌──────────────────────┐                                       │
@@ -61,18 +61,16 @@
                     │ outbound HTTPS only
                     ▼
          foreupsoftware.com (ForeUP API)
-         SMTP relay (email notification)
 ```
 
 **One-line summary.** Three ACA Jobs: two booking jobs (one per DST half) fire 10 minutes before
 6:00 AM ET on Saturdays and Sundays; one watch job fires every 10 minutes year-round to monitor for
-cancellation slots. Each job pulls the bot image from ACR using a user-assigned managed identity,
-downloads the SQLite state blob from Blob Storage (acquiring a 60-second renewable blob lease), runs
-the booking or watch logic, and uploads the updated blob on exit — mirroring the v0 `actions/cache`
-pattern. The watch job shares the same SQLite blob and advisory-lock mechanism as the booking jobs.
-Secrets flow from Key Vault into the job container as environment variables via
-native `keyVaultUrl` secret references, resolved at container start by the ACA
-platform using the same user-assigned MI.
+cancellation slots. Each job is fully stateless — it pulls the bot image from ACR using a
+user-assigned managed identity, runs the booking or watch logic entirely in process memory
+(`InMemoryStore`), and exits. There is no durable state blob; the live `list_reservations()`
+pre-book check is the cross-run source of truth for existing reservations. Secrets flow from Key
+Vault into the job container as environment variables via native `keyVaultUrl` secret references,
+resolved at container start by the ACA platform using the same user-assigned MI.
 
 ---
 
@@ -83,9 +81,7 @@ platform using the same user-assigned MI.
 | Compute | **Azure Container Apps Jobs (Consumption)** | Azure Functions Consumption | Cold-start variance (documented 0–60s) breaks the T0 busy-wait window — see §5.1 |
 | Compute | (same) | Azure Functions Premium EP1 | ~$146/mo, 29× cost ceiling; no benefit for twice-weekly 5-min job |
 | Compute | (same) | Azure Logic Apps | No native Python; JSON-based workflows can't run the bot code |
-| State persistence | **Azure Blob Storage (LRS Hot)** | Azure Cosmos DB | Overkill; $24+/mo minimum RU reservation |
-| State persistence | (same) | Azure Table Storage | No ACID multi-row transactions; SQLite gives us that for free |
-| State persistence | (same) | Azure Files | SMB mount latency introduces unnecessary complexity for a blob download pattern |
+| State persistence | **None (in-process InMemoryStore)** | Azure Blob Storage / Cosmos DB / Table Storage | Single-user, low-frequency bot; durable store deliberately dropped. `list_reservations()` pre-book check is the cross-run source of truth. |
 | Secrets | **Azure Key Vault (Standard)** | GitHub Actions secrets in env | v1 is no longer GitHub-runner-hosted; secrets must live in Azure |
 | Secrets | (same) | Hardcoded Bicep parameters | Hard no — plaintext secrets in IaC state |
 | IaC | **Bicep** | Terraform | Bicep is first-class on Azure; no external state backend needed; less tooling overhead for single-cloud shop |
@@ -97,7 +93,7 @@ platform using the same user-assigned MI.
 
 ## 3. Module layout
 
-**Status: ALL modules implemented (M-azure-T1 through M-azure-T7 DONE).**
+**Status: ALL modules implemented (storage module removed — state is in-process only).**
 
 ```
 infra/
@@ -109,7 +105,6 @@ infra/
     modules/
       identity.bicep           # user-assigned managed identity for the Container Apps Jobs
       registry.bicep           # ACR Basic; grants AcrPull to the job MI
-      storage.bicep            # Blob Storage account (LRS Hot) + container 'teetime-state'; soft-delete 7d
       keyvault.bicep           # Key Vault Standard; grants Key Vault Secrets User to the job MI; soft-delete 90d
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
       compute.bicep            # ACA Environment (Consumption) + 2× booking ACA Jobs (DST crons) + watch ACA Job
@@ -119,7 +114,7 @@ infra/
 ```
 
 **Dependency order for `az deployment group create` (RG-scoped):**
-`identity` → `registry` + `storage` + `keyvault` + `logs` → `compute`
+`identity` → `registry` + `keyvault` + `logs` → `compute`
 
 `budget` is subscription-scoped and is NOT part of this dependency chain. It is
 deployed in a separate `az deployment sub create` call from `azure-iac.yml`
@@ -155,9 +150,7 @@ before module B references the resource.
 
 | Constant | Value | Reason |
 |---|---|---|
-| Blob container name | `teetime-state` | Code references this name; changing it is a code+infra change |
-| Blob name | `teetime.db` | Same |
-| KV secret names | `MB-USERNAME`, `MB-PASSWORD`, `SMTP-HOST`, `SMTP-USER`, `SMTP-PASS`, `PLAYER1-EMAIL`, etc. | Bot reads these by name; names are part of the interface contract |
+| KV secret names | `MB-USERNAME`, `MB-PASSWORD`, `PLAYER1-EMAIL`, `PLAYER1-PHONE`, `PLAYER1-MB-MEMBER`, `TWOCAPTCHA-API-KEY` | Bot reads these by name; names are part of the interface contract |
 | RBAC role IDs | `Key Vault Secrets User` = `4633458b-17de-408a-b874-0445c86b69e6`; `AcrPull` = `7f951dda-4ed3-4680-a7ca-43fe172d538d` | Stable Azure built-in role GUIDs |
 | `parallelism` | `1` | Never run two replicas of the booking job simultaneously — see §6 |
 | `replicaCompletionCount` | `1` | Pair with parallelism=1; see §6 |
@@ -267,11 +260,11 @@ Key differences from the booking jobs:
 | Enabled | Always | Controlled by `watcher.enabled` in TOML; exits 0 when false |
 | Concurrency group | `book-tee-time` | `watch-tee-time` (separate; but a watch+book overlap is safe — advisory lock in code handles it) |
 
-The watch job shares the same SQLite blob, the same advisory lock, and the
-same `teetime-state` container as the booking jobs. It acquires `request_lock`
-only for the booking phase (if a cancellation slot is found), matching the
-booking jobs' lock discipline. The `WatchOrchestrator.check_once` module
-docstring is the canonical reference for lock ownership rules.
+The watch job is fully stateless (same as the booking jobs — `InMemoryStore`).
+It acquires `request_lock` only for the booking phase (if a cancellation slot is
+found), matching the booking jobs' in-process lock discipline. The
+`WatchOrchestrator.check_once` module docstring is the canonical reference for
+lock ownership rules.
 
 `compute.bicep` includes the watch job `Microsoft.App/jobs` resource
 (implemented as part of M-azure-T1, now DONE).
@@ -280,140 +273,28 @@ docstring is the canonical reference for lock ownership rules.
 
 ## 6. State persistence (pre-emption items 4 & 10)
 
-### 6.1 Blob layout
+**v1 state is in-process only.** Each ACA Job run uses `InMemoryStore` — state
+lives in process memory for the duration of a single execution and is discarded
+on exit. There is no durable persistence: no SQLite file, no blob download/upload,
+no blob lease.
 
-```
-Storage Account: teetime{envName}sa (LRS, Hot)
-  Container: teetime-state
-    Blob: teetime.db          ← the SQLite file; binary, ~100 KB typical
-```
+**Why this is safe.** The bot is single-user and low-frequency (at most a handful
+of runs per week). A durable store would guard against double-bookings across runs,
+but the same protection is provided more simply by the `list_reservations()` pre-book
+check (PLAN.md §9 layer 2): at the start of every run the bot calls the live ForeUP
+API to check for existing reservations before posting a new one. The live
+`list_reservations()` result is the authoritative cross-run source of truth.
 
-The blob is downloaded at job start into a local ephemeral path
-(`/tmp/teetime.db` or the equivalent within the job container), used for the
-run, then uploaded back at job end (`if: always()` equivalent = the bot's
-`finally:` block in the orchestrator). This is the direct functional
-equivalent of v0's `actions/cache/restore` + `actions/cache/save`.
+**Why the durable store was dropped.** The blob download/upload/lease cycle (plus
+`azure-storage-blob` + `azure-identity` SDK deps and the `BlobStateManager` Python
+module) was deliberate infrastructure for a single-user, twice-weekly job. The
+pre-book `list_reservations()` guard is a simpler and equally correct substitute.
+This was a deliberate scope reduction — not a compromise on correctness.
 
-### 6.2 Blob lease semantics (concurrency safety)
-
-The SQLite file is per-blob-download. If two ACA Job replicas ran
-simultaneously and both downloaded, modified, and uploaded the blob, the last
-writer would silently win and clobber the other's attempt_log entries.
-
-**Primary defense:** `parallelism = 1` and `replicaCompletionCount = 1` are
-set in the job's `scheduleTriggerConfig`. This pins each cron execution to
-exactly one replica. ACA does not launch a second replica for the same
-execution under these settings.
-
-**Secondary defense (belt-and-suspenders):** The bot acquires an exclusive
-blob lease at download time and holds it for the duration of the run, releasing
-on upload. Azure Blob Storage enforces exclusive write access for lease
-holders: any upload without the lease ID is rejected with HTTP 412 Precondition
-Failed. This catches the theoretical scenario where a manually triggered
-`az containerapp job start` overlaps with the scheduled run.
-
-Lease implementation (60-second finite lease with renewal thread):
-- Acquire lease: `BlobLeaseClient.acquire(lease_duration=60)`. 60 seconds is
-  the chosen duration. Infinite leases (`-1`) are NOT used — Azure does not
-  auto-expire them, so a container crash would strand the lease indefinitely.
-- Renew on a background `threading.Thread` every 30 seconds (half the lease
-  duration) while the job is running. `threading.Thread` is used, not asyncio,
-  because the bot's `busy_wait_until` tight loop (1 ms cadence) would starve
-  an asyncio task scheduled on the same event loop. A daemon thread runs
-  independently and calls `BlobLeaseClient.renew()` on its own cadence.
-- Upload with lease ID: pass `lease` parameter to `upload_blob`.
-- Release on exit: stop the renewal thread, then call `BlobLeaseClient.release()`
-  in the `finally:` block of the orchestrator.
-- If the container dies mid-run (crash, OOM kill): the renewal thread dies with
-  the process. Azure auto-expires the lease in at most 60 seconds. The next
-  scheduled run acquires a fresh lease cleanly. The blob content is unchanged
-  (the upload only happens after successful run completion in the `finally:`
-  block), so state integrity is preserved.
-
-**Threading model summary:** The lease renewal is a `threading.Thread(daemon=True)`
-started after successful lease acquisition and stopped (via a `threading.Event`)
-before the upload. It does not interact with the bot's `busy_wait_until` or the
-orchestrator's booking logic. The thread is the sole writer to the lease; the
-main thread is the sole writer to the blob content. No cross-thread state sharing
-beyond the stop event is required.
-
-The bot's existing `request_lock` (PLAN.md §9 layer 5) continues to serve as
-the advisory lock within a single run. It does not protect across replicas
-because the SQLite file is local to each replica; the blob lease is the
-cross-replica guard.
-
-### 6.3 Blob and container soft-delete (disaster recovery)
-
-Both **blob soft-delete** and **container soft-delete** are enabled with 7-day
-retention in `storage.bicep`. These are separate properties:
-
-- `deleteRetentionPolicy` (blob soft-delete): protects individual blobs.
-  If `teetime.db` is deleted or corrupted, recover with `az storage blob undelete`.
-- `containerDeleteRetentionPolicy` (container soft-delete): protects the
-  `teetime-state` container itself. If the container is accidentally deleted,
-  blob soft-delete alone cannot recover it — the container must be restored
-  first via `az storage container-rm undelete` (or portal), then the blob
-  within it can be undeleted. Setting both properties closes this gap.
-
-**Cache-eviction equivalent on Azure.** There is no equivalent to GH Actions'
-cache eviction on Blob Storage: the blob persists until explicitly deleted.
-PLAN.md §9.2's catastrophic-eviction scenario does not apply to v1. If the
-blob is absent (first run, or operator-deleted), the bot initializes a fresh
-DB, then §9 layer 2 (`list_reservations`) catches any pre-existing reservations
-before re-POSTing. Same behavior as v0.
-
-### 6.4 v1 code changes required (new in round 2)
-
-The v0 `SqliteStore` knows nothing about Azure Blob Storage. The following
-code changes are required for v1 to work — they are NOT optional and are NOT
-handled by the Bicep IaC. This section names them explicitly so the
-implementation agent has a clear task list.
-
-**New Python module: `src/teetime/persistence/blob_state_manager.py`**
-
-Implements the Blob Storage download/upload/lease lifecycle. Key responsibilities:
-
-```
-class BlobStateManager:
-    def __init__(self, account_name: str, container: str, blob_name: str) -> None
-    def __enter__(self) -> Path          # download blob → /tmp/teetime.db, acquire lease, start renewal thread
-    def __exit__(self, ...) -> None      # upload blob (with lease), release lease, stop renewal thread
-```
-
-- Uses `azure-storage-blob` Python SDK (`BlobServiceClient`, `BlobLeaseClient`).
-- Auth: `DefaultAzureCredential` — picks up the user-assigned MI automatically
-  via `AZURE_CLIENT_ID` env var (the MI client ID). No connection string or
-  account key. Env var `AZURE_STORAGE_ACCOUNT_NAME` is the only config needed.
-- Implements the 60-second lease + 30-second renewal thread from §6.2.
-- On first run (blob does not exist): initializes a fresh SQLite DB, then §9
-  layer 2 (`list_reservations`) checks for pre-existing reservations.
-- Used as a context manager wrapping the orchestrator's `run()` call in the
-  CLI entrypoint.
-
-**New Python dependency: `azure-storage-blob`**
-
-Add to `pyproject.toml` dependencies. The SDK is ~10 MB installed, well within
-the image size budget. `azure-identity` is also required for `DefaultAzureCredential`
-(check whether it is already a transitive dep; if not, add it explicitly).
-
-Do NOT use `azure-cli` (`az` CLI) for blob I/O. The CLI is ~150 MB and adds no
-benefit over the Python SDK. The container image must not include it.
-
-**Container entrypoint**
-
-The CLI entrypoint (`teetime run`) must be updated to instantiate
-`BlobStateManager` using `os.environ["AZURE_STORAGE_ACCOUNT_NAME"]` and
-`os.environ.get("AZURE_CLIENT_ID")` and use it as a context manager. When
-`AZURE_STORAGE_ACCOUNT_NAME` is absent (local dev, v0 GH Actions), the
-entrypoint falls back to a local file path (existing behavior). This makes
-the blob manager opt-in via env var, keeping backward compatibility.
-
-**Open milestone task for implementation agent:**
-- Write `blob_state_manager.py` stub with `NotImplementedError` (red phase).
-- Write tests: lease acquisition, renewal thread, upload-on-exit, crash recovery
-  (lease expiry), first-run fresh DB init. Use `pytest` + `unittest.mock` for
-  the Azure SDK calls; no live Azure required.
-- Implement green phase. TDD loop as per CLAUDE.md.
+**Concurrency.** `parallelism = 1` and `replicaCompletionCount = 1` on each ACA Job
+ensure at most one replica runs per cron execution. The in-process `request_lock`
+(PLAN.md §9 layer 5) serializes any within-run concurrent paths. No blob lease is
+involved.
 
 ---
 
@@ -438,32 +319,17 @@ not per-guest name/email/phone (verified in `courses/foreup/base.py` `book()`;
 matches the website, which never collects guest emails). So guests 2–4 in
 `config/container.toml` are name-only and require **no** `PLAYER2/3/4-EMAIL`
 secrets. `tests/test_container_config_parity.py` enforces that every `*_env`
-referenced by `container.toml` is wired in `compute.bicep` (and that the listed
-runtime vars — `TWOCAPTCHA_API_KEY`, `AZURE_CLIENT_ID`,
-`AZURE_STORAGE_ACCOUNT_NAME` — are present), so this set can't silently drift.
+referenced by `container.toml` is wired in `compute.bicep`, so this set can't
+silently drift.
 
-**SMTP secrets are OMITTED for now.** `config/container.toml` uses
-`backend = "console"` — notifications are written to stdout/Log Analytics.
-When SMTP is ready, add `SMTP-HOST`, `SMTP-USER`, `SMTP-PASS` to the vault
-and update the ACA job `secretRef` bindings and the container TOML.
-
-| Secret name | Contains | Used by | Status |
-|---|---|---|---|
-| `SMTP-HOST` | SMTP relay hostname | Bot env var `SMTP_HOST` | **Deferred** |
-| `SMTP-USER` | SMTP login username | Bot env var `SMTP_USER` | **Deferred** |
-| `SMTP-PASS` | SMTP login password | Bot env var `SMTP_PASS` | **Deferred** |
+**No SMTP secrets.** `config/container.toml` uses `backend = "console"` —
+notifications are written to stdout/Log Analytics only. The golf course sends
+booking confirmation emails directly to the player. No `SMTP-*` secrets are
+needed and none are provisioned in Key Vault.
 
 The set of secrets is determined by `config/container.toml` (the image's runtime
 config), which references env var names; the Key Vault must contain matching
 secrets. The parity test in §7.1 keeps this in sync automatically.
-
-**`STORAGE-CONN-STR` is NOT stored in Key Vault.** Storage connection strings
-contain a shared account key — a long-lived credential with full account access.
-The bot uses `Storage Blob Data Contributor` via the user-assigned MI and
-`DefaultAzureCredential`. The storage account name is passed as a plain
-(non-secret) env var `AZURE_STORAGE_ACCOUNT_NAME`. This is strictly better than
-a connection string: the MI credential is short-lived, scoped to the specific
-storage account, and cannot be exfiltrated as a static string.
 
 KV secret names use hyphens (Azure KV convention); the bot's config references
 the env var names with underscores. The mapping is 1:1 via the `secretRef`
@@ -477,7 +343,7 @@ The Container Apps Job uses a **user-assigned managed identity** (created by
 **Why user-assigned, not system-assigned:**
 A system-assigned MI's `principalId` is unavailable until after the ACA job
 resource is created. This makes it impossible to pre-stage RBAC assignments
-for Key Vault, ACR, and Storage in the same Bicep deployment — you need either
+for Key Vault and ACR in the same Bicep deployment — you need either
 a two-pass deployment or separate role-assignment runs. A user-assigned MI is
 created first (one Bicep module call), its `principalId` is known immediately,
 and all RBAC modules receive it in the same deployment. Both ACA job resources
@@ -490,12 +356,13 @@ RBAC assignments granted to the job's MI:
 |---|---|---|
 | `Key Vault Secrets User` (4633458b-…) | Key Vault | The vault in the same RG |
 | `AcrPull` (7f951dda-…) | Registry | The ACR in the same RG |
-| `Storage Blob Data Contributor` (ba92f5b4-…) | Storage Account | The storage account in the same RG (needed for blob lease + upload) |
 
-Assignments are declared in `keyvault.bicep`, `registry.bicep`, and
-`storage.bicep` respectively, referencing the job's `principalId` via module
-output. All assignments use `roleAssignmentCondition: none` (no ABAC
-conditions needed). Legacy Key Vault access policies are NOT used.
+The MI is used only for ACR image pulls and Key Vault secret resolution — the bot
+makes no authenticated Azure SDK calls at runtime (no blob storage, no
+`DefaultAzureCredential` usage). Assignments are declared in `keyvault.bicep` and
+`registry.bicep` respectively, referencing the job's `principalId` via module
+output. All assignments use `roleAssignmentCondition: none` (no ABAC conditions
+needed). Legacy Key Vault access policies are NOT used.
 
 ### 7.3 Key Vault secret injection pattern
 
@@ -687,12 +554,11 @@ in the parameter file and redeploy — this is the intended release workflow.
 | Container Apps Job memory | Consumption | **$0.00** | Free tier: 360,000 GiB-seconds/month. One 5-min run at 0.5 GiB = 750 GiB-s/run × ~8 weekend-days/month = 6,000 GiB-s/month. 98% below free tier. |
 | Container Apps Environment | Consumption | **$0.00** | No per-environment fee on Consumption plan. |
 | Azure Container Registry | Basic | **~$5.00** | $5.00/mo flat for Basic SKU. Includes 10 GiB storage. Our image is ~300 MB; well within limits. |
-| Blob Storage | LRS Hot | **~$0.01** | ~100 KB blob × ~8 writes/month = negligible. $0.018/GB storage + $0.004/10k operations. |
-| Key Vault | Standard | **~$0.01** | $0.03/10k operations. ~225 secret reads/month (7 secrets × 2 cron-halves × ~8 weekend-days/month ≈ 112; rounding to ~225 with overhead). Negligible — well under 10k operations. |
+| Key Vault | Standard | **~$0.01** | $0.03/10k operations. ~225 secret reads/month (6 secrets × 2 cron-halves × ~8 weekend-days/month ≈ 96; rounding to ~225 with overhead). Negligible — well under 10k operations. |
 | Log Analytics | Pay-per-use | **~$0.00–$0.50** | First 5 GB/month free. Bot produces <10 MB logs/month. |
 | Application Insights | Pay-per-use | **~$0.00** | First 5 GB/month free. |
 | Network egress | — | **~$0.00** | First 100 GB/month free. Bot does <10 MB/run. |
-| **Total (dev or prod)** | | **~$5.04–$5.54/mo** | Well within $10/mo ceiling. |
+| **Total (dev or prod)** | | **~$5.01–$5.51/mo** | Well within $10/mo ceiling. |
 
 ### 9.2 Budget alert
 
@@ -733,12 +599,8 @@ az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-PHONE --value 
 az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-MB-MEMBER --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name TWOCAPTCHA-API-KEY --value "<value>"
 # Guests 2-4 need NO secrets — ForeUP books by player count only. See §7.1.
-# SMTP-HOST / SMTP-USER / SMTP-PASS are intentionally OMITTED — notifications
-# use console (stdout) until SMTP is wired. See §7.1.
-# NOTE: No STORAGE-CONN-STR. Blob Storage access uses DefaultAzureCredential
-# via the user-assigned MI. The storage account name is resolved from IaC
-# output (az deployment group show --query properties.outputs.storageAccountName).
-# See §7.1 and §6.4.
+# No SMTP-* secrets needed — notifications use console (stdout) only. See §7.1.
+# No storage secrets needed — the bot makes no Azure SDK calls at runtime. See §6.
 
 # 4. Build and push container image
 az acr build --registry teetimedev --image teetime:dev --file Dockerfile .
@@ -747,7 +609,7 @@ az acr build --registry teetimedev --image teetime:dev --file Dockerfile .
 az containerapp job start \
   --name teetime-job-dev \
   --resource-group rg-teetime-dev
-# Check logs in Log Analytics; verify email arrives; verify blob created.
+# Check logs in Log Analytics; verify dry-run output is correct.
 
 # 6. Deploy budget (subscription-scoped, run once)
 az deployment sub create \
@@ -778,12 +640,12 @@ For IaC changes (Bicep edits):
 The v0 `book.yml` cron and the v1 ACA Jobs schedule MUST NOT both be active at
 the same time. Running both risks concurrent booking attempts against the same
 RequestId from two independent execution environments (GH runner + ACA
-container), defeating layer 5 (advisory lock is per-SQLite-file, not
+container), defeating layer 5 (advisory lock is in-process, not
 cross-platform).
 
 **Cutover sequence:**
 1. Deploy and validate v1 in dev with `--dry-run true`.
-2. Confirm v1 dry-run email arrives at correct time with correct content.
+2. Confirm v1 dry-run log output arrives at correct time with correct content.
 3. Disable the v0 cron schedule in `book.yml` by commenting out all four `schedule:`
    entries (keep `workflow_dispatch` intact for manual recovery):
    ```yaml
@@ -816,17 +678,15 @@ by un-commenting the schedule lines, run a manual booking, then re-disable.
 | No secrets in container env vars (direct) | Required | All env vars are `secretRef:` pointing to Key Vault references |
 | Key Vault soft-delete | On (90 days, default) | Confirmed default for new vaults created since 2019 |
 | Key Vault purge protection | **Dev: disabled (fast iteration); Prod: enabled** | NOT on by default; must be set for prod; irreversible once enabled |
-| Blob soft-delete | Enabled (7 days) | Set in `storage.bicep` |
-| Blob versioning | Disabled | Versioning adds cost and complexity; soft-delete is sufficient |
 | ACA Job has no public ingress | By design | ACA Jobs (scheduled trigger type) do NOT expose HTTP ingress — unlike Container Apps services, which can have HTTP listeners. There is no public endpoint, no port binding, and no inbound network surface for the job resources. |
-| Outbound-only network | By design | Bot makes outbound HTTPS to ForeUP and SMTP relay; no inbound surface |
+| Outbound-only network | By design | Bot makes outbound HTTPS to ForeUP only; no inbound surface |
 | VNet integration | Not required for v0/v1 | ForeUP is a public internet endpoint; VNet adds cost and complexity with no security benefit |
 | ACR authentication | Managed identity (AcrPull) | No registry password in job config; admin account disabled on ACR |
-| RBAC minimum privilege | Key Vault Secrets User (read only), AcrPull (read only), Storage Blob Data Contributor (read/write/lease) | Each role is scoped to the specific resource, not subscription. All three roles are assigned to the single user-assigned MI (not per-job system-assigned MIs). |
+| RBAC minimum privilege | Key Vault Secrets User (read only), AcrPull (read only) | Each role is scoped to the specific resource, not subscription. Both roles are assigned to the single user-assigned MI (not per-job system-assigned MIs). No storage RBAC needed — bot makes no Azure SDK calls at runtime. |
 | CI service principal | Contributor + User Access Admin, RG-scoped | Not subscription-level Contributor |
 | OIDC auth (no client secrets in GitHub) | Required | GitHub stores only AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID |
 | No credit card data | By design (inherited from v0) | ForeUP keeps card on file; bot never sees PAN/CVV |
-| PII redaction in logs | Inherited from v0 | PLAN.md §10.1 rules apply; attempt_log is in Blob Storage under the same RBAC |
+| PII redaction in logs | Inherited from v0 | PLAN.md §10.1 rules apply; attempt_log is in Log Analytics (stdout) |
 
 ---
 
@@ -842,9 +702,9 @@ The following items cannot be resolved without operator input. The stubs in
 | 3 | ~~**Preferred environment names**~~ — **RESOLVED: `dev`/`prod`** confirmed | `main.bicepparam.*` filenames and resource name suffixes |
 | 4 | **Budget alert email address** — set to the operator's real email at deploy time (passed as a `budget.bicep` parameter / bicepparam value, not committed in plaintext); confirm or override | `budget.bicep` parameter |
 | 5 | ~~**GitHub repo owner/name**~~ — **RESOLVED: `wardcrazy01894/TeeTimeBooker`**. OIDC subject claims updated. | OIDC federated credential `subject` field |
-| 6 | ~~**Dockerfile needed?**~~ — **RESOLVED: created at `Dockerfile` + `config/container.toml` + `.dockerignore`**. SMTP backend set to `console` until credentials are wired. SQLite path set to `/tmp/teetime-state/teetime.db` for BlobStateManager. | `registry.bicep` + `azure-iac.yml` build step |
+| 6 | ~~**Dockerfile needed?**~~ — **RESOLVED: created at `Dockerfile` + `config/container.toml` + `.dockerignore`**. Notifications backend is `console` (stdout only). No blob state manager. | `registry.bicep` + `azure-iac.yml` build step |
 | 7 | **ACR name** must be globally unique in Azure. Proposed: `teetime{envName}{shortId}` where `shortId` is a 4-char hash of the subscription ID. Confirm or override. | `registry.bicep` |
-| 8 | **Storage account name** must be globally unique, 3–24 chars, lowercase alphanumeric. Proposed: `teetime{envName}sa{shortId}`. Confirm or override. | `storage.bicep` |
+| 8 | ~~**Storage account name**~~ — **MOOT (storage module removed).** No storage account is provisioned. State is in-process only. | N/A |
 | 9 | **Key Vault name** must be globally unique, 3–24 chars. Proposed: `kv-teetime-{envName}-{shortId}`. Confirm or override. | `keyvault.bicep` |
-| 10 | ~~**SMTP credentials**~~ — **DEFERRED.** `config/container.toml` uses `backend = "console"` for now. Switch to `backend = "email"` and provision SMTP_HOST/SMTP_USER/SMTP_PASS in Key Vault when ready. | Key Vault secrets + `SMTP-*` secret names |
+| 10 | ~~**SMTP credentials**~~ — **CUT.** Email notifications removed from scope. Console (stdout) is the only notifier. The golf course sends booking confirmations directly to the player. | N/A |
 | 11 | **ForeUP IP allowlist / bot-detection risk** — **ACCEPTED RISK for now.** Bot can be run locally via `uv run teetime run --config config/local.toml --dry-run true` while v1 ACA is still being built. Test from Azure before v1 cutover (§10.3 step 2b). Mitigations if blocked: NAT Gateway with static IP, or keep v0 GH Actions as primary. | v1 cutover; §10.3 |

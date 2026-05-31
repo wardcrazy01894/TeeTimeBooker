@@ -10,7 +10,7 @@ do not modify them as part of Azure infra work.
 
 ## Bicep location
 
-**All modules are implemented (M-azure-T1 through M-azure-T7 DONE).**
+**All modules are implemented (M-azure-T1 through M-azure-T7 DONE; storage module removed — state is in-process only).**
 
 ```
 infra/
@@ -22,7 +22,6 @@ infra/
     modules/
       identity.bicep         # user-assigned MI for all ACA Jobs
       registry.bicep         # ACR Basic; AcrPull RBAC to job MI
-      storage.bicep          # Blob Storage + teetime-state container; soft-delete 7d
       keyvault.bicep         # Key Vault Standard; Secrets User RBAC to job MI
                              #   dev: enablePurgeProtection=false
                              #   prod: enablePurgeProtection=true
@@ -81,6 +80,5 @@ What agents MUST NOT run without explicit user instruction:
 ## Pointer to open questions
 
 See AZURE_PLAN.md §12. Most questions are now resolved (tenant ID, subscription ID,
-repo identity, Dockerfile). Remaining items: ACR/KV/storage name uniqueness
-confirmation (§12 Q7–9), budget alert email (§12 Q4), and ForeUP IP allowlist
-risk acceptance (§12 Q11). SMTP secrets are deferred (§12 Q10).
+repo identity, Dockerfile). Remaining items: budget alert email (§12 Q4) and
+ForeUP IP allowlist risk acceptance (§12 Q11).

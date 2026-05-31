@@ -62,9 +62,6 @@ jobs:
       PLAYER2_EMAIL: ${{ secrets.PLAYER2_EMAIL }}
       PLAYER3_EMAIL: ${{ secrets.PLAYER3_EMAIL }}
       PLAYER4_EMAIL: ${{ secrets.PLAYER4_EMAIL }}
-      SMTP_HOST: ${{ secrets.SMTP_HOST }}
-      SMTP_USER: ${{ secrets.SMTP_USER }}
-      SMTP_PASS: ${{ secrets.SMTP_PASS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -79,15 +76,9 @@ jobs:
       - name: uv sync
         run: uv sync
 
-      # Restore watch state (shared SQLite DB with main booking job via same cache key).
-      # Shared with the main booking job — see PLAN.md §20.1 Q1 (resolved: shared key).
-      - name: Restore state cache
-        id: state-cache-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: state/
-          key: teetime-state-v1
-
+      # No state cache: the bot uses an in-process store (no durable SQLite file).
+      # The watch and booking jobs share no persisted state; existing bookings are
+      # detected via the live list_reservations() check (PLAN.md §9 layer 2).
       - name: Run watch check
         # Security: workflow_dispatch inputs are passed via step-level env vars
         # (not interpolated into the shell script body) to prevent template
@@ -97,7 +88,6 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           TARGET_DATE: ${{ github.event.inputs.target_date }}
         run: |
-          mkdir -p state
           DATE_ARGS=()
           if [ -n "$TARGET_DATE" ]; then
             DATE_ARGS=(--date "$TARGET_DATE")
@@ -106,18 +96,3 @@ jobs:
             --config config/example.toml \
             --dry-run "$DRY_RUN" \
             "${DATE_ARGS[@]}"
-
-      - name: Save state cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: state/
-          key: teetime-state-v1
-
-      - name: Upload state diff (forensic artifact)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: teetime-watch-state
-          path: state/
-          if-no-files-found: ignore

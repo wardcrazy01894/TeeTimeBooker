@@ -1,8 +1,11 @@
-"""In-memory BookingStore. Used by orchestrator unit tests (M2.T1) and any
-contributor wanting to spike a flow without touching SQLite.
+"""In-memory BookingStore — the production store in v0.
 
-NOT used in production. Real persistence is `SqliteStore` in v0 and a cloud-KV
-sibling at v1.
+State lives in process memory for the duration of a single run; there is no
+durable cross-run persistence. The source of truth for existing bookings is the
+live `list_reservations()` pre-book check, not this store (see PLAN.md §9). The
+`get_terminal`/`request_lock` methods provide within-run idempotency and an
+advisory lock; they do not survive process exit. A durable backend (SqliteStore)
+was considered and deliberately dropped — see PLAN.md §16 (M3 removed).
 """
 
 from __future__ import annotations
@@ -16,8 +19,8 @@ from .store import ConcurrentRunError
 
 
 class InMemoryStore:
-    """Dict-backed BookingStore. Behaviorally indistinguishable from SqliteStore
-    for single-process tests."""
+    """Dict-backed BookingStore. The v0 production store (single-process,
+    non-durable)."""
 
     def __init__(self) -> None:
         self._history: dict[tuple[RequestId, date], BookingResult] = {}

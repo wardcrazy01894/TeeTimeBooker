@@ -1,7 +1,7 @@
 ---
 name: tdd-cycle
 description: Walk a single behavior change through this repo's mandatory red-green-refactor loop. Use when implementing a milestone task, filling in a NotImplementedError stub, or fixing a bug — anything that changes behavior. Enforces test-first.
-argument-hint: <behavior or stub to implement, e.g. "SqliteStore.record_terminal" or "M3.T1">
+argument-hint: <behavior or stub to implement, e.g. "WatchOrchestrator reconciliation" or "M2.T3">
 allowed-tools: [Read, Edit, Write, Bash, Glob, Grep]
 model: sonnet
 ---

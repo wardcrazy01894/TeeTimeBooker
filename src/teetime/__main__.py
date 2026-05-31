@@ -12,8 +12,6 @@ import asyncio
 import logging
 import os
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -51,17 +49,7 @@ from .courses.foreup.mangrove_bay import MangroveBayAdapter
 from .courses.teeitup.sydney_marovitz import SydneyMarovitzAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
-from .persistence.blob_state_manager import BlobStateManager
 from .persistence.in_memory_store import InMemoryStore
-
-# ACA Blob Storage layout (AZURE_PLAN.md §6.1). Hard-coded by design — the code
-# and the IaC both reference these exact names; changing them is a code+infra change.
-_BLOB_STATE_CONTAINER = "teetime-state"
-_BLOB_STATE_BLOB_NAME = "teetime.db"
-
-# Local SQLite download target for the blob (container.toml's [state].sqlite_path).
-# AppConfig does not model [state]; the Dockerfile sets TEETIME_STATE_DIR to match.
-_DEFAULT_SQLITE_PATH = os.environ.get("TEETIME_STATE_DIR", "/tmp/teetime-state") + "/teetime.db"
 
 # Registry mapping TOML adapter names to adapter classes.
 # _build_adapters() resolves every [[courses]] entry through this dict.
@@ -168,32 +156,27 @@ async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None
         adapters = _build_adapters(cfg, dry_run=dry_run, site_keys=site_keys)
         creds = _resolve_creds(cfg)
 
-    # On ACA, _state_context downloads the SQLite blob + holds the lease for the
-    # whole run, uploading on exit. Locally (no AZURE_STORAGE_ACCOUNT_NAME) it is a
-    # no-op yielding the configured local path. See AZURE_PLAN.md §6.4.
-    with _state_context(_DEFAULT_SQLITE_PATH) as sqlite_path:
-        log.info("State SQLite path: %s", sqlite_path)
-        store = InMemoryStore()
-        await store.initialize()
+    # State is in-process only (InMemoryStore). The source of truth for existing
+    # bookings is the live `list_reservations()` pre-book check, not a durable store.
+    store = InMemoryStore()
+    await store.initialize()
 
-        # Local demo: skip the 6 AM ET busy-wait. The real wait only makes sense
-        # when invoked by the cron in book.yml.
-        scheduler = _local_demo_scheduler(cfg.scheduler)
+    # Local demo: skip the 6 AM ET busy-wait. The real wait only makes sense
+    # when invoked by the cron in book.yml.
+    scheduler = _local_demo_scheduler(cfg.scheduler)
 
-        # One-shot NTP offset for the T0 race (live runs only; best-effort, 0 on failure).
-        clock_offset = (
-            measure_ntp_offset() if not use_fake_adapter and not dry_run else timedelta(0)
-        )
+    # One-shot NTP offset for the T0 race (live runs only; best-effort, 0 on failure).
+    clock_offset = measure_ntp_offset() if not use_fake_adapter and not dry_run else timedelta(0)
 
-        orch = Orchestrator(
-            adapters=adapters,
-            store=store,
-            notifier=ConsoleNotifier(),
-            clock=RealClock(offset=clock_offset),
-            scheduler=scheduler,
-            creds=creds,
-        )
-        result = await orch.run(request)
+    orch = Orchestrator(
+        adapters=adapters,
+        store=store,
+        notifier=ConsoleNotifier(),
+        clock=RealClock(offset=clock_offset),
+        scheduler=scheduler,
+        creds=creds,
+    )
+    result = await orch.run(request)
     if result.outcome.value not in {"booked", "dry_run", "already_booked"}:
         raise click.ClickException(f"booking failed: outcome={result.outcome.value}")
 
@@ -296,35 +279,31 @@ async def _watch(
         adapters = _build_adapters(cfg, dry_run=dry_run, site_keys=site_keys)
         creds = _resolve_creds(cfg)
 
-    # Shares the same teetime-state blob + advisory lock as the booking jobs
-    # (AZURE_PLAN.md §5.4). No-op locally when AZURE_STORAGE_ACCOUNT_NAME is unset.
-    with _state_context(_DEFAULT_SQLITE_PATH) as sqlite_path:
-        log.info("State SQLite path: %s", sqlite_path)
-        store = InMemoryStore()
-        await store.initialize()
+    # In-process state only. Existing bookings are detected via the live
+    # list_reservations() check inside the orchestrators, not a durable store.
+    store = InMemoryStore()
+    await store.initialize()
 
-        clock_offset = (
-            measure_ntp_offset() if not use_fake_adapter and not dry_run else timedelta(0)
-        )
+    clock_offset = measure_ntp_offset() if not use_fake_adapter and not dry_run else timedelta(0)
 
-        watch_config = cfg.watcher.to_watch_config()
-        watch = WatchOrchestrator(
-            adapters=adapters,
-            store=store,
-            notifier=ConsoleNotifier(),
-            clock=RealClock(offset=clock_offset),
-            scheduler=cfg.scheduler,
-            watch_config=watch_config,
-            creds=creds,
-            policy=cfg.one_booking_policy,
+    watch_config = cfg.watcher.to_watch_config()
+    watch = WatchOrchestrator(
+        adapters=adapters,
+        store=store,
+        notifier=ConsoleNotifier(),
+        clock=RealClock(offset=clock_offset),
+        scheduler=cfg.scheduler,
+        watch_config=watch_config,
+        creds=creds,
+        policy=cfg.one_booking_policy,
+    )
+    result = await watch.check_once(request, target_date)
+    if result is not None:
+        log.info(
+            "watch result: outcome=%s confirmation=%s",
+            result.outcome,
+            result.confirmation_code,
         )
-        result = await watch.check_once(request, target_date)
-        if result is not None:
-            log.info(
-                "watch result: outcome=%s confirmation=%s",
-                result.outcome,
-                result.confirmation_code,
-            )
 
 
 async def _resolve_site_keys(cfg: AppConfig) -> dict[CourseId, str]:
@@ -447,35 +426,6 @@ def _resolve_creds(cfg: AppConfig) -> dict[CourseId, CourseCredentials]:
                 extra[key] = value
         creds[CourseId(c.id)] = CourseCredentials(username=username, password=password, extra=extra)
     return creds
-
-
-@contextmanager
-def _state_context(configured_sqlite_path: str | Path) -> Iterator[Path]:
-    """Yield the SQLite path to use for this run, wrapping in BlobStateManager on ACA.
-
-    When ``AZURE_STORAGE_ACCOUNT_NAME`` is set (Azure Container Apps Job), the
-    SQLite state lives in a blob: download → lease → run → upload → release. The
-    blob is downloaded to ``configured_sqlite_path`` (from container.toml's
-    ``[state].sqlite_path``), which is also the upload source on exit. The yielded
-    path is the BlobStateManager's local download target.
-
-    When the env var is absent (local dev / v0 GH Actions), no manager is used and
-    the configured local path is yielded unchanged — fully backward compatible.
-
-    See AZURE_PLAN.md §6.4.
-    """
-    account = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
-    if not account:
-        yield Path(configured_sqlite_path)
-        return
-
-    with BlobStateManager(
-        account,
-        _BLOB_STATE_CONTAINER,
-        _BLOB_STATE_BLOB_NAME,
-        configured_sqlite_path,
-    ) as local_path:
-        yield local_path
 
 
 def _local_demo_scheduler(base: SchedulerConfig) -> SchedulerConfig:

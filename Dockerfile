@@ -19,10 +19,6 @@ RUN uv sync --no-dev --frozen
 COPY src/ ./src/
 COPY config/container.toml ./config/container.toml
 
-# BlobStateManager (M-azure-T5) downloads the SQLite file here at startup
-# and uploads it on exit. /tmp is ephemeral — persistence is in Blob Storage.
-RUN mkdir -p /tmp/teetime-state
-
 # Secrets arrive as env vars via ACA secretRef (Key Vault references).
 # See infra/AZURE_PLAN.md §7.3 for the full env var inventory.
 CMD ["uv", "run", "teetime", "run", "--config", "/app/config/container.toml"]
