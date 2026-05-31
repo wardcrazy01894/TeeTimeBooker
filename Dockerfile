@@ -10,10 +10,13 @@ RUN pip install uv --no-cache-dir
 
 WORKDIR /app
 
-# Install runtime deps first (cached layer unless pyproject/lockfile change)
-# README.md is required by hatchling (build backend) to install the project itself
+# Install runtime deps first WITHOUT the project itself, so this layer stays
+# cached unless pyproject/lockfile change. --no-install-project is required
+# because the project source (src/) is not copied yet; installing it here would
+# either fail or bake an empty package into the venv. README.md is copied now
+# because hatchling (build backend) reads it during the later project install.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --no-dev --frozen
+RUN uv sync --no-install-project --no-dev --frozen
 
 # Add the venv's bin directory to PATH so that console scripts (including
 # "teetime") are callable as bare executables. This is required because the
@@ -21,8 +24,14 @@ RUN uv sync --no-dev --frozen
 # run" wrapper), so the venv must be on PATH for the entrypoint to resolve.
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Source and runtime config
+# Now copy the source and install the project itself into the venv. Without
+# this second sync the `teetime` package is never installed and a bare
+# `teetime` invocation fails with ModuleNotFoundError (the old `uv run teetime`
+# CMD masked this by re-syncing at runtime).
 COPY src/ ./src/
+RUN uv sync --no-dev --frozen
+
+# Runtime config
 COPY config/container.toml ./config/container.toml
 
 # Invoke teetime directly (venv is on PATH above) — matches how ACA Jobs
