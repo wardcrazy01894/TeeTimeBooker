@@ -14,7 +14,8 @@
 //   parallelism = 1            — one replica per execution (no concurrent replicas)
 //   replicaCompletionCount = 1 — execution completes when that one replica finishes
 //   replicaRetryLimit = 0      — no ACA-level retry; bot handles retry internally
-//   replicaTimeout = 900       — 15 minutes; matches v0 timeout-minutes: 15
+//   bookingReplicaTimeout = 1200 — 20 min; covers the in-replica busy-wait to 06:00 ET
+//   watchReplicaTimeout = 120  — 2 min; watch is one HTTP round-trip, no busy-wait
 // See: infra/AZURE_PLAN.md §6.2 (concurrency safety), §4 (hard-coded constants)
 //
 // Identity: user-assigned managed identity (MI). A single MI resource is
@@ -79,7 +80,13 @@ var cronEdtSun = '50 9 * * 0'    // 09:50 UTC = 05:50 EDT Sunday
 var cronEstSun = '50 10 * * 0'   // 10:50 UTC = 05:50 EST Sunday
 
 // Hard-coded parallelism settings. See AZURE_PLAN.md §4.
-var replicaTimeout = 900      // 15 minutes in seconds
+// The booking job busy-waits up to ~12 min to T0 (06:00:00 ET) INSIDE the replica
+// (teetime run --wait), so its timeout must cover lead + busy-wait + post-T0 poll/book.
+// Worst tolerated early-jitter case (~:47 land = 780s wait + 30s poll + 60s book = 870s)
+// fits 1200 with ~330s slack. The DST gate (core/dst_gate.py) caps the busy-wait by
+// skipping the wrong-season cron, so 1200 need not cover the ~70-min wrong-season wait.
+// See AZURE_PLAN.md §5.2 / M6_PLAN §2 PR3.
+var bookingReplicaTimeout = 1200   // 20 minutes in seconds
 var replicaRetryLimit = 0     // bot handles retry; ACA retry would bypass idempotency
 var parallelism = 1
 var replicaCompletionCount = 1
@@ -226,7 +233,7 @@ resource bookingJob 'Microsoft.App/jobs@2024-03-01' = [for job in bookingJobs: {
         replicaCompletionCount: replicaCompletionCount
       }
       replicaRetryLimit: replicaRetryLimit
-      replicaTimeout: replicaTimeout
+      replicaTimeout: bookingReplicaTimeout
       registries: jobRegistries
       secrets: jobSecrets
     }
@@ -246,6 +253,7 @@ resource bookingJob 'Microsoft.App/jobs@2024-03-01' = [for job in bookingJobs: {
             'run'
             '--config'
             '/app/config/container.toml'
+            '--wait' // M6: select the real-timing busy-wait (DST gate + 06:00:00 ET race)
             '--dry-run'
             dryRun ? 'true' : 'false'
           ]
