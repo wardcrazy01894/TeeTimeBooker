@@ -4,14 +4,13 @@
 // Purge protection: EXPLICITLY ENABLED here — not on by default. Irreversible.
 //
 // Secret names stored here (operator must populate after deploy):
-//   MB-USERNAME, MB-PASSWORD, SMTP-HOST, SMTP-USER, SMTP-PASS,
-//   PLAYER1-EMAIL, PLAYER1-PHONE
+//   MB-USERNAME, MB-PASSWORD, PLAYER1-EMAIL, PLAYER1-PHONE, PLAYER1-MB-MEMBER,
+//   TWOCAPTCHA-API-KEY
 //   (plus any additional PLAYER* secrets)
 //
-// NOTE: STORAGE-CONN-STR is NOT stored here. The bot uses DefaultAzureCredential
-// with Storage Blob Data Contributor (via user-assigned MI) for Blob access.
-// The storage account name is passed as a plain (non-secret) env var.
-// See: infra/AZURE_PLAN.md §7.1, §6.4
+// NOTE: the bot makes no authenticated Azure SDK calls at runtime (state is
+// in-process; no Blob Storage), so no storage connection string or account name
+// is needed here. See: infra/AZURE_PLAN.md §7.1.
 //
 // See: infra/AZURE_PLAN.md §7 (secrets & identity), §7.3 (injection pattern),
 //      §7.4 (secret rotation), §11 (security checklist)

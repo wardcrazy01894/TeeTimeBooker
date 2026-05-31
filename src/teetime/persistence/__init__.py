@@ -1,1 +1,1 @@
-"""Persistence: BookingStore protocol + concrete backends (sqlite, json)."""
+"""Persistence: BookingStore protocol + the in-memory (non-durable) backend."""

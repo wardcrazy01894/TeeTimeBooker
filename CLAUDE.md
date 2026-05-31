@@ -25,30 +25,23 @@ PARTIAL — the core orchestrator is done, but M2.T3 (post-mortem reconciliation
 the UNCERTAIN→RECONCILING→BOOKED/LOST path) is not yet implemented. ForeUP adapter
 fully implemented; live dry-run confirmed against Mangrove Bay. TeeItUp adapter
 fully implemented; live booking + cancel confirmed against Sydney Marovitz
-(2026-05-29). M3 (SQLite), M4 (email notifications), M2.T3 (reconciliation), and
-M6 (first production cron run) are the remaining v0 tasks.
+(2026-05-29). M3 (SQLite) and M4 (email notifications) are CUT — `InMemoryStore`
++ `ConsoleNotifier` are the final production wiring, not stubs. Remaining v0 tasks:
+M2.T3 (reconciliation) and M6 (first production cron run).
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
-`registry`, `storage`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys
-on merge to main via `.github/workflows/azure-iac.yml` with `dryRun = true` —
-no real bookings fire in dev. The `BlobStateManager` runtime module (Python SDK
-integration) and container entrypoint wiring (`_state_context()` in `__main__.py`)
-are also implemented (M-azure runtime). Caveat: the downloaded/uploaded blob path
-is not exercised by a durable store until M3's `SqliteStore` lands — the CLI still
-wires `InMemoryStore` (see the note below), so cross-run state is not yet active.
-
-Note: the production CLI currently wires `InMemoryStore` + `ConsoleNotifier`
-unconditionally (SqliteStore/EmailNotifier are stubs). Cross-run durable state
-and the idempotency/advisory-lock layers are therefore NOT active across runs
-until M3 lands — do not run `--dry-run false` on a real cron until then.
+`registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
+to main via `.github/workflows/azure-iac.yml` with `dryRun = true` — no real
+bookings fire in dev. State is in-process only (`InMemoryStore`); the bot makes
+no authenticated Azure SDK calls at runtime.
 
 ## Package layout
 
 ```
 src/teetime/
   core/             # models, adapter Protocol, orchestrator, config, clock
-  persistence/      # BookingStore Protocol + SqliteStore
-  notifications/    # Notifier Protocol + EmailNotifier
+  persistence/      # BookingStore Protocol + InMemoryStore
+  notifications/    # Notifier Protocol + ConsoleNotifier
   courses/foreup/   # Shared ForeUP HTTP base + per-course IDs
   courses/teeitup/  # Shared TeeItUp/Kenna HTTP base + per-course IDs
   courses/chronogolf/  # placeholder; not used in v0
@@ -95,31 +88,31 @@ in `core/` — never directly. This is the cut line for parallel work.
   Consequence: handling raw PAN/CVV brings PCI scope; card fields MUST be dropped
   by `_redact_payload` before any `attempt_log` write (PLAN.md §10.1), and the
   card POST uses `follow_redirects=False`.
-- **Double-booking defense is layered.** Idempotency check, pre-book remote
-  list, single-attempt-per-slot rule, post-mortem reconciliation, advisory
-  lock, GH Actions concurrency group. PLAN.md §9 has the full flow; §9.1 has
-  the explicit state machine that M2.T1 implements. `list_reservations` is
-  on the `CourseAdapter` Protocol from M0 — it is NOT optional.
+- **Double-booking defense is layered.** Live pre-book `list_reservations`
+  check, single-attempt-per-slot rule, in-process advisory lock, ACA Job /
+  GH Actions concurrency groups. There is no durable cross-run idempotency
+  record; the live remote check is the primary cross-run guard. PLAN.md §9
+  has the full flow; §9.1 has the explicit state machine that M2.T1
+  implements. `list_reservations` is on the `CourseAdapter` Protocol from
+  M0 — it is NOT optional.
 - **DST handled by `zoneinfo`** + two GH Actions crons + a "DST-half" gate
   in the workflow that ACTUALLY checks ET wall-clock hour (book.yml `dst`
   step). Math in PLAN.md §6.3.
-- **Cross-run state via `actions/cache`** (key `teetime-state-v1`). SQLite
-  file in `state/teetime.db` survives between runs; cache loss is caught by
-  `list_reservations` pre-book check, never produces phantom bookings.
-  See PLAN.md §9.2.
 - **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
-  This lets `target_offsets = [7]` produce one stable RequestId across the
-  weekend cron while still booking a fresh date each week. See PLAN.md §13.1.
+  This lets `target_offsets = [7]` produce one stable RequestId within a run
+  while still targeting a fresh date each week. The key is held in-process
+  only (InMemoryStore); there is no durable record across runs. See PLAN.md §13.1.
 - **Player PII redacted before write** to `attempt_log` (SHA-256 prefix).
-  See PLAN.md §10.1. The store is a workflow artifact — assume contents
-  are visible to anyone with repo read access.
+  See PLAN.md §10.1. The attempt_log lives in InMemoryStore (in-process only,
+  not persisted to disk or any external store).
 - **`cancel_reservation` is on the `CourseAdapter` Protocol** (breaking — all
   adapters must implement it). Raises `CancelError` on failure. Returns normally
   on 404 (already-cancelled is the desired post-condition). See `core/adapter.py`.
-- **`delete_terminal` is on the `BookingStore` Protocol** (breaking — all stores
-  must implement it). Used only by `UpgradeOrchestrator` after a successful
-  cancel+rebook to clear the old idempotency record before inserting the new
-  one. Must be called under the advisory lock. See `persistence/store.py`.
+- **`delete_terminal` is on the `BookingStore` Protocol** (all stores must
+  implement it; `InMemoryStore` does). Used only by `UpgradeOrchestrator` after
+  a successful cancel+rebook to clear the old in-process idempotency record
+  before inserting the new one. Must be called under the advisory lock.
+  See `persistence/store.py`.
 - **`WatchOrchestrator` and `UpgradeOrchestrator` live in `core/`**. They follow
   the same collaborator-injection pattern as `Orchestrator`. Neither is
   long-running — each is a single-invocation check (one ACA Job execution).
@@ -165,9 +158,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   cleared after use). Adapters with no pre-fetch cost (FakeAdapter, TeeItUpAdapter,
   future Chronogolf) implement it as a no-op. This shrinks the cancel-to-book
   no-booking window from ~60 s to ~1-2 s.
-- **Watch job shares `teetime-state-v1` cache key** with the main booking job.
-  Single SQLite file = single source of truth. Advisory locks serialise concurrent
-  writes. See PLAN.md §20.1 Q1 (resolved).
+- **Each run is independent** — there is no shared state cache between the watch
+  job and the main booking job. The live `list_reservations()` call is the source
+  of truth across runs. Concurrent-run serialization is handled by ACA Job /
+  GH Actions `concurrency:` groups. In-process advisory locks serialise writes
+  within a single run.
 
 ## Per-course specifics → `src/teetime/courses/CLAUDE.md`
 

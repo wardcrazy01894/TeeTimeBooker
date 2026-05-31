@@ -54,13 +54,6 @@ poll_interval_ms = 250
 max_poll_seconds = 30
 
 [notifier]
-# SMTP is deferred — use console until SMTP_HOST is provisioned in Key Vault.
-# Switch to backend = "email" once SMTP credentials are wired.
-backend  = "console"
-email_to = "you@example.com"   # set to the real recipient when switching backend to "email"
-
-[persistence]
-backend = "sqlite"
-# BlobStateManager (M-azure-T5) downloads the blob to /tmp/teetime-state/teetime.db
-# before the bot starts and uploads it on exit. Do not change this path.
-path = "/tmp/teetime-state/teetime.db"
+# Console only. The bot does not send email — booking confirmations come from
+# the course directly. See PLAN.md §16 (M4 removed).
+backend = "console"

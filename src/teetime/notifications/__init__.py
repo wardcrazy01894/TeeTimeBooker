@@ -1,1 +1,1 @@
-"""Notifier protocol + concrete delivery backends (email v0; Slack/SMS later)."""
+"""Notifier protocol + the console delivery backend (Slack/SMS later)."""

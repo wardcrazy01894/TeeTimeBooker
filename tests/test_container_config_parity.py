@@ -35,12 +35,10 @@ _COMPUTE_BICEP = _REPO / "infra" / "bicep" / "modules" / "compute.bicep"
 #   TWOCAPTCHA_API_KEY: read via os.environ directly in __main__ (CAPTCHA solve).
 #     Critically, its absence does NOT crash at config load, so a dropped wiring
 #     would fail SILENTLY at the 6 AM booking — the worst failure mode.
-#   AZURE_CLIENT_ID / AZURE_STORAGE_ACCOUNT_NAME: required for DefaultAzureCredential
-#     to pick the user-assigned MI and reach the SQLite state blob.
+# The bot makes no authenticated Azure SDK calls at runtime (state is in-process;
+# no Blob Storage), so no AZURE_CLIENT_ID / AZURE_STORAGE_ACCOUNT_NAME is needed.
 _REQUIRED_RUNTIME_ENV_VARS = {
     "TWOCAPTCHA_API_KEY",
-    "AZURE_CLIENT_ID",
-    "AZURE_STORAGE_ACCOUNT_NAME",
 }
 
 
@@ -54,7 +52,7 @@ def _referenced_env_vars(cfg: dict) -> set[str]:
 
     Mirrors core/config.py: any key ending in ``_env`` (course creds, player
     contact fields, card fields) resolves an env var that must exist. The
-    ``[notifier]`` SMTP refs are excluded only while the backend is ``console``.
+    ``[notifier]`` block is console-only (no env refs).
     """
     names: set[str] = set()
 
@@ -68,13 +66,6 @@ def _referenced_env_vars(cfg: dict) -> set[str]:
 
     for player in cfg.get("request", {}).get("players", []):
         for key, val in player.items():
-            if key.endswith("_env") and isinstance(val, str):
-                names.add(val)
-
-    # SMTP only matters once notifications switch to the email backend.
-    notifier = cfg.get("notifier", {})
-    if notifier.get("backend") == "email":
-        for key, val in notifier.items():
             if key.endswith("_env") and isinstance(val, str):
                 names.add(val)
 

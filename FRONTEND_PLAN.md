@@ -36,8 +36,9 @@ Rationale:
 - **`BookingStore` is the bot's operational memory** (idempotency keys, advisory
   locks, attempt log) — NOT a mirror of reservations. These are two different
   jobs; conflating them is the trap to avoid.
-- Live-fetch lets list + cancel + cancel-all ship **without M3**. Only preference
-  editing (§5.4) needs durable mutable state.
+- Live-fetch lets list + cancel + cancel-all ship **independently, with no store
+  dependency**. Preference editing (§5.4) needs durable mutable state — M3 was
+  cut from the v0 roadmap, so this is an open decision (§7 Q1).
 
 **Writes are the exception.** Cancelling a *managed* booking must also clear its
 idempotency record (`delete_terminal` under `request_lock`), or the one-booking
@@ -107,33 +108,40 @@ refactor — red/green is "CLI tests still pass."
 Add a service function: for each configured course, authenticate + list, merge,
 return a UI-shaped DTO (course, tee_time, party_size, `is_managed`,
 confirmation_code). Wire one read endpoint. Add the TTL cache. **No store
-dependency** → ships before M3.
+dependency** → ships independently.
 
 ### M-fe-T3 — Cancel (single) endpoint
 Orchestrator-mediated cancel. Managed → cancel + `delete_terminal` under
 `request_lock` (reuse the `UpgradeOrchestrator` pattern). Manual → straight
-adapter cancel. Idempotent (404 = success). **Requires M3** for the managed path
-(`delete_terminal` is a `SqliteStore` method, currently a stub) — OR scope the
-first cut to manual-only cancels if M3 hasn't landed (§7 Q1).
+adapter cancel. Idempotent (404 = success). **No durable store required** —
+`delete_terminal` is implemented on `InMemoryStore`. For a single long-running
+frontend process, the managed-booking record lives for the server's uptime, which
+covers the normal create→cancel lifecycle. Caveat: a server restart between book
+and cancel loses the in-process record; the cancel still succeeds via the live
+`list_reservations` + manual-cancel path, but the idempotency record is gone.
 
 ### M-fe-T4 — Cancel-all endpoint
 Composition of T2 (list) + T3 (cancel). Per-item managed/manual routing. Report
 per-item success/failure (partial-failure is expected and must be surfaced, not
 swallowed).
 
-### M-fe-T5 — Preferences editing (gated on M3)
-Promote the `[request]` block (time_windows, target_offsets) into the store as
-editable state, TOML as bootstrap defaults. Note: editing windows/offsets rotates
-the `RequestId` fingerprint (`derive_request_id` folds
+### M-fe-T5 — Preferences editing (needs durable mutable state — M3 was cut; see §7 Q1)
+Promote the `[request]` block (time_windows, target_offsets) into editable state,
+TOML as bootstrap defaults. The store backing this is currently `InMemoryStore`
+only — edits do not survive a server restart. M3 (`SqliteStore`) was cut from the
+v0 roadmap, so there is an open decision about how to persist preferences across
+restarts: keep `[request]` in TOML (not UI-editable) for now, or introduce a
+durable store as part of the frontend work (§7 Q1). Note: editing windows/offsets
+rotates the `RequestId` fingerprint (`derive_request_id` folds
 `course_ids|offsets|windows|party`) — semantically correct (different prefs =
 different request), but the UI must expect idempotency records to rotate.
 
 ### M-fe-T6 — Frontend UI
 The actual web client over T2–T5 endpoints. Single-user; auth model per §7 Q2.
 
-**Sequencing:** T1 → T2 ship first and unblock the "see my reservations" + (manual)
-cancel features with zero M3 dependency. M3 then gates the managed-cancel cleanup
-and the preferences screen.
+**Sequencing:** T1 → T2 → T3 → T4 can all ship with no durable-store dependency
+(managed-cancel cleanup works on `InMemoryStore`). Only T5 (preferences editing)
+carries an open durability question (§7 Q1).
 
 ---
 
@@ -143,17 +151,24 @@ and the preferences screen.
   store (M-fe-T5). The reservation-read path needs none (it's live).
 - **No `CourseAdapter` changes** — `list_reservations` / `cancel_reservation`
   already cover reads and cancels.
-- **M3 (`SqliteStore`)** must be implemented for managed-cancel cleanup and
-  preferences. It's already on the v0 roadmap.
+- **No durable store required for managed-cancel cleanup** — `delete_terminal` is
+  implemented on `InMemoryStore` and works for a single long-running process.
+- **Preferences persistence is an open decision** — M3 (`SqliteStore`) was cut
+  from the v0 roadmap. Until a durable store is introduced, `[request]` prefs
+  live in TOML only and are not UI-editable across restarts (§7 Q1).
 
 ---
 
 ## 7. Open questions
 
-- **Q1 — Ship manual-only cancel before M3?** T3's managed path needs
-  `delete_terminal` (M3). Option A: wait for M3, ship full cancel. Option B: ship
-  manual-only cancel first, add managed cancel when M3 lands. (Leaning A unless
-  M3 slips.)
+- **Q1 — How to persist editable preferences (M-fe-T5)?** Managed cancel is
+  unblocked — `delete_terminal` is implemented on `InMemoryStore` and needs no
+  durable store for a single long-running process. The real open question is
+  preferences: M3 (`SqliteStore`) was cut from the v0 roadmap and is not coming.
+  Option A: keep `[request]` prefs in TOML for now (not UI-editable; T5 deferred
+  until a durable store is justified). Option B: introduce a lightweight durable
+  store (e.g. SQLite via `SqliteStore`) as part of the frontend work, accepting it
+  as a frontend-scoped dependency rather than a v0 booking-engine milestone.
 - **Q2 — Frontend auth.** Single-user, but the API holds course credentials and
   can cancel bookings — it cannot be unauthenticated if exposed. Local-only? Basic
   auth? Behind the Azure perimeter? Resolve before M-fe-T6.

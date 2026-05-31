@@ -49,9 +49,9 @@ param usePublicBootstrapImage bool = false
 // ---------------------------------------------------------------------------
 // Module: identity
 // User-assigned managed identity — the SINGLE principalId for all RBAC.
-// Deploying identity first breaks the chicken-and-egg cycle: keyvault,
-// registry, and storage can all receive the principalId before compute
-// is declared, and compute references the identity by resource ID.
+// Deploying identity first breaks the chicken-and-egg cycle: keyvault and
+// registry can both receive the principalId before compute is declared, and
+// compute references the identity by resource ID.
 // See: infra/AZURE_PLAN.md §7.2
 // ---------------------------------------------------------------------------
 
@@ -75,21 +75,6 @@ module registry 'modules/registry.bicep' = {
     envName: envName
     location: location
     acrSku: acrSku
-    jobPrincipalId: identity.outputs.principalId
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Module: storage
-// Blob Storage account + teetime-state container for SQLite state blob.
-// See: infra/AZURE_PLAN.md §6
-// ---------------------------------------------------------------------------
-
-module storage 'modules/storage.bicep' = {
-  name: 'storage-${envName}'
-  params: {
-    envName: envName
-    location: location
     jobPrincipalId: identity.outputs.principalId
   }
 }
@@ -133,28 +118,21 @@ module logs 'modules/logs.bicep' = {
 // ---------------------------------------------------------------------------
 
 module compute 'modules/compute.bicep' = {
-  // TODO(M-azure-T6): wire all module outputs:
-  //   - registry.outputs.loginServer → containerImage prefix
-  //   - logs.outputs.workspaceId → ACA environment diagnostics
-  //   - keyvault.outputs.vaultUri → secret keyVaultUrl references
-  //   - storage.outputs.storageAccountName → AZURE_STORAGE_ACCOUNT_NAME env var (non-secret)
   name: 'compute-${envName}'
   params: {
     envName: envName
     location: location
     containerImage: containerImage
     userAssignedIdentityResourceId: identity.outputs.identityResourceId
-    userAssignedIdentityClientId: identity.outputs.clientId
     keyVaultUri: keyvault.outputs.vaultUri
-    storageAccountName: storage.outputs.storageAccountName
     logAnalyticsWorkspaceId: logs.outputs.workspaceId
     logAnalyticsWorkspaceKey: logs.outputs.workspaceKey
     dryRun: dryRun
     usePublicBootstrapImage: usePublicBootstrapImage
   }
-  // keyvault, logs, and storage are already implicit dependencies via their
-  // outputs consumed above (vaultUri, workspaceId/Key, storageAccountName), so
-  // they are NOT listed here (Bicep no-unnecessary-dependson). registry IS
+  // keyvault and logs are already implicit dependencies via their outputs
+  // consumed above (vaultUri, workspaceId/Key), so they are NOT listed here
+  // (Bicep no-unnecessary-dependson). registry IS
   // listed: compute derives the ACR login server from the containerImage string
   // (not a registry output), so there is no implicit edge — but the job's AcrPull
   // role assignment in registry.bicep must exist before the job can pull.
@@ -173,9 +151,6 @@ output acrLoginServer string = registry.outputs.loginServer
 
 @description('Key Vault URI, for az keyvault secret set commands.')
 output keyVaultUri string = keyvault.outputs.vaultUri
-
-@description('Storage account name, for az storage blob commands.')
-output storageAccountName string = storage.outputs.storageAccountName
 
 @description('User-assigned managed identity principal ID. Used to verify RBAC assignments post-deploy.')
 output identityPrincipalId string = identity.outputs.principalId

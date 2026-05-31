@@ -61,9 +61,6 @@ jobs:
       PLAYER2_EMAIL: ${{ secrets.PLAYER2_EMAIL }}
       PLAYER3_EMAIL: ${{ secrets.PLAYER3_EMAIL }}
       PLAYER4_EMAIL: ${{ secrets.PLAYER4_EMAIL }}
-      SMTP_HOST: ${{ secrets.SMTP_HOST }}
-      SMTP_USER: ${{ secrets.SMTP_USER }}
-      SMTP_PASS: ${{ secrets.SMTP_PASS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -114,42 +111,12 @@ jobs:
         if: steps.dst.outputs.proceed == 'true'
         run: uv run playwright install chromium --with-deps
 
-      # Cross-run state restore. Without this, SqliteStore starts empty every
-      # run and the §9-layer-1 idempotency check is defeated. We use the GH
-      # Actions cache (single key) — catastrophic eviction triggers a phantom-
-      # booking re-check on the next run via §9 layer 2 (list_reservations).
-      # See PLAN.md §10 "Cross-run state".
-      - name: Restore state cache
-        if: steps.dst.outputs.proceed == 'true'
-        id: state-cache-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: state/
-          key: teetime-state-v1
-          # No restore-keys: a partial/stale match is worse than empty.
-
+      # No cross-run state cache: the bot uses an in-process store (no durable
+      # SQLite file). Existing bookings are caught by the live list_reservations()
+      # pre-book check (PLAN.md §9 layer 2), not a persisted idempotency record.
       - name: Run booking
         if: steps.dst.outputs.proceed == 'true'
         run: |
-          mkdir -p state
           uv run teetime run \
             --config config/local.toml \
             --dry-run "${{ github.event.inputs.dry_run || 'false' }}"
-
-      # Always save state, even on failure, so attempt_log persists. Cache
-      # 'always' save uses save@v4 unconditionally; we accept overwriting an
-      # older entry under the same key.
-      - name: Save state cache
-        if: always() && steps.dst.outputs.proceed == 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: state/
-          key: teetime-state-v1
-
-      - name: Upload state diff (forensic artifact)
-        if: always() && steps.dst.outputs.proceed == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: teetime-state
-          path: state/
-          if-no-files-found: ignore

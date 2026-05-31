@@ -1,7 +1,8 @@
-"""Tests for InMemoryStore — partial M2.T1 deliverable.
+"""Tests for InMemoryStore — the v0 production store (M2.T1).
 
-Behavioral parity with future SqliteStore (M3): same Protocol, same semantics
-for single-process usage. Tests here pin the contract so M3 can copy them.
+Pins the BookingStore Protocol contract for single-process usage. There is no
+durable backend (M3/SQLite was dropped — see PLAN.md §16); state does not
+survive process exit, and that is intentional.
 """
 
 from __future__ import annotations

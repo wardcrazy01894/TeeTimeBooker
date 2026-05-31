@@ -18,18 +18,16 @@
 // See: infra/AZURE_PLAN.md §6.2 (concurrency safety), §4 (hard-coded constants)
 //
 // Identity: user-assigned managed identity (MI). A single MI resource is
-// created by identity.bicep and passed in here as userAssignedIdentityResourceId
-// and userAssignedIdentityClientId. Both ACA job resources (EDT + EST) reference
-// the SAME MI, so RBAC assignments in keyvault/registry/storage cover both jobs
-// with a single principalId. There is NO system-assigned MI.
+// created by identity.bicep and passed in here as userAssignedIdentityResourceId.
+// Both ACA job resources (EDT + EST) reference the SAME MI, so RBAC assignments
+// in keyvault/registry cover both jobs with a single principalId. There is NO
+// system-assigned MI.
 // See: infra/AZURE_PLAN.md §7.2
 //
 // Secret injection:
 //   Secrets are declared with keyVaultUrl references (platform resolves at
 //   container start via the user-assigned MI). Env vars reference secret names
 //   via secretRef. Bot reads from os.environ — no SDK changes required.
-//   Storage account name is passed as a plain (non-secret) env var; the bot
-//   uses DefaultAzureCredential for Blob Storage access, not a connection string.
 // See: infra/AZURE_PLAN.md §7.3 (injection pattern)
 
 targetScope = 'resourceGroup'
@@ -47,17 +45,11 @@ param location string
 @description('Full container image reference (e.g. teetimedev<suffix>.azurecr.io/teetime:v1.0.0).')
 param containerImage string
 
-@description('Resource ID of the user-assigned managed identity (from identity.bicep). Assigned to both ACA job resources so KV/ACR/Storage RBAC covers both.')
+@description('Resource ID of the user-assigned managed identity (from identity.bicep). Assigned to both ACA job resources so KV/ACR RBAC covers both.')
 param userAssignedIdentityResourceId string
-
-@description('Client ID of the user-assigned managed identity. Required in the ACA job identity block for KV secret resolution.')
-param userAssignedIdentityClientId string
 
 @description('Key Vault URI for secret references (e.g. https://kv-teetime-dev-xxxx.vault.azure.net/).')
 param keyVaultUri string
-
-@description('Storage account name passed as a plain env var. Bot uses DefaultAzureCredential for Blob Storage; no connection string needed.')
-param storageAccountName string
 
 @description('Log Analytics Workspace resource ID for ACA environment diagnostics.')
 param logAnalyticsWorkspaceId string
@@ -136,10 +128,9 @@ var acrLoginServer = split(containerImage, '/')[0]
 // (tests/test_container_config_parity.py) that fails CI if container.toml ever
 // references an env var not wired below.
 //
-// SMTP-* secrets are intentionally OMITTED: the notifications backend is
-// 'console' (config/container.toml) until email is enabled. When switching to
-// backend = 'email', add smtp-host / smtp-user / smtp-pass secretRefs here (and
-// matching SMTP_* env vars below) plus the KV secrets. See AZURE_PLAN.md §12 Q10.
+// No SMTP-* secrets: the bot sends no email (M4/email was cut — the golf course
+// sends booking confirmations directly). The notifier is 'console' only.
+// See AZURE_PLAN.md §12 Q10.
 var jobSecrets = [
   { name: 'mb-username',        keyVaultUrl: '${keyVaultUri}secrets/MB-USERNAME',        identity: userAssignedIdentityResourceId }
   { name: 'mb-password',        keyVaultUrl: '${keyVaultUri}secrets/MB-PASSWORD',        identity: userAssignedIdentityResourceId }
@@ -165,8 +156,9 @@ var jobRegistries = usePublicBootstrapImage ? [] : [
 
 // Common container env vars shared by booking + watch jobs. The secretRef
 // entries point at the jobSecrets names above; the value entries are plain
-// (non-secret) config. AZURE_CLIENT_ID is REQUIRED so DefaultAzureCredential
-// selects the user-assigned MI (not a system-assigned one) for Blob Storage.
+// (non-secret) config. The bot makes no authenticated Azure SDK calls at
+// runtime (state is in-process; no Blob Storage), so no AZURE_CLIENT_ID is
+// needed — Key Vault secret resolution uses the job's identity block directly.
 var commonEnv = [
   { name: 'MB_USERNAME',                secretRef: 'mb-username' }
   { name: 'MB_PASSWORD',                secretRef: 'mb-password' }
@@ -174,8 +166,6 @@ var commonEnv = [
   { name: 'PLAYER1_PHONE',              secretRef: 'player1-phone' }
   { name: 'PLAYER1_MB_MEMBER',          secretRef: 'player1-mb-member' }
   { name: 'TWOCAPTCHA_API_KEY',         secretRef: 'twocaptcha-api-key' }
-  { name: 'AZURE_STORAGE_ACCOUNT_NAME', value: storageAccountName }
-  { name: 'AZURE_CLIENT_ID',            value: userAssignedIdentityClientId }
   { name: 'TEETIME_ENV',                value: envName }
 ]
 
@@ -342,5 +332,5 @@ output acaEnvironmentId string = acaEnv.id
 
 // NOTE: There are no per-job principalId outputs. RBAC is handled by the
 // single user-assigned MI (identity.bicep). The principalId is already wired
-// from identity.outputs.principalId to keyvault/registry/storage before
-// compute.bicep runs. No post-compute RBAC pass needed.
+// from identity.outputs.principalId to keyvault/registry before compute.bicep
+// runs. No post-compute RBAC pass needed.

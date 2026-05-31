@@ -17,8 +17,6 @@ dependencies = [
     "playwright>=1.37",     # headless browser for reCAPTCHA v2 invisible token harvest
     "idna>=3.15",           # CVE-2026-45409 fixed in 3.15; transitive via httpx
     "ntplib>=0.4",          # best-effort NTP clock-offset for the 6 AM race (RealClock)
-    "azure-storage-blob>=12.20",  # SQLite state blob download/upload/lease on ACA (AZURE_PLAN.md §6.4)
-    "azure-identity>=1.17",       # DefaultAzureCredential for the user-assigned MI (no account key)
 ]
 
 [project.optional-dependencies]
@@ -71,7 +69,7 @@ warn_unreachable = true
 no_implicit_reexport = true
 
 [[tool.mypy.overrides]]
-module = ["vcr.*", "freezegun.*", "ntplib.*", "azure.*"]
+module = ["vcr.*", "freezegun.*", "ntplib.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
