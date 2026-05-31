@@ -111,10 +111,11 @@ infra/
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
       compute.bicep            # ACA Environment (Consumption) + 2× booking ACA Jobs (DST crons) + watch ACA Job
       budget.bicep             # Cost Management budget ($20/mo, both RGs; Actual 80% + Forecasted 100%); subscription-scoped
+                               #   also conditionally deploys budget-teetime-killswitch ($50 actual → killswitch Action Group) when killswitchActionGroupId is supplied
       killswitch.bicep         # Cost killswitch: Logic App (Consumption) + Action Group + RBAC; deployed to rg-teetime-dev only
                                #   12 HTTP actions: 6 PATCH (Schedule→Manual) + 6 POST /stop; all 3 jobs × 2 envs
                                #   gated: enableKillswitch && !empty(killswitchRbacRoleId) && envName=='dev'
-                               #   operator pre-step: create "ACA Job Schedule Manager" custom role (see §9.2)
+                               #   DONE 2026-05-31: custom role created (GUID 3e2d5a14-96bd-4469-9f96-b9c3270aa9e6 set in param files + azure-iac.yml); killswitch live in dev
       killswitch-rbac-prod.bicep  # companion: cross-RG role assignment for rg-teetime-prod
                                #   deployed as nested module by killswitch.bicep with scope: resourceGroup(sub, prodRgName)
 .github/workflows/
@@ -611,21 +612,31 @@ $50, killswitch-trigger) is a SEPARATE second budget resource in `budget.bicep` 
 
 **Deploy note:** the `azure-iac.yml` budget step is **skipped** in CI because the CI service
 principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission).
-Deploy once manually as the operator. After PR-KS1 deploys the killswitch, obtain the Action
-Group ID from the `killswitchActionGroupId` output of the dev deployment, then re-run:
+Deploy once manually as the operator. PR-KS1 is deployed (2026-05-31); the killswitch is live
+in dev. The remaining operator step is to obtain `killswitchActionGroupId` and run the
+subscription-scoped budget deploy:
 ```bash
+# Obtain the Action Group ID from the dev deployment:
+az deployment group show -g rg-teetime-dev -n teetime-dev \
+  --query properties.outputs.killswitchActionGroupId.value -o tsv
+# → currently: /subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d/resourceGroups/rg-teetime-dev/providers/Microsoft.Insights/actionGroups/ag-teetime-killswitch-dev
+
+# Then deploy the $50 killswitch budget tier:
 az deployment sub create --location eastus2 \
   --template-file infra/bicep/modules/budget.bicep \
   --parameters budgetAmountUsd=20 budgetAlertEmail=<email> \
-               killswitchActionGroupId=<output from killswitch deploy> \
+               killswitchActionGroupId=<output from above> \
                killswitchBudgetAmountUsd=50
 ```
 The Tier-2 `killswitchBudget` resource is conditional on `killswitchActionGroupId`: omit that
 param and the manual deploy only creates/updates the Tier-1 $20 budget (Tier 2 is a clean no-op).
 
-**Killswitch custom role — operator pre-step (required before killswitch.bicep deploys):**
-The "ACA Job Schedule Manager" custom role requires subscription-level
-`Microsoft.Authorization/roleDefinitions/write` (CI SP does not have this):
+**Killswitch custom role — DONE 2026-05-31:**
+The "ACA Job Schedule Manager" custom role (GUID `3e2d5a14-96bd-4469-9f96-b9c3270aa9e6`) has been
+created by the operator. The GUID is set in both param files (`main.bicepparam.dev` /
+`main.bicepparam.prod`) and in `azure-iac.yml` (dev job env `KILLSWITCH_RBAC_ROLE_ID`). The
+killswitch chain (Logic App + Action Group + cross-RG RBAC) arms automatically on every dev
+auto-deploy. For reference, the role was created with:
 ```bash
 az role definition create --role-definition '{
   "Name": "ACA Job Schedule Manager",
@@ -637,11 +648,7 @@ az role definition create --role-definition '{
   ],
   "AssignableScopes": ["/subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d"]
 }'
-# Record the GUID from the output.
-# Then set param killswitchRbacRoleId = '<GUID>' in BOTH:
-#   infra/bicep/main.bicepparam.dev
-#   infra/bicep/main.bicepparam.prod
-# Until the GUID is set, enableKillswitch=true is a clean no-op (the !empty() gate prevents deploy).
+# GUID returned: 3e2d5a14-96bd-4469-9f96-b9c3270aa9e6 — already set in both param files.
 ```
 
 ---

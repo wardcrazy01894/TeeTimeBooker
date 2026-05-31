@@ -100,7 +100,7 @@ var replicaCompletionCount = 1
 var watchCron = '*/10 * * * *'
 var watchReplicaTimeout = 120
 
-// Booking-job cron table. A single array + loop avoids four copy-pasted job
+// Booking-job cron table. A single array + loop avoids two copy-pasted job
 // resources. Each entry pairs a resource-name suffix with its UTC cron.
 // One job resource per cron => independent execution history; any one cron-half
 // can be disabled without touching the others (a single job with multiple
@@ -205,11 +205,11 @@ resource acaEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
   }
 }
 
-// Four booking jobs (Sat EDT, Sat EST, Sun EDT, Sun EST) via a loop over the
-// bookingJobs table. Each is an independent Microsoft.App/jobs resource sharing
-// the same image, identity, registries, secrets, and env — only name + cron vary.
+// Two booking jobs (Sun EDT, Sun EST) via a loop over the bookingJobs table.
+// Each is an independent Microsoft.App/jobs resource sharing the same image,
+// identity, registries, secrets, and env — only name + cron vary.
 //
-// @batchSize(1) serializes their creation (one at a time, not all four at once).
+// @batchSize(1) serializes their creation (one at a time, not both at once).
 // On a freshly-created Consumption environment the ACA control plane times out
 // ("ContainerAppOperationError: Operation expired") when several job revisions
 // are provisioned simultaneously against the still-cold env. Serial creation

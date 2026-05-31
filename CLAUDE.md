@@ -46,18 +46,20 @@ to main via `.github/workflows/azure-iac.yml` with `dryRun = true` — no real
 bookings fire in dev. State is in-process only (`InMemoryStore`); the bot makes
 no authenticated Azure SDK calls at runtime.
 
-**Cost killswitch (PR-KS1 + PR-KS2) implemented.** `killswitch.bicep` + `killswitch-rbac-prod.bicep`
+**Cost killswitch (PR-KS1 + PR-KS2) implemented and LIVE in dev.** `killswitch.bicep` + `killswitch-rbac-prod.bicep`
 deploy a Logic App (Consumption) + Action Group in `rg-teetime-dev` that issues 12 HTTP
 calls (6 PATCH + 6 POST /stop) to silence all six ACA Job crons when the $50 actual budget
 threshold fires. Deployed only in dev (Logic App manages both envs via cross-RG RBAC). Gated
-on `enableKillswitch && !empty(killswitchRbacRoleId) && envName=='dev'`; currently a no-op
-until operator creates the "ACA Job Schedule Manager" custom role and fills the GUID into both
-param files. The `killswitchFired` param (already in both param files) is the CI deploy-clobber
+on `enableKillswitch && !empty(killswitchRbacRoleId) && envName=='dev'`. The "ACA Job Schedule
+Manager" custom role (GUID `3e2d5a14-96bd-4469-9f96-b9c3270aa9e6`) is created; the GUID is set
+in both param files and in `azure-iac.yml` — the killswitch **arms on every dev auto-deploy** and
+is live in dev. The `killswitchFired` param (already in both param files) is the CI deploy-clobber
 guard: once set to `true`, no subsequent CI deploy can re-arm the cron schedules. PR-KS2 added the
 separate $50 `budget-teetime-killswitch` resource to `budget.bicep` (conditional on
 `killswitchActionGroupId`; the $20 email budget is untouched) — deployed manually, subscription-
-scoped. Remaining to go live: operator creates the custom role + supplies the GUID, then runs the
-manual `az deployment sub create` for budget.bicep with the Action Group ID. See
+scoped. **Remaining step:** operator runs `az deployment sub create` for `budget.bicep` with
+`killswitchActionGroupId` (obtain via `az deployment group show -g rg-teetime-dev -n teetime-dev
+--query properties.outputs.killswitchActionGroupId.value -o tsv`) to arm the $50 budget tier. See
 `infra/COST_KILLSWITCH_PLAN.md` and `infra/AZURE_PLAN.md §9.2`.
 
 ## Package layout
@@ -71,7 +73,7 @@ src/teetime/
   courses/teeitup/  # Shared TeeItUp/Kenna HTTP base + per-course IDs
   courses/chronogolf/  # placeholder; not used in v0
 config/             # example.toml; secrets via env-var refs only
-.github/workflows/  # ci.yml (lint/test) + azure-iac.yml (Bicep deploy)
+.github/workflows/  # ci.yml (lint / type-check / test / docker-smoke / secret-scan / bicep-lint) + azure-iac.yml (Bicep deploy)
 tests/              # pytest; vcrpy cassettes go in tests/cassettes/
 ```
 
@@ -281,6 +283,27 @@ check each of these and update any that the PR makes stale:
 A PR that introduces a new CLI flag, env var, or milestone task with no
 corresponding doc update is incomplete. Not every PR touches every doc —
 the rule is to check and update the ones that are now stale.
+
+## Required CI checks
+
+Any NEW CI validation job added to `ci.yml` (a job that runs on PRs and should
+gate merge — e.g. a new lint/test/scan/build check) **MUST be added to `main`'s
+branch-protection required status checks in the same PR**:
+
+```bash
+gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_status_checks \
+  -F strict=true \
+  -f 'contexts[]=<job-name-1>' \
+  -f 'contexts[]=<job-name-2>' \
+  # ... include the FULL current list every time (replaces, not appends)
+```
+
+Validation checks are required by default; do NOT add a merge-gating check that
+is only advisory. Deploy jobs (`deploy-dev` / `deploy-prod`) are NOT required
+checks — they run on push/tags, not PRs.
+
+**Current required checks:** `test / lint / typecheck`, `docker build`,
+`docker smoke`, `bicep lint`, `secret scan`.
 
 ## When in doubt
 

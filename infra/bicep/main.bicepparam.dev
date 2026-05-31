@@ -8,13 +8,12 @@
 
 using 'main.bicep'
 
-// TODO(M-azure-T0): fill in actual values. See AZURE_PLAN.md §12.
 param envName = 'dev'
 param location = 'eastus2'
 
-// TODO(M-azure-T6): update this after first `az acr build` push.
-// Format: <acrLoginServer>/teetime:<tag>
-// AZURE_PLAN.md §12 Q7 — confirm ACR name is globally unique.
+// containerImage is a placeholder for local/manual deploy only — CI injects containerImage
+// inline (resolved from the ACR login server after ACR creation); this placeholder is never
+// read by CI. Format: <acrLoginServer>/teetime:<tag>
 param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime:dev'
 
 // Budget params are NOT set here. budget.bicep is subscription-scoped and

@@ -33,10 +33,9 @@ param jobPrincipalId string
 // Variables
 // ---------------------------------------------------------------------------
 
-// TODO(M-azure-T2): ACR name must be globally unique, 5–50 chars, alphanumeric.
-// Proposed: teetime{envName}{uniqueSuffix} where uniqueSuffix is derived from
-// subscription ID. See AZURE_PLAN.md §12 Q7.
-// Use uniqueString() built-in for deterministic suffix.
+// ACR name is globally unique, 5–50 chars, alphanumeric.
+// Pattern: teetime{envName}{uniqueSuffix} where uniqueSuffix is derived from
+// resourceGroup().id via uniqueString() for a deterministic suffix. See AZURE_PLAN.md §12 Q7.
 var acrName = 'teetime${envName}${uniqueString(resourceGroup().id)}'
 
 // AcrPull built-in role GUID — stable across all Azure environments.

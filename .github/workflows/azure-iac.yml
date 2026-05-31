@@ -115,7 +115,7 @@ jobs:
       DRY_RUN: "true"
       PURGE_PROT: "false"
       BUDGET_ALERT_EMAIL: alanc3939@gmail.com
-      # Cost-killswitch arming (PR-KS2). CI passes params INLINE, so these MUST be
+      # Cost-killswitch arming (PR-KS1). CI passes params INLINE, so these MUST be
       # set here — the main.bicepparam.dev values are NOT read by CI (manual-deploy
       # only). The killswitch module is gated on envName=='dev', so it only deploys
       # in this dev job. ROLE GUID is non-secret config (a custom-role definition id).
@@ -171,6 +171,8 @@ jobs:
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
       - name: Deploy budget (subscription-scoped; non-fatal)
+        # killswitchActionGroupId intentionally omitted — the $50 killswitch budget is
+        # subscription-scoped and deployed manually by the operator (see AZURE_PLAN.md §9.2).
         run: |
           az deployment sub create \
             --location "${AZURE_LOCATION}" \
@@ -249,6 +251,8 @@ jobs:
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
       - name: Deploy budget (subscription-scoped; non-fatal)
+        # killswitchActionGroupId intentionally omitted — the $50 killswitch budget is
+        # subscription-scoped and deployed manually by the operator (see AZURE_PLAN.md §9.2).
         run: |
           az deployment sub create \
             --location "${AZURE_LOCATION}" \

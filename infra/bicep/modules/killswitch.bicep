@@ -45,15 +45,15 @@
 //   callbackUrl is obtained via listCallbackUrl() at deploy time — no secret stored.
 //   Source: https://learn.microsoft.com/en-us/azure/templates/microsoft.insights/2023-01-01/actiongroups
 //
-// TRIGGER NAME COUPLING CONSTRAINT (PR-KS1 implementation must preserve this):
+// INVARIANT — TRIGGER NAME COUPLING:
 //   The Logic App HTTP trigger is declared with the name 'manual' (see the
 //   triggers.manual block in the workflow definition). The listCallbackUrl()
 //   call below references this name:
 //     listCallbackUrl('${logicApp.id}/triggers/manual', '2019-05-01')
-//   If the PR-KS1 implementation renames the trigger (e.g. to 'When_HTTP_request'),
-//   the listCallbackUrl path will point to a non-existent trigger URL, silently
+//   If this trigger is ever renamed (e.g. to 'When_HTTP_request'), the
+//   listCallbackUrl path will point to a non-existent trigger URL, silently
 //   producing a 404 when the Action Group fires. The trigger name MUST remain
-//   'manual' (exact match, lowercase) in the final workflow definition.
+//   'manual' (exact match, lowercase) in the workflow definition — do not rename it.
 //
 // Idempotency (VERIFIED — see infra/COST_KILLSWITCH_PLAN.md §2/Item6):
 //   PATCH triggerType=Manual on an already-Manual job returns HTTP 200 (no error).
@@ -78,9 +78,9 @@
 //   Effective monthly cost: $0.00.
 //   See infra/COST_KILLSWITCH_PLAN.md §2/Item9.
 //
-// NOT deployed by default: main.bicep gates this module on enableKillswitch=false.
-// The operator must set enableKillswitch=true in the bicepparam files and supply
-// killswitchRbacRoleId to activate.
+// Deploy gate: main.bicep's param default for enableKillswitch is false, but both
+// bicepparam files and azure-iac.yml set enableKillswitch=true and supply the custom
+// role GUID — so this module IS deployed (live in dev as of 2026-05-31).
 //
 // Deploy dependency: this module is deployed in rg-teetime-dev. The role
 // assignments target BOTH rg-teetime-dev (inline) and rg-teetime-prod (nested
@@ -176,12 +176,11 @@ var patchBodyDisable = {
 // useCommonAlertSchema=true in the Action Group means the HTTP trigger body
 // will be in the Common Alert Schema format.
 //
-// TODO(PR-KS1): Replace the stub workflow definition below with the full
-// workflow JSON: HTTP trigger → Parse JSON (Common Alert Schema) → 12 parallel
+// Workflow definition: HTTP trigger → Parse JSON (Common Alert Schema) → 12 parallel
 // HTTP actions (6 PATCH + 6 POST /stop targeting all 6 ACA Job resources in
 // both rg-teetime-dev and rg-teetime-prod).
 //
-// The 12 actions to implement (all parallel — runAfter: {}):
+// The 12 actions (all parallel — runAfter: {}):
 //
 //   Lever (a) — 6 PATCH calls (Schedule → Manual):
 //   Patch_booking_edt_sun_dev:   PATCH .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-job-dev-edt-sun?api-version=2024-03-01
@@ -218,8 +217,6 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
   }
   properties: {
     state: 'Enabled'
-    // TODO(PR-KS1): Replace this stub definition with the full workflow.
-    // See the detailed comment above for all 12 action URIs and body shapes.
     definition: {
       '$schema': 'https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#'
       contentVersion: '1.0.0.0'
@@ -512,7 +509,7 @@ module rbacProd 'killswitch-rbac-prod.bicep' = {
 // Outputs
 // ---------------------------------------------------------------------------
 
-@description('ARM resource ID of the Action Group. Pass as killswitchActionGroupId to budget.bicep (PR-KS2) to wire the $50 budget threshold to this Action Group.')
+@description('ARM resource ID of the Action Group. Pass as killswitchActionGroupId to budget.bicep to arm the $50 budget threshold; budget.bicep already has the killswitchBudget resource wired (conditional on this output). Obtain via: az deployment group show -g rg-teetime-dev -n teetime-dev --query properties.outputs.killswitchActionGroupId.value -o tsv')
 output actionGroupId string = actionGroup.id
 
 @description('Principal ID of the Logic App system-assigned managed identity. Used to verify the RBAC assignments post-deploy: az role assignment list --assignee <principalId>.')
