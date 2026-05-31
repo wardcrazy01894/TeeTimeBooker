@@ -57,3 +57,18 @@ max_poll_seconds = 30
 # Console only. The bot does not send email — booking confirmations come from
 # the course directly. See PLAN.md §16 (M4 removed).
 backend = "console"
+
+# Cancellation-monitor job (M-feature-1). ENABLED for the v1 dev/prod watch job.
+# With --dry-run true (dev) the watcher does ALL the looking/ranking/logging and
+# suppresses ONLY the final booking POST (WatchOrchestrator returns DRY_RUN before
+# the lock + POST). That is the intended dev posture: prove the poller works without
+# booking. In prod (--dry-run false) the same code path books a found slot.
+[watcher]
+enabled            = true
+poll_interval_s    = 600  # 10 minutes; must be >= 300 (anti-bot floor)
+polling_start_hour = 7    # course-local; no polling before 7 AM ET
+polling_end_hour   = 22   # course-local; no polling after 10 PM ET
+
+# one_booking_policy is intentionally NOT enabled in M6 (see M6_PLAN.md §4.4): the
+# watcher only logs/ranks newly available slots; cancel+rebook upgrades are a later,
+# separately-verified step. Daily-watch + policy-on needs a target-date design fix first.

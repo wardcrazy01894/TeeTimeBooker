@@ -256,7 +256,7 @@ Key differences from the booking jobs:
 | DST gate | Required (races a wall-clock moment) | Not required (WatchOrchestrator gates on polling hours internally via zoneinfo) |
 | `replicaTimeout` | 900 s (15 min) | 60 s (one HTTP round-trip) |
 | Command | `teetime run --config ...` | `teetime watch --config ...` |
-| Enabled | Always | Controlled by `watcher.enabled` in TOML; exits 0 when false |
+| Enabled | Always | `watcher.enabled = true` in v1 configs (M6 PR4); look-but-don't-book under `--dry-run true`. Uses the SAME `MB-*`/`PLAYER1-*` KV secrets — no new secrets. |
 | Concurrency group | `book-tee-time` | `watch-tee-time` (separate; but a watch+book overlap is safe — advisory lock in code handles it) |
 
 The watch job is fully stateless (same as the booking jobs — `InMemoryStore`).

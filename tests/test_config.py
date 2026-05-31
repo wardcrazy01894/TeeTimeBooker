@@ -15,6 +15,7 @@ import pytest
 from teetime.core.config import AppConfig, MissingEnvVarError, load, redact
 
 EXAMPLE_TOML = Path(__file__).resolve().parent.parent / "config" / "example.toml"
+CONTAINER_TOML = Path(__file__).resolve().parent.parent / "config" / "container.toml"
 
 
 # Minimal env set required by `config/example.toml`.
@@ -45,6 +46,22 @@ def test_loads_example_toml(env_set: None) -> None:
     assert cfg.request.holes == 18
     assert cfg.request.max_price_per_player == Decimal("55.00")
     assert len(cfg.request.players) == 4
+
+
+def test_container_config_enables_watcher(env_set: None) -> None:
+    """M6 PR4: the shipped container config (deployed image) enables the watcher so
+    the dev/prod watch job actually polls. With --dry-run true it looks but never books;
+    the orchestrator-level dry-run guard is covered in test_watch_orchestrator.py."""
+    cfg = load(CONTAINER_TOML)
+    assert cfg.watcher.enabled is True
+    assert cfg.watcher.poll_interval_s == 600
+    assert cfg.watcher.polling_start_hour == 7
+    assert cfg.watcher.polling_end_hour == 22
+    # to_watch_config() round-trips the knobs the WatchOrchestrator consumes.
+    wc = cfg.watcher.to_watch_config()
+    assert wc.poll_interval_s == 600
+    assert wc.polling_start_hour == 7
+    assert wc.polling_end_hour == 22
 
 
 def test_player_email_env_resolves_to_email_value(env_set: None) -> None:

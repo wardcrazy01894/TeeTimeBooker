@@ -127,9 +127,10 @@ uv run teetime watch --config config/local.toml --dry-run false
 uv run teetime watch --config config/local.toml --dry-run true --date 2026-06-07
 ```
 
-The watch feature must be enabled in `config/local.toml` (`watcher.enabled = true`).
-When disabled, the command logs a warning and exits 0 — safe to leave running in the
-cron even if you don't want it active.
+The watch feature is **enabled by default in the v1 configs** (`config/container.toml`
+and `config/local.toml`, `watcher.enabled = true`). With `--dry-run true` it does all the
+looking/ranking/logging but never books. When disabled, the command logs a warning and
+exits 0. `one_booking_policy` (cancel + rebook to a better slot) stays disabled in M6.
 
 ---
 
