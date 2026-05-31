@@ -82,6 +82,25 @@ jobs:
         run: docker build -t teetime:ci .
 
   # -------------------------------------------------------------------------
+  # Container: smoke-test the bare "teetime" entrypoint resolves on PATH.
+  # Mirrors exactly how ACA Jobs invoke the container (command: ['teetime']).
+  # Catches regressions where venv is not on PATH (exit 128 crash-loop).
+  # -------------------------------------------------------------------------
+  docker-smoke:
+    name: docker smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build container image
+        run: docker build -t teetime:ci .
+
+      - name: Smoke-test bare teetime entrypoint (ACA parity)
+        run: docker run --rm teetime:ci teetime --help
+
+  # -------------------------------------------------------------------------
   # IaC: validate Bicep templates (no Azure credentials required)
   # -------------------------------------------------------------------------
   bicep-lint:
