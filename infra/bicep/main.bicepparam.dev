@@ -46,3 +46,15 @@ param killswitchFired = false
 // Requires killswitchRbacRoleId to be set to the pre-created custom role GUID.
 // See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1
 param enableKillswitch = true
+
+// GUID of the pre-created "ACA Job Schedule Manager" custom role.
+// OPERATOR: fill in after running:
+//   az role definition create --role-definition '{
+//     "Name": "ACA Job Schedule Manager",
+//     "Actions": ["Microsoft.App/jobs/read","Microsoft.App/jobs/write","Microsoft.App/jobs/stop/action"],
+//     "AssignableScopes": ["/subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d"]
+//   }'
+// Record the GUID from the output and set it here. Until the GUID is filled in,
+// the killswitch module is a clean no-op (the !empty() gate in main.bicep prevents deploy).
+// See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
+param killswitchRbacRoleId = ''

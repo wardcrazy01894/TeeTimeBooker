@@ -60,6 +60,12 @@ IMPORTANT: do NOT clear this param until the overspend root cause is diagnosed a
 ''')
 param killswitchFired bool = false
 
+@description('Enable the cost-killswitch Logic App + Action Group. Defaults false in main.bicep; param files set true (enabled on deploy). See COST_KILLSWITCH_PLAN.md §3/PR-KS1.')
+param enableKillswitch bool = false
+
+@description('GUID of the pre-created "ACA Job Schedule Manager" custom role. Required when enableKillswitch=true. Must be created manually by the operator (subscription-level roleDefinitions/write required). See COST_KILLSWITCH_PLAN.md §2/Item4.')
+param killswitchRbacRoleId string = ''
+
 // When the killswitch has fired, force schedules off regardless of enableSchedules.
 // This ensures that any CI deploy — even one that does not touch the killswitchFired
 // param — cannot silently re-arm the jobs. The enableSchedules param retains its value
@@ -161,6 +167,26 @@ module compute 'modules/compute.bicep' = {
 }
 
 // ---------------------------------------------------------------------------
+// Module: killswitch (optional — dev only, gated on enableKillswitch + role GUID)
+// Cost-killswitch Logic App + Action Group + RBAC.
+// Deployed ONLY when: (a) enableKillswitch=true, (b) killswitchRbacRoleId is
+// non-empty (custom role pre-created), AND (c) envName=='dev' (the killswitch
+// lives in rg-teetime-dev and manages BOTH envs via cross-RG RBAC — a second
+// instance must NOT be created in prod). If enableKillswitch=true but
+// killswitchRbacRoleId='' (role not yet created), the deploy is a clean no-op.
+// See: infra/COST_KILLSWITCH_PLAN.md §2/Item3, §3/PR-KS1
+// ---------------------------------------------------------------------------
+
+module killswitch 'modules/killswitch.bicep' = if (enableKillswitch && !empty(killswitchRbacRoleId) && envName == 'dev') {
+  name: 'killswitch-${envName}'
+  params: {
+    envName: envName
+    location: location
+    killswitchRbacRoleId: killswitchRbacRoleId
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
@@ -175,3 +201,10 @@ output keyVaultUri string = keyvault.outputs.vaultUri
 
 @description('User-assigned managed identity principal ID. Used to verify RBAC assignments post-deploy.')
 output identityPrincipalId string = identity.outputs.principalId
+
+@description('ARM resource ID of the killswitch Action Group. Empty string when the killswitch module is not deployed (enableKillswitch=false, killswitchRbacRoleId empty, or envName!=dev). Pass to budget.bicep as killswitchActionGroupId in PR-KS2 to wire the $50 budget threshold.')
+// BCP318: Bicep's type system cannot prove the ternary prevents null access on a conditional
+// module. This is a known limitation for conditional modules in Bicep — the runtime evaluation
+// is correct (the ternary condition matches the module deploy condition exactly). Using any()
+// to bypass the static null-check; the ARM engine evaluates the ternary safely at deploy time.
+output killswitchActionGroupId string = (enableKillswitch && !empty(killswitchRbacRoleId) && envName == 'dev') ? any(killswitch).outputs.actionGroupId : ''

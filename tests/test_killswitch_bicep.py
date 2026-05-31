@@ -3,22 +3,18 @@
 These tests assert structural properties of the Bicep source text.
 `az bicep build` is the compile gate; pytest is the contract gate.
 
-Two tests remain RED on the stub (TODO bodies) and go GREEN once PR-KS1
-fills in the workflow definition and wires the nested module for the prod
-cross-RG role assignment:
-  - test_killswitch_patches_all_six_jobs (RED: stub has Stub_placeholder only)
-  - test_killswitch_stops_all_six_jobs   (RED: /stop only in comment lines)
+All tests are GREEN after PR-KS1 implementation:
+  - test_killswitch_patches_all_six_jobs: GREEN — 6 PATCH actions wired
+  - test_killswitch_stops_all_six_jobs:   GREEN — 6 POST /stop actions wired
+  - test_killswitch_rbac_prod_nested_module_present: GREEN — module unwired
+  - test_main_bicep_killswitch_module_gated: GREEN — dev-only conditional deploy
+  - test_main_bicep_killswitch_output_present: GREEN — killswitchActionGroupId output
 
-All other tests are GREEN, including:
-  - test_killswitch_enabled_on_deploy: asserts enableKillswitch = true in both
-    param files (operator decision 2026-05-31: enabled on deploy, not opt-in).
-
-IMPORTANT — test design note for the two RED workflow tests:
+IMPORTANT — test design note for the workflow tests:
 The tests filter out Bicep comment lines (lines starting with //) before
-asserting on PATCH/POST/stop content. This prevents them from going green
-against a stub that only has those strings in comments. The tests are
-genuinely RED against the current stub (Stub_placeholder Terminate action,
-no real PATCH/POST actions in the non-comment portion of the actions block).
+asserting on PATCH/POST/stop content. This prevents false-green against a
+stub that only has those strings in comments. The tests assert on the live
+(non-comment) source, where the real HTTP actions now appear.
 """
 
 from __future__ import annotations
@@ -130,21 +126,11 @@ def test_stop_action_in_custom_role(ks: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RED until PR-KS1 fills in the real PATCH actions in killswitch.bicep. "
-    "strict=True makes the suite FAIL once implemented, forcing this marker's removal.",
-)
 def test_killswitch_patches_all_six_jobs(ks_non_comment_lines: str) -> None:
     """The workflow definition must reference PATCH calls for all 3 jobs x 2 envs.
 
-    RED today: the stub has a Stub_placeholder Terminate action and all job-name
-    / method strings only appear in comment lines. This test uses the comment-
-    stripped source so it is genuinely RED until PR-KS1 adds real PATCH actions.
-    GREEN after PR-KS1 fills in the 6 PATCH actions.
-
-    This test asserts against ks_non_comment_lines (lines NOT starting with //)
-    to prevent false-green against a stub that only has these strings in comments.
+    GREEN after PR-KS1 fills in the 6 PATCH actions. Asserts against the
+    comment-stripped source to prevent false-green against comment-only strings.
     """
     # All three job name patterns must appear outside comment lines.
     # Note: the var declarations (bookingJobEdtSun etc.) are already non-comment
@@ -167,24 +153,13 @@ def test_killswitch_patches_all_six_jobs(ks_non_comment_lines: str) -> None:
     assert "Stub_placeholder" not in ks_non_comment_lines
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RED until PR-KS1 fills in the real POST /stop actions in killswitch.bicep. "
-    "strict=True makes the suite FAIL once implemented, forcing this marker's removal.",
-)
 def test_killswitch_stops_all_six_jobs(ks_non_comment_lines: str) -> None:
     """The workflow definition must reference POST /stop calls for all 3 jobs x 2 envs.
 
-    RED today: the stub has a Stub_placeholder Terminate action and /stop only
-    appears in comment lines. This test uses the comment-stripped source so it is
-    genuinely RED until PR-KS1 adds real POST /stop actions.
-    GREEN after PR-KS1 fills in the 6 POST /stop actions.
-
-    Lever (b) is required: disabling the schedule (lever a) alone does NOT halt
-    a replica that is already running at the moment the $50 alert fires.
-
-    This test asserts against ks_non_comment_lines (lines NOT starting with //)
-    to prevent false-green against a stub that only has /stop in comments.
+    GREEN after PR-KS1 fills in the 6 POST /stop actions. Lever (b) is required:
+    disabling the schedule alone does NOT halt a replica already running at $50-trip time.
+    Asserts against the comment-stripped source to prevent false-green against
+    comment-only strings.
     """
     # The /stop path segment must appear outside comment lines.
     assert "/stop" in ks_non_comment_lines
@@ -211,14 +186,15 @@ def test_killswitch_rbac_prod_file_exists() -> None:
     )
 
 
-def test_killswitch_rbac_prod_nested_module_present(ks: str) -> None:
-    """killswitch.bicep must wire the killswitch-rbac-prod.bicep nested module.
+def test_killswitch_rbac_prod_nested_module_present(ks_non_comment_lines: str) -> None:
+    """killswitch.bicep must wire the killswitch-rbac-prod.bicep nested module in live code.
 
-    RED today: the module call is in a comment block (TODO PR-KS1).
-    GREEN after PR-KS1 uncomments the module call.
+    After PR-KS1: the module call must be uncommented (not only in comment blocks).
+    Asserts against the comment-stripped source to prevent false-green when the
+    module call is only in a // comment block (as it was in the stub).
     """
-    # After PR-KS1: the module call must be uncommented and reference the file.
-    assert "killswitch-rbac-prod.bicep" in ks
+    # The module reference must appear outside comment lines.
+    assert "killswitch-rbac-prod.bicep" in ks_non_comment_lines
 
 
 # ---------------------------------------------------------------------------
@@ -260,4 +236,56 @@ def test_killswitch_enabled_on_deploy(param_dev: str, param_prod: str) -> None:
     assert "enableKillswitch = true" in param_prod, (
         "main.bicepparam.prod must contain 'enableKillswitch = true' "
         "(operator decision 2026-05-31: killswitch enabled on deploy, not opt-in)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# PR-KS1 main.bicep gating assertions (GREEN after PR-KS1 implementation)
+# ---------------------------------------------------------------------------
+
+
+def test_main_bicep_killswitch_module_gated(main_bicep: str) -> None:
+    """main.bicep must gate the killswitch module on enableKillswitch, non-empty
+    killswitchRbacRoleId, AND envName=='dev' (dev-only deploy).
+
+    The gate prevents:
+    - Deploying the module when the custom role GUID has not been supplied yet
+      (empty killswitchRbacRoleId = clean no-op, safe to merge without the role).
+    - Deploying a second Logic App in the prod RG (the killswitch lives in
+      rg-teetime-dev and manages BOTH envs via cross-RG RBAC — only one instance
+      is needed). See COST_KILLSWITCH_PLAN.md §2/Item3.
+    """
+    # The module must be conditional on all three guards.
+    assert "enableKillswitch" in main_bicep
+    assert "killswitchRbacRoleId" in main_bicep
+    # The dev-only guard: envName == 'dev' must appear in the killswitch module condition.
+    assert "envName == 'dev'" in main_bicep
+    # The empty-GUID guard: !empty(killswitchRbacRoleId) must appear.
+    assert "!empty(killswitchRbacRoleId)" in main_bicep
+    # The module call itself must reference killswitch.bicep.
+    assert "'modules/killswitch.bicep'" in main_bicep
+
+
+def test_main_bicep_killswitch_output_present(main_bicep: str) -> None:
+    """main.bicep must declare a killswitchActionGroupId output.
+
+    This output is consumed by the operator (and PR-KS2 budget.bicep) to wire
+    the $50 budget threshold to the killswitch Action Group after PR-KS1 deploys.
+    Must be an empty string when the killswitch module is not deployed.
+    """
+    assert "output killswitchActionGroupId string" in main_bicep
+
+
+def test_param_files_have_killswitch_rbac_role_id(param_dev: str, param_prod: str) -> None:
+    """Both param files must declare killswitchRbacRoleId (empty GUID placeholder).
+
+    The value starts empty — the operator fills it in after creating the custom role.
+    Until filled in, the !empty() gate in main.bicep makes the killswitch module
+    a clean no-op, so the dev auto-deploy is safe even before the role is created.
+    """
+    assert "killswitchRbacRoleId" in param_dev, (
+        "main.bicepparam.dev must contain killswitchRbacRoleId (operator fills GUID)"
+    )
+    assert "killswitchRbacRoleId" in param_prod, (
+        "main.bicepparam.prod must contain killswitchRbacRoleId (operator fills GUID)"
     )

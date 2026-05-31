@@ -223,3 +223,5 @@ __marimo__/
 # from the .bicep sources directly (az compiles on the fly), so these are
 # regenerable build artifacts and must not be tracked.
 infra/bicep/**/*.json
+# bicepconfig.json is a Bicep linter config (NOT a build artifact) — must be tracked.
+!infra/bicep/bicepconfig.json

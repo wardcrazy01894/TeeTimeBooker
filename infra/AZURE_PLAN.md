@@ -94,11 +94,12 @@ resolved at container start by the ACA platform using the same user-assigned MI.
 
 ## 3. Module layout
 
-**Status: ALL modules implemented (storage module removed — state is in-process only).**
+**Status: ALL modules implemented (storage module removed — state is in-process only). Cost killswitch (PR-KS1) implemented.**
 
 ```
 infra/
   AZURE_PLAN.md                # this file
+  COST_KILLSWITCH_PLAN.md      # verified design for the $50 automated killswitch chain
   bicep/
     main.bicep                 # entry point; orchestrates all modules; accepts envName + location params
     main.bicepparam.dev        # dev environment parameter values
@@ -110,12 +111,18 @@ infra/
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
       compute.bicep            # ACA Environment (Consumption) + 2× booking ACA Jobs (DST crons) + watch ACA Job
       budget.bicep             # Cost Management budget ($20/mo, both RGs; Actual 80% + Forecasted 100%); subscription-scoped
+      killswitch.bicep         # Cost killswitch: Logic App (Consumption) + Action Group + RBAC; deployed to rg-teetime-dev only
+                               #   12 HTTP actions: 6 PATCH (Schedule→Manual) + 6 POST /stop; all 3 jobs × 2 envs
+                               #   gated: enableKillswitch && !empty(killswitchRbacRoleId) && envName=='dev'
+                               #   operator pre-step: create "ACA Job Schedule Manager" custom role (see §9.2)
+      killswitch-rbac-prod.bicep  # companion: cross-RG role assignment for rg-teetime-prod
+                               #   deployed as nested module by killswitch.bicep with scope: resourceGroup(sub, prodRgName)
 .github/workflows/
   azure-iac.yml                # ACTIVE CI: bicep build + what-if on PR; deploy on merge to main (dev) / tag (prod)
 ```
 
 **Dependency order for `az deployment group create` (RG-scoped):**
-`identity` → `registry` + `keyvault` + `logs` → `compute`
+`identity` → `registry` + `keyvault` + `logs` → `compute` → `killswitch` (optional; dev only)
 
 `budget` is subscription-scoped and is NOT part of this dependency chain. It is
 deployed in a separate `az deployment sub create` call from `azure-iac.yml`
@@ -589,16 +596,51 @@ deployment invoked from `azure-iac.yml` with `--scope /subscriptions/<id>`
 after the RG deployment. Alternatively, create the budget manually once via
 the Azure portal (Cost Management > Budgets) and document it in the runbook.
 
-Budget parameters: **`$20/mo`** covering **both** teetime RGs (dev + prod = the total project
-bill), emailing `budgetAlertEmail` on two thresholds: **Actual ≥ 80% ($16)** (early warning) and
-**Forecasted ≥ 100% ($20)** (Azure projects the month will exceed $20). Notification only — it
-does not stop/throttle usage.
+**Two-tier alert ladder (as of PR-KS1):**
+
+| Tier | Budget resource | Amount | Threshold | Alert type | Action |
+|---|---|---|---|---|---|
+| 1 | `budget-teetime` | $20 | 80% actual ($16) | Email only | Early warning |
+| 1 | `budget-teetime` | $20 | 100% forecast ($20) | Email only | Projected overage warning |
+| 2 | `budget-teetime-killswitch` | $50 | 100% actual ($50) | Action Group → Logic App | Silences all 6 ACA Job crons + stops in-flight (PR-KS2 wires this) |
+
+Tier 1 (`budget-teetime`, $20, email-only) is UNCHANGED. Tier 2 (`budget-teetime-killswitch`,
+$50, killswitch-trigger) is a SEPARATE second budget resource to be added in PR-KS2.
+Both budgets evaluate the same project spend independently. See `infra/COST_KILLSWITCH_PLAN.md`.
 
 **Deploy note:** the `azure-iac.yml` budget step is **skipped** in CI because the CI service
 principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission).
-So deploy it once manually as the operator: `az deployment sub create --location eastus2
---template-file infra/bicep/modules/budget.bicep --parameters budgetAmountUsd=20
-budgetAlertEmail=<email>`.
+Deploy once manually as the operator. After PR-KS1 deploys the killswitch, obtain the Action
+Group ID from the `killswitchActionGroupId` output of the dev deployment, then re-run:
+```bash
+az deployment sub create --location eastus2 \
+  --template-file infra/bicep/modules/budget.bicep \
+  --parameters budgetAmountUsd=20 budgetAlertEmail=<email> \
+               killswitchActionGroupId=<output from killswitch deploy> \
+               killswitchBudgetAmountUsd=50
+```
+Until PR-KS2 (budget.bicep update) lands, omit the `killswitchActionGroupId` param.
+
+**Killswitch custom role — operator pre-step (required before killswitch.bicep deploys):**
+The "ACA Job Schedule Manager" custom role requires subscription-level
+`Microsoft.Authorization/roleDefinitions/write` (CI SP does not have this):
+```bash
+az role definition create --role-definition '{
+  "Name": "ACA Job Schedule Manager",
+  "Description": "Read, PATCH (disable/enable schedule), and stop executions on ACA Jobs. Used by cost killswitch Logic App.",
+  "Actions": [
+    "Microsoft.App/jobs/read",
+    "Microsoft.App/jobs/write",
+    "Microsoft.App/jobs/stop/action"
+  ],
+  "AssignableScopes": ["/subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d"]
+}'
+# Record the GUID from the output.
+# Then set param killswitchRbacRoleId = '<GUID>' in BOTH:
+#   infra/bicep/main.bicepparam.dev
+#   infra/bicep/main.bicepparam.prod
+# Until the GUID is set, enableKillswitch=true is a clean no-op (the !empty() gate prevents deploy).
+```
 
 ---
 
@@ -833,7 +875,8 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
 | Outbound-only network | By design | Bot makes outbound HTTPS to ForeUP only; no inbound surface |
 | VNet integration | Not required for v0/v1 | ForeUP is a public internet endpoint; VNet adds cost and complexity with no security benefit |
 | ACR authentication | Managed identity (AcrPull) | No registry password in job config; admin account disabled on ACR |
-| RBAC minimum privilege | Key Vault Secrets User (read only), AcrPull (read only) | Each role is scoped to the specific resource, not subscription. Both roles are assigned to the single user-assigned MI (not per-job system-assigned MIs). No storage RBAC needed — bot makes no Azure SDK calls at runtime. |
+| RBAC minimum privilege | Key Vault Secrets User (read only), AcrPull (read only), custom "ACA Job Schedule Manager" (killswitch Logic App MI) | Each role is scoped to the specific resource or RG. The killswitch custom role grants only Microsoft.App/jobs/read + write + stop/action — NOT Contributor. No storage RBAC needed — bot makes no Azure SDK calls at runtime. |
+| Killswitch custom role | "ACA Job Schedule Manager" (operator creates, subscription-scoped) | Actions: Microsoft.App/jobs/read + write + stop/action. Assigned to Logic App system-assigned MI on rg-teetime-dev + rg-teetime-prod. See §9.2 for the az CLI command. |
 | CI service principal | Contributor + User Access Admin, RG-scoped | Not subscription-level Contributor |
 | OIDC auth (no client secrets in GitHub) | Required | GitHub stores only AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID |
 | Credit-card data | Platform-specific | ForeUP keeps card on file → bot never sends PAN/CVV. **TeeItUp has no wallet → the TeeItUp adapter DOES POST PAN/CVV/expiry/billing to tr.gnsvc.com** (from env vars, never committed); card fields are dropped by `_redact_payload` before any attempt_log write (PLAN.md §10.1), and the card POST uses `follow_redirects=False`. |
