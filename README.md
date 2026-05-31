@@ -1,6 +1,6 @@
 # TeeTimeBooker
 
-Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via Azure Container Apps Jobs; the golf course sends booking confirmations directly.
+Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET every Sunday, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via Azure Container Apps Jobs; the golf course sends booking confirmations directly.
 
 **Status:** M1 + M5 + M-feature-1 + M-feature-2 + M-feature-3 + M-azure complete. M2 core (orchestrator, idempotency) is done; only M2.T3 (post-mortem reconciliation) remains. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented and dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run. Remaining v0 tasks: M2.T3 (reconciliation), M6 (first production cron run). M3 (SQLite persistence) and M4 (email notifications) were intentionally cut — the live `list_reservations()` pre-book check is the double-booking guard, and the golf course sends confirmations directly. Cancellation watch job live (ACA watch job); auto-upgrade (M-feature-2) shipped — cancel-before-book + CAPTCHA pre-fetch, Spike S4 resolved.
 
@@ -15,7 +15,7 @@ Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). 
 ## How it works
 
 **6 AM booking job** (ACA Job — `compute.bicep`):
-1. Two Azure Container Apps Jobs fire ~10 minutes before 6:00 AM ET on Saturday and Sunday (two jobs handle both DST halves)
+1. Two Azure Container Apps Jobs fire ~10 minutes before 6:00 AM ET on Sunday (two jobs, one per DST half; the wrong-season one exits via the DST gate)
 2. The bot busy-waits until T0 (±250 ms)
 3. It polls for available slots, picks the slot **closest to the midpoint** of the 08:45–10:00 ET window (midpoint-distance sort), and POSTs the booking
 4. A live `list_reservations()` check immediately before the book POST guards against double-booking; the golf course sends the booking confirmation directly

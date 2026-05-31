@@ -10,8 +10,8 @@ This plan is structured for parallel execution. Milestones are sequential; tasks
 
 ```
                      +-----------------------------+
-                     |   GitHub Actions cron       |
-                     | (UTC; 4 entries: Sat+Sun×DST)|
+                     |   ACA Job cron (v1)         |
+                     | (UTC; Sunday × DST half)    |
                      +--------------+--------------+
                                     |  workflow_dispatch / cron fires ~10 min early
                                     v
@@ -170,7 +170,7 @@ T0 = today + target_offset days, 06:00:00.000 America/New_York
 GH Actions cron fires ~T0 - 10 min  (jitter is 1–15 min in our experience)
     -> step "DST-half check" reads ZoneInfo("America/New_York") wall-clock
        and short-circuits the rest of the job if not in 5:xx ET. NOT a TODO;
-       the gate is implemented in book.yml (see review item 1).
+       the gate now lives in core/dst_gate.py (was the book.yml dst step; M6 PR2).
     -> uv sync; bot starts ~T0 - 8 min in steady state
 Bot:
     1. Resolve T0 in tz-aware datetime via `zoneinfo.ZoneInfo("America/New_York")`.
@@ -468,12 +468,12 @@ Across runs (multiple days):
   doesn't break idempotency).
 
 **Resolved dates are excluded from the fingerprint.** The reason: `target_offsets = [7]`
-firing on Saturday books the Saturday 7 days out; the resolved date changes each
-week but the goal is the same. The in-process idempotency key is
+(anchored to `target_weekday`, default Sunday) books the upcoming Sunday 7 days out; the
+resolved date changes each week but the goal is the same. The in-process idempotency key is
 `(RequestId, resolved_date)` — composite. This:
 
-- Lets the weekend cron book day N+7 this weekend and day N+14 next weekend without conflict within a run.
-- Keeps the user's "I always want a Saturday at 9:00-10:30 AM 7 days out" rule a single
+- Lets the Sunday cron book day N+7 this Sunday and day N+14 next Sunday without conflict within a run.
+- Keeps the user's "I always want a Sunday at 8:45-10:00 AM 7 days out" rule a single
   RequestId for the §9 layer-5 in-process advisory lock.
 - A BOOKED terminal for resolved_date X does NOT block resolved_date Y for the same
   RequestId within the same run. (See review failure mode "Two target_dates with overlapping
@@ -496,10 +496,15 @@ week but the goal is the same. The in-process idempotency key is
 
 ## 15. Deployment / runbook
 
-**v0:**
+> **Superseded by v1 (Azure).** The v0 GitHub Actions operation below is historical: the
+> `book.yml` / `watch-tee-time.yml` cron workflows were **removed in #43**, and the bot now
+> runs as Azure Container Apps Jobs (Sunday-only). The authoritative deploy + verification +
+> cutover runbook is **infra/AZURE_PLAN.md §10**; the DST gate now lives in `core/dst_gate.py`.
+
+**v0 (historical):**
 1. Set GH Actions repo secrets: `MB_USERNAME`, `MB_PASSWORD`, plus per-player `PLAYER1_EMAIL`, `PLAYER1_PHONE` etc. as referenced by `config/local.toml`.
 2. Commit `config/local.toml` to a private fork OR pass via `workflow_dispatch` input file.
-3. Cron fires on Saturday and Sunday at 6:00 AM ET; the workflow's `dst` step gates downstream steps on ET wall-clock hour == 5 (see book.yml). Wrong DST-half cron exits early as success.
+3. Cron fired Sunday at 6:00 AM ET; a `dst` step gated on ET wall-clock hour == 5 (that gate now lives in `core/dst_gate.py`). Wrong DST-half cron exits early as success.
 4. After each run, check the GH Actions log output (ConsoleNotifier). No state is preserved between runs — each run begins fresh and relies on `list_reservations` to detect any existing booking (§9.2).
 5. On `CAPTCHA_BLOCKED` or repeated `AUTH_FAILED`: `gh workflow disable book-tee-time`. Investigate manually. Re-enable with `gh workflow enable book-tee-time`. NO auto-re-enable — a human MUST confirm the cause is resolved.
 
