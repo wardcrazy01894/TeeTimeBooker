@@ -70,7 +70,8 @@ TeeTimeBooker/
   pyproject.toml                # 3.12+, ruff, pytest, mypy strict, uv-managed
   PLAN.md                       # this file
   CLAUDE.md                     # operator/agent guide
-  .github/workflows/book.yml    # cron + workflow_dispatch
+  .github/workflows/ci.yml      # lint/test on PRs
+  .github/workflows/azure-iac.yml # Bicep IaC deploy
   config/example.toml           # template; secrets via env-var refs
   src/teetime/
     __init__.py                 # version
@@ -894,15 +895,8 @@ proceed to T2 without S4 since WatchOrchestrator.check_once does not call cancel
 
 ---
 
-## 21. Post-Azure cutover cleanup
+## 21. Post-Azure cutover cleanup (DONE)
 
-Once the bot is live on Azure (v1), audit and remove any GitHub Actions workflows that are
-no longer needed. At minimum:
-
-- `book.yml` — replaced by ACA Job (two booking jobs, one per DST half)
-- `watch-tee-time.yml` — replaced by ACA Job (watch cron)
-- `ci.yml` — **keep** if it still runs tests/lint on PRs; only remove if CI moves elsewhere
-
-The `.github/workflows/` directory should contain only what still runs. Dead workflows
-generate noise (stale cron emails, confusing run history) and create a false impression
-that something is still running on GitHub when it isn't.
+`book.yml` and `watch-tee-time.yml` have been removed. Their schedules now run as ACA Jobs
+defined in `infra/bicep/modules/compute.bicep`. The `.github/workflows/` directory now
+contains only `ci.yml` (lint/test on PRs) and `azure-iac.yml` (Bicep IaC deploy).

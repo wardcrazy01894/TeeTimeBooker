@@ -1,8 +1,8 @@
 # TeeTimeBooker
 
-Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via GitHub Actions; the golf course sends booking confirmations directly.
+Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on Saturdays and Sundays, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via Azure Container Apps Jobs; the golf course sends booking confirmations directly.
 
-**Status:** M1 + M5 + M-feature-1 + M-feature-2 + M-feature-3 + M-azure complete. M2 core (orchestrator, idempotency) is done; only M2.T3 (post-mortem reconciliation) remains. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented and dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run. Remaining v0 tasks: M2.T3 (reconciliation), M6 (first production cron run). M3 (SQLite persistence) and M4 (email notifications) were intentionally cut — the live `list_reservations()` pre-book check is the double-booking guard, and the golf course sends confirmations directly. Cancellation watch job live (GH Actions `watch-tee-time.yml` + ACA watch job); auto-upgrade (M-feature-2) shipped — cancel-before-book + CAPTCHA pre-fetch, Spike S4 resolved.
+**Status:** M1 + M5 + M-feature-1 + M-feature-2 + M-feature-3 + M-azure complete. M2 core (orchestrator, idempotency) is done; only M2.T3 (post-mortem reconciliation) remains. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented and dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run. Remaining v0 tasks: M2.T3 (reconciliation), M6 (first production cron run). M3 (SQLite persistence) and M4 (email notifications) were intentionally cut — the live `list_reservations()` pre-book check is the double-booking guard, and the golf course sends confirmations directly. Cancellation watch job live (ACA watch job); auto-upgrade (M-feature-2) shipped — cancel-before-book + CAPTCHA pre-fetch, Spike S4 resolved.
 
 **Where to look:**
 - [PLAN.md](./PLAN.md) — full design, milestone roadmap, state machine, DST math, spikes
@@ -14,14 +14,14 @@ Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). 
 
 ## How it works
 
-**6 AM booking job** (`book.yml`):
-1. A GitHub Actions cron fires ~10 minutes before 6:00 AM ET on Saturday and Sunday (four entries handle both days × both DST seasons)
+**6 AM booking job** (ACA Job — `compute.bicep`):
+1. Two Azure Container Apps Jobs fire ~10 minutes before 6:00 AM ET on Saturday and Sunday (two jobs handle both DST halves)
 2. The bot busy-waits until T0 (±250 ms)
 3. It polls for available slots, picks the slot **closest to the midpoint** of the 08:45–10:00 ET window (midpoint-distance sort), and POSTs the booking
 4. A live `list_reservations()` check immediately before the book POST guards against double-booking; the golf course sends the booking confirmation directly
 
-**Cancellation watch job** (`watch-tee-time.yml`):
-1. A second GitHub Actions cron fires every 10 minutes, year-round
+**Cancellation watch job** (ACA Job — `compute.bicep`):
+1. A third ACA Job fires every 10 minutes, year-round
 2. Each run performs one availability check for the target date (7 days out)
 3. If a slot opens in the preferred window, it books immediately
 4. Polling is suppressed outside 7 AM – 10 PM ET (handled internally — no DST gate needed)
@@ -113,7 +113,7 @@ uv run teetime run --config config/local.toml --dry-run false
 ### Cancellation watch (one-shot check)
 
 The watch command runs one availability check and exits. In production it is
-called by the `watch-tee-time.yml` cron every 10 minutes. You can trigger it
+called by the ACA watch Job every 10 minutes. You can trigger it
 manually to test or to grab a cancellation slot immediately:
 
 ```bash
@@ -166,44 +166,11 @@ The container notifier is `console` (stdout); booking confirmations come from th
 
 ---
 
-## GitHub Actions setup (v0)
+## Azure hosting
 
-The workflow at `.github/workflows/book.yml` runs on **Saturday and Sunday only** at 6:00 AM ET. With `target_offsets = [7]`, Saturday's run books the next Saturday and Sunday's run books the next Sunday. Four cron entries cover both days across both DST seasons:
+The booking and watch schedules run as **Azure Container Apps Jobs** — managed, serverless scheduled jobs that run the same Python container on a UTC cron. Secrets live in **Azure Key Vault**; the bot makes no authenticated Azure SDK calls at runtime (state is in-process only for the duration of each run).
 
-| Cron (UTC)    | Day      | Covers      |
-|---------------|----------|-------------|
-| `50 9 * * 6`  | Saturday | EDT (UTC−4) |
-| `50 10 * * 6` | Saturday | EST (UTC−5) |
-| `50 9 * * 0`  | Sunday   | EDT (UTC−4) |
-| `50 10 * * 0` | Sunday   | EST (UTC−5) |
-
-A workflow step verifies the ET wall-clock hour before proceeding, so only one of the two same-day crons actually books.
-
-**Ad-hoc mid-week bookings:** trigger manually via `gh workflow run book-tee-time -f dry_run=false` after temporarily adjusting `target_offsets` in `config/local.toml`.
-
-**Required repository secrets** (Settings → Secrets → Actions):
-
-```
-MB_USERNAME, MB_PASSWORD
-PLAYER1_EMAIL, PLAYER1_PHONE, PLAYER1_MB_MEMBER
-PLAYER2_EMAIL
-PLAYER3_EMAIL
-PLAYER4_EMAIL
-```
-
-There is no cross-run state cache — the bot is stateless between runs. A live `list_reservations()` call immediately before each book POST is the double-booking guard.
-
-**Manual trigger:**
-
-```bash
-gh workflow run book-tee-time -f dry_run=true
-```
-
----
-
-## Azure v1 hosting
-
-The v1 upgrade moves off GitHub Actions onto **Azure Container Apps Jobs** — a managed, serverless scheduled job that runs the same Python container on a UTC cron, busy-waits to 6:00 AM ET, and books the tee time. Secrets move to **Azure Key Vault**; the bot makes no authenticated Azure SDK calls at runtime (state is in-process only for the duration of each run).
+The former GitHub Actions booking and watch workflows (`book.yml`, `watch-tee-time.yml`) have been removed — they are superseded by the ACA Jobs. The only remaining GitHub Actions workflows are `ci.yml` (lint/test) and `azure-iac.yml` (Bicep deploy).
 
 **Cost:** ~$5/month (ACR Basic flat; Container Apps compute is within the free tier).
 
