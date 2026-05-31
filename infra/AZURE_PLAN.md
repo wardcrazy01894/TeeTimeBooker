@@ -602,11 +602,12 @@ the Azure portal (Cost Management > Budgets) and document it in the runbook.
 |---|---|---|---|---|---|
 | 1 | `budget-teetime` | $20 | 80% actual ($16) | Email only | Early warning |
 | 1 | `budget-teetime` | $20 | 100% forecast ($20) | Email only | Projected overage warning |
-| 2 | `budget-teetime-killswitch` | $50 | 100% actual ($50) | Action Group → Logic App | Silences all 6 ACA Job crons + stops in-flight (PR-KS2 wires this) |
+| 2 | `budget-teetime-killswitch` | $50 | 100% actual ($50) | Action Group → Logic App | Silences all 6 ACA Job crons + stops in-flight |
 
 Tier 1 (`budget-teetime`, $20, email-only) is UNCHANGED. Tier 2 (`budget-teetime-killswitch`,
-$50, killswitch-trigger) is a SEPARATE second budget resource to be added in PR-KS2.
-Both budgets evaluate the same project spend independently. See `infra/COST_KILLSWITCH_PLAN.md`.
+$50, killswitch-trigger) is a SEPARATE second budget resource in `budget.bicep` (conditional on
+`killswitchActionGroupId`). Both budgets evaluate the same project spend independently. See
+`infra/COST_KILLSWITCH_PLAN.md`.
 
 **Deploy note:** the `azure-iac.yml` budget step is **skipped** in CI because the CI service
 principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission).
@@ -619,7 +620,8 @@ az deployment sub create --location eastus2 \
                killswitchActionGroupId=<output from killswitch deploy> \
                killswitchBudgetAmountUsd=50
 ```
-Until PR-KS2 (budget.bicep update) lands, omit the `killswitchActionGroupId` param.
+The Tier-2 `killswitchBudget` resource is conditional on `killswitchActionGroupId`: omit that
+param and the manual deploy only creates/updates the Tier-1 $20 budget (Tier 2 is a clean no-op).
 
 **Killswitch custom role — operator pre-step (required before killswitch.bicep deploys):**
 The "ACA Job Schedule Manager" custom role requires subscription-level

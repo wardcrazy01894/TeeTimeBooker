@@ -46,15 +46,18 @@ to main via `.github/workflows/azure-iac.yml` with `dryRun = true` — no real
 bookings fire in dev. State is in-process only (`InMemoryStore`); the bot makes
 no authenticated Azure SDK calls at runtime.
 
-**Cost killswitch (PR-KS1) implemented.** `killswitch.bicep` + `killswitch-rbac-prod.bicep`
+**Cost killswitch (PR-KS1 + PR-KS2) implemented.** `killswitch.bicep` + `killswitch-rbac-prod.bicep`
 deploy a Logic App (Consumption) + Action Group in `rg-teetime-dev` that issues 12 HTTP
 calls (6 PATCH + 6 POST /stop) to silence all six ACA Job crons when the $50 actual budget
 threshold fires. Deployed only in dev (Logic App manages both envs via cross-RG RBAC). Gated
 on `enableKillswitch && !empty(killswitchRbacRoleId) && envName=='dev'`; currently a no-op
 until operator creates the "ACA Job Schedule Manager" custom role and fills the GUID into both
 param files. The `killswitchFired` param (already in both param files) is the CI deploy-clobber
-guard: once set to `true`, no subsequent CI deploy can re-arm the cron schedules. PR-KS2 (not yet
-started) adds the $50 budget resource to `budget.bicep` to complete the wiring. See
+guard: once set to `true`, no subsequent CI deploy can re-arm the cron schedules. PR-KS2 added the
+separate $50 `budget-teetime-killswitch` resource to `budget.bicep` (conditional on
+`killswitchActionGroupId`; the $20 email budget is untouched) — deployed manually, subscription-
+scoped. Remaining to go live: operator creates the custom role + supplies the GUID, then runs the
+manual `az deployment sub create` for budget.bicep with the Action Group ID. See
 `infra/COST_KILLSWITCH_PLAN.md` and `infra/AZURE_PLAN.md §9.2`.
 
 ## Package layout
