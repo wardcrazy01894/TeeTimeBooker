@@ -46,7 +46,7 @@ src/teetime/
   courses/teeitup/  # Shared TeeItUp/Kenna HTTP base + per-course IDs
   courses/chronogolf/  # placeholder; not used in v0
 config/             # example.toml; secrets via env-var refs only
-.github/workflows/  # GH Actions cron (4 entries: Sat+Sun × 2 DST seasons)
+.github/workflows/  # ci.yml (lint/test) + azure-iac.yml (Bicep deploy)
 tests/              # pytest; vcrpy cassettes go in tests/cassettes/
 ```
 
@@ -66,7 +66,6 @@ in `core/` — never directly. This is the cut line for parallel work.
 | `uv run ruff format .`                   | Format.                                  |
 | `uv run teetime run --config config/local.toml --dry-run true` | One-shot booking attempt, no final POST. |
 | `uv run teetime show-config --config config/local.toml` | Print resolved AppConfig (with secrets redacted). |
-| `gh workflow run book-tee-time -f dry_run=true` | Trigger the workflow on demand.   |
 
 ## Architectural notes (non-obvious)
 
@@ -95,9 +94,16 @@ in `core/` — never directly. This is the cut line for parallel work.
   has the full flow; §9.1 has the explicit state machine that M2.T1
   implements. `list_reservations` is on the `CourseAdapter` Protocol from
   M0 — it is NOT optional.
-- **DST handled by `zoneinfo`** + two GH Actions crons + a "DST-half" gate
-  in the workflow that ACTUALLY checks ET wall-clock hour (book.yml `dst`
-  step). Math in PLAN.md §6.3.
+- **DST handled by `zoneinfo`** (the bot computes T0 in `America/New_York`,
+  which resolves the ambiguous/skipped-hour edge cases) + four ACA Job crons
+  (two per day, one per DST half) in `infra/bicep/modules/compute.bicep`. Math
+  in PLAN.md §6.3. The booking and watch schedules run as ACA Jobs;
+  `book.yml`/`watch-tee-time.yml` have been removed. ⚠️ The wall-clock
+  "DST-half" gate (which suppressed the wrong-season cron so only one of a day's
+  two crons books) lived ONLY in `book.yml`; it is NOT yet replicated in the
+  container entrypoint. Re-homing that gate (and the precise T0 busy-wait —
+  `run` currently uses `_local_demo_scheduler`) is part of the still-open M6
+  (first production cron run). See PLAN.md §6.3.
 - **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
   This lets `target_offsets = [7]` produce one stable RequestId within a run
   while still targeting a fresh date each week. The key is held in-process

@@ -5,8 +5,10 @@ Azure infrastructure. The root `CLAUDE.md` has the repo-wide rules; the
 authoritative Azure design is [`AZURE_PLAN.md`](./AZURE_PLAN.md) — read it before
 changing anything here.
 
-The v0 files (`src/`, `tests/`, `.github/workflows/book.yml`) are v0 territory —
-do not modify them as part of Azure infra work.
+The v0 files (`src/`, `tests/`) are v0 territory —
+do not modify them as part of Azure infra work. The former v0 booking and watch
+workflows (`book.yml`, `watch-tee-time.yml`) have been removed; their schedules
+now run as ACA Jobs defined in `compute.bicep`.
 
 ## Bicep location
 
