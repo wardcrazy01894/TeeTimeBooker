@@ -31,3 +31,18 @@ param dryRun = true
 // torn down and recreated during iteration. Prod keeps it true (irreversible
 // once enabled). See AZURE_PLAN.md §7.4, §11.
 param enablePurgeProtection = false
+
+// Cost-killswitch safety latch. Defaults false (schedules run normally).
+// If the $50 budget killswitch fires: set this to true in BOTH param files and push.
+// CI will then enforce enableSchedules=false regardless of the enableSchedules value,
+// preventing any subsequent merge from re-arming the cron schedules.
+// WARNING: do NOT clear this param until the overspend root cause is resolved.
+// See: infra/COST_KILLSWITCH_PLAN.md §2/Item2 + §5 (operator runbook)
+param killswitchFired = false
+
+// Killswitch module enabled on deploy (true = Logic App + Action Group + RBAC deployed).
+// Enabled by default per operator decision (2026-05-31): full killswitch chain deploys
+// to dev automatically on merge to main and to prod on the next infra/v* tag push.
+// Requires killswitchRbacRoleId to be set to the pre-created custom role GUID.
+// See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1
+param enableKillswitch = true

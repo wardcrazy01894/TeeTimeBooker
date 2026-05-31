@@ -1,4 +1,4 @@
-// budget.bicep — Azure Cost Management budget alert.
+// budget.bicep — Azure Cost Management budget alerts.
 //
 // IMPORTANT SCOPE NOTE: Cost Management budgets are subscription-scoped,
 // not resource-group-scoped. This file uses targetScope = 'subscription'.
@@ -10,14 +10,29 @@
 //   az deployment sub create \
 //     --location eastus2 \
 //     --template-file infra/bicep/modules/budget.bicep \
-//     --parameters budgetAmountUsd=20 budgetAlertEmail=<email>
+//     --parameters budgetAmountUsd=20 budgetAlertEmail=<email> \
+//     --parameters killswitchBudgetAmountUsd=50 killswitchActionGroupId=<actionGroupId>
 //
-// Single $20/mo budget across both teetime RGs (dev + prod) = the total project bill.
-// Two email notifications (notification only — does NOT stop/throttle usage):
-//   - Actual ≥ 80%  ($16): early warning.
-//   - Forecasted ≥ 100% ($20): Azure projects the month will exceed $20.
+// TWO-TIER BUDGET DESIGN (two independent Microsoft.Consumption/budgets resources):
+//
+//   Tier 1 — budget-teetime ($20, email-only, unchanged):
+//     Tracks combined dev+prod spend. Email-only notifications:
+//       - Actual ≥ 80%  ($16): early warning.
+//       - Forecasted ≥ 100% ($20): Azure projects the month will exceed $20.
+//     This resource is NEVER changed by the killswitch design. budgetAmountUsd
+//     stays $20; the $16/$20 email thresholds are unchanged.
+//
+//   Tier 2 — budget-teetime-killswitch ($50, killswitch-trigger, added by PR-KS2):
+//     A SEPARATE, INDEPENDENT second budget resource on the same two-RG filter.
+//     Single notification: Actual ≥ 100% (= $50), wired to the killswitch Action Group
+//     (contactGroups references the Action Group resourceId from PR-KS1).
+//     Both budgets evaluate the same subscription spend independently — this is by
+//     design (standard tiered-alert pattern). Azure allows many budgets per subscription
+//     scope as long as each has a distinct name; two overlapping-filter budgets is
+//     explicitly supported and is the recommended approach for tiered alerting.
 //
 // See: infra/AZURE_PLAN.md §9.2 (budget alert), §4 (parameter strategy)
+// See: infra/COST_KILLSWITCH_PLAN.md §2/Item10 (tier design rationale)
 
 targetScope = 'subscription'
 
@@ -30,8 +45,16 @@ targetScope = 'subscription'
 @maxValue(1000)
 param budgetAmountUsd int = 20
 
-@description('Email address for budget alert notifications.')
+@description('Email address for budget alert notifications (used by the $20 email-only budget).')
 param budgetAlertEmail string
+
+@description('Monthly ceiling in USD for the separate killswitch budget. Defaults $50. The killswitch Action Group fires when actual spend hits this amount. Set to 0 to deploy without the killswitch budget (killswitchActionGroupId must also be empty).')
+@minValue(0)
+@maxValue(1000)
+param killswitchBudgetAmountUsd int = 50
+
+@description('ARM resource ID of the killswitch Action Group (from killswitch.outputs.actionGroupId). When non-empty, the separate $50 killswitch budget resource is created and wired to this Action Group. Empty string = killswitch budget omitted.')
+param killswitchActionGroupId string = ''
 
 @description('''Start date for the budget period. Format: YYYY-MM-01T00:00:00Z (first of a month).
 utcNow('yyyy-MM-01T00:00:00Z') dynamically sets the first day of the current deployment month
@@ -47,12 +70,15 @@ param budgetStartDate string = utcNow('yyyy-MM-01T00:00:00Z')
 // Variables
 // ---------------------------------------------------------------------------
 
-// Single project-wide budget (covers both teetime RGs across dev + prod) so it tracks the
-// TOTAL monthly bill, not one environment. Fixed name → idempotent if deployed from either
-// the dev or prod path.
+// Tier 1: project-wide $20 email-only budget. Covers both teetime RGs (dev + prod).
+// Fixed name → idempotent if deployed from either the dev or prod path.
 var budgetName = 'budget-teetime'
 
-// Early-warning Actual alert at 80% of the ceiling ($16 of $20).
+// Tier 2: separate $50 killswitch-trigger budget. Same two-RG filter as Tier 1.
+// Deployed only when killswitchActionGroupId is non-empty.
+var killswitchBudgetName = 'budget-teetime-killswitch'
+
+// Early-warning Actual alert at 80% of the Tier-1 ceiling ($16 of $20).
 var alertThresholdPercent = 80
 
 // ---------------------------------------------------------------------------
@@ -118,9 +144,63 @@ resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
   }
 }
 
+// Tier 2: separate $50 killswitch-trigger budget.
+// Only deployed when killswitchActionGroupId is provided (non-empty string).
+// This is a SECOND, INDEPENDENT Microsoft.Consumption/budgets resource with a
+// DISTINCT name (budget-teetime-killswitch). Azure supports multiple budgets per
+// subscription scope with distinct names; both budgets evaluate the same spend
+// independently — by design (tiered-alert pattern). No conflict with Tier 1.
+//
+// Single notification: Actual >= 100% (= $50), contactGroups wired to the
+// killswitch Action Group. No contactEmails — the Tier-1 budget handles email.
+//
+// PR-KS2 deploys this by passing killswitchActionGroupId from killswitch.outputs.actionGroupId.
+// Operator manual step: re-run az deployment sub create with the new params after PR-KS1 lands.
+resource killswitchBudget 'Microsoft.Consumption/budgets@2023-11-01' = if (!empty(killswitchActionGroupId)) {
+  name: killswitchBudgetName
+  properties: {
+    category: 'Cost'
+    amount: killswitchBudgetAmountUsd
+    timeGrain: 'Monthly'
+    timePeriod: {
+      startDate: budgetStartDate
+    }
+    // Same two-RG filter as Tier 1 — both budgets track the full project spend.
+    // Two independent budgets on the same filter is intentional (tiered alerting).
+    filter: {
+      dimensions: {
+        name: 'ResourceGroupName'
+        operator: 'In'
+        values: [
+          'rg-teetime-dev'
+          'rg-teetime-prod'
+        ]
+      }
+    }
+    notifications: {
+      // Single notification: Actual >= 100% of $50 = $50 hard cap.
+      // contactGroups wired to the killswitch Action Group (triggers Logic App).
+      // contactEmails intentionally empty — Tier-1 budget handles email alerts.
+      actual_GreaterThan_100Pct_killswitch: {
+        enabled: true
+        operator: 'GreaterThan'
+        threshold: 100
+        thresholdType: 'Actual'
+        contactEmails: []
+        contactGroups: [
+          killswitchActionGroupId
+        ]
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
-@description('Budget resource name.')
+@description('Tier-1 budget resource name ($20, email-only).')
 output budgetName string = budget.name
+
+@description('Tier-2 killswitch budget resource name ($50, Action Group wired). Empty string if not deployed.')
+output killswitchBudgetName string = !empty(killswitchActionGroupId) ? killswitchBudget.name : ''
