@@ -137,6 +137,7 @@ jobs:
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
                          acrSku=Basic kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         usePublicBootstrapImage=true \
                          containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
       - name: Resolve ACR login server (direct query, timing-independent)
         run: |
@@ -155,6 +156,7 @@ jobs:
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
                          acrSku=Basic kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
       - name: Deploy budget (subscription-scoped; non-fatal)
         run: |
@@ -203,6 +205,7 @@ jobs:
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
                          acrSku=Basic kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         usePublicBootstrapImage=true \
                          containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
       - name: Resolve ACR login server (direct query, timing-independent)
         run: |
@@ -221,6 +224,7 @@ jobs:
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
                          acrSku=Basic kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
       - name: Deploy budget (subscription-scoped; non-fatal)
         run: |

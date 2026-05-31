@@ -43,6 +43,9 @@ param dryRun bool = true
 @description('Key Vault purge protection. Defaults true (safe). Prod MUST stay true; dev passes false so the vault can be torn down and recreated during iteration. See AZURE_PLAN.md §7.4, §11.')
 param enablePurgeProtection bool = true
 
+@description('True when containerImage is a PUBLIC bootstrap image (deploy pass 1). The CI workflow sets this true for pass 1 and false for pass 2 (real ACR image). Drops the ACA registries[] auth block for the public pass — listing a public registry (MCR) with the MI causes job provisioning to hang ("Operation expired"). See compute.bicep.')
+param usePublicBootstrapImage bool = false
+
 // ---------------------------------------------------------------------------
 // Module: identity
 // User-assigned managed identity — the SINGLE principalId for all RBAC.
@@ -147,6 +150,7 @@ module compute 'modules/compute.bicep' = {
     logAnalyticsWorkspaceId: logs.outputs.workspaceId
     logAnalyticsWorkspaceKey: logs.outputs.workspaceKey
     dryRun: dryRun
+    usePublicBootstrapImage: usePublicBootstrapImage
   }
   // keyvault, logs, and storage are already implicit dependencies via their
   // outputs consumed above (vaultUri, workspaceId/Key, storageAccountName), so
