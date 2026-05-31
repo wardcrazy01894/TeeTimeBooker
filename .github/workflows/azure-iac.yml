@@ -115,6 +115,12 @@ jobs:
       DRY_RUN: "true"
       PURGE_PROT: "false"
       BUDGET_ALERT_EMAIL: alanc3939@gmail.com
+      # Cost-killswitch arming (PR-KS2). CI passes params INLINE, so these MUST be
+      # set here — the main.bicepparam.dev values are NOT read by CI (manual-deploy
+      # only). The killswitch module is gated on envName=='dev', so it only deploys
+      # in this dev job. ROLE GUID is non-secret config (a custom-role definition id).
+      ENABLE_KILLSWITCH: "true"
+      KILLSWITCH_RBAC_ROLE_ID: "3e2d5a14-96bd-4469-9f96-b9c3270aa9e6"
     steps:
       - uses: actions/checkout@v4
       - name: Azure login (OIDC)
@@ -139,6 +145,8 @@ jobs:
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
                          acrSku=Basic kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         enableKillswitch="${ENABLE_KILLSWITCH}" \
+                         killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          usePublicBootstrapImage=true \
                          containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
       - name: Resolve ACR login server (direct query, timing-independent)
@@ -158,6 +166,8 @@ jobs:
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
                          acrSku=Basic kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         enableKillswitch="${ENABLE_KILLSWITCH}" \
+                         killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
       - name: Deploy budget (subscription-scoped; non-fatal)
@@ -186,6 +196,12 @@ jobs:
       DRY_RUN: "false"
       PURGE_PROT: "true"
       BUDGET_ALERT_EMAIL: alanc3939@gmail.com
+      # Cost-killswitch: prod deploy NEVER creates a killswitch (the module is gated
+      # on envName=='dev' in main.bicep, and the prod RBAC assignment is created by
+      # the DEV deploy's cross-RG nested module). These are set false/empty only so
+      # the shared inline-param block below expands to a valid bool/string in prod.
+      ENABLE_KILLSWITCH: "false"
+      KILLSWITCH_RBAC_ROLE_ID: ""
     steps:
       - uses: actions/checkout@v4
       - name: Azure login (OIDC)
@@ -207,6 +223,8 @@ jobs:
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
                          acrSku=Basic kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         enableKillswitch="${ENABLE_KILLSWITCH}" \
+                         killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          usePublicBootstrapImage=true \
                          containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
       - name: Resolve ACR login server (direct query, timing-independent)
@@ -226,6 +244,8 @@ jobs:
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
                          acrSku=Basic kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         enableKillswitch="${ENABLE_KILLSWITCH}" \
+                         killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
       - name: Deploy budget (subscription-scoped; non-fatal)

@@ -52,7 +52,7 @@ param enableKillswitch = true
 
 // GUID of the pre-created "ACA Job Schedule Manager" custom role.
 // Same value as dev param file — the custom role is subscription-scoped (usable across both RGs).
-// OPERATOR: fill in the same GUID here after creating the custom role (see dev param file comment).
-// Until the GUID is filled in, the module is a clean no-op regardless of enableKillswitch.
+// Same value as dev param file. NOTE: the killswitch module is gated on envName=='dev', so the
+// prod deploy never creates a killswitch — this value is unused in prod, set only for parity.
 // See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
-param killswitchRbacRoleId = ''
+param killswitchRbacRoleId = '3e2d5a14-96bd-4469-9f96-b9c3270aa9e6'
