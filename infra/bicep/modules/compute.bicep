@@ -1,13 +1,13 @@
 // compute.bicep — Container Apps Environment (Consumption) + Container Apps Job.
 //
-// Four scheduled triggers (identical job, four cron entries) handle Sat+Sun × DST:
-//   50 9 * * 6   = 09:50 UTC = 05:50 EDT Saturday  (UTC-4, Mar-Nov)
-//   50 10 * * 6  = 10:50 UTC = 05:50 EST Saturday  (UTC-5, Nov-Mar)
+// Two scheduled triggers (identical job, one per DST half) book ONE tee time every
+// SUNDAY (M6 — Sunday-only schedule):
 //   50 9 * * 0   = 09:50 UTC = 05:50 EDT Sunday    (UTC-4, Mar-Nov)
 //   50 10 * * 0  = 10:50 UTC = 05:50 EST Sunday    (UTC-5, Nov-Mar)
 //
-// The bot's DST gate (wall-clock ET hour == 5 check) ensures the wrong-half
-// cron exits immediately. This is identical to the book.yml pattern.
+// Both same-day crons fire; the bot's DST gate (core/dst_gate.py, --wait path:
+// proceed iff ET wall-clock hour == 5) makes the wrong-season one exit 0. This
+// re-homes the deleted book.yml `dst` step.
 // See: infra/AZURE_PLAN.md §5.3 (DST), §5.1 (jitter), §5.2 (cold-start)
 //
 // Concurrency control:
@@ -72,11 +72,9 @@ var acaEnvName = 'cae-teetime-${envName}'
 var jobName = 'teetime-job-${envName}'
 var watchJobName = 'teetime-watch-job-${envName}'
 
-// DST cron expressions (UTC). Four crons: Sat+Sun × EDT+EST.
-// DST gate in bot selects correct half; wrong-half cron exits immediately.
-// See: infra/AZURE_PLAN.md §5.3
-var cronEdtSat = '50 9 * * 6'    // 09:50 UTC = 05:50 EDT Saturday
-var cronEstSat = '50 10 * * 6'   // 10:50 UTC = 05:50 EST Saturday
+// DST cron expressions (UTC). Two crons: Sunday × EDT+EST (Sunday-only schedule, M6).
+// The bot's DST gate (core/dst_gate.py) selects the correct half; the wrong-season
+// cron exits 0. See: infra/AZURE_PLAN.md §5.3
 var cronEdtSun = '50 9 * * 0'    // 09:50 UTC = 05:50 EDT Sunday
 var cronEstSun = '50 10 * * 0'   // 10:50 UTC = 05:50 EST Sunday
 
@@ -98,8 +96,6 @@ var watchReplicaTimeout = 120
 // can be disabled without touching the others (a single job with multiple
 // scheduleTriggerConfigs is NOT supported by the ACA ARM/Bicep API — see stub).
 var bookingJobs = [
-  { name: '${jobName}-edt-sat', cron: cronEdtSat }
-  { name: '${jobName}-est-sat', cron: cronEstSat }
   { name: '${jobName}-edt-sun', cron: cronEdtSun }
   { name: '${jobName}-est-sun', cron: cronEstSun }
 ]
@@ -324,7 +320,7 @@ resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
 // Outputs
 // ---------------------------------------------------------------------------
 
-@description('Container Apps Job base name. Four jobs are created: -edt-sat, -est-sat, -edt-sun, -est-sun. For az containerapp job start, target one by appending the suffix.')
+@description('Container Apps Job base name. Two jobs are created: -edt-sun, -est-sun (Sunday-only schedule). This output is index 0 (-edt-sun). For az containerapp job start, target a specific job by appending the suffix.')
 output jobName string = bookingJob[0].name
 
 @description('Container Apps Environment resource ID.')

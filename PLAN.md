@@ -204,10 +204,9 @@ GH Actions cron is documented as best-effort with potentially **15+ minute** del
 | Local target | EDT (Mar–Nov) | EST (Nov–Mar) |
 |--------------|---------------|---------------|
 | 06:00 ET     | 10:00 UTC     | 11:00 UTC     |
-| Cron (Saturday) | `50 9 * * 6` (09:50 UTC, 10 min early in EDT) | `50 10 * * 6` (10:50 UTC, 10 min early in EST) |
 | Cron (Sunday)   | `50 9 * * 0` (09:50 UTC, 10 min early in EDT) | `50 10 * * 0` (10:50 UTC, 10 min early in EST) |
 
-We register **all four** crons (two per day) on Saturdays and Sundays, year-round. To avoid the maintenance burden of seasonal cron edits, both same-day crons fire and a "DST-half check" computes `datetime.now(ZoneInfo("America/New_York"))` and proceeds only when the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET) — otherwise the wrong-season cron exits without booking. This is what prevents the "second cron of the day runs anyway" failure mode (review item 1).
+We register **both Sunday** crons (one per DST half), year-round — one tee time per Sunday (M6 Sunday-only schedule; the Saturday crons were dropped in M6 PR5). To avoid the maintenance burden of seasonal cron edits, both same-day crons fire and the DST-half gate (`core/dst_gate.py`) proceeds only when the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET) — otherwise the wrong-season cron exits without booking. This is what prevents the "second cron of the day runs anyway" failure mode (review item 1).
 
 > **Status (M6):** the gate has been re-homed from the removed `book.yml` `dst` step
 > into the container entrypoint. It now lives in `core/dst_gate.py` (`should_proceed`,
