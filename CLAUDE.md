@@ -26,8 +26,16 @@ the UNCERTAIN→RECONCILING→BOOKED/LOST path) is not yet implemented. ForeUP a
 fully implemented; live dry-run confirmed against Mangrove Bay. TeeItUp adapter
 fully implemented; live booking + cancel confirmed against Sydney Marovitz
 (2026-05-29). M3 (SQLite) and M4 (email notifications) are CUT — `InMemoryStore`
-+ `ConsoleNotifier` are the final production wiring, not stubs. Remaining v0 tasks:
-M2.T3 (reconciliation) and M6 (first production cron run).
++ `ConsoleNotifier` are the final production wiring, not stubs.
+
+**M6 wiring is DONE** (PRs 1–7): `run --wait` busy-waits to the 06:00:00 ET drop;
+`core/dst_gate.py` exits the wrong-season cron; watcher enabled (look-but-don't-book
+under dry-run); Sunday-only crons (`bookingReplicaTimeout=1200`); target anchored to
+`target_weekday` via `core/target_date.py` (daily watcher no longer drifts); the
+`enableSchedules` bicep param can silence dev at prod cutover. Verification + cutover
+runbook in AZURE_PLAN §10.4/§10.5. Remaining v0 tasks: a clean dev dry-run Sunday
+(M6.T2) → prod cutover (M6.T3, operator: prod secrets + funded 2captcha + tag), and
+M2.T3 (reconciliation, independent).
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge

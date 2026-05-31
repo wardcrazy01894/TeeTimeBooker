@@ -50,3 +50,10 @@ def test_jobname_output_index_zero_is_a_real_sunday_job(bicep: str) -> None:
     # exists post-PR5. Assert the first bookingJobs entry is -edt-sun.
     assert "bookingJob[0].name" in bicep
     assert bicep.index("-edt-sun") < bicep.index("-est-sun")
+
+
+def test_enable_schedules_param_toggles_both_jobs(bicep: str) -> None:
+    # M6 PR6: enableSchedules=false → Manual triggers (no auto-fire) so dev can be
+    # silenced once prod is live. Both jobs (booking + watch) gate on it.
+    assert "param enableSchedules bool = true" in bicep
+    assert bicep.count("triggerType: enableSchedules ? 'Schedule' : 'Manual'") == 2

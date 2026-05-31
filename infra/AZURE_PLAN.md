@@ -733,6 +733,56 @@ cross-platform).
 manual recovery path if ACA has an outage. An operator can re-enable the cron
 by un-commenting the schedule lines, run a manual booking, then re-disable.
 
+### 10.4 M6 verification (dev, dry-run) — proving both jobs work before prod
+
+With `dryRun=true` the final POST never fires, so **logs are the only proof**. Query
+`ContainerAppConsoleLogs_CL` (or `az containerapp job logs show`) for the job execution.
+
+**(a) Booking job fired at the 6:00:00 ET drop** — look for, in order:
+- `Booking run: target=['<next-target-Sunday>'] dry_run=True players=4` (quoted list)
+- `run: real-timing path (--wait); fire_time=06:00:00 America/New_York, NTP offset_ms=…`
+  (confirms the REAL scheduler was selected, not the immediate demo path)
+- `race: busy-wait complete; firing at <ts> (target=<ts>, drift_ms=…)` — the load-bearing
+  line: it fired within a few ms of T0. (Emitted by `orchestrator.run` after `busy_wait_until`.)
+- Then a `DRY_RUN` outcome (no booking POST).
+A wrong-season cron instead logs `DST-half gate: wrong-season cron (ET hour != 5) — exiting 0`.
+
+**(b) Watch job actually polled** — look for: `Watch check: target=<target-Sunday> dry_run=True`
+(bare date, no brackets), a ranked-slots line, and a `DRY_RUN` result. A run that logs
+`Watch job is disabled` means `watcher.enabled` is false — not what we want in v1.
+
+**On-demand check (no need to wait for Sunday)** — the `--fire-time` hatch makes the
+`--wait` busy-wait + DST gate reachable at any hour, refused unless `--dry-run true`:
+```bash
+az containerapp job start -n teetime-job-dev-edt-sun -g rg-teetime-dev \
+  --command "teetime" --args "run --config /app/config/container.toml --dry-run true --wait --fire-time HH:MM:SS"
+```
+(pick `HH` = current ET hour + 1 so the gate's `hour == fire_hour-1` passes and the busy-wait
+is short). NOTE: `az containerapp job start` is an agent-guarded command — operator runs it.
+
+**Exit criterion (accepted):** production-identical timing (the real cron landing on T0) is
+observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock tests + a clean
+`--fire-time` on-demand dev run + **one clean dev dry-run Sunday** (the cron-driven race).
+
+### 10.5 Prod cutover checklist (in order)
+
+1. **M6 verified in dev** (§10.4) — incl. one clean dev dry-run Sunday.
+2. **Silence dev** so two environments don't hit ForeUP on the same creds (concurrent logins
+   at T0 can invalidate each other's session): redeploy dev with `enableSchedules=false`
+   (jobs become Manual-trigger, never auto-fire) via `workflow_dispatch` (environment=dev) or
+   a `main.bicepparam.dev` flip. Verify the dev jobs show `triggerType: Manual`.
+3. **Prod bootstrap done** (§10.1.1): `rg-teetime-prod` + SP roles (DONE 2026-05-31).
+4. **Prerequisites ready:** a FUNDED 2captcha key, valid Mangrove Bay creds, and acceptance of
+   the ForeUP IP-allowlist risk (§12 Q11).
+5. **Deploy prod:** push tag `infra/v1.0.0` (manual-approval `prod` environment). This creates
+   the prod Key Vault + jobs.
+6. **Set the 6 prod KV secrets** (§10.1.1 step 6) immediately so the first run can authenticate.
+7. **Monitor** the first prod Sunday: confirm the `race: busy-wait complete` line, a real
+   `BOOKED` outcome (NOT dry_run), and the course's confirmation email. Watch for
+   `CAPTCHA_BLOCKED` / `AUTH_FAILED` (operator-action outcomes).
+8. **Rollback:** if the first run misbehaves, redeploy prod with `enableSchedules=false` (or
+   re-enable dev) to stop further attempts while you investigate.
+
 ---
 
 ## 11. Security checklist
