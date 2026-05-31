@@ -73,6 +73,12 @@ poll_interval_s    = 600  # 10 minutes; must be >= 300 (anti-bot floor)
 polling_start_hour = 7    # course-local; no polling before 7 AM ET
 polling_end_hour   = 22   # course-local; no polling after 10 PM ET
 
-# one_booking_policy is intentionally NOT enabled in M6 (see M6_PLAN.md §4.4): the
-# watcher only logs/ranks newly available slots; cancel+rebook upgrades are a later,
-# separately-verified step. Daily-watch + policy-on needs a target-date design fix first.
+# Auto-upgrade (M-feature-2). ENABLED. When the watcher finds a higher-ranked slot
+# (closer to the 8:45-10:00 midpoint) than the current managed booking for the target
+# Sunday, it cancels and rebooks the better slot. Safe to run daily now that the watch
+# target is anchored to the booked Sunday (target_weekday, PR7) — it only ever acts on
+# that one date, never a drifting today+7. Real effect is prod-only: in dev (--dry-run
+# true) the cancel/book POSTs are suppressed. priority_slots omitted → defaults to
+# course_preferences order + time_windows[0] (the midpoint ranking).
+[one_booking_policy]
+enabled = true
