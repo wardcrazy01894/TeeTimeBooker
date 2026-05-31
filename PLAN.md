@@ -207,9 +207,11 @@ GH Actions cron is documented as best-effort with potentially **15+ minute** del
 | Cron (Saturday) | `50 9 * * 6` (09:50 UTC, 10 min early in EDT) | `50 10 * * 6` (10:50 UTC, 10 min early in EST) |
 | Cron (Sunday)   | `50 9 * * 0` (09:50 UTC, 10 min early in EDT) | `50 10 * * 0` (10:50 UTC, 10 min early in EST) |
 
-We register **all four** crons (two per day) on Saturdays and Sundays, year-round. The job's first step ("DST-half check", implemented in `.github/workflows/book.yml`) computes `datetime.now(ZoneInfo("America/New_York"))` and writes `proceed=true|false` based on whether the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET). Subsequent steps gate on `steps.dst.outputs.proceed == 'true'`. This avoids the maintenance burden of seasonal workflow edits AND the "second cron of the day runs anyway" failure mode (review item 1).
+We register **all four** crons (two per day) on Saturdays and Sundays, year-round. To avoid the maintenance burden of seasonal cron edits, both same-day crons fire and a "DST-half check" computes `datetime.now(ZoneInfo("America/New_York"))` and proceeds only when the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET) — otherwise the wrong-season cron exits without booking. This is what prevents the "second cron of the day runs anyway" failure mode (review item 1).
 
-`workflow_dispatch` always proceeds (the gate is `if: github.event_name == 'schedule'`-equivalent), so manual dry-runs aren't blocked by the gate.
+> ⚠️ **Status (M6, open):** this gate was implemented as the `dst` step in `.github/workflows/book.yml`, which has now been **removed** (the schedule runs as ACA Jobs — see §21). It is **not yet replicated** in the container entrypoint, and the `run` command currently uses `_local_demo_scheduler` (T0 = now), so the precise 06:00 ET busy-wait is also not yet wired for the cron path. Re-homing both the DST-half gate and the real-scheduler T0 busy-wait into the entrypoint is part of M6 (first production cron run). Until then the ACA booking jobs are exercised in dry-run only.
+
+`workflow_dispatch` manual triggers (now `gh`/ACA on-demand executions) bypass the gate, so manual dry-runs aren't blocked.
 
 The bot itself uses `zoneinfo` to compute T0 — that handles the ambiguous-hour and skipped-hour edge cases automatically. Mangrove Bay's booking window opening on a fall-back morning is unambiguous (06:00 EST, the second 06:00 of the night) by the standard `fold=0` semantics; we accept that.
 
