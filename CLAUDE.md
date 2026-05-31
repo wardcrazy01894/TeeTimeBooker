@@ -126,9 +126,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   `config/local.toml`, `watcher.enabled = true`, M6 PR4). Under `--dry-run true` (dev)
   it does ALL the looking/ranking/logging and suppresses ONLY the final POST
   (`WatchOrchestrator` returns `DRY_RUN` before the lock+POST). `one_booking_policy`
-  (cancel+rebook upgrade) stays DISABLED in M6 (a separate, higher-blast-radius change).
-  The watch cron stays daily: a Sunday booking is upgradeable all week, so polling every
-  day catches a better slot.
+  (cancel+rebook upgrade) is **ENABLED** (`config/*.toml`): when a higher-ranked slot
+  (closer to the 8:45–10:00 midpoint) opens for the booked Sunday, the watcher cancels
+  and rebooks it. Safe because the watch target is anchored to that Sunday (PR7), so it
+  only ever upgrades the intended date; real effect is prod-only (dry-run suppresses the
+  POSTs). The watch cron stays daily: a Sunday booking is upgradeable all week.
 - **Target date anchors to `target_weekday` (default Sunday), NOT a rolling `today+7`**
   (M6 PR7, `core/target_date.py`). `_build_request` computes `target = most-recent
   target_weekday(today) + offset`, so the DAILY watch job locks onto the upcoming target

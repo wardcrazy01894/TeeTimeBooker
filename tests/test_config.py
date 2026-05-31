@@ -64,6 +64,16 @@ def test_container_config_enables_watcher(env_set: None) -> None:
     assert wc.polling_end_hour == 22
 
 
+def test_container_config_enables_one_booking_policy(env_set: None) -> None:
+    """Auto-upgrade: with one_booking_policy.enabled the watcher cancels the current
+    booking and rebooks a higher-ranked (closer-to-midpoint) slot. Real effect only in
+    prod (dryRun=false); dev's dry-run suppresses the cancel/book POSTs. Safe to enable
+    now that the watch target is anchored to the booked Sunday (PR7, not a rolling
+    today+7). Empty priority_slots → uses course_preferences + time_windows[0] ranking."""
+    cfg = load(CONTAINER_TOML)
+    assert cfg.one_booking_policy.enabled is True
+
+
 def test_player_email_env_resolves_to_email_value(env_set: None) -> None:
     cfg = load(EXAMPLE_TOML)
     p1 = cfg.request.players[0]
