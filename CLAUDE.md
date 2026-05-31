@@ -102,10 +102,14 @@ in `core/` — never directly. This is the cut line for parallel work.
   wired (M6 PR1): `teetime run --wait` uses the real `cfg.scheduler` (busy-waits to
   06:00:00 ET); `--no-wait` (default; `TEETIME_WAIT` env fallback) keeps immediate
   local-demo timing via `_local_demo_scheduler`. The ACA booking job will pass
-  `--wait` in M6 PR3. ⚠️ STILL PENDING (M6 PR2): the wall-clock "DST-half" gate
-  (which suppressed the wrong-season cron so only one of a day's two crons books)
-  lived ONLY in `book.yml` and is NOT yet replicated in the entrypoint — so do not
-  pass `--wait` to both DST crons until PR2 lands. See PLAN.md §6.3.
+  `--wait` in M6 PR3. The wall-clock **"DST-half" gate** (which suppresses the
+  wrong-season cron so only one of a day's two crons books) now lives in
+  `core/dst_gate.py` (`should_proceed`, M6 PR2) — re-homed from the deleted
+  `book.yml` `dst` step. It is a pure function of `(clock, timezone, fire_time)`
+  evaluated in `_run` ONLY on the `--wait` path, BEFORE the busy-wait: proceed iff
+  the ET wall-clock hour == `fire_time.hour - 1` (i.e. 5 for a 06:00 drop). A
+  wrong-season cron exits 0 without booking. `--no-wait` bypasses the gate (matching
+  the old `workflow_dispatch` always-proceed). See PLAN.md §6.3.
 - **`teetime run --fire-time HH:MM:SS`** is a DEV/TEST-ONLY override of the scheduler
   fire_time, hard-refused unless `--dry-run true`. It makes an on-demand `--wait`
   busy-wait reachable at any wall-clock hour (it cannot shift a real booking). See

@@ -27,6 +27,7 @@ from .core.config import (
     load,
     redact,
 )
+from .core.dst_gate import should_proceed
 from .core.models import (
     BookingRequest,
     CourseCredentials,
@@ -229,12 +230,28 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
     # prod Sunday; best-effort, degrades to 0 on failure. Skipped for the fake adapter
     # (no network in tests/demo) and off the wait path (offset is meaningless there).
     clock_offset = measure_ntp_offset() if wait and not use_fake_adapter else timedelta(0)
+    clock = RealClock(offset=clock_offset)
+
+    # DST-half gate (ONLY on the real cron path). compute.bicep registers both a EDT and
+    # an EST cron per day; only one is correct each season. The wrong-season cron would
+    # otherwise book ~50 min late (past T0) or busy-wait ~70 min into the replica timeout
+    # (future T0). Exit 0 without booking — a wrong-season firing is NOT an error. The
+    # --no-wait path (manual/local/on-demand) bypasses the gate, matching the old
+    # book.yml workflow_dispatch always-proceed semantics. See core/dst_gate.py.
+    if wait and not should_proceed(
+        clock, timezone=cfg.scheduler.timezone, fire_time=cfg.scheduler.fire_time
+    ):
+        log.info(
+            "DST-half gate: wrong-season cron (ET hour != %d) — exiting 0 without booking.",
+            cfg.scheduler.fire_time.hour - 1,
+        )
+        return
 
     orch = Orchestrator(
         adapters=adapters,
         store=store,
         notifier=ConsoleNotifier(),
-        clock=RealClock(offset=clock_offset),
+        clock=clock,
         scheduler=scheduler,
         creds=creds,
     )

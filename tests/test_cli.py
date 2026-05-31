@@ -291,7 +291,7 @@ def test_run_no_wait_uses_demo_scheduler(spy_run: SimpleNamespace) -> None:
     assert spy_run.ntp_calls == []  # no NTP probe off the wait path
 
 
-def test_run_wait_uses_real_scheduler(spy_run: SimpleNamespace) -> None:
+def test_run_wait_uses_real_scheduler(spy_run: SimpleNamespace, gate_spy: SimpleNamespace) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
@@ -362,9 +362,11 @@ def test_fire_time_override_refused_when_live() -> None:
     assert "dev/test" in result.output.lower()  # our guard, not click's "no such option"
 
 
-def test_fire_time_override_sets_scheduler_fire_time(spy_run: SimpleNamespace) -> None:
-    # DST-gate interaction is asserted in PR2; here we prove the override reaches
-    # the scheduler the orchestrator runs against.
+def test_fire_time_override_sets_scheduler_fire_time(
+    spy_run: SimpleNamespace, gate_spy: SimpleNamespace
+) -> None:
+    # gate_spy keeps the --wait DST gate proceeding regardless of wall-clock hour;
+    # here we prove the --fire-time override reaches the scheduler the orchestrator runs.
     runner = CliRunner()
     result = runner.invoke(
         cli,
@@ -402,3 +404,66 @@ def test_no_wait_real_adapter_does_not_measure_ntp(spy_run: SimpleNamespace) -> 
     )
     assert result.exit_code == 0, result.output
     assert spy_run.ntp_calls == []
+
+
+# ---------------------------------------------------------------------------
+# M6 PR2: the DST-half gate is invoked ONLY on the --wait path. The --no-wait
+# path (manual/local/on-demand) bypasses it, matching the old book.yml
+# workflow_dispatch always-proceed semantics. (Predicate matrix: test_dst_gate.py.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def gate_spy(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Replace the DST gate with a recorder. `.proceed` controls its return."""
+    holder = SimpleNamespace(calls=[], proceed=True)
+
+    def fake_gate(clock: object, *, timezone: str, fire_time: object) -> bool:
+        holder.calls.append((timezone, fire_time))
+        return holder.proceed
+
+    monkeypatch.setattr(main_mod, "should_proceed", fake_gate)
+    return holder
+
+
+def test_gate_bypassed_on_no_wait_path(spy_run: SimpleNamespace, gate_spy: SimpleNamespace) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run",
+            "--config",
+            str(EXAMPLE_TOML),
+            "--dry-run",
+            "true",
+            "--use-fake-adapter",
+            "--no-wait",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert gate_spy.calls == []  # gate never evaluated off the wait path
+
+
+def test_gate_invoked_on_wait_path(spy_run: SimpleNamespace, gate_spy: SimpleNamespace) -> None:
+    gate_spy.proceed = True
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--use-fake-adapter", "--wait"],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(gate_spy.calls) == 1  # gate evaluated on the wait path
+    assert spy_run.kwargs()  # proceeded → orchestrator was constructed/run
+
+
+def test_gate_skip_exits_zero_without_booking(
+    spy_run: SimpleNamespace, gate_spy: SimpleNamespace
+) -> None:
+    gate_spy.proceed = False  # wrong-season cron
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--use-fake-adapter", "--wait"],
+    )
+    assert result.exit_code == 0, result.output  # a wrong-season cron is NOT an error
+    assert spy_run.kwargs() == {}  # orchestrator never constructed → no booking attempt
