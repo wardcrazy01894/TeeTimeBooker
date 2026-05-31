@@ -1,9 +1,10 @@
 # TeeTimeBooker — Azure Serverless Hosting Plan (v1)
 
 > **Scope.** This document covers the Azure infrastructure that replaces the
-> v0 GitHub Actions runner-hosted execution. v0 source code (`src/`, `tests/`,
-> `PLAN.md`, `CLAUDE.md`, `.github/workflows/book.yml`) is unchanged. The bot
-> binary is container-packaged and run as an Azure Container Apps Job on a
+> v0 GitHub Actions runner-hosted execution. (The v0 cron workflows `book.yml` /
+> `watch-tee-time.yml` were removed in #43; scheduling now runs as ACA Jobs, and the
+> M6 runtime wiring — `--wait`, `core/dst_gate.py`, `core/target_date.py` — landed in
+> `src/`.) The bot binary is container-packaged and run as an Azure Container Apps Job on a
 > cron schedule. All decisions listed in the task brief are treated as settled;
 > this document addresses the "anticipate-the-reviewer" items explicitly.
 
@@ -215,8 +216,8 @@ ACR geo-replication.
 ### 5.3 DST handling on ACA
 
 ACA cron expressions are UTC-only (identical constraint to GitHub Actions).
-The identical four-cron pattern from `book.yml` is required and is implemented
-in `compute.bicep`:
+Two Sunday crons (one per DST half; Sunday-only since M6 PR5, re-homed from the
+deleted `book.yml`) are implemented in `compute.bicep`:
 
 | ET target | UTC cron | Description |
 |---|---|---|
@@ -238,7 +239,7 @@ It is a pure function (clock-injectable, FakeClock-tested). `_run` calls it only
 real-timing `--wait` path (the ACA booking job passes `--wait`, M6 PR3); `--no-wait`
 (manual/local) bypasses it, matching the old `workflow_dispatch` always-proceed.
 
-**The gate is not optional.** Without it, all four crons would fire the full
+**The gate is not optional.** Without it, both same-day crons would fire the full
 booking logic, and the wrong-half run would arrive at T0 ± 1 hour, bypassing
 the idempotency check (same RequestId but wrong resolved_date) and potentially
 booking the wrong day.
@@ -252,7 +253,7 @@ Key differences from the booking jobs:
 
 | Property | Booking jobs (×2) | Watch job (×1) |
 |---|---|---|
-| Cron | 4 entries for DST × day | `*/10 * * * *` (single, year-round) |
+| Cron | 2 entries (Sunday, one per DST half) | `*/10 * * * *` (single, year-round) |
 | DST gate | Required (races a wall-clock moment) | Not required (WatchOrchestrator gates on polling hours internally via zoneinfo) |
 | `replicaTimeout` | 1200 s (20 min — covers the in-replica busy-wait to 06:00 ET) | 120 s (one HTTP round-trip) |
 | Command | `teetime run --config ...` | `teetime watch --config ...` |
@@ -423,8 +424,9 @@ This triggers a manual execution that will pick up the new secret.
 
 ## 8. CI validation pipeline (pre-emption item 9)
 
-The file `.github/workflows/azure-iac.yml` is the active CI workflow, separate
-from `book.yml`. It never touches `book.yml` or any v0 workflow.
+The file `.github/workflows/azure-iac.yml` is the active deploy workflow (alongside
+`ci.yml` for lint/test). The v0 `book.yml` / `watch-tee-time.yml` cron workflows were
+removed in #43.
 
 ### 8.1 Trigger strategy
 
@@ -565,11 +567,11 @@ in the parameter file and redeploy — this is the intended release workflow.
 
 | Component | SKU | Monthly cost | Notes |
 |---|---|---|---|
-| Container Apps Job compute | Consumption | **$0.00** | Free tier: 180,000 vCPU-seconds/month. One 5-min run/weekend-day at 0.25 vCPU = 375 vCPU-s/run × ~8 weekend-days/month = 3,000 vCPU-s/month. 98% below free tier. |
-| Container Apps Job memory | Consumption | **$0.00** | Free tier: 360,000 GiB-seconds/month. One 5-min run at 0.5 GiB = 750 GiB-s/run × ~8 weekend-days/month = 6,000 GiB-s/month. 98% below free tier. |
+| Container Apps Job compute | Consumption | **$0.00** | Free tier: 180,000 vCPU-s/month. Booking: ~11-min busy-wait run × 0.25 vCPU ≈ 165 vCPU-s × ~9 Sunday runs/mo ≈ 1.5k. Watch (every 10 min, ~30 s): ~4,320 runs × ~7.5 vCPU-s ≈ 32k. Combined ≈ 34k vCPU-s/mo — ~80% below free tier. (The every-10-min watch job, not the booker, is the dominant consumer.) |
+| Container Apps Job memory | Consumption | **$0.00** | Free tier: 360,000 GiB-s/month. Same run profile at 0.5 GiB ≈ 68k GiB-s/mo — ~80% below free tier. |
 | Container Apps Environment | Consumption | **$0.00** | No per-environment fee on Consumption plan. |
 | Azure Container Registry | Basic | **~$5.00** | $5.00/mo flat for Basic SKU. Includes 10 GiB storage. Our image is ~300 MB; well within limits. |
-| Key Vault | Standard | **~$0.01** | $0.03/10k operations. ~225 secret reads/month (6 secrets × 2 cron-halves × ~8 weekend-days/month ≈ 96; rounding to ~225 with overhead). Negligible — well under 10k operations. |
+| Key Vault | Standard | **~$0.03** | $0.03/10k operations. ACA caches KV-referenced secrets (~30-min refresh, not per-execution), so ≈ 6 secrets × ~48 refreshes/day × 30 ≈ ~9k reads/month. Negligible — around the 10k mark, well under $0.10. |
 | Log Analytics | Pay-per-use | **~$0.00–$0.50** | First 5 GB/month free. Bot produces <10 MB logs/month. |
 | Application Insights | Pay-per-use | **~$0.00** | First 5 GB/month free. |
 | Network egress | — | **~$0.00** | First 100 GB/month free. Bot does <10 MB/run. |
@@ -700,38 +702,17 @@ For IaC changes (Bicep edits):
    Dev always runs in dry-run (`dryRun = true` in parameter file).
 3. Tag `infra/v*` → `azure-iac.yml` deploys to prod (requires manual approval).
 
-### 10.3 v0 → v1 cutover
+### 10.3 v0 → v1 cutover (DONE)
 
-The v0 `book.yml` cron and the v1 ACA Jobs schedule MUST NOT both be active at
-the same time. Running both risks concurrent booking attempts against the same
-RequestId from two independent execution environments (GH runner + ACA
-container), defeating layer 5 (advisory lock is in-process, not
-cross-platform).
+The v0 GitHub Actions cron workflows (`book.yml`, `watch-tee-time.yml`) were **removed in
+#43** — the booking and watch schedules now run exclusively as ACA Jobs (Sunday-only;
+`compute.bicep`). There is therefore no longer a v0/v1 dual-run hazard: no GitHub Actions
+schedule exists to conflict with the ACA Jobs. The only remaining GitHub Actions workflows
+are `ci.yml` (lint/test on PRs) and `azure-iac.yml` (deploy).
 
-**Cutover sequence:**
-1. Deploy and validate v1 in dev with `--dry-run true`.
-2. Confirm v1 dry-run log output arrives at correct time with correct content.
-3. Disable the v0 cron schedule in `book.yml` by commenting out all four `schedule:`
-   entries (keep `workflow_dispatch` intact for manual recovery):
-   ```yaml
-   on:
-     # schedule:  ← DISABLED on v1 cutover; v1 uses ACA Jobs
-     #   - cron: "50 9 * * 6"   # Saturday EDT
-     #   - cron: "50 10 * * 6"  # Saturday EST
-     #   - cron: "50 9 * * 0"   # Sunday EDT
-     #   - cron: "50 10 * * 0"  # Sunday EST
-     workflow_dispatch:
-       ...
-   ```
-   Commit this change as a PR titled "v1 cutover: disable v0 cron schedule".
-4. Deploy v1 ACA Jobs in prod with `--dry-run false`.
-5. Monitor for 3 consecutive successful weekend runs.
-6. After 30 days of clean v1 operation, remove the commented schedule entries
-   from `book.yml` in a follow-up PR.
-
-**Do NOT auto-delete `book.yml`.** Keep `workflow_dispatch` forever as a
-manual recovery path if ACA has an outage. An operator can re-enable the cron
-by un-commenting the schedule lines, run a manual booking, then re-disable.
+For ad-hoc recovery (e.g. a missed drop), trigger an ACA job execution directly
+(`az containerapp job start …`) or run the `teetime` CLI locally — see §10.4. The first
+real production run is gated on the M6 cutover checklist (§10.5), not on this section.
 
 ### 10.4 M6 verification (dev, dry-run) — proving both jobs work before prod
 
@@ -767,10 +748,21 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
 ### 10.5 Prod cutover checklist (in order)
 
 1. **M6 verified in dev** (§10.4) — incl. one clean dev dry-run Sunday.
-2. **Silence dev** so two environments don't hit ForeUP on the same creds (concurrent logins
-   at T0 can invalidate each other's session): redeploy dev with `enableSchedules=false`
-   (jobs become Manual-trigger, never auto-fire) via `workflow_dispatch` (environment=dev) or
-   a `main.bicepparam.dev` flip. Verify the dev jobs show `triggerType: Manual`.
+2. **Credential isolation between dev and prod.** Dev and prod must NOT log into the same
+   ForeUP account — concurrent logins (especially at the Sunday 6 AM race) can invalidate
+   each other's session. **Resolved by giving dev its own ForeUP account** (set
+   `MB-USERNAME`/`MB-PASSWORD` in the dev vault `kv-teetime-dev-s66g` to a separate account;
+   done 2026-05-31). With distinct accounts, dev (dry-run) and prod (live) never share a
+   session, so dev can keep running — no need to silence it.
+   - **NOTE — ACA caches Key Vault secrets.** Updating a KV secret value does NOT
+     immediately reach a running job; the job serves the cached value until it is
+     redeployed. Each `azure-iac` deploy stamps a new image tag (`teetime:<sha>`), which
+     updates the job and re-resolves `keyVaultUrl` secrets to "latest". So after rotating a
+     dev/prod credential, trigger a deploy (`workflow_dispatch` environment=dev, or any merge
+     touching `infra/**` / `src/**` / `config/**`) and confirm the new value via the next
+     run's `logging in as <account>` log line.
+   - The `enableSchedules=false` param remains available as an explicit kill-switch (jobs go
+     Manual-trigger, never auto-fire) if you ever DO need to fully silence an environment.
 3. **Prod bootstrap done** (§10.1.1): `rg-teetime-prod` + SP roles (DONE 2026-05-31).
 4. **Prerequisites ready:** a FUNDED 2captcha key, valid Mangrove Bay creds, and acceptance of
    the ForeUP IP-allowlist risk (§12 Q11).
