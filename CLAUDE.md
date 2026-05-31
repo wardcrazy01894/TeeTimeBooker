@@ -98,12 +98,18 @@ in `core/` — never directly. This is the cut line for parallel work.
   which resolves the ambiguous/skipped-hour edge cases) + four ACA Job crons
   (two per day, one per DST half) in `infra/bicep/modules/compute.bicep`. Math
   in PLAN.md §6.3. The booking and watch schedules run as ACA Jobs;
-  `book.yml`/`watch-tee-time.yml` have been removed. ⚠️ The wall-clock
-  "DST-half" gate (which suppressed the wrong-season cron so only one of a day's
-  two crons books) lived ONLY in `book.yml`; it is NOT yet replicated in the
-  container entrypoint. Re-homing that gate (and the precise T0 busy-wait —
-  `run` currently uses `_local_demo_scheduler`) is part of the still-open M6
-  (first production cron run). See PLAN.md §6.3.
+  `book.yml`/`watch-tee-time.yml` have been removed. The precise T0 busy-wait is
+  wired (M6 PR1): `teetime run --wait` uses the real `cfg.scheduler` (busy-waits to
+  06:00:00 ET); `--no-wait` (default; `TEETIME_WAIT` env fallback) keeps immediate
+  local-demo timing via `_local_demo_scheduler`. The ACA booking job will pass
+  `--wait` in M6 PR3. ⚠️ STILL PENDING (M6 PR2): the wall-clock "DST-half" gate
+  (which suppressed the wrong-season cron so only one of a day's two crons books)
+  lived ONLY in `book.yml` and is NOT yet replicated in the entrypoint — so do not
+  pass `--wait` to both DST crons until PR2 lands. See PLAN.md §6.3.
+- **`teetime run --fire-time HH:MM:SS`** is a DEV/TEST-ONLY override of the scheduler
+  fire_time, hard-refused unless `--dry-run true`. It makes an on-demand `--wait`
+  busy-wait reachable at any wall-clock hour (it cannot shift a real booking). See
+  `_with_fire_time_override` and AZURE_PLAN §6.5.
 - **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
   This lets `target_offsets = [7]` produce one stable RequestId within a run
   while still targeting a fresh date each week. The key is held in-process

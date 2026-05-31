@@ -112,23 +112,81 @@ def show_config_cmd(config_path: Path) -> None:
     help="If true, do everything except the final booking POST.",
 )
 @click.option(
+    "--wait/--no-wait",
+    "wait",
+    default=None,
+    help="Busy-wait until the configured fire_time (the real 06:00 ET race path). "
+    "Default (no flag): consult the TEETIME_WAIT env var, else --no-wait (immediate, "
+    "local-demo timing). The ACA booking job passes --wait.",
+)
+@click.option(
+    "--fire-time",
+    "fire_time_str",
+    type=str,
+    default="",
+    help="DEV/TEST ONLY. Override the scheduler fire_time (HH:MM:SS) so an on-demand "
+    "--wait run's busy-wait is satisfiable at any wall-clock hour. REFUSED unless "
+    "--dry-run true (it must never be able to shift a real booking). See AZURE_PLAN §6.5.",
+)
+@click.option(
     "--use-fake-adapter",
     is_flag=True,
     default=False,
     help="Use the in-process FakeAdapter (v0 demo). Real ForeUP adapter "
     "lands in M5 (gated behind Spike S1).",
 )
-def run_cmd(config_path: Path, dry_run: bool, use_fake_adapter: bool) -> None:
+def run_cmd(
+    config_path: Path,
+    dry_run: bool,
+    wait: bool | None,
+    fire_time_str: str,
+    use_fake_adapter: bool,
+) -> None:
     """Run one BookingRequest end-to-end."""
+    # Resolve bool|None -> bool here (in the command) so _run takes a plain bool.
+    resolved_wait = _resolve_wait_mode(wait)
+    # --fire-time is a dev/test escape hatch; hard-refuse it on a live run.
+    if fire_time_str and not dry_run:
+        raise click.ClickException("--fire-time is dev/test-only and requires --dry-run true.")
     try:
         cfg = load(config_path)
     except MissingEnvVarError as e:
         raise click.ClickException(str(e)) from e
 
-    asyncio.run(_run(cfg, dry_run=dry_run, use_fake_adapter=use_fake_adapter))
+    if fire_time_str:
+        cfg = _with_fire_time_override(cfg, fire_time_str)
+
+    asyncio.run(_run(cfg, dry_run=dry_run, wait=resolved_wait, use_fake_adapter=use_fake_adapter))
 
 
-async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None:
+def _resolve_wait_mode(flag: bool | None) -> bool:
+    """Resolve the execution mode.
+
+    Precedence: explicit --wait/--no-wait flag > TEETIME_WAIT env (truthy: "1"/"true"/
+    "yes"/"on") > False. True = the real 06:00 ET busy-wait path; False = immediate
+    local-demo timing. Called from run_cmd (NOT _run) so _run receives a concrete bool.
+    """
+    if flag is not None:
+        return flag
+    return os.getenv("TEETIME_WAIT", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _with_fire_time_override(cfg: AppConfig, fire_time_str: str) -> AppConfig:
+    """Return a copy of cfg with scheduler.fire_time replaced by HH:MM:SS.
+
+    Dev/test only (the caller refuses it unless --dry-run true). Lets the --wait
+    busy-wait be exercised on demand at any wall-clock hour. Raises ClickException
+    on a malformed time.
+    """
+    try:
+        parsed = time.fromisoformat(fire_time_str)
+    except ValueError as e:
+        raise click.ClickException(f"--fire-time must be HH:MM:SS, got {fire_time_str!r}.") from e
+    new_scheduler = cfg.scheduler.model_copy(update={"fire_time": parsed})
+    return cfg.model_copy(update={"scheduler": new_scheduler})
+
+
+async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: bool) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(message)s",
@@ -161,12 +219,16 @@ async def _run(cfg: AppConfig, *, dry_run: bool, use_fake_adapter: bool) -> None
     store = InMemoryStore()
     await store.initialize()
 
-    # Local demo: skip the 6 AM ET busy-wait. The real wait only makes sense
-    # when invoked by the cron in book.yml.
-    scheduler = _local_demo_scheduler(cfg.scheduler)
+    # --wait (the ACA booking cron): use cfg.scheduler verbatim so the orchestrator
+    # busy-waits to the configured fire_time (06:00:00 ET). --no-wait (local default):
+    # T0 = now via _local_demo_scheduler, so busy_wait returns immediately.
+    scheduler = cfg.scheduler if wait else _local_demo_scheduler(cfg.scheduler)
 
-    # One-shot NTP offset for the T0 race (live runs only; best-effort, 0 on failure).
-    clock_offset = measure_ntp_offset() if not use_fake_adapter and not dry_run else timedelta(0)
+    # One-shot NTP offset for the T0 race. Gated on `wait` (NOT dry_run) so the dev
+    # `--wait --dry-run true` run probes UDP:123 reachability before the first real
+    # prod Sunday; best-effort, degrades to 0 on failure. Skipped for the fake adapter
+    # (no network in tests/demo) and off the wait path (offset is meaningless there).
+    clock_offset = measure_ntp_offset() if wait and not use_fake_adapter else timedelta(0)
 
     orch = Orchestrator(
         adapters=adapters,

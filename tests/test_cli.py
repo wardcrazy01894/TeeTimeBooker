@@ -8,12 +8,16 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from click.testing import CliRunner
 
+import teetime.__main__ as main_mod
 from teetime.__main__ import cli
 
 EXAMPLE_TOML = Path(__file__).resolve().parent.parent / "config" / "example.toml"
@@ -214,3 +218,187 @@ enabled = false
     assert result.exit_code != 0
     assert "card_number" in result.output
     assert "ambiguity" in result.output
+
+
+# ---------------------------------------------------------------------------
+# M6 PR1: `teetime run --wait/--no-wait` execution-mode selector,
+#          NTP-offset re-gating (on `wait`, not `dry_run`), and the dev/test
+#          `--fire-time` override. The SUT is the CLI wiring — collaborators
+#          (Orchestrator.run, measure_ntp_offset) are mocked so no real
+#          busy-wait or network call happens.
+# ---------------------------------------------------------------------------
+
+
+class _SpyOrchestrator:
+    """Captures init kwargs and no-ops .run() so the CLI wiring is exercised
+    without a real T0 busy-wait or network call."""
+
+    last_kwargs: ClassVar[dict] = {}
+
+    def __init__(self, **kwargs: object) -> None:
+        _SpyOrchestrator.last_kwargs = dict(kwargs)
+
+    async def run(self, request: object) -> object:
+        return SimpleNamespace(outcome=SimpleNamespace(value="dry_run"))
+
+
+@pytest.fixture
+def spy_run(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Replace Orchestrator with a spy; spy on _local_demo_scheduler and
+    measure_ntp_offset. TEETIME_WAIT is cleared so tests start from a known state."""
+    monkeypatch.delenv("TEETIME_WAIT", raising=False)
+    _SpyOrchestrator.last_kwargs = {}
+    demo_calls: list = []
+    ntp_calls: list = []
+
+    orig_demo = main_mod._local_demo_scheduler
+
+    def demo_spy(base: object) -> object:
+        demo_calls.append(base)
+        return orig_demo(base)
+
+    def ntp_spy(*_a: object, **_k: object) -> _dt.timedelta:
+        ntp_calls.append(1)
+        return _dt.timedelta(0)
+
+    monkeypatch.setattr(main_mod, "Orchestrator", _SpyOrchestrator)
+    monkeypatch.setattr(main_mod, "_local_demo_scheduler", demo_spy)
+    monkeypatch.setattr(main_mod, "measure_ntp_offset", ntp_spy)
+    return SimpleNamespace(
+        kwargs=lambda: _SpyOrchestrator.last_kwargs,
+        demo_calls=demo_calls,
+        ntp_calls=ntp_calls,
+    )
+
+
+def test_run_no_wait_uses_demo_scheduler(spy_run: SimpleNamespace) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run",
+            "--config",
+            str(EXAMPLE_TOML),
+            "--dry-run",
+            "true",
+            "--use-fake-adapter",
+            "--no-wait",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(spy_run.demo_calls) == 1  # immediate/demo timing
+    assert spy_run.kwargs()["scheduler"].early_arrival_ms == 0
+    assert spy_run.ntp_calls == []  # no NTP probe off the wait path
+
+
+def test_run_wait_uses_real_scheduler(spy_run: SimpleNamespace) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--use-fake-adapter", "--wait"],
+    )
+    assert result.exit_code == 0, result.output
+    assert spy_run.demo_calls == []  # real cfg.scheduler, NOT the demo
+    sched = spy_run.kwargs()["scheduler"]
+    assert sched.fire_time == _dt.time(6, 0, 0)
+    assert sched.early_arrival_ms == 500  # verbatim from example.toml
+    assert spy_run.ntp_calls == []  # fake adapter suppresses the NTP probe
+
+
+def test_run_default_is_no_wait(spy_run: SimpleNamespace) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--use-fake-adapter"],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(spy_run.demo_calls) == 1  # neither flag, env unset -> no-wait
+
+
+def test_run_env_wait_fallback_and_flag_override(
+    spy_run: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEETIME_WAIT", "1")
+    runner = CliRunner()
+    # No flag -> TEETIME_WAIT fallback -> real scheduler (wait).
+    r1 = runner.invoke(
+        cli, ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--use-fake-adapter"]
+    )
+    assert r1.exit_code == 0, r1.output
+    assert spy_run.demo_calls == []  # env enabled wait
+    # Explicit --no-wait overrides the env.
+    r2 = runner.invoke(
+        cli,
+        [
+            "run",
+            "--config",
+            str(EXAMPLE_TOML),
+            "--dry-run",
+            "true",
+            "--use-fake-adapter",
+            "--no-wait",
+        ],
+    )
+    assert r2.exit_code == 0, r2.output
+    assert len(spy_run.demo_calls) == 1  # flag overrode env
+
+
+def test_fire_time_override_refused_when_live() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run",
+            "--config",
+            str(EXAMPLE_TOML),
+            "--dry-run",
+            "false",
+            "--use-fake-adapter",
+            "--fire-time",
+            "12:00:00",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "dev/test" in result.output.lower()  # our guard, not click's "no such option"
+
+
+def test_fire_time_override_sets_scheduler_fire_time(spy_run: SimpleNamespace) -> None:
+    # DST-gate interaction is asserted in PR2; here we prove the override reaches
+    # the scheduler the orchestrator runs against.
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run",
+            "--config",
+            str(EXAMPLE_TOML),
+            "--dry-run",
+            "true",
+            "--use-fake-adapter",
+            "--wait",
+            "--fire-time",
+            "12:00:00",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert spy_run.kwargs()["scheduler"].fire_time == _dt.time(12, 0, 0)
+
+
+def test_wait_measures_ntp_on_real_adapter_even_in_dry_run(spy_run: SimpleNamespace) -> None:
+    # Reviewer item 3: NTP gated on `wait and not use_fake_adapter`, NOT on dry_run,
+    # so the dev `--wait --dry-run true` run probes UDP:123 before the first prod Sunday.
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--wait"]
+    )
+    assert result.exit_code == 0, result.output
+    assert spy_run.ntp_calls == [1]  # measured despite dry-run
+
+
+def test_no_wait_real_adapter_does_not_measure_ntp(spy_run: SimpleNamespace) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--no-wait"]
+    )
+    assert result.exit_code == 0, result.output
+    assert spy_run.ntp_calls == []
