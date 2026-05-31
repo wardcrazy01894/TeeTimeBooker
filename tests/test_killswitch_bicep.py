@@ -272,8 +272,18 @@ def test_main_bicep_killswitch_output_present(main_bicep: str) -> None:
     This output is consumed by the operator (and PR-KS2 budget.bicep) to wire
     the $50 budget threshold to the killswitch Action Group after PR-KS1 deploys.
     Must be an empty string when the killswitch module is not deployed.
+
+    Regression guard: the output MUST NOT use `any(killswitch).outputs...` — the
+    any() cast strips Bicep's module-output `.value` unwrapping, so ARM returns the
+    raw {value,type} object and the deploy fails with DeploymentOutputEvaluationFailed
+    (observed 2026-05-31). Use the safe-dereference `.?` + `??` pattern instead, which
+    `az bicep build` validates statically (no BCP318 suppression needed).
     """
     assert "output killswitchActionGroupId string" in main_bicep
+    assert "any(killswitch)" not in main_bicep, (
+        "do not use any(killswitch).outputs — it returns an Object at deploy time; "
+        "use killswitch.?outputs.actionGroupId ?? '' instead"
+    )
 
 
 def test_param_files_have_killswitch_rbac_role_id(param_dev: str, param_prod: str) -> None:
