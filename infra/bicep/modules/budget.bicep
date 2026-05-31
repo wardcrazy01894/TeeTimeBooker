@@ -5,18 +5,17 @@
 // It must be deployed with a separate az deployment sub create command,
 // NOT as a nested module inside the RG-scoped main.bicep.
 //
-// Deploy command (from azure-iac.yml, after the RG deployment):
+// Deploy command (operator, subscription-scope; the CI service principal is RG-scoped
+// only, so the azure-iac budget step warns-and-skips — this must be run manually):
 //   az deployment sub create \
 //     --location eastus2 \
 //     --template-file infra/bicep/modules/budget.bicep \
-//     --parameters envName=dev budgetAmountUsd=10 budgetAlertEmail=<email>
+//     --parameters budgetAmountUsd=20 budgetAlertEmail=<email>
 //
-// The budget alert fires at 80% of the monthly amount (i.e., ~$8 for a $10
-// budget). This is a notification only — it does not stop or throttle Azure
-// resource usage.
-//
-// The budget is filtered to the specific resource group rg-teetime-${envName}
-// via filter.dimensions so it does not alert on unrelated subscription costs.
+// Single $20/mo budget across both teetime RGs (dev + prod) = the total project bill.
+// Two email notifications (notification only — does NOT stop/throttle usage):
+//   - Actual ≥ 80%  ($16): early warning.
+//   - Forecasted ≥ 100% ($20): Azure projects the month will exceed $20.
 //
 // See: infra/AZURE_PLAN.md §9.2 (budget alert), §4 (parameter strategy)
 
@@ -26,13 +25,10 @@ targetScope = 'subscription'
 // Parameters
 // ---------------------------------------------------------------------------
 
-@description('Environment name. Used to name the budget uniquely per env.')
-param envName string
-
-@description('Monthly budget ceiling in USD. Alert fires at 80%.')
+@description('Monthly budget ceiling in USD. Emails an Actual alert at 80% (early warning) and a Forecasted alert at 100% (projected to exceed the ceiling this month).')
 @minValue(1)
-@maxValue(100)
-param budgetAmountUsd int = 10
+@maxValue(1000)
+param budgetAmountUsd int = 20
 
 @description('Email address for budget alert notifications.')
 param budgetAlertEmail string
@@ -51,10 +47,12 @@ param budgetStartDate string = utcNow('yyyy-MM-01T00:00:00Z')
 // Variables
 // ---------------------------------------------------------------------------
 
-var budgetName = 'budget-teetime-${envName}'
+// Single project-wide budget (covers both teetime RGs across dev + prod) so it tracks the
+// TOTAL monthly bill, not one environment. Fixed name → idempotent if deployed from either
+// the dev or prod path.
+var budgetName = 'budget-teetime'
 
-// Alert threshold as a percentage of the monthly budget amount.
-// 80% means the alert fires at ~$8 for a $10 budget.
+// Early-warning Actual alert at 80% of the ceiling ($16 of $20).
 var alertThresholdPercent = 80
 
 // ---------------------------------------------------------------------------
@@ -87,20 +85,31 @@ resource budget 'Microsoft.Consumption/budgets@2023-11-01' = {
         name: 'ResourceGroupName'
         operator: 'In'
         values: [
-          'rg-teetime-${envName}'
+          'rg-teetime-dev'
+          'rg-teetime-prod'
         ]
       }
     }
 
-    // Notifications map: key is an arbitrary identifier for the notification rule.
-    // 'actual_GreaterThan_${alertThresholdPercent}Pct' is a descriptive name that
-    // encodes the trigger condition for human readability in the Azure portal.
+    // Two notifications, both emailing budgetAlertEmail:
+    //  - Actual ≥ 80%  ($16): early warning that spend is climbing.
+    //  - Forecasted ≥ 100% ($20): Azure projects this month will EXCEED the ceiling —
+    //    this is the "email me if the bill is going to be north of $20" alert.
     notifications: {
       'actual_GreaterThan_${alertThresholdPercent}Pct': {
         enabled: true
         operator: 'GreaterThan'
         threshold: alertThresholdPercent
         thresholdType: 'Actual'
+        contactEmails: [
+          budgetAlertEmail
+        ]
+      }
+      forecasted_GreaterThan_100Pct: {
+        enabled: true
+        operator: 'GreaterThan'
+        threshold: 100
+        thresholdType: 'Forecasted'
         contactEmails: [
           budgetAlertEmail
         ]

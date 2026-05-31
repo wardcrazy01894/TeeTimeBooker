@@ -109,7 +109,7 @@ infra/
       keyvault.bicep           # Key Vault Standard; grants Key Vault Secrets User to the job MI; soft-delete 90d
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
       compute.bicep            # ACA Environment (Consumption) + 2× booking ACA Jobs (DST crons) + watch ACA Job
-      budget.bicep             # Cost Management budget ($10/mo at 80% alert); subscription-scoped
+      budget.bicep             # Cost Management budget ($20/mo, both RGs; Actual 80% + Forecasted 100%); subscription-scoped
 .github/workflows/
   azure-iac.yml                # ACTIVE CI: bicep build + what-if on PR; deploy on merge to main (dev) / tag (prod)
 ```
@@ -142,7 +142,7 @@ before module B references the resource.
 | `envName` | string | `dev` | `prod` | Resource name suffix; also tags |
 | `location` | string | `eastus2` | `eastus2` | Allow future multi-region |
 | `containerImage` | string | `teetime.azurecr.io/teetime:dev` | `teetime.azurecr.io/teetime:v1.0.0` | Decoupled from IaC |
-| `budgetAmountUsd` | int | `10` | `10` | Cost ceiling per env |
+| `budgetAmountUsd` | int | `20` | `20` | Monthly cost ceiling (project-wide, both RGs) |
 | `budgetAlertEmail` | string | operator email | operator email | Cost alert recipient |
 | `acrSku` | string | `Basic` | `Basic` | Allow upgrade to Standard later |
 | `kvSku` | string | `standard` | `standard` | Allow upgrade if HSM needed |
@@ -589,8 +589,16 @@ deployment invoked from `azure-iac.yml` with `--scope /subscriptions/<id>`
 after the RG deployment. Alternatively, create the budget manually once via
 the Azure portal (Cost Management > Budgets) and document it in the runbook.
 
-Budget parameters: `$10/mo`, 80% threshold alert, email to `budgetAlertEmail`.
-The alert fires at ~$8 in a given month.
+Budget parameters: **`$20/mo`** covering **both** teetime RGs (dev + prod = the total project
+bill), emailing `budgetAlertEmail` on two thresholds: **Actual ≥ 80% ($16)** (early warning) and
+**Forecasted ≥ 100% ($20)** (Azure projects the month will exceed $20). Notification only — it
+does not stop/throttle usage.
+
+**Deploy note:** the `azure-iac.yml` budget step is **skipped** in CI because the CI service
+principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission).
+So deploy it once manually as the operator: `az deployment sub create --location eastus2
+--template-file infra/bicep/modules/budget.bicep --parameters budgetAmountUsd=20
+budgetAlertEmail=<email>`.
 
 ---
 
@@ -632,7 +640,7 @@ az containerapp job start \
 az deployment sub create \
   --location eastus2 \
   --template-file infra/bicep/modules/budget.bicep \
-  --parameters envName=dev budgetAmountUsd=10 budgetAlertEmail=<email>
+  --parameters budgetAmountUsd=20 budgetAlertEmail=<email>
 ```
 
 ### 10.1.1 Prod first-time bootstrap (run once, before the first `infra/v*` tag)
@@ -660,17 +668,32 @@ az role assignment create --assignee 7a9c17a4-b65b-4028-99db-6a099d2b9524 \
 # 4. GitHub `prod` environment with required reviewers.  (DONE — verified present.)
 
 # 5. First prod deploy: push a tag matching infra/v* (e.g. infra/v1.0.0), or
-#    workflow_dispatch with environment=prod. Creates ACR, Key Vault
-#    (kv-teetime-prod-<suffix>), Log Analytics, identity, and the ACA jobs.
+#    workflow_dispatch with environment=prod. This creates ACR, Key Vault
+#    (kv-teetime-prod-<suffix>), Log Analytics, identity, and the ACA environment.
+#    ⚠️ This deploy is EXPECTED TO FAIL at the compute/jobs step — ACA validates the
+#    jobs' keyVaultUrl secret references at CREATION time, and the vault is still empty,
+#    so job creation errors ("InvalidParameterValueInContainerTemplate ... Unable to get
+#    value ... for secret 'mb-username'..."). The vault IS created before the failure, so
+#    you can populate it and redeploy. (Done 2026-05-31.)
+
+# 5b. Grant the OPERATOR (you) write access to the prod vault. keyvault.bicep grants only
+#     the bot's managed identity "Key Vault Secrets User" (read); the RBAC vault gives the
+#     human no data-plane access, so secret-set would 403 without this. (Done 2026-05-31.)
+OBJ=$(az ad signed-in-user show --query id -o tsv)
+KVID=$(az keyvault show -n <kv-teetime-prod-suffix> -g rg-teetime-prod --query id -o tsv)
+az role assignment create --assignee-object-id "$OBJ" --assignee-principal-type User \
+  --role "Key Vault Secrets Officer" --scope "$KVID"   # wait ~1-2 min to propagate
 
 # 6. Populate the prod Key Vault secrets (operator, REAL prod values — NOT in CI).
-#    Vault name: az keyvault list -g rg-teetime-prod --query "[0].name" -o tsv
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name MB-USERNAME       --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name MB-PASSWORD       --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-EMAIL     --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-PHONE     --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-MB-MEMBER --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TWOCAPTCHA-API-KEY --value "<value>"
+
+# 7. RE-RUN the deploy (workflow_dispatch environment=prod, approve the gate). Now the
+#    secrets resolve, so job creation succeeds and the 3 jobs land. (Done 2026-05-31.)
 ```
 
 **Prerequisites for a successful prod RUN (not just a successful deploy):**
@@ -680,10 +703,14 @@ az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TWOCAPTCHA-A
 - **M6 implemented and verified in dev** (the `--wait` real-timing path, the DST gate, and
   watcher enablement). The prod cutover is the LAST step, after a clean dev dry-run Sunday.
 
-**Secret timing:** the ACA jobs are created with Key Vault `keyVaultUrl` secret references.
-Populate the six secrets (step 6) immediately after step 5 so the first booking/watch RUN
-can resolve them. A 10-minute watch run that fires before the secrets exist will fail to
-authenticate and exit non-zero — harmless noise, cleared once the secrets are set.
+**Secret ordering (corrected — this bit us on the first prod deploy):** ACA validates a job's
+`keyVaultUrl` secret references at DEPLOY (job-creation) time, NOT lazily at run time. So a
+fresh-vault deploy hard-FAILS at the compute step until the secrets exist. The vault is created
+in the same deploy (before compute), so the working sequence is: **deploy (creates vault, fails
+at jobs) → grant operator KV access (5b) → set secrets (6) → re-deploy (7)**. (An earlier draft
+of this runbook wrongly said the deploy succeeds and only runs fail — it does not.) Follow-up
+idea: have the IaC auto-grant a named `operatorObjectId` the `Key Vault Secrets Officer` role so
+step 5b isn't manual.
 
 ### 10.2 Ongoing deploy (CI-driven)
 
@@ -766,14 +793,30 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
 3. **Prod bootstrap done** (§10.1.1): `rg-teetime-prod` + SP roles (DONE 2026-05-31).
 4. **Prerequisites ready:** a FUNDED 2captcha key, valid Mangrove Bay creds, and acceptance of
    the ForeUP IP-allowlist risk (§12 Q11).
-5. **Deploy prod:** push tag `infra/v1.0.0` (manual-approval `prod` environment). This creates
-   the prod Key Vault + jobs.
-6. **Set the 6 prod KV secrets** (§10.1.1 step 6) immediately so the first run can authenticate.
+5. **First deploy:** push tag `infra/v1.0.0` (manual-approval `prod` environment). It creates the
+   ACR/KV/identity/env but **FAILS at the jobs step** because the vault is empty (ACA validates
+   `keyVaultUrl` secrets at job creation — see §10.1.1). Expected; the vault is created.
+6. **Grant yourself KV access + set the 6 secrets** (§10.1.1 steps 5b–6), then **re-run the
+   deploy** (`workflow_dispatch` env=prod, approve) — now job creation succeeds and the 3 jobs
+   land. (Done 2026-05-31.)
 7. **Monitor** the first prod Sunday: confirm the `race: busy-wait complete` line, a real
    `BOOKED` outcome (NOT dry_run), and the course's confirmation email. Watch for
    `CAPTCHA_BLOCKED` / `AUTH_FAILED` (operator-action outcomes).
 8. **Rollback:** if the first run misbehaves, redeploy prod with `enableSchedules=false` (or
    re-enable dev) to stop further attempts while you investigate.
+
+**Notes on two non-blocking observations:**
+- **Budget deploy is skipped** by design here: the `Deploy budget` step (`az deployment sub
+  create`) is **subscription-scoped**, but the CI service principal is **RG-scoped only**
+  (least-privilege), so it fails and the step swallows it as a `::warning::`. So the $20/mo
+  budget (`budget.bicep` — both RGs, Actual 80% + Forecasted 100%, §9.2) is NOT auto-created;
+  deploy it ONCE manually as the operator (command in §9.2 / budget.bicep header). This is a
+  notification only — it does NOT affect the bot. Real spend is ~$5/mo per ACR + free-tier
+  compute.
+- **"Application Insights Smart Detection"** (a Failure-Anomalies smart-detector alert rule) is
+  **auto-created by the Azure platform** alongside App Insights — it is NOT in our Bicep. It
+  appears on its own shortly after the App Insights resource sees telemetry; prod will get it
+  too. Nothing to add to IaC.
 
 ---
 
@@ -814,4 +857,4 @@ The following items cannot be resolved without operator input. The stubs in
 | 8 | ~~**Storage account name**~~ — **MOOT (storage module removed).** No storage account is provisioned. State is in-process only. | N/A |
 | 9 | **Key Vault name** must be globally unique, 3–24 chars. Proposed: `kv-teetime-{envName}-{shortId}`. Confirm or override. | `keyvault.bicep` |
 | 10 | ~~**SMTP credentials**~~ — **CUT.** Email notifications removed from scope. Console (stdout) is the only notifier. The golf course sends booking confirmations directly to the player. | N/A |
-| 11 | **ForeUP IP allowlist / bot-detection risk** — **ACCEPTED RISK for now.** Bot can be run locally via `uv run teetime run --config config/local.toml --dry-run true` while v1 ACA is still being built. Test from Azure before v1 cutover (§10.3 step 2b). Mitigations if blocked: NAT Gateway with static IP, or keep v0 GH Actions as primary. | v1 cutover; §10.3 |
+| ~~11~~ | ~~**ForeUP IP allowlist / bot-detection risk**~~ — **RESOLVED / OBSERVED (2026-05-31): ForeUP does NOT block the Azure (East US 2) egress IPs.** Both the dev and prod watch jobs log into ForeUP from ACA every 10 min and succeed (`POST .../login "HTTP/1.1 200 OK"`, `ForeUP: login successful`, tee-time fetch returns slots). No 403 / block / challenge observed. Residual: sustained-polling rate-limit over many days is still worth a passive eye (Spike S5), but the IP-block concern is empirically cleared. Fallback if it ever changes: NAT Gateway with a static egress IP. | Resolved (observed in dev + prod) |
