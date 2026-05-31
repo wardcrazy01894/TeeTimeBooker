@@ -660,17 +660,32 @@ az role assignment create --assignee 7a9c17a4-b65b-4028-99db-6a099d2b9524 \
 # 4. GitHub `prod` environment with required reviewers.  (DONE — verified present.)
 
 # 5. First prod deploy: push a tag matching infra/v* (e.g. infra/v1.0.0), or
-#    workflow_dispatch with environment=prod. Creates ACR, Key Vault
-#    (kv-teetime-prod-<suffix>), Log Analytics, identity, and the ACA jobs.
+#    workflow_dispatch with environment=prod. This creates ACR, Key Vault
+#    (kv-teetime-prod-<suffix>), Log Analytics, identity, and the ACA environment.
+#    ⚠️ This deploy is EXPECTED TO FAIL at the compute/jobs step — ACA validates the
+#    jobs' keyVaultUrl secret references at CREATION time, and the vault is still empty,
+#    so job creation errors ("InvalidParameterValueInContainerTemplate ... Unable to get
+#    value ... for secret 'mb-username'..."). The vault IS created before the failure, so
+#    you can populate it and redeploy. (Done 2026-05-31.)
+
+# 5b. Grant the OPERATOR (you) write access to the prod vault. keyvault.bicep grants only
+#     the bot's managed identity "Key Vault Secrets User" (read); the RBAC vault gives the
+#     human no data-plane access, so secret-set would 403 without this. (Done 2026-05-31.)
+OBJ=$(az ad signed-in-user show --query id -o tsv)
+KVID=$(az keyvault show -n <kv-teetime-prod-suffix> -g rg-teetime-prod --query id -o tsv)
+az role assignment create --assignee-object-id "$OBJ" --assignee-principal-type User \
+  --role "Key Vault Secrets Officer" --scope "$KVID"   # wait ~1-2 min to propagate
 
 # 6. Populate the prod Key Vault secrets (operator, REAL prod values — NOT in CI).
-#    Vault name: az keyvault list -g rg-teetime-prod --query "[0].name" -o tsv
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name MB-USERNAME       --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name MB-PASSWORD       --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-EMAIL     --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-PHONE     --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-MB-MEMBER --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TWOCAPTCHA-API-KEY --value "<value>"
+
+# 7. RE-RUN the deploy (workflow_dispatch environment=prod, approve the gate). Now the
+#    secrets resolve, so job creation succeeds and the 3 jobs land. (Done 2026-05-31.)
 ```
 
 **Prerequisites for a successful prod RUN (not just a successful deploy):**
@@ -680,10 +695,14 @@ az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TWOCAPTCHA-A
 - **M6 implemented and verified in dev** (the `--wait` real-timing path, the DST gate, and
   watcher enablement). The prod cutover is the LAST step, after a clean dev dry-run Sunday.
 
-**Secret timing:** the ACA jobs are created with Key Vault `keyVaultUrl` secret references.
-Populate the six secrets (step 6) immediately after step 5 so the first booking/watch RUN
-can resolve them. A 10-minute watch run that fires before the secrets exist will fail to
-authenticate and exit non-zero — harmless noise, cleared once the secrets are set.
+**Secret ordering (corrected — this bit us on the first prod deploy):** ACA validates a job's
+`keyVaultUrl` secret references at DEPLOY (job-creation) time, NOT lazily at run time. So a
+fresh-vault deploy hard-FAILS at the compute step until the secrets exist. The vault is created
+in the same deploy (before compute), so the working sequence is: **deploy (creates vault, fails
+at jobs) → grant operator KV access (5b) → set secrets (6) → re-deploy (7)**. (An earlier draft
+of this runbook wrongly said the deploy succeeds and only runs fail — it does not.) Follow-up
+idea: have the IaC auto-grant a named `operatorObjectId` the `Key Vault Secrets Officer` role so
+step 5b isn't manual.
 
 ### 10.2 Ongoing deploy (CI-driven)
 
@@ -766,14 +785,30 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
 3. **Prod bootstrap done** (§10.1.1): `rg-teetime-prod` + SP roles (DONE 2026-05-31).
 4. **Prerequisites ready:** a FUNDED 2captcha key, valid Mangrove Bay creds, and acceptance of
    the ForeUP IP-allowlist risk (§12 Q11).
-5. **Deploy prod:** push tag `infra/v1.0.0` (manual-approval `prod` environment). This creates
-   the prod Key Vault + jobs.
-6. **Set the 6 prod KV secrets** (§10.1.1 step 6) immediately so the first run can authenticate.
+5. **First deploy:** push tag `infra/v1.0.0` (manual-approval `prod` environment). It creates the
+   ACR/KV/identity/env but **FAILS at the jobs step** because the vault is empty (ACA validates
+   `keyVaultUrl` secrets at job creation — see §10.1.1). Expected; the vault is created.
+6. **Grant yourself KV access + set the 6 secrets** (§10.1.1 steps 5b–6), then **re-run the
+   deploy** (`workflow_dispatch` env=prod, approve) — now job creation succeeds and the 3 jobs
+   land. (Done 2026-05-31.)
 7. **Monitor** the first prod Sunday: confirm the `race: busy-wait complete` line, a real
    `BOOKED` outcome (NOT dry_run), and the course's confirmation email. Watch for
    `CAPTCHA_BLOCKED` / `AUTH_FAILED` (operator-action outcomes).
 8. **Rollback:** if the first run misbehaves, redeploy prod with `enableSchedules=false` (or
    re-enable dev) to stop further attempts while you investigate.
+
+**Notes on two non-blocking observations:**
+- **Budget deploy is skipped** by design here: the `Deploy budget` step (`az deployment sub
+  create`) is **subscription-scoped**, but the CI service principal is **RG-scoped only**
+  (least-privilege), so it fails and the step swallows it as a `::warning::`. No Cost
+  Management budget/alert is created. It does NOT affect the bot. If you want the $10/mo alert,
+  create it manually (Portal → Cost Management → Budgets, or `az consumption budget create`) —
+  preferable to granting the SP subscription-scope. Real spend is ~$5/mo (ACR flat) + free-tier
+  compute.
+- **"Application Insights Smart Detection"** (a Failure-Anomalies smart-detector alert rule) is
+  **auto-created by the Azure platform** alongside App Insights — it is NOT in our Bicep. It
+  appears on its own shortly after the App Insights resource sees telemetry; prod will get it
+  too. Nothing to add to IaC.
 
 ---
 
