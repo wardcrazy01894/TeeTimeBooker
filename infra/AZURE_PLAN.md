@@ -519,6 +519,22 @@ az role assignment create \
 GitHub repository secrets required: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
 `AZURE_SUBSCRIPTION_ID`. No `AZURE_CLIENT_SECRET` — OIDC is credential-free.
 
+**Live federated-credential reality (verified 2026-05-31).** Because the
+`deploy-dev`/`deploy-prod` jobs set `environment: dev|prod` and `validate` runs on
+`pull_request`, GitHub's OIDC `sub` claim is environment-/PR-scoped, NOT ref-scoped.
+The app registration therefore carries the credentials below, which are what the
+workflow actually consumes — the `gh-main`/`gh-tags` ref-based creds in steps 3–4
+above are legacy and NOT used by the current env-scoped jobs:
+
+| Name | Subject | Used by |
+|------|---------|---------|
+| `gh-env-dev` | `…:environment:dev` | `deploy-dev` (push to main / dispatch) |
+| `gh-env-prod` | `…:environment:prod` | `deploy-prod` (tag `infra/v*` OR dispatch) |
+| `gh-pull-request` | `…:pull_request` | `validate` |
+
+The `gh-tags` credential is NOT required: `deploy-prod`'s `environment: prod` makes the
+`sub` claim `environment:prod` even on a tag push, so `gh-env-prod` covers it.
+
 The CI service principal needs `Contributor` on the target resource group plus
 `User Access Administrator` scoped to the resource group (to create role
 assignments in the Bicep modules). The `User Access Administrator` scope is
@@ -617,6 +633,56 @@ az deployment sub create \
   --template-file infra/bicep/modules/budget.bicep \
   --parameters envName=dev budgetAmountUsd=10 budgetAlertEmail=<email>
 ```
+
+### 10.1.1 Prod first-time bootstrap (run once, before the first `infra/v*` tag)
+
+The per-env bootstrap that §8.2 step 5 defers ("dev first, then prod when ready").
+The prod deploy will FAIL on the first try without these — the CI service principal
+starts with permissions on `rg-teetime-dev` only. Status flags reflect 2026-05-31.
+
+```bash
+# 1. Resource group.  (DONE 2026-05-31)
+az group create -n rg-teetime-prod -l eastus2
+
+# 2. Grant the CI service principal Contributor + User Access Administrator on the
+#    prod RG. RG-scoped is sufficient — the CI `az group create` step then no-ops on
+#    the existing RG, exactly as it does for dev (the SP need NOT have subscription
+#    scope).  (DONE 2026-05-31)
+az role assignment create --assignee 7a9c17a4-b65b-4028-99db-6a099d2b9524 \
+  --role "Contributor" \
+  --scope /subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d/resourceGroups/rg-teetime-prod
+az role assignment create --assignee 7a9c17a4-b65b-4028-99db-6a099d2b9524 \
+  --role "User Access Administrator" \
+  --scope /subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d/resourceGroups/rg-teetime-prod
+
+# 3. OIDC federated credential for prod.  (DONE — `gh-env-prod` exists; see §8.2.)
+# 4. GitHub `prod` environment with required reviewers.  (DONE — verified present.)
+
+# 5. First prod deploy: push a tag matching infra/v* (e.g. infra/v1.0.0), or
+#    workflow_dispatch with environment=prod. Creates ACR, Key Vault
+#    (kv-teetime-prod-<suffix>), Log Analytics, identity, and the ACA jobs.
+
+# 6. Populate the prod Key Vault secrets (operator, REAL prod values — NOT in CI).
+#    Vault name: az keyvault list -g rg-teetime-prod --query "[0].name" -o tsv
+az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name MB-USERNAME       --value "<value>"
+az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name MB-PASSWORD       --value "<value>"
+az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-EMAIL     --value "<value>"
+az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-PHONE     --value "<value>"
+az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-MB-MEMBER --value "<value>"
+az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TWOCAPTCHA-API-KEY --value "<value>"
+```
+
+**Prerequisites for a successful prod RUN (not just a successful deploy):**
+- A **funded** 2captcha key in `TWOCAPTCHA-API-KEY` — prod runs `dryRun=false`, which
+  performs the live CAPTCHA solve (dev dry-run skips it).
+- Valid ForeUP / Mangrove Bay credentials in `MB-USERNAME` / `MB-PASSWORD`.
+- **M6 implemented and verified in dev** (the `--wait` real-timing path, the DST gate, and
+  watcher enablement). The prod cutover is the LAST step, after a clean dev dry-run Sunday.
+
+**Secret timing:** the ACA jobs are created with Key Vault `keyVaultUrl` secret references.
+Populate the six secrets (step 6) immediately after step 5 so the first booking/watch RUN
+can resolve them. A 10-minute watch run that fires before the secrets exist will fail to
+authenticate and exit non-zero — harmless noise, cleared once the secrets are set.
 
 ### 10.2 Ongoing deploy (CI-driven)
 
