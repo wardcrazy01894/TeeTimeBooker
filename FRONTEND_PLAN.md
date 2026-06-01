@@ -16,7 +16,7 @@ A single-user web UI (just the operator) that can, on demand:
 1. **List every reservation** across all configured courses.
 2. **Cancel one** reservation via a button next to it.
 3. **Cancel all** reservations.
-4. **Edit booking preferences** (time windows, day/offset preferences).
+4. **Edit booking preferences** (time windows, day/offset, and course ranking/priority).
 
 v0 stays as-is (cron/ACA-Jobs booking + watch). The frontend is additive — a new
 read/write surface over the same engine, not a replacement for the scheduled jobs.
@@ -55,7 +55,7 @@ orchestrator-mediated logic, never a raw `adapter.cancel_reservation()`.
 | Cancel (managed) | orchestrator: `cancel_reservation()` + `delete_terminal()` (locked) | Yes (write)    |
 | Cancel (manual)  | straight `adapter.cancel_reservation()` (no store record to clear)  | No             |
 | Cancel all       | list → per-item cancel (managed vs manual via `is_managed`)          | Some           |
-| Edit preferences | read/write the `[request]` config promoted into the store           | Yes (write)    |
+| Edit preferences | read/write `[request]` + course-ranking prefs promoted into the store | Yes (write)    |
 
 `ExistingReservation.is_managed` (the `TTB:` prefix on `confirmation_code`)
 selects the managed-vs-manual cancel path.
@@ -126,15 +126,20 @@ per-item success/failure (partial-failure is expected and must be surfaced, not
 swallowed).
 
 ### M-fe-T5 — Preferences editing (needs durable mutable state — M3 was cut; see §7 Q1)
-Promote the `[request]` block (time_windows, target_offsets) into editable state,
-TOML as bootstrap defaults. The store backing this is currently `InMemoryStore`
-only — edits do not survive a server restart. M3 (`SqliteStore`) was cut from the
-v0 roadmap, so there is an open decision about how to persist preferences across
-restarts: keep `[request]` in TOML (not UI-editable) for now, or introduce a
-durable store as part of the frontend work (§7 Q1). Note: editing windows/offsets
-rotates the `RequestId` fingerprint (`derive_request_id` folds
-`course_ids|offsets|windows|party`) — semantically correct (different prefs =
-different request), but the UI must expect idempotency records to rotate.
+Promote the editable preferences into mutable state, TOML as bootstrap defaults:
+the `[request]` block (time_windows, target_offsets) **and course ranking** — the
+`[[courses]]` / `course_preferences` order plus the
+`[[one_booking_policy.priority_slots]]` priority index (priority=0 wins). The store
+backing this is currently `InMemoryStore` only — edits do not survive a server
+restart. M3 (`SqliteStore`) was cut from the v0 roadmap, so there is an open
+decision about how to persist preferences across restarts: keep them in TOML (not
+UI-editable) for now, or introduce a durable store as part of the frontend work
+(§7 Q1). Note: editing windows/offsets rotates the `RequestId` fingerprint
+(`derive_request_id` folds `course_ids|offsets|windows|party`) — semantically
+correct (different prefs = different request), but the UI must expect idempotency
+records to rotate. Re-ordering courses or `priority_slots`, by contrast, does NOT
+rotate the fingerprint (`course_ids` is sorted before hashing) — it changes which
+slot the watcher prefers, not request identity.
 
 ### M-fe-T6 — Frontend UI
 The actual web client over T2–T5 endpoints. Single-user; auth model per §7 Q2.
