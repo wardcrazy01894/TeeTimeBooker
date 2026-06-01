@@ -257,12 +257,13 @@ each budget independently — both see the same spend figures. This is the stand
 tiered-alert pattern and is explicitly supported: Azure allows any number of budget
 resources per subscription scope as long as each has a distinct name.
 
-**Operator manual steps required:**
-- Re-run `az deployment sub create` for `budget.bicep` to add the separate $50
-  killswitch budget resource. (Same command as today, same RG-scoped CI SP constraint.
-  Pass `killswitchActionGroupId` from `killswitch.outputs.actionGroupId`.)
-- The Action Group and Logic App in `killswitch.bicep` are RG-scoped and CAN
-  be deployed by CI via `az deployment group create` targeting `rg-teetime-dev`.
+**Operator manual steps — DONE 2026-05-31 (verified live):**
+- The `az deployment sub create` for `budget.bicep` has been run; the separate $50
+  `budget-teetime-killswitch` resource exists and its `contactGroups` notification is
+  wired to the `ag-teetime-killswitch-dev` Action Group at 100%-actual. The $20
+  `budget-teetime` (email-only) is also deployed and armed. No operator step remains.
+- The Action Group and Logic App in `killswitch.bicep` are RG-scoped and were
+  deployed by CI via `az deployment group create` targeting `rg-teetime-dev`.
 
 **U3 resolved:** The cross-RG prod role assignment is handled by a nested module
 `killswitch-rbac-prod.bicep` with `scope: resourceGroup(subscriptionId, prodRgName)`.

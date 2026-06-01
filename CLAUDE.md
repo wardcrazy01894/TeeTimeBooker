@@ -57,10 +57,11 @@ is live in dev. The `killswitchFired` param (already in both param files) is the
 guard: once set to `true`, no subsequent CI deploy can re-arm the cron schedules. PR-KS2 added the
 separate $50 `budget-teetime-killswitch` resource to `budget.bicep` (conditional on
 `killswitchActionGroupId`; the $20 email budget is untouched) — deployed manually, subscription-
-scoped. **Remaining step:** operator runs `az deployment sub create` for `budget.bicep` with
-`killswitchActionGroupId` (obtain via `az deployment group show -g rg-teetime-dev -n teetime-dev
---query properties.outputs.killswitchActionGroupId.value -o tsv`) to arm the $50 budget tier. See
-`infra/COST_KILLSWITCH_PLAN.md` and `infra/AZURE_PLAN.md §9.2`.
+scoped. **Both budget tiers are DEPLOYED and ARMED (verified live 2026-05-31):** `budget-teetime`
+($20) emails on 80%-actual/100%-forecast, and `budget-teetime-killswitch` ($50) is wired to the
+`ag-teetime-killswitch-dev` Action Group at 100%-actual. The killswitch chain is fully armed
+end-to-end across dev + prod; no operator step remains. See `infra/COST_KILLSWITCH_PLAN.md` and
+`infra/AZURE_PLAN.md §9.2`.
 
 ## Package layout
 
