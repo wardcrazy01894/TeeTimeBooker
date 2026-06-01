@@ -49,8 +49,15 @@ def test_booking_replica_timeout_covers_busy_wait() -> None:
     assert "var replicaTimeout" not in content
 
 
-def test_watch_replica_timeout_unchanged(parts: tuple[str, str]) -> None:
+def test_watch_replica_timeout_covers_idempotent_retries(parts: tuple[str, str]) -> None:
+    """The watch job's replicaTimeout must give headroom for the in-run retries on
+    idempotent ForeUP calls (warm-up/login/search). With the 30s httpx timeout and
+    up to 2 retries across ~3 calls, a pathological all-timeout run can approach
+    ~270s, so 120s is no longer safe — it would convert a recovered run into a
+    replica-timeout Failure. Bumped to 300s. See base.py _send_with_retry."""
     content = COMPUTE_BICEP.read_text()
     _, watch_part = parts
     assert "replicaTimeout: watchReplicaTimeout" in watch_part
-    assert "var watchReplicaTimeout = 120" in content
+    m = re.search(r"var watchReplicaTimeout = (\d+)", content)
+    assert m is not None, "watchReplicaTimeout var not defined"
+    assert int(m.group(1)) >= 300

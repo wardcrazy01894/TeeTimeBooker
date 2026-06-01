@@ -93,6 +93,20 @@ def _adapter(client: httpx.AsyncClient) -> ForeUpAdapter:
     )
 
 
+def _retry_adapter(client: httpx.AsyncClient, *, max_retries: int = 2) -> ForeUpAdapter:
+    """Adapter with retries enabled and zero backoff (no real sleeps in tests)."""
+    return ForeUpAdapter(
+        course_id=CID,
+        course_pk=19671,
+        booking_class_id=2149,
+        schedule_id=2149,
+        timezone="America/New_York",
+        http_client=client,
+        max_retries=max_retries,
+        retry_backoff_s=0.0,
+    )
+
+
 def _request(*, dry_run: bool = False) -> BookingRequest:
     return BookingRequest(
         request_id=RequestId(uuid4()),
@@ -288,6 +302,96 @@ async def test_search_empty_list_returns_no_slots() -> None:
         adapter = _adapter(client)
         slots = await adapter.search(_request())
     assert slots == []
+
+
+# --- transient-error retry (idempotent calls only) -----------------------
+
+
+@respx.mock
+async def test_search_retries_transient_timeout_then_succeeds() -> None:
+    """A single httpx.ReadTimeout on the /times GET is retried, not abandoned.
+
+    Reproduces the prod failure mode: ForeUP occasionally read-times-out for one
+    poll while the server is up (adjacent polls succeed). The watcher's per-course
+    catch turned that into a wasted 10-minute cycle. With retry, the call recovers
+    in-run. See the prod log incident 2026-06-01."""
+    route = respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        side_effect=[httpx.ReadTimeout("upstream slow"), httpx.Response(200, json=[_RAW_SLOT])]
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _retry_adapter(client)
+        slots = await adapter.search(_request())
+    assert route.call_count == 2  # 1 timeout + 1 successful retry
+    assert len(slots) == 1
+
+
+@respx.mock
+async def test_search_raises_after_retries_exhausted() -> None:
+    """A persistent transport failure (server genuinely unreachable) still raises
+    after the bounded retries — we do not retry forever."""
+    route = respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        side_effect=httpx.ReadTimeout("upstream down")
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _retry_adapter(client, max_retries=2)
+        with pytest.raises(httpx.TransportError):
+            await adapter.search(_request())
+    assert route.call_count == 3  # 1 initial attempt + 2 retries
+
+
+@respx.mock
+async def test_authenticate_retries_transient_connect_blip() -> None:
+    """The warm-up GET and login POST are idempotent and retried on a connect blip."""
+    respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        side_effect=[httpx.ConnectError("blip"), httpx.Response(200, text="<html/>")]
+    )
+    respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        side_effect=[httpx.ReadTimeout("slow"), httpx.Response(200, json={"success": True})]
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _retry_adapter(client)
+        await adapter.authenticate(CREDS)  # must not raise
+    assert adapter._logged_in is True
+
+
+@respx.mock
+async def test_http_status_errors_are_not_retried() -> None:
+    """Retry is scoped to transport failures. A 500 surfaces via raise_for_status
+    on the first attempt — it must NOT be retried (it isn't a transient transport blip)."""
+    route = respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(500, text="server error")
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _retry_adapter(client)
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.search(_request())
+    assert route.call_count == 1  # no retry on HTTP status errors
+
+
+@respx.mock
+async def test_book_is_not_retried_on_transient_error() -> None:
+    """book()'s POST is single-attempt: a transport error propagates and is NEVER
+    retried (§9 double-booking defense — a timed-out book is the UNCERTAIN case for
+    M2.T3 reconciliation, not a safe re-fire)."""
+    route = respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        side_effect=httpx.ReadTimeout("slow")
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _retry_adapter(client)
+        adapter._logged_in = True  # simulate successful authenticate()
+        with pytest.raises(httpx.TransportError):
+            await adapter.book(slot, _request())
+    assert route.call_count == 1  # book is NOT retried
 
 
 # --- book ----------------------------------------------------------------
