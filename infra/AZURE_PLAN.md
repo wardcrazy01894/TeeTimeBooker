@@ -612,24 +612,40 @@ $50, killswitch-trigger) is a SEPARATE second budget resource in `budget.bicep` 
 
 **Deploy note:** the `azure-iac.yml` budget step is **skipped** in CI because the CI service
 principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission).
-Deploy once manually as the operator. PR-KS1 is deployed (2026-05-31); the killswitch is live
-in dev. The remaining operator step is to obtain `killswitchActionGroupId` and run the
-subscription-scoped budget deploy:
-```bash
-# Obtain the Action Group ID from the dev deployment:
-az deployment group show -g rg-teetime-dev -n teetime-dev \
-  --query properties.outputs.killswitchActionGroupId.value -o tsv
-# → currently: /subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d/resourceGroups/rg-teetime-dev/providers/Microsoft.Insights/actionGroups/ag-teetime-killswitch-dev
+It is deployed manually by the operator. **DONE 2026-05-31** — both `budget-teetime` ($20) and
+`budget-teetime-killswitch` ($50, wired to the Action Group) are deployed; the killswitch is
+fully armed end-to-end across dev + prod.
 
-# Then deploy the $50 killswitch budget tier:
+⚠️ **Two non-obvious prerequisites when (re)deploying the killswitch budget** (both caused a
+`RBACAccessDenied` on the first attempt — see Microsoft's Cost Management error-codes doc):
+1. **Monitoring Reader on the Action Group's RG.** A budget whose notification references an
+   Action Group (`contactGroups`) triggers a *separate* `Microsoft.Insights/actionGroups/read`
+   authorization check in the Cost Management PUT path. **Subscription Owner is NOT sufficient**
+   (the inherited grant isn't honored by that backend check). The deploying principal must have an
+   explicit `Monitoring Reader` (or higher) assignment on `rg-teetime-dev`:
+   `az role assignment create --assignee <objectId> --role "Monitoring Reader" --scope /subscriptions/<sub>/resourceGroups/rg-teetime-dev` (wait ~1-2 min to propagate). Granted to the operator 2026-05-31.
+2. **Use the canonical Action Group resource ID, exact casing.** Get it from
+   `az monitor action-group show -g rg-teetime-dev -n ag-teetime-killswitch-dev --query id -o tsv`
+   (note `microsoft.insights` is lowercase in the canonical ID). A mis-cased `contactGroups` ID
+   independently triggers `RBACAccessDenied`.
+
+```bash
+# 1) Obtain the canonical Action Group ID:
+az monitor action-group show -g rg-teetime-dev -n ag-teetime-killswitch-dev --query id -o tsv
+# → /subscriptions/3F82C7E1-.../resourceGroups/rg-teetime-dev/providers/microsoft.insights/actionGroups/ag-teetime-killswitch-dev
+
+# 2) Deploy both budget tiers (Tier-1 $20 + Tier-2 $50 killswitch):
 az deployment sub create --location eastus2 \
   --template-file infra/bicep/modules/budget.bicep \
   --parameters budgetAmountUsd=20 budgetAlertEmail=<email> \
-               killswitchActionGroupId=<output from above> \
+               killswitchActionGroupId=<canonical id from above> \
                killswitchBudgetAmountUsd=50
 ```
 The Tier-2 `killswitchBudget` resource is conditional on `killswitchActionGroupId`: omit that
 param and the manual deploy only creates/updates the Tier-1 $20 budget (Tier 2 is a clean no-op).
+Fallback if `RBACAccessDenied` persists after the Monitoring Reader grant propagates: create the
+budget in the Azure portal (the portal path bypasses a known `az deployment sub create` bug —
+azure-cli issue #23648).
 
 **Killswitch custom role — DONE 2026-05-31:**
 The "ACA Job Schedule Manager" custom role (GUID `3e2d5a14-96bd-4469-9f96-b9c3270aa9e6`) has been
