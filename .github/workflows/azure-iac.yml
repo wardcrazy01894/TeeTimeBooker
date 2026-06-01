@@ -77,9 +77,9 @@ jobs:
     env:
       RESOURCE_GROUP: rg-teetime-dev
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -114,7 +114,6 @@ jobs:
       ENVNAME: dev
       DRY_RUN: "true"
       PURGE_PROT: "false"
-      BUDGET_ALERT_EMAIL: alanc3939@gmail.com
       # Cost-killswitch arming (PR-KS1). CI passes params INLINE, so these MUST be
       # set here — the main.bicepparam.dev values are NOT read by CI (manual-deploy
       # only). The killswitch module is gated on envName=='dev', so it only deploys
@@ -122,9 +121,9 @@ jobs:
       ENABLE_KILLSWITCH: "true"
       KILLSWITCH_RBAC_ROLE_ID: "3e2d5a14-96bd-4469-9f96-b9c3270aa9e6"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -170,16 +169,13 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
-      - name: Deploy budget (subscription-scoped; non-fatal)
-        # killswitchActionGroupId intentionally omitted — the $50 killswitch budget is
-        # subscription-scoped and deployed manually by the operator (see AZURE_PLAN.md §9.2).
-        run: |
-          az deployment sub create \
-            --location "${AZURE_LOCATION}" \
-            --template-file infra/bicep/modules/budget.bicep \
-            --parameters budgetAmountUsd=20 \
-                         budgetAlertEmail="${BUDGET_ALERT_EMAIL}" \
-            || echo "::warning::Budget deploy skipped (SP lacks subscription-scope permission). Infra deploy unaffected."
+      - name: Budget reminder (operator deploys manually — see AZURE_PLAN.md §9.2)
+        # Budgets are subscription-scoped; the CI service principal is RG-scoped by
+        # design (least privilege), so it cannot create them. The $20 email budget and
+        # the $50 killswitch budget are deployed manually by the operator (the portal
+        # path also sidesteps a known `az deployment sub create` budget-PUT bug). This
+        # step is an explicit notice — it does NOT attempt (and fail) a deploy.
+        run: echo "::notice::Budget is subscription-scoped and deployed manually by the operator; the CI service principal is RG-scoped by design. See AZURE_PLAN.md §9.2."
 
   # ---------------------------------------------------------------------------
   # deploy-prod — MANUAL ONLY (workflow_dispatch environment=prod, or infra/v* tag).
@@ -197,7 +193,6 @@ jobs:
       ENVNAME: prod
       DRY_RUN: "false"
       PURGE_PROT: "true"
-      BUDGET_ALERT_EMAIL: alanc3939@gmail.com
       # Cost-killswitch: prod deploy NEVER creates a killswitch (the module is gated
       # on envName=='dev' in main.bicep, and the prod RBAC assignment is created by
       # the DEV deploy's cross-RG nested module). These are set false/empty only so
@@ -205,9 +200,9 @@ jobs:
       ENABLE_KILLSWITCH: "false"
       KILLSWITCH_RBAC_ROLE_ID: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -250,13 +245,10 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
-      - name: Deploy budget (subscription-scoped; non-fatal)
-        # killswitchActionGroupId intentionally omitted — the $50 killswitch budget is
-        # subscription-scoped and deployed manually by the operator (see AZURE_PLAN.md §9.2).
-        run: |
-          az deployment sub create \
-            --location "${AZURE_LOCATION}" \
-            --template-file infra/bicep/modules/budget.bicep \
-            --parameters budgetAmountUsd=20 \
-                         budgetAlertEmail="${BUDGET_ALERT_EMAIL}" \
-            || echo "::warning::Budget deploy skipped (SP lacks subscription-scope permission). Infra deploy unaffected."
+      - name: Budget reminder (operator deploys manually — see AZURE_PLAN.md §9.2)
+        # Budgets are subscription-scoped; the CI service principal is RG-scoped by
+        # design (least privilege), so it cannot create them. The $20 email budget and
+        # the $50 killswitch budget are deployed manually by the operator (the portal
+        # path also sidesteps a known `az deployment sub create` budget-PUT bug). This
+        # step is an explicit notice — it does NOT attempt (and fail) a deploy.
+        run: echo "::notice::Budget is subscription-scoped and deployed manually by the operator; the CI service principal is RG-scoped by design. See AZURE_PLAN.md §9.2."
