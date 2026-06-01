@@ -8,6 +8,8 @@ Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). 
 - [PLAN.md](./PLAN.md) — full design, milestone roadmap, state machine, DST math, spikes
 - [CLAUDE.md](./CLAUDE.md) — operator and contributor notes (read this if you're picking up a milestone task)
 - [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md) — v1 Azure serverless hosting design (Container Apps Jobs, Bicep IaC, OIDC CI)
+- [FRONTEND_PLAN.md](./FRONTEND_PLAN.md) — proposed v2 web UI over the engine (list / cancel / edit prefs); no code yet
+- [BACKLOG.md](./BACKLOG.md) — running list of future wants (courses to add, frontend ideas)
 - `config/example.toml` — copy to `config/local.toml` and edit before running
 
 ---
