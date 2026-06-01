@@ -122,6 +122,17 @@ in `core/` — never directly. This is the cut line for parallel work.
   has the full flow; §9.1 has the explicit state machine that M2.T1
   implements. `list_reservations` is on the `CourseAdapter` Protocol from
   M0 — it is NOT optional.
+- **Transient-failure retry is for IDEMPOTENT ForeUP calls only.** `ForeUpAdapter.
+  _send_with_retry` retries on `httpx.TransportError` (read/connect timeouts,
+  network blips — the observed prod failure was a lone `httpx.ReadTimeout` that
+  wasted a whole 10-min watch cycle) around the warm-up GET, login POST, search
+  GET, and cancel DELETE. It does NOT retry HTTP status errors (those surface via
+  `raise_for_status` after it returns) and **`book()`'s POST is never wrapped** —
+  that stays single-attempt (§9; a timed-out book is the UNCERTAIN case M2.T3
+  owns, not a safe re-fire). Tuned by ctor `max_retries` (default 2) /
+  `retry_backoff_s` (default 0.5s, linear); tests pass `retry_backoff_s=0`. The
+  watch ACA Job's `replicaTimeout` is 300s (not 120s) to give these retries
+  headroom — see `compute.bicep` / AZURE_PLAN §5.4.
 - **DST handled by `zoneinfo`** (the bot computes T0 in `America/New_York`,
   which resolves the ambiguous/skipped-hour edge cases) + two Sunday ACA Job
   booking crons (one per DST half) in `infra/bicep/modules/compute.bicep`. Math

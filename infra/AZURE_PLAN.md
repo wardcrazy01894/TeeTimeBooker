@@ -163,9 +163,9 @@ before module B references the resource.
 | RBAC role IDs | `Key Vault Secrets User` = `4633458b-17de-408a-b874-0445c86b69e6`; `AcrPull` = `7f951dda-4ed3-4680-a7ca-43fe172d538d` | Stable Azure built-in role GUIDs |
 | `parallelism` | `1` | Never run two replicas of the booking job simultaneously — see §6 |
 | `replicaCompletionCount` | `1` | Pair with parallelism=1; see §6 |
-| `replicaRetryLimit` | `0` | Bot handles its own retry logic; ACA-level retry would re-enter booking without idempotency guard |
+| `replicaRetryLimit` | `0` | Bot handles its own retry logic; ACA-level retry would re-enter booking without idempotency guard. NOTE: in-replica retry of *idempotent* ForeUP calls (warm-up/login/search/cancel) is handled by the adapter (`base.py _send_with_retry`); `book()` is never retried. |
 | `bookingReplicaTimeout` | `1200` (20 min) | Booking job busy-waits up to ~12 min to 06:00 ET INSIDE the replica (`run --wait`, M6 PR3); timeout covers lead + busy-wait + post-T0 poll/book with ~330s slack. The DST gate caps the busy-wait by skipping the wrong-season cron. |
-| `watchReplicaTimeout` | `120` (2 min) | Watch job is one HTTP round-trip; no busy-wait |
+| `watchReplicaTimeout` | `300` (5 min) | Normal watch run is one HTTP round-trip (~30s), but the adapter retries transient transport failures on idempotent calls; 300s gives headroom so a slow-upstream run that retries never hits the replica cap (which would turn a recovered run into a Failure). |
 | Log Analytics retention | `30` days | Minimal for cost; structured logs are the primary debug surface |
 
 ---
@@ -263,7 +263,7 @@ Key differences from the booking jobs:
 |---|---|---|
 | Cron | 2 entries (Sunday, one per DST half) | `*/10 * * * *` (single, year-round) |
 | DST gate | Required (races a wall-clock moment) | Not required (WatchOrchestrator gates on polling hours internally via zoneinfo) |
-| `replicaTimeout` | 1200 s (20 min — covers the in-replica busy-wait to 06:00 ET) | 120 s (one HTTP round-trip) |
+| `replicaTimeout` | 1200 s (20 min — covers the in-replica busy-wait to 06:00 ET) | 300 s (5 min — one HTTP round-trip plus headroom for idempotent-call retries) |
 | Command | `teetime run --config ...` | `teetime watch --config ...` |
 | Enabled | Always | `watcher.enabled = true` in v1 configs (M6 PR4); look-but-don't-book under `--dry-run true`. Uses the SAME `MB-*`/`PLAYER1-*` KV secrets — no new secrets. |
 | Concurrency group | `book-tee-time` | `watch-tee-time` (separate; but a watch+book overlap is safe — advisory lock in code handles it) |

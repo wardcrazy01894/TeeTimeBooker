@@ -40,6 +40,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+from functools import partial
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
@@ -109,6 +110,8 @@ class ForeUpAdapter(CourseAdapter):
         timezone: str = "America/New_York",
         http_client: httpx.AsyncClient | None = None,
         captcha_provider: Callable[[], Awaitable[str]] | None = None,
+        max_retries: int = 2,
+        retry_backoff_s: float = 0.5,
     ) -> None:
         self.course_id = course_id
         self._course_pk = course_pk
@@ -137,6 +140,13 @@ class ForeUpAdapter(CourseAdapter):
         # (normal booking path). When set, book() consumes and clears it
         # (single-use) so the token is never silently reused.
         self._captcha_token: str | None = None
+        # Transient-failure retry budget for IDEMPOTENT calls only (warm-up GET,
+        # login POST, search GET, cancel DELETE). Reproduces+fixes the prod failure
+        # where a single httpx.ReadTimeout against ForeUP (server up, adjacent polls
+        # green) wasted a whole 10-minute watch cycle. book()'s POST is NEVER retried
+        # — single-attempt rule, §9 double-booking defense.
+        self._max_retries = max_retries
+        self._retry_backoff_s = retry_backoff_s
 
     def _make_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -158,6 +168,45 @@ class ForeUpAdapter(CourseAdapter):
         if self._client is None:
             raise RuntimeError("authenticate() must be called before search/book/list_reservations")
         return self._client
+
+    async def _send_with_retry(
+        self,
+        send: Callable[[], Awaitable[httpx.Response]],
+        *,
+        op: str,
+    ) -> httpx.Response:
+        """Issue an IDEMPOTENT HTTP request, retrying transient transport failures.
+
+        Retries on httpx.TransportError — read/connect timeouts and network blips,
+        the failure observed in prod (httpx.ReadTimeout against ForeUP while the
+        server was up and adjacent polls succeeded). HTTP status errors are NOT
+        retried here: they surface via raise_for_status() at the call site, after
+        this returns. `send` must be a thunk that issues a FRESH request each call.
+
+        MUST NOT wrap book()'s POST — that is single-attempt by contract (§9
+        double-booking defense; a timed-out book is the UNCERTAIN case M2.T3 owns).
+        Backoff is linear (retry_backoff_s * attempt); set retry_backoff_s=0 in tests.
+        """
+        attempts = self._max_retries + 1
+        for i in range(attempts):
+            try:
+                return await send()
+            except httpx.TransportError as exc:
+                if i == attempts - 1:
+                    _log.warning("ForeUP: %s failed after %d attempt(s): %r", op, attempts, exc)
+                    raise
+                _log.info(
+                    "ForeUP: %s transient error (attempt %d/%d), retrying: %r",
+                    op,
+                    i + 1,
+                    attempts,
+                    exc,
+                )
+                if self._retry_backoff_s:
+                    await asyncio.sleep(self._retry_backoff_s * (i + 1))
+        # Unreachable: the loop either returns a response or raises on the final
+        # attempt. Present only to satisfy the type checker's return analysis.
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def _guard_captcha(self, r: httpx.Response) -> None:
         """Raise CaptchaError on any ForeUP captcha/browser-challenge signal."""
@@ -183,17 +232,21 @@ class ForeUpAdapter(CourseAdapter):
         if self._client is None:
             self._client = self._make_client()
         _log.info("ForeUP: warming up session cookie...")
-        await self._client.get(f"/index.php/booking/{self._course_pk}/{self._booking_class_id}")
+        warmup_path = f"/index.php/booking/{self._course_pk}/{self._booking_class_id}"
+        await self._send_with_retry(lambda: self._c().get(warmup_path), op="warm-up")
         _log.info("ForeUP: logging in as %s...", creds.username)
-        r = await self._client.post(
-            LOGIN_PATH,
-            data={
-                "username": creds.username,
-                "password": creds.password,
-                "api_key": "",  # booking widget uses empty api_key (not "no_limits")
-                "booking_class_id": str(self._public_booking_class_id),
-                "course_id": str(self._course_pk),
-            },
+        r = await self._send_with_retry(
+            lambda: self._c().post(
+                LOGIN_PATH,
+                data={
+                    "username": creds.username,
+                    "password": creds.password,
+                    "api_key": "",  # booking widget uses empty api_key (not "no_limits")
+                    "booking_class_id": str(self._public_booking_class_id),
+                    "course_id": str(self._course_pk),
+                },
+            ),
+            op="login",
         )
         self._guard_captcha(r)
         if r.status_code in (400, 401):
@@ -254,18 +307,20 @@ class ForeUpAdapter(CourseAdapter):
                 target_date,
                 len(request.players),
             )
-            r = await client.get(
-                TIMES_PATH,
-                params={
-                    "time": "all",
-                    "date": f"{target_date.month}-{target_date.day}-{target_date.year}",
-                    "holes": request.holes,
-                    "players": len(request.players),
-                    "booking_class": False,
-                    "schedule_id": self._schedule_id,
-                    "specials_only": 0,
-                    "api_key": _API_KEY,
-                },
+            params: dict[str, str | int | bool] = {
+                "time": "all",
+                "date": f"{target_date.month}-{target_date.day}-{target_date.year}",
+                "holes": request.holes,
+                "players": len(request.players),
+                "booking_class": False,
+                "schedule_id": self._schedule_id,
+                "specials_only": 0,
+                "api_key": _API_KEY,
+            }
+            # partial binds `params` by value (avoids a loop-variable closure) and
+            # types cleanly as a zero-arg thunk for _send_with_retry.
+            r = await self._send_with_retry(
+                partial(client.get, TIMES_PATH, params=params), op="search"
             )
             if r.status_code == _HTTP_RATE_LIMIT:
                 raise RateLimitError(
@@ -481,9 +536,11 @@ class ForeUpAdapter(CourseAdapter):
         if self._auth_token:
             extra_headers["x-authorization"] = f"Bearer {self._auth_token}"
         _log.info("ForeUP: cancelling reservation %s...", raw_id)
-        r = await client.delete(
-            f"{RESERVATION_PATH}/{raw_id}",
-            headers=extra_headers,
+        # Cancel is idempotent (404 already-cancelled → success), so a transient
+        # transport failure is safe to retry.
+        r = await self._send_with_retry(
+            lambda: client.delete(f"{RESERVATION_PATH}/{raw_id}", headers=extra_headers),
+            op="cancel",
         )
         if r.status_code == _HTTP_NOT_FOUND:
             # Already cancelled — the desired post-condition is satisfied.

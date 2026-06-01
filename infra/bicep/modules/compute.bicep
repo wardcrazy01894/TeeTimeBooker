@@ -15,7 +15,8 @@
 //   replicaCompletionCount = 1 — execution completes when that one replica finishes
 //   replicaRetryLimit = 0      — no ACA-level retry; bot handles retry internally
 //   bookingReplicaTimeout = 1200 — 20 min; covers the in-replica busy-wait to 06:00 ET
-//   watchReplicaTimeout = 120  — 2 min; watch is one HTTP round-trip, no busy-wait
+//   watchReplicaTimeout = 300  — 5 min; headroom for in-run retries on idempotent
+//                                ForeUP calls (warm-up/login/search; base.py _send_with_retry)
 // See: infra/AZURE_PLAN.md §6.2 (concurrency safety), §4 (hard-coded constants)
 //
 // Identity: user-assigned managed identity (MI). A single MI resource is
@@ -95,10 +96,13 @@ var parallelism = 1
 var replicaCompletionCount = 1
 
 // Watch job runs every 10 minutes year-round (no DST gate needed; the
-// WatchOrchestrator gates polling hours internally). One HTTP round-trip, so
-// a short replicaTimeout is sufficient. See AZURE_PLAN.md §5.4.
+// WatchOrchestrator gates polling hours internally). A normal run is one HTTP
+// round-trip (~30s), but the adapter now retries transient transport failures on
+// idempotent calls (warm-up/login/search; base.py _send_with_retry). 300s gives
+// headroom so a slow-upstream run that retries can never hit the replica cap and
+// turn a recovered run into a Failure. See AZURE_PLAN.md §5.4.
 var watchCron = '*/10 * * * *'
-var watchReplicaTimeout = 120
+var watchReplicaTimeout = 300
 
 // Booking-job cron table. A single array + loop avoids two copy-pasted job
 // resources. Each entry pairs a resource-name suffix with its UTC cron.
