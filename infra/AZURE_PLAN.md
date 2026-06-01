@@ -593,9 +593,12 @@ scoped. `budget.bicep` is a subscription-scope Bicep module (targetScope =
 nested module in the RG-scoped `main.bicep`.
 
 **Approach:** `main.bicep` is RG-scoped. `budget.bicep` is a separate
-deployment invoked from `azure-iac.yml` with `--scope /subscriptions/<id>`
-after the RG deployment. Alternatively, create the budget manually once via
-the Azure portal (Cost Management > Budgets) and document it in the runbook.
+subscription-scope deployment (`az deployment sub create`), run **manually by
+the operator** — the CI service principal is RG-scoped by design and cannot
+deploy it. `azure-iac.yml` emits a `::notice::` reminder in the deploy jobs
+rather than attempting (and failing) the deploy. The runbook command is below;
+the Azure portal (Cost Management > Budgets) is an equivalent path that also
+sidesteps a known `az deployment sub create` budget-PUT bug.
 
 **Two-tier alert ladder (as of PR-KS1):**
 
@@ -610,9 +613,10 @@ $50, killswitch-trigger) is a SEPARATE second budget resource in `budget.bicep` 
 `killswitchActionGroupId`). Both budgets evaluate the same project spend independently. See
 `infra/COST_KILLSWITCH_PLAN.md`.
 
-**Deploy note:** the `azure-iac.yml` budget step is **skipped** in CI because the CI service
-principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission).
-It is deployed manually by the operator. **DONE 2026-05-31** — both `budget-teetime` ($20) and
+**Deploy note:** `azure-iac.yml` does **not** attempt the budget deploy — the CI service
+principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission),
+so the deploy jobs just emit a `::notice::` reminder. The budget is deployed manually by the
+operator. **DONE 2026-05-31** — both `budget-teetime` ($20) and
 `budget-teetime-killswitch` ($50, wired to the Action Group) are deployed; the killswitch is
 fully armed end-to-end across dev + prod.
 
