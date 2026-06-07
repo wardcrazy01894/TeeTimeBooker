@@ -38,10 +38,11 @@ extra = { booking_class_id = "2149" }
 # across weekend cron firings; the (RequestId, resolved_date) pair is the actual
 # idempotency key. See PLAN.md §13.
 target_offsets     = [7]
-# Offsets anchor to this weekday (default "sunday") — target = (most-recent
-# target_weekday) + offset. This keeps the DAILY watch job locked onto the upcoming
-# target date all week instead of drifting; the Sunday 6 AM booker is unchanged.
-target_weekday     = "sunday"
+# Wanted booking weekdays. The booking job books `today + offset` only when that date's
+# weekday is in this set; the daily watcher checks the next occurrence of EACH within the
+# horizon. Default Sat+Sun. (Deprecated singular alias `target_weekday = "sunday"` still
+# parses for backward-compat, but not together with this key.)
+target_weekdays    = ["saturday", "sunday"]
 holes              = 18
 # Decimal-as-string. Pydantic coerces via Decimal(str) — no float drift.
 max_price_per_player = "55.00"

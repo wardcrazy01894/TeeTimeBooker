@@ -12,7 +12,7 @@ from datetime import time
 from decimal import Decimal
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
 
 from .models import CartPreference, WatchConfig
 from .target_date import weekday_from_name
@@ -70,17 +70,37 @@ class RequestConfig(BaseModel):
     max_price_per_player: Decimal | None = None
     cart: CartPreference = CartPreference.EITHER
     course_preferences: list[str]
-    # Booking weekday the offsets anchor to. The target is computed as
-    # (most-recent <target_weekday>) + offset, so the daily watch job locks onto the
-    # upcoming target date all week instead of drifting with `today + offset`. The
-    # 6 AM booker (which only runs on this weekday) is unaffected. See target_date.py.
-    target_weekday: str = "sunday"
+    # Wanted booking weekdays. The booking job books `today + offset` ONLY when that
+    # date's weekday is in this set (core/booking_day_gate.py); the watcher checks the
+    # next upcoming occurrence of EACH of these within the horizon (core/target_date.py).
+    # Default Sat+Sun. Helpers convert to weekday indices via wanted_weekday_indices.
+    target_weekdays: list[str] = Field(default_factory=lambda: ["saturday", "sunday"])
+    # Deprecated alias: the old singular key. If present (and target_weekdays was not
+    # also given) it seeds the set. Setting both is an error. See MULTIDAY_PLAN.md PR1.
+    target_weekday: str | None = None
 
-    @field_validator("target_weekday")
-    @classmethod
-    def _validate_target_weekday(cls, v: str) -> str:
-        weekday_from_name(v)  # raises ValueError on an invalid name
-        return v
+    @model_validator(mode="after")
+    def _resolve_weekdays(self) -> RequestConfig:
+        # `model_fields_set` holds the keys actually present in the input, so we can
+        # tell "user gave target_weekdays" from "default applied".
+        fields_set = self.model_fields_set
+        if "target_weekday" in fields_set and "target_weekdays" in fields_set:
+            raise ValueError("set either target_weekday (deprecated) or target_weekdays, not both")
+        if self.target_weekday is not None:
+            self.target_weekdays = [self.target_weekday]
+        if not self.target_weekdays:
+            raise ValueError("target_weekdays must be non-empty")
+        for name in self.target_weekdays:
+            weekday_from_name(name)  # raises ValueError("invalid weekday ...") on a bad name
+        # Normalise: dedupe + sort by weekday index for a deterministic, legible order.
+        by_index = {weekday_from_name(n): n.strip().lower() for n in self.target_weekdays}
+        self.target_weekdays = [name for _, name in sorted(by_index.items())]
+        return self
+
+    @property
+    def wanted_weekday_indices(self) -> frozenset[int]:
+        """Python weekday() indices (Mon=0..Sun=6) of the wanted set."""
+        return frozenset(weekday_from_name(n) for n in self.target_weekdays)
 
 
 class SchedulerConfig(BaseModel):
