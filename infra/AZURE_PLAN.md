@@ -224,16 +224,18 @@ ACR geo-replication.
 ### 5.3 DST handling on ACA
 
 ACA cron expressions are UTC-only (identical constraint to GitHub Actions).
-Two Sunday crons (one per DST half; Sunday-only since M6 PR5, re-homed from the
-deleted `book.yml`) are implemented in `compute.bicep`:
+Two DAILY crons (one per DST half; multi-day re-arch — the jobs are `teetime-job-<env>-edt`
+and `-est`, the `-sun` suffix was dropped) are implemented in `compute.bicep`:
 
 | ET target | UTC cron | Description |
 |---|---|---|
-| 05:50 EDT Sunday (UTC-4)   | `50 9 * * 0` | Fires 10 min before T0, EDT, Sunday |
-| 05:50 EST Sunday (UTC-5)   | `50 10 * * 0` | Fires 10 min before T0, EST, Sunday |
+| 05:50 EDT, every day (UTC-4)   | `50 9 * * *` | Fires 10 min before T0, EDT |
+| 05:50 EST, every day (UTC-5)   | `50 10 * * *` | Fires 10 min before T0, EST |
 
-Both Sunday crons fire year-round (one tee time per Sunday; M6 Sunday-only schedule — the
-Saturday crons were dropped in M6 PR5). The bot's own DST gate — re-homed
+Both crons fire every morning year-round. The bot's DST gate selects the correct season half,
+and the booking-day gate (`core/booking_day_gate.py`) fast-exits 0 on mornings whose
+`today+offset` weekday isn't in `target_weekdays` (default Sat+Sun) — so the daily crons book
+only the wanted days. The bot's own DST gate — re-homed
 from the deleted `book.yml` `dst` step into `core/dst_gate.py` (`should_proceed`, M6 PR2) —
 is evaluated in `_run` on the `--wait` path, BEFORE the busy-wait:
 
@@ -833,7 +835,7 @@ A wrong-season cron instead logs `DST-half gate: wrong-season cron (ET hour != 5
 **On-demand check (no need to wait for Sunday)** — the `--fire-time` hatch makes the
 `--wait` busy-wait + DST gate reachable at any hour, refused unless `--dry-run true`:
 ```bash
-az containerapp job start -n teetime-job-dev-edt-sun -g rg-teetime-dev \
+az containerapp job start -n teetime-job-dev-edt -g rg-teetime-dev \
   --command "teetime" --args "run --config /app/config/container.toml --dry-run true --wait --fire-time HH:MM:SS"
 ```
 (pick `HH` = current ET hour + 1 so the gate's `hour == fire_hour-1` passes and the busy-wait
