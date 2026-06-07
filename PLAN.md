@@ -403,12 +403,15 @@ from `BookingRequest.players` or `CourseCredentials`, the orchestrator MUST:
   entirely (not hashed). Raw PAN/CVV in any log is a PCI incident.
 - Confirmation codes ARE persisted (we need them for reconciliation).
 
-A helper `_redact_payload(d: dict) -> dict` lives in `core/orchestrator.py` (recursive;
-redacts card/PII values — the `Payment.*`/`Payments_*` GNSVC namespace and the cred-style
-card keys — to `"***"`). Any caller that builds a payload MUST route it through
-`_redact_payload` before `store.append_attempt`. NOTE: `append_attempt` is not yet called by
-any flow — the post-mortem reconciliation path (M2.T3) is the intended first caller and must
-apply this helper. The helper exists today so the guard is in place before that wiring lands.
+A helper `_redact_payload(d: dict) -> dict` lives in `core/orchestrator.py` (recursive — nested
+dicts AND lists). It drops to `"***"` both the CARD fields (the `Payment.*`/`Payments_*` GNSVC
+namespace + the cred-style keys: card_number, cvv, expiry_*, billing_*, name_on_card, password)
+AND player PII (email, phone, mobile, member number, first/last name). (It DROPS PII rather than
+SHA-256-hashing it — stronger for an audit blob, since a hash of a low-entropy phone number is
+reversible.) Any caller that builds a payload MUST route it through `_redact_payload` before
+`store.append_attempt`. NOTE: `append_attempt` is not yet called by any flow — the post-mortem
+reconciliation path (M2.T3) is the intended first caller and must apply this helper. The helper
+exists today so the guard is in place before that wiring lands.
 
 ---
 

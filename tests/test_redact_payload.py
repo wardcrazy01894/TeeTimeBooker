@@ -90,8 +90,46 @@ def test_does_not_mutate_input() -> None:
 
 
 def test_non_sensitive_substring_not_over_redacted() -> None:
-    # Avoid dangerous substring tokens: "success" (contains "cc"), "company" (contains "pan").
-    out = _redact_payload({"success": True, "company": "ACME", "account": "x"})
+    # Avoid dangerous substring tokens: "success" (contains "cc"), "company" (contains "pan"),
+    # and bare "name" (course_name/job_name are useful audit fields, not PII).
+    out = _redact_payload(
+        {"success": True, "company": "ACME", "account": "x", "course_name": "Mangrove Bay"}
+    )
     assert out["success"] is True
     assert out["company"] == "ACME"
     assert out["account"] == "x"
+    assert out["course_name"] == "Mangrove Bay"
+
+
+def test_redacts_player_pii() -> None:
+    # PLAN §10.1 requires player PII (email/phone/member/name) redaction, not just card data.
+    out = _redact_payload(
+        {
+            "CustomerEmail": "alex@example.test",
+            "BookerEmail": "alex@example.test",
+            "customerMobile": "555-0001",
+            "Payment.PhoneNumber": "555-0002",
+            "member_number": "12345",
+            "first_name": "Alex",
+            "last_name": "Lancaster",
+            "course_id": "foreup:mangrove_bay",  # NOT PII — preserved
+        }
+    )
+    for k in (
+        "CustomerEmail",
+        "BookerEmail",
+        "customerMobile",
+        "Payment.PhoneNumber",
+        "member_number",
+        "first_name",
+        "last_name",
+    ):
+        assert out[k] == "***", k
+    assert out["course_id"] == "foreup:mangrove_bay"
+
+
+def test_redacts_nested_lists_of_lists() -> None:
+    # The recursive guard must descend into nested lists (M2.T3 payload shapes are unknown).
+    out = _redact_payload({"deep": [[{"cvv": "9"}], [{"ok": "keep"}]]})
+    assert out["deep"][0][0]["cvv"] == "***"
+    assert out["deep"][1][0]["ok"] == "keep"
