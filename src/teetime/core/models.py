@@ -7,6 +7,7 @@ Keep this module dependency-light: stdlib + pydantic only.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -44,7 +45,7 @@ def build_request_fingerprint(
     *,
     course_ids: list[CourseId],
     target_offsets: list[int],
-    time_windows: list[TimeWindow],
+    time_windows: Sequence[tuple[int, TimeWindow]],
     players: list[Player],
 ) -> str:
     """Build the canonical fingerprint string per PLAN.md §13.1.
@@ -54,7 +55,10 @@ def build_request_fingerprint(
 
     - ``courses``: sorted CourseId values.
     - ``offsets``: sorted integers as decimal strings.
-    - ``windows``: ``HH:MM-HH:MM``, sorted lexically.
+    - ``windows``: ``<weekday>:HH:MM-HH:MM``, sorted lexically. The weekday index is
+      in the token so a window applied to Saturday vs Sunday is a DISTINCT request
+      identity (per-day windows, PERDAY_WINDOWS_PLAN §6). Caller passes
+      ``(weekday_index, window)`` pairs so the domain ``TimeWindow`` stays weekday-free.
     - ``party``: per-player ``first_name|last_name`` (note: NOT comma-joined —
       the player tokens follow the outer pipe so the canonical form is
       ``courses|offsets|windows|first1|last1|first2|last2``). Email and phone
@@ -64,7 +68,10 @@ def build_request_fingerprint(
     courses_seg = ",".join(sorted(course_ids))
     offsets_seg = ",".join(str(o) for o in sorted(target_offsets))
     windows_seg = ",".join(
-        sorted(f"{w.earliest.strftime('%H:%M')}-{w.latest.strftime('%H:%M')}" for w in time_windows)
+        sorted(
+            f"{wd}:{w.earliest.strftime('%H:%M')}-{w.latest.strftime('%H:%M')}"
+            for wd, w in time_windows
+        )
     )
     party_tokens = sorted(f"{p.first_name}|{p.last_name}" for p in players)
     return "|".join([courses_seg, offsets_seg, windows_seg, *party_tokens])

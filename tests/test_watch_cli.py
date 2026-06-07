@@ -59,6 +59,12 @@ phone_env = "PLAYER1_PHONE"
 member_number_env = "PLAYER1_MB_MEMBER"
 
 [[request.time_windows]]
+weekday = "saturday"
+earliest = "08:45:00"
+latest = "10:00:00"
+
+[[request.time_windows]]
+weekday = "sunday"
 earliest = "08:45:00"
 latest = "10:00:00"
 

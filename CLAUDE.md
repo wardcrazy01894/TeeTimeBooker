@@ -35,7 +35,8 @@ AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (tag `infra/v1.0.0`, 2026-05-31),
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
-(config `target_weekdays = ["saturday","sunday"]`), holding one reservation PER day:
+(wanted days derived from the per-day `[[request.time_windows]]` weekdays), holding one
+reservation PER day:
 - Booking crons fire **DAILY** (`50 9/10 * * *`), jobs renamed `teetime-job-<env>-edt`/`-est`
   (the `-sun` suffix dropped). Each run computes `today+7` and **fast-exits 0** unless that
   weekday is wanted (`core/booking_day_gate.py`), after the DST gate.
@@ -199,11 +200,20 @@ in `core/` — never directly. This is the cut line for parallel work.
   each `target_date` (`dc_replace`) AND filters ranked candidates to that date** — a Saturday
   watch can NEVER book a Sunday slot (one reservation PER date; the per-date `(RequestId,
   date)` store key keeps Sat and Sun independent). `--date` still overrides to a single date.
-- **Target date(s) anchor to the `target_weekdays` SET (default Sat+Sun), NOT a rolling
-  `today+7`** (`core/target_date.py`, multi-day re-arch). The booking job books a SINGLE gated
-  date (`today + offset`, gated by `core/booking_day_gate.py` to a wanted weekday: the daily
-  booking cron fast-exits 0 when `today+offset` isn't in `target_weekdays`); the watcher uses
-  `next_occurrences_within_horizon`. `--date` still overrides for the watch command.
+- **Time windows are bound to weekdays; wanted days are DERIVED from them** (per-day windows,
+  PERDAY_WINDOWS_PLAN). Each `[[request.time_windows]]` carries a `weekday`; multiple windows
+  may share a day (one reservation per day — best window wins; list order = preference).
+  `RequestConfig.wanted_weekday_indices` is derived from the windows' weekdays (the separate
+  `target_weekdays`/`target_weekday` keys were REMOVED — hard cutover, un-tagged config errors
+  loudly). The domain `TimeWindow` stays weekday-free; per-invocation scoping narrows the
+  request's windows to the date's weekday: `_build_booking_request` (booker) and
+  `_scope_request_to_date` (the `_watch` loop) pin `time_windows=_windows_for_date(...)`, so a
+  Saturday run only ever searches/ranks Saturday's windows. The RequestId fingerprint encodes
+  the window weekday (`<wd>:HH:MM-HH:MM`) so a Sat vs Sun window is a distinct identity.
+- **Target date(s):** the booking job books a SINGLE gated date (`today + offset`, gated by
+  `core/booking_day_gate.py` to a wanted weekday); the watcher uses
+  `next_occurrences_within_horizon` over the derived wanted days. `--date` still overrides for
+  the watch command (errors if that weekday has no window).
 - **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
   This lets `target_offsets = [7]` produce one stable RequestId within a run
   while still targeting a fresh date each week. The key is held in-process

@@ -40,7 +40,11 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
-from .core.target_date import next_occurrences_within_horizon, resolve_target_dates
+from .core.target_date import (
+    next_occurrences_within_horizon,
+    resolve_target_dates,
+    weekday_from_name,
+)
 from .core.watch_orchestrator import WatchOrchestrator
 from .courses.foreup.base import ForeUpAdapter
 from .courses.foreup.captcha import (
@@ -428,9 +432,11 @@ async def _watch(
         policy=cfg.one_booking_policy,
     )
     # Check every wanted date this run (do NOT break — both Sat and Sun must be checked).
-    # _check_course scopes the search to each target_date, so a Sat check can only book Sat.
+    # Each check_once gets a request scoped to that date AND that date's weekday's windows,
+    # so a Sat check searches/books only Sat (and only Sat's windows). See PERDAY §8.
     for target_date in target_dates:
-        result = await watch.check_once(request, target_date)
+        scoped_request = _scope_request_to_date(request, cfg, target_date)
+        result = await watch.check_once(scoped_request, target_date)
         if result is not None:
             log.info(
                 "watch result: date=%s outcome=%s confirmation=%s",
@@ -598,6 +604,13 @@ def _build_request(cfg: AppConfig, *, dry_run: bool) -> BookingRequest:
     # every time the [[courses]] block is edited. See PLAN.md §13.1.
     course_ids = [CourseId(p) for p in cfg.request.course_preferences]
     windows = [TimeWindow(earliest=w.earliest, latest=w.latest) for w in cfg.request.time_windows]
+    # (weekday_index, window) pairs for the fingerprint so a window applied to Sat vs Sun is a
+    # distinct RequestId (per-day windows, PERDAY_WINDOWS_PLAN §6). request.time_windows itself
+    # stays the full flat tuple; per-invocation scoping narrows it (PR3).
+    window_pairs = [
+        (weekday_from_name(w.weekday), TimeWindow(earliest=w.earliest, latest=w.latest))
+        for w in cfg.request.time_windows
+    ]
     players = [
         Player(
             first_name=p.first_name,
@@ -611,7 +624,7 @@ def _build_request(cfg: AppConfig, *, dry_run: bool) -> BookingRequest:
     fp = build_request_fingerprint(
         course_ids=course_ids,
         target_offsets=cfg.request.target_offsets,
-        time_windows=windows,
+        time_windows=window_pairs,
         players=players,
     )
     rid = derive_request_id(fp)
@@ -639,7 +652,44 @@ def _build_booking_request(cfg: AppConfig, *, dry_run: bool, target_date: date) 
     fingerprint excludes dates). See MULTIDAY_PLAN.md PR2.
     """
     base = _build_request(cfg, dry_run=dry_run)
-    return dc_replace(base, target_dates=(target_date,))
+    return dc_replace(
+        base,
+        target_dates=(target_date,),
+        time_windows=_windows_for_date(cfg, target_date),
+    )
+
+
+def _windows_for_date(cfg: AppConfig, target_date: date) -> tuple[TimeWindow, ...]:
+    """Domain TimeWindows configured for target_date's weekday (per-day windows).
+
+    Asserts non-empty: the booking-day gate / watcher only ever produce dates whose weekday
+    has windows (wanted_weekday_indices is derived from the windows), so an empty result means
+    a caller passed a windowless weekday (e.g. `watch --date` on an unwanted day) — fail loudly.
+    See PERDAY_WINDOWS_PLAN §5/§8.
+    """
+    cfgs = cfg.request.windows_for(target_date.weekday())
+    if not cfgs:
+        raise click.ClickException(
+            f"no time window configured for {target_date} ({target_date.strftime('%A')}); "
+            f"add a [[request.time_windows]] with that weekday or pick a different --date."
+        )
+    return tuple(TimeWindow(earliest=w.earliest, latest=w.latest) for w in cfgs)
+
+
+def _scope_request_to_date(
+    request: BookingRequest, cfg: AppConfig, target_date: date
+) -> BookingRequest:
+    """Return a copy of `request` scoped to a single date AND that date's weekday's windows.
+
+    Used by `_watch` to hand `check_once` a per-date-scoped request: a Saturday check then
+    searches/ranks only Saturday's windows, a Sunday check only Sunday's. Keeps the domain
+    TimeWindow weekday-free (the narrowing lives in the CLI config layer). See PERDAY §8.
+    """
+    return dc_replace(
+        request,
+        target_dates=(target_date,),
+        time_windows=_windows_for_date(cfg, target_date),
+    )
 
 
 def main() -> int:
