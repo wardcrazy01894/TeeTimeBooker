@@ -83,7 +83,13 @@ class BookingStore(Protocol):
         payload: dict[str, object],
         at: datetime,
     ) -> None:
-        """Append-only audit trail. Best-effort durability."""
+        """Append-only audit trail. Best-effort durability.
+
+        Contract: the implementation MUST redact card fields (PAN/CVV/expiry/billing) and
+        player PII from ``payload`` before storing it — via ``core.redaction.redact_payload``
+        — so a caller cannot leak card data by forgetting to scrub. Redaction is enforced at
+        this boundary, not by convention at call sites. See PLAN.md §10.1.
+        """
         ...
 
     async def cache_session(
