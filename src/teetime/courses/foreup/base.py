@@ -79,6 +79,11 @@ _MIN_BETWEEN_S = 0.25  # anti-bot courtesy delay between non-booking requests
 _HTTP_RATE_LIMIT = 429
 _HTTP_SLOT_GONE = 409
 _HTTP_NOT_FOUND = 404
+# ForeUP returns 400 on the reservation POST when it definitively rejects the
+# booking — observed in prod (2026-06-07) when the slot was claimed between search
+# and book. Unlike a 5xx/timeout (the §9 UNCERTAIN case), a 4xx rejection is
+# unambiguous that NO reservation was created, so it is safe to try the next slot.
+_HTTP_BOOK_REJECTED = 400
 
 
 class ForeUpAdapter(CourseAdapter):
@@ -427,14 +432,29 @@ class ForeUpAdapter(CourseAdapter):
             slot.tee_time.strftime("%Y-%m-%d %H:%M %Z"),
         )
         r = await client.post(RESERVATION_PATH, json=body)
-        if r.status_code == _HTTP_SLOT_GONE:
+        if r.is_error:
+            # Log status + body BEFORE raising. raise_for_status() discards the body,
+            # which left us blind to WHY ForeUP rejected the 2026-06-07 booking. r.text
+            # is truncated to keep logs sane (and any card data already lives only in
+            # the request, never the response).
             _log.warning(
-                "ForeUP: slot %s → 409. Response: %s",
+                "ForeUP: book POST for slot %s → HTTP %d. Response: %s",
                 slot.slot_id,
-                r.text[:300],
+                r.status_code,
+                r.text[:500],
             )
+        if r.status_code == _HTTP_SLOT_GONE:
             raise SlotGoneError(f"Slot gone (409): {r.text[:300]}")
+        # A captcha/browser challenge can come back as a 400; classify it as such
+        # (CaptchaError) BEFORE the generic 400 → SlotGone mapping below.
         self._guard_captcha(r)
+        if r.status_code == _HTTP_BOOK_REJECTED:
+            # 400 = ForeUP definitively rejected this booking; no reservation was
+            # created (typically the slot was claimed between search and book). Raise
+            # SlotGoneError so the orchestrator's candidate loop tries the next-ranked
+            # slot instead of crashing. NOT the §9 UNCERTAIN case (a 4xx is unambiguous
+            # that nothing was booked). See PLAN §9.
+            raise SlotGoneError(f"Slot unbookable (HTTP 400): {r.text[:300]}")
         r.raise_for_status()
         data: Any = r.json() if r.text else {}
         _log.info("ForeUP: booking response: %s", data)
