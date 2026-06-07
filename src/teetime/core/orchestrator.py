@@ -16,6 +16,7 @@ add the reconciliation branch in one place.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -38,8 +39,6 @@ from .models import (
 from .slot_utils import rank_slots_for_request
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from ..notifications.notifier import Notifier
     from ..persistence.store import BookingStore
     from .adapter import CourseAdapter
@@ -47,6 +46,56 @@ if TYPE_CHECKING:
     from .config import SchedulerConfig
 
 log = logging.getLogger(__name__)
+
+# Card/PII keys whose VALUES must never reach the attempt_log (PLAN.md §10.1). Matched
+# case-insensitively. The TeeItUp booking POST namespaces all card fields under
+# "Payment"/"Payments_" (Payment.CC.CreditCardNumber, Payment.CC.CVVCode, Payment.Address.*,
+# …); the CourseCredentials.extra cred keys (card_number, cvv, expiry_*, billing_*,
+# name_on_card, password) are the other shape. Tokens are chosen to avoid dangerous
+# substrings — e.g. NOT "cc" (would hit "success") or "pan" (would hit "company").
+_SENSITIVE_KEY_TOKENS = (
+    "card",
+    "cvv",
+    "expir",  # expiry_month/year, ExpirationMonth/Year
+    "billing",
+    "password",
+    "securitycode",
+    "name_on_card",
+)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    k = key.lower()
+    # The whole GNSVC payment block is sensitive (card number, CVV, expiry, billing address,
+    # cardholder name, phone). Redacting the namespace is intentional over-redaction.
+    if k.startswith("payment"):
+        return True
+    return any(tok in k for tok in _SENSITIVE_KEY_TOKENS)
+
+
+def _redact_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    """Return a deep copy of ``payload`` with card/PII values replaced by ``"***"``.
+
+    MUST be applied to any dict before it is written to the attempt_log
+    (``BookingStore.append_attempt``) — the TeeItUp booking payload contains raw PAN/CVV/
+    billing (`Payment.*`/`Payments_*`), and CourseCredentials.extra carries the cred-style
+    card keys. Recurses into nested dicts and lists; does not mutate the input. See PLAN.md
+    §10.1. (NOTE: ``append_attempt`` is not yet wired into any flow — the post-mortem
+    reconciliation path M2.T3 is the intended first caller; it MUST route payloads through
+    this helper.)
+    """
+    out: dict[str, object] = {}
+    for raw_k, v in payload.items():
+        k = str(raw_k)
+        if _is_sensitive_key(k):
+            out[k] = "***"
+        elif isinstance(v, Mapping):
+            out[k] = _redact_payload(v)
+        elif isinstance(v, (list, tuple)):
+            out[k] = [_redact_payload(i) if isinstance(i, Mapping) else i for i in v]
+        else:
+            out[k] = v
+    return out
 
 
 class Orchestrator:
