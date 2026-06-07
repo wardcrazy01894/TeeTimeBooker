@@ -225,6 +225,67 @@ enabled = false
     assert "ambiguity" in result.output
 
 
+def test_resolve_creds_literal_sensitive_key_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lone literal sensitive key (e.g. card_number) — no _env counterpart — must be
+    rejected: card/credential fields MUST use the *_env form so a raw PAN never sits in a
+    config file. (Non-sensitive literals like booking_class_id stay allowed.)"""
+    monkeypatch.setenv("MB_USERNAME", "u")
+    monkeypatch.setenv("MB_PASSWORD", "p")
+    monkeypatch.setenv("PLAYER1_EMAIL", "a@x.test")
+    toml = tmp_path / "t.toml"
+    toml.write_text(
+        """
+[[courses]]
+id = "teeitup:sydney_marovitz"
+adapter = "teeitup.sydney_marovitz"
+username_env = "MB_USERNAME"
+password_env = "MB_PASSWORD"
+[courses.extra]
+card_number = "4111111111111111"
+
+[request]
+target_offsets = [7]
+holes = 9
+course_preferences = ["teeitup:sydney_marovitz"]
+
+[[request.players]]
+first_name = "A"
+last_name = "B"
+email_env = "PLAYER1_EMAIL"
+
+[[request.time_windows]]
+weekday  = "sunday"
+earliest = "07:00:00"
+latest   = "10:00:00"
+
+[scheduler]
+timezone = "America/Chicago"
+fire_time = "06:00:00"
+early_arrival_ms = 0
+poll_interval_ms = 100
+max_poll_seconds = 1
+
+[notifier]
+backend = "console"
+
+[watcher]
+enabled = false
+
+[one_booking_policy]
+enabled = false
+"""
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["run", "--config", str(toml), "--dry-run", "true"])
+    assert result.exit_code != 0
+    assert "card_number" in result.output
+    assert "card_number_env" in result.output  # the message names the required env form
+    # the raw PAN must never be echoed in the error
+    assert "4111111111111111" not in result.output
+
+
 # ---------------------------------------------------------------------------
 # M6 PR1: `teetime run --wait/--no-wait` execution-mode selector,
 #          NTP-offset re-gating (on `wait`, not `dry_run`), and the dev/test

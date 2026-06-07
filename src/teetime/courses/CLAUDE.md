@@ -57,7 +57,7 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
 - **Payment flow**: TeeItUp native accounts use direct card entry via `POST https://tr.gnsvc.com/AddReservation` (form-encoded). There is no "card on file" wallet — card credentials are passed each booking call. Required `extra` fields in `CourseCredentials`:
   - `card_number`, `cvv`, `expiry_month`, `expiry_year`, `billing_address`, `billing_postal_code`
   - Optional: `billing_country` (default `"US"`), `name_on_card` (default: first+last from auth)
-  - In TOML, use the `*_env` convention (e.g. `card_number_env = "SM_CARD_NUMBER"`) so secrets resolve from env vars and never appear in config files.
+  - In TOML, use the `*_env` convention (e.g. `card_number_env = "SM_CARD_NUMBER"`) so secrets resolve from env vars and never appear in config files. **Enforced:** `_resolve_creds` rejects a literal sensitive key (any of `_SENSITIVE_EXTRA_KEYS` — card_number/cvv/expiry/billing/name_on_card/password) and requires the `*_env` form.
 - **Cancel returns HTTP 200** (not 404) for already-cancelled reservations — our cancel is idempotent on both (live-confirmed 2026-05-29).
 - **`list_reservations()` uses a live GET** (`/reservation/history`), unlike ForeUP's login-cache approach. Re-authentication before calling is not required.
 - **`tr.gnsvc.com` response time**: payment endpoint takes ~5-10 s. The adapter sets a 60 s timeout for that specific call.
