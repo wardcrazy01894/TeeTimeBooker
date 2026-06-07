@@ -40,10 +40,15 @@ reservation PER day:
 - Booking crons fire **DAILY** (`50 9/10 * * *`), jobs renamed `teetime-job-<env>-edt`/`-est`
   (the `-sun` suffix dropped). Each run computes `today+7` and **fast-exits 0** unless that
   weekday is wanted (`core/booking_day_gate.py`), after the DST gate.
-- The watcher **polls on every run** (the time-of-day gate was removed) and checks the next
-  occurrence of EACH wanted weekday within the horizon (`core/target_date.next_occurrences_within_horizon`);
-  `_check_course` scopes the search per date so a Sat watch can never book a Sun slot. Removing
-  the hours gate also enables an early-morning recovery booking.
+- The watcher **polls on every run** (the time-of-day gate was removed) and, on EVERY run
+  regardless of which weekday it executes, checks the next occurrence of EACH wanted weekday
+  within the horizon (`core/target_date.next_occurrences_within_horizon`) — e.g. a run on any
+  day checks the upcoming Saturday AND the upcoming Sunday and can book/upgrade either. The
+  per-date scoping is about pairing each TARGET DATE with its own slots/windows: the search is
+  `dc_replace`d to one target date, so the check for the Saturday *target* books only a Saturday
+  slot and the check for the Sunday *target* only a Sunday slot (it is NOT a restriction based
+  on the day the watcher runs). Removing the hours gate also enables an early-morning recovery
+  booking.
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
@@ -206,10 +211,13 @@ in `core/` — never directly. This is the cut line for parallel work.
   `RequestConfig.wanted_weekday_indices` is derived from the windows' weekdays (the separate
   `target_weekdays`/`target_weekday` keys were REMOVED — hard cutover, un-tagged config errors
   loudly). The domain `TimeWindow` stays weekday-free; per-invocation scoping narrows the
-  request's windows to the date's weekday: `_build_booking_request` (booker) and
-  `_scope_request_to_date` (the `_watch` loop) pin `time_windows=_windows_for_date(...)`, so a
-  Saturday run only ever searches/ranks Saturday's windows. The RequestId fingerprint encodes
-  the window weekday (`<wd>:HH:MM-HH:MM`) so a Sat vs Sun window is a distinct identity.
+  request's windows to the TARGET DATE's weekday: `_build_booking_request` (booker) and
+  `_scope_request_to_date` (the `_watch` loop, called once per target date) pin
+  `time_windows=_windows_for_date(...)`, so the check for a Saturday-dated target searches/ranks
+  Saturday's windows and a Sunday-dated target uses Sunday's. (This is per TARGET DATE, not per
+  execution day — a single watcher run still checks every wanted upcoming date.) The RequestId
+  fingerprint encodes the window weekday (`<wd>:HH:MM-HH:MM`) so a Sat vs Sun window is a
+  distinct identity.
 - **Target date(s):** the booking job books a SINGLE gated date (`today + offset`, gated by
   `core/booking_day_gate.py` to a wanted weekday); the watcher uses
   `next_occurrences_within_horizon` over the derived wanted days. `--date` still overrides for

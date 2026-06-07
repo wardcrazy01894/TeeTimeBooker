@@ -24,7 +24,7 @@ Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). 
 
 **Cancellation watch job** (ACA Job — `compute.bicep`):
 1. A third ACA Job fires every 10 minutes, year-round, and **polls on every run** (no time-of-day gate — so it sees the 6 AM drop + early cancellations)
-2. Each run checks the next upcoming occurrence of **each** wanted weekday within the horizon (upcoming Sat **and** Sun), one reservation per day; the search is scoped per date (a Saturday check never books a Sunday slot)
+2. Each run — whatever weekday it executes on — checks the next upcoming occurrence of **each** wanted weekday within the horizon (the upcoming Sat **and** Sun) and can book/upgrade any of them, one reservation per day. The search is scoped per **target date**: when evaluating the Saturday target it considers only Saturday slots+window, the Sunday target only Sunday's (so windows can differ per day) — this is not a limit based on the day the watcher runs
 3. If a slot opens in the preferred window, it books immediately (including an early-morning recovery if the 6 AM race missed)
 
 ---
