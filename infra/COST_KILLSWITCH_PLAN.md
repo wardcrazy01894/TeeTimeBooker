@@ -101,19 +101,19 @@ unconditionally without checking for running executions first.
 The Logic App issues **12 calls total** per trigger activation (6 PATCHes + 6 POSTs):
 
 **Dev env (`rg-teetime-dev`):**
-- `PATCH .../jobs/teetime-job-dev-edt-sun?api-version=2024-03-01` — set triggerType=Manual
-- `PATCH .../jobs/teetime-job-dev-est-sun?api-version=2024-03-01` — set triggerType=Manual
+- `PATCH .../jobs/teetime-job-dev-edt?api-version=2024-03-01` — set triggerType=Manual
+- `PATCH .../jobs/teetime-job-dev-est?api-version=2024-03-01` — set triggerType=Manual
 - `PATCH .../jobs/teetime-watch-job-dev?api-version=2024-03-01` — set triggerType=Manual
-- `POST .../jobs/teetime-job-dev-edt-sun/stop?api-version=2024-03-01` — stop running replicas
-- `POST .../jobs/teetime-job-dev-est-sun/stop?api-version=2024-03-01` — stop running replicas
+- `POST .../jobs/teetime-job-dev-edt/stop?api-version=2024-03-01` — stop running replicas
+- `POST .../jobs/teetime-job-dev-est/stop?api-version=2024-03-01` — stop running replicas
 - `POST .../jobs/teetime-watch-job-dev/stop?api-version=2024-03-01` — stop running replicas
 
 **Prod env (`rg-teetime-prod`):**
-- `PATCH .../jobs/teetime-job-prod-edt-sun?api-version=2024-03-01` — set triggerType=Manual
-- `PATCH .../jobs/teetime-job-prod-est-sun?api-version=2024-03-01` — set triggerType=Manual
+- `PATCH .../jobs/teetime-job-prod-edt?api-version=2024-03-01` — set triggerType=Manual
+- `PATCH .../jobs/teetime-job-prod-est?api-version=2024-03-01` — set triggerType=Manual
 - `PATCH .../jobs/teetime-watch-job-prod?api-version=2024-03-01` — set triggerType=Manual
-- `POST .../jobs/teetime-job-prod-edt-sun/stop?api-version=2024-03-01` — stop running replicas
-- `POST .../jobs/teetime-job-prod-est-sun/stop?api-version=2024-03-01` — stop running replicas
+- `POST .../jobs/teetime-job-prod-edt/stop?api-version=2024-03-01` — stop running replicas
+- `POST .../jobs/teetime-job-prod-est/stop?api-version=2024-03-01` — stop running replicas
 - `POST .../jobs/teetime-watch-job-prod/stop?api-version=2024-03-01` — stop running replicas
 
 The PATCH calls can run in parallel with each other; same for the POSTs.
@@ -596,7 +596,7 @@ az role definition create --role-definition '{
   references `killswitchRbacRoleId` param (not hardcoded Contributor GUID
   `b24988ac-6180-42a0-ab88-20f7382dd24c`).
 - `test_killswitch_patches_all_six_jobs` — assert the workflow definition
-  references all three job name patterns (`edt-sun`, `est-sun`, `watch-job`)
+  references all three job name patterns (`edt`, `est`, `watch-job`)
   for BOTH envs (`dev` and `prod`) in PATCH calls.
 - `test_killswitch_stops_all_six_jobs` — assert the workflow definition
   references all three job name patterns with `/stop` for BOTH envs.
