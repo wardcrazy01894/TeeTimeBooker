@@ -19,6 +19,7 @@ from click.testing import CliRunner
 
 import teetime.__main__ as main_mod
 from teetime.__main__ import cli
+from teetime.core.config import load as _load
 
 EXAMPLE_TOML = Path(__file__).resolve().parent.parent / "config" / "example.toml"
 
@@ -467,3 +468,29 @@ def test_gate_skip_exits_zero_without_booking(
     )
     assert result.exit_code == 0, result.output  # a wrong-season cron is NOT an error
     assert spy_run.kwargs() == {}  # orchestrator never constructed → no booking attempt
+
+
+# --- multi-day PR1: _build_request interim (atomic with the config rename) ----
+
+
+def test_build_request_after_rename_does_not_crash(env_set: None) -> None:
+    """Guards must-fix 2: after target_weekday→target_weekdays, _build_request must NOT
+    crash (the old code called weekday_from_name(cfg.request.target_weekday), now None)."""
+
+    cfg = _load(EXAMPLE_TOML)
+    req = main_mod._build_request(cfg, dry_run=True)
+    assert req.target_dates  # non-empty
+
+
+def test_build_request_interim_anchors_min_weekday(env_set: None) -> None:
+    """PR1 interim: _build_request anchors on min(wanted_weekday_indices). Sat+Sun → Sat (5);
+    Sunday-only → Sun (6). resolve_target_dates(+7) preserves the weekday, so this is
+    clock-independent. PR2/PR4 override this per-job; pinning it makes that change visible."""
+
+    cfg = _load(EXAMPLE_TOML)  # target_weekdays = ["saturday", "sunday"]
+    req = main_mod._build_request(cfg, dry_run=True)
+    assert req.target_dates[0].weekday() == 5  # Saturday = min({5, 6})
+
+    cfg.request.target_weekdays = ["sunday"]
+    req2 = main_mod._build_request(cfg, dry_run=True)
+    assert req2.target_dates[0].weekday() == 6  # Sunday

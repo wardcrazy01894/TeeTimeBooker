@@ -12,7 +12,28 @@ from pathlib import Path
 
 import pytest
 
-from teetime.core.config import AppConfig, MissingEnvVarError, load, redact
+from teetime.core.config import (
+    AppConfig,
+    MissingEnvVarError,
+    PlayerConfig,
+    RequestConfig,
+    TimeWindowConfig,
+    load,
+    redact,
+)
+
+
+def _rc(**overrides: object) -> RequestConfig:
+    """Build a minimal valid RequestConfig, overriding any field (for validator tests)."""
+    base: dict[str, object] = {
+        "target_offsets": [7],
+        "time_windows": [TimeWindowConfig(earliest=time(8, 45), latest=time(10, 0))],
+        "players": [PlayerConfig(first_name="A", last_name="B")],
+        "course_preferences": ["foreup:mangrove_bay"],
+    }
+    base.update(overrides)
+    return RequestConfig(**base)  # type: ignore[arg-type]
+
 
 EXAMPLE_TOML = Path(__file__).resolve().parent.parent / "config" / "example.toml"
 CONTAINER_TOML = Path(__file__).resolve().parent.parent / "config" / "container.toml"
@@ -141,11 +162,50 @@ def test_redact_strips_secrets(env_set: None) -> None:
     assert p1_dump["member_number"] == "***"
 
 
-def test_target_weekday_defaults_to_sunday(env_set: None) -> None:
-    # M6 PR7: offsets anchor to this weekday so the daily watcher tracks the upcoming
-    # target date instead of drifting. Default Sunday matches the booking cron.
+def test_example_toml_uses_target_weekdays(env_set: None) -> None:
+    # Multi-day re-arch (MULTIDAY_PLAN PR1): example.toml documents the Sat+Sun default.
     cfg = load(EXAMPLE_TOML)
-    assert cfg.request.target_weekday == "sunday"
+    assert cfg.request.target_weekdays == ["saturday", "sunday"]
+    assert cfg.request.wanted_weekday_indices == frozenset({5, 6})
+
+
+def test_target_weekdays_default_is_sat_sun() -> None:
+    rc = _rc()
+    assert rc.target_weekdays == ["saturday", "sunday"]
+    assert rc.wanted_weekday_indices == frozenset({5, 6})
+
+
+def test_target_weekdays_explicit_list_parses() -> None:
+    rc = _rc(target_weekdays=["sunday"])
+    assert rc.target_weekdays == ["sunday"]
+    assert rc.wanted_weekday_indices == frozenset({6})
+
+
+def test_target_weekday_singular_alias_migrates() -> None:
+    # Backward-compat: the deprecated singular key seeds the set.
+    rc = _rc(target_weekday="sunday")
+    assert rc.target_weekdays == ["sunday"]
+    assert rc.wanted_weekday_indices == frozenset({6})
+
+
+def test_both_weekday_keys_raises() -> None:
+    with pytest.raises(ValueError, match="not both"):
+        _rc(target_weekday="sunday", target_weekdays=["saturday"])
+
+
+def test_empty_target_weekdays_raises() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        _rc(target_weekdays=[])
+
+
+def test_invalid_weekday_name_raises() -> None:
+    with pytest.raises(ValueError, match="invalid weekday"):
+        _rc(target_weekdays=["someday"])
+
+
+def test_target_weekdays_dedupe_and_sort() -> None:
+    rc = _rc(target_weekdays=["sunday", "saturday", "sunday"])
+    assert rc.target_weekdays == ["saturday", "sunday"]
 
 
 def test_invalid_target_weekday_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

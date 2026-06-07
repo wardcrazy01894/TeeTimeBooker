@@ -12,10 +12,11 @@ extra = { booking_class_id = "2149" }
 
 [request]
 target_offsets       = [7]
-# Offsets anchor to this weekday: target = (most-recent sunday) + 7. Keeps the daily
-# watch job locked onto the upcoming target Sunday all week; the Sunday booker is
-# unchanged (on Sunday, anchor == today). See core/target_date.py.
-target_weekday       = "sunday"
+# Wanted booking weekdays (multi-day re-arch). The booking job books `today + 7` only when
+# that date's weekday is in this set; the daily watcher checks the next occurrence of EACH
+# within the horizon, holding one reservation per date. See core/booking_day_gate.py /
+# core/target_date.py and MULTIDAY_PLAN.md.
+target_weekdays      = ["saturday", "sunday"]
 holes                = 18
 max_price_per_player = "60.00"
 cart                 = "either"
