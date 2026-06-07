@@ -23,14 +23,15 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
-    "vcrpy>=6",             # HTTP cassettes for adapter integration tests
     "respx>=0.21",          # httpx mock for unit tests
-    "freezegun>=1.5",       # clock injection in tests
     "ruff>=0.5",
     "mypy>=2.0",            # 2.x strict defaults verified clean against this codebase
     "types-pytz",
     "pip-audit>=2.10",      # dependency vulnerability scanning (CVE check)
 ]
+# Removed (unused): vcrpy (cassettes were never recorded — the live-API drift canary in
+# tests/test_foreup_canary.py replaced them); freezegun (the injectable FakeClock is used
+# everywhere instead). See full-repo-scan dependency-hygiene finding.
 
 [project.scripts]
 teetime = "teetime.__main__:main"

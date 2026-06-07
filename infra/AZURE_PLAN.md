@@ -803,6 +803,19 @@ For IaC changes (Bicep edits):
    Dev always runs in dry-run (`dryRun = true` in parameter file).
 3. Tag `infra/v*` → `azure-iac.yml` deploys to prod (requires manual approval).
 
+> **⚠️ Multi-day cutover — manual orphan cleanup required.** The next prod `infra/v*` tag
+> renames the booking jobs `teetime-job-prod-edt-sun`/`-est-sun` → `-edt`/`-est`. Deploys run
+> in ARM **incremental** mode (`az deployment group create`, no `--mode Complete`), which
+> CREATES the new jobs but does **not** delete the old ones. The orphaned `-edt-sun`/`-est-sun`
+> jobs would keep firing their old Sunday-only cron AND are NOT covered by the killswitch (it
+> targets the new names). After the prod tag deploy, MANUALLY delete them (operator-approved):
+> ```
+> az containerapp job delete -n teetime-job-prod-edt-sun -g rg-teetime-prod --yes
+> az containerapp job delete -n teetime-job-prod-est-sun -g rg-teetime-prod --yes
+> ```
+> Confirm with `az containerapp job list -g rg-teetime-prod` that only `-edt`, `-est`, and the
+> watch job remain. (The dev orphans were already cleaned up on the dev auto-deploy.)
+
 ### 10.3 v0 → v1 cutover (DONE)
 
 The v0 GitHub Actions cron workflows (`book.yml`, `watch-tee-time.yml`) were **removed in
