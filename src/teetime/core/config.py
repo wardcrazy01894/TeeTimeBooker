@@ -249,7 +249,9 @@ def load(path: Path) -> AppConfig:
     return cfg
 
 
-_SENSITIVE_EXTRA_KEYS = frozenset(
+# Public: shared across modules (redact() here + _resolve_creds in __main__). Card +
+# credential fields whose VALUES are masked in show-config output.
+SENSITIVE_EXTRA_KEYS = frozenset(
     {
         "card_number",
         "cvv",
@@ -262,6 +264,12 @@ _SENSITIVE_EXTRA_KEYS = frozenset(
         "password",
     }
 )
+
+# Subset that MUST be provided via the `*_env` form (never a literal in TOML) — a raw
+# value here is a real secret/PII. `billing_country` is intentionally EXCLUDED: it is a
+# non-secret 2-letter code with a sane "US" default, so forcing an env var for it would be
+# pure friction. Used by _resolve_creds (__main__) to reject literal credential keys.
+SECRET_EXTRA_KEYS = SENSITIVE_EXTRA_KEYS - frozenset({"billing_country"})
 
 
 def redact(cfg: AppConfig) -> AppConfig:
@@ -283,5 +291,5 @@ def redact(cfg: AppConfig) -> AppConfig:
     # Keys ending in _env are env-var *names* (safe to show); resolved literal
     # values for known sensitive fields are masked.
     for c in masked.courses:
-        c.extra = {k: ("***" if k in _SENSITIVE_EXTRA_KEYS else v) for k, v in c.extra.items()}
+        c.extra = {k: ("***" if k in SENSITIVE_EXTRA_KEYS else v) for k, v in c.extra.items()}
     return masked
