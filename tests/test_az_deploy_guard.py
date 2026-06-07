@@ -35,6 +35,8 @@ _BLOCKED = [
     # vault-level destructive ops (the gap the security review found)
     "az keyvault purge --name kv-teetime-dev",
     "az keyvault delete --name kv-teetime-dev",
+    # access-policy removal is a privileged mutation — intentionally gated like set-policy
+    "az keyvault delete-policy --name kv --object-id o",
     # secret-level ops (already covered — guard against regression)
     "az keyvault secret set --vault-name kv --name s --value x",
     "az keyvault secret delete --vault-name kv --name s",
@@ -58,6 +60,7 @@ _ALLOWED = [
     "az keyvault secret list --vault-name kv",
     "az keyvault show --name kv",
     "az keyvault list-deleted",  # must NOT be caught by the new 'delete' alternative
+    "az keyvault show-deleted --name kv",  # read-only; starts with show-, not delete-
     "az deployment group what-if -g rg -f main.bicep",
     "az deployment group validate -g rg -f main.bicep",
     "az containerapp job show -n j -g rg",

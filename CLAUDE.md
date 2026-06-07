@@ -393,8 +393,8 @@ checks — they run on push/tags, not PRs.
 - Adding a new course (ForeUP / TeeItUp / Chronogolf)? See the step-by-step and
   per-course IDs in [`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md).
 - Touching the orchestrator? Make sure FakeAdapter + FakeClock + InMemoryStore
-  tests still cover your change. Fixtures live in `tests/conftest.py`. The
-  race-window test is the canary.
+  tests still cover your change. Tests construct these collaborators inline (see
+  `tests/test_orchestrator.py::_build`); the race-window test is the canary.
 - Modifying anti-bot etiquette? Re-read PLAN.md §12 first. ToS posture is not
   ours to negotiate around.
 
