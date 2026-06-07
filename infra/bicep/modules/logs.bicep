@@ -4,7 +4,7 @@
 // Application Insights is available for structured metrics (v1 extension point).
 //
 // Retention: 30 days (minimal for cost; first 5 GB/month free).
-// Bot uses structlog → JSON → stderr; captured by ACA and forwarded here.
+// Bot uses stdlib logging → stderr; captured by ACA and forwarded here.
 //
 // See: infra/AZURE_PLAN.md §10 (observability, from PLAN.md), §9.1 (cost),
 //      §11 (security)
