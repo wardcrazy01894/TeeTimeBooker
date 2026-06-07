@@ -241,19 +241,16 @@ def test_rank_slots_respects_max_price() -> None:
     assert ranked[0].slot_id == SlotId("cheap")
 
 
-def test_rank_slots_multiple_windows_sorted_by_per_window_midpoint_distance() -> None:
-    """With two time windows, slots are sorted by distance from their own
-    window's midpoint. A slot at the exact midpoint of window 2 ranks first even
-    though it starts later than all slots in window 1.
+def test_rank_slots_multiple_windows_sorted_by_window_priority_then_midpoint() -> None:
+    """With two time windows, WINDOW LIST ORDER is priority (PERDAY_WINDOWS_PLAN Q1): ALL
+    window-0 slots outrank ALL window-1 slots, regardless of midpoint distance. Within a
+    window, closest-to-midpoint wins (ascending tee_time tiebreaker).
 
-    Window 1: 09:00-09:30 → midpoint 09:15
-    Window 2: 10:00-10:30 → midpoint 10:15
+    Window 0: 09:00-09:30 → midpoint 09:15
+    Window 1: 10:00-10:30 → midpoint 10:15
 
-    Slots and distances:
-      10:15 → distance 0  (window 2 midpoint — WINNER)
-      09:00 → distance 15 (window 1; tied with 09:30 and 10:00)
-      09:30 → distance 15 (window 1; tiebreak ascending tee_time)
-      10:00 → distance 15 (window 2; tiebreak ascending tee_time)
+    Expected order: 09:00, 09:30 (window 0, both dist 15, ascending tee_time), then
+    10:15 (window 1, dist 0), then 10:00 (window 1, dist 15).
     """
     orch = _make_orchestrator()
     windows = [
@@ -262,18 +259,18 @@ def test_rank_slots_multiple_windows_sorted_by_per_window_midpoint_distance() ->
     ]
     req = _request(windows=windows)
     slots = [
-        _slot(10, 15),  # window 2, distance 0
-        _slot(9, 0),  # window 1, distance 15
-        _slot(9, 30),  # window 1, distance 15
-        _slot(10, 0),  # window 2, distance 15
+        _slot(10, 15),  # window 1, distance 0 — but window 1 is lower priority
+        _slot(9, 0),  # window 0, distance 15
+        _slot(9, 30),  # window 0, distance 15
+        _slot(10, 0),  # window 1, distance 15
     ]
     ranked = orch._rank_slots(slots, req)
     assert len(ranked) == 4
-    # 10:15 is closest to its window's midpoint.
-    assert ranked[0].tee_time.hour == 10 and ranked[0].tee_time.minute == 15
-    # The remaining three all have distance 15; ascending tee_time tiebreaker.
-    assert ranked[1].tee_time.hour == 9 and ranked[1].tee_time.minute == 0
-    assert ranked[2].tee_time.hour == 9 and ranked[2].tee_time.minute == 30
+    # Window 0 first (priority), ascending tee_time within the same distance.
+    assert ranked[0].tee_time.hour == 9 and ranked[0].tee_time.minute == 0
+    assert ranked[1].tee_time.hour == 9 and ranked[1].tee_time.minute == 30
+    # Then window 1, closest-to-midpoint first.
+    assert ranked[2].tee_time.hour == 10 and ranked[2].tee_time.minute == 15
     assert ranked[3].tee_time.hour == 10 and ranked[3].tee_time.minute == 0
 
 
