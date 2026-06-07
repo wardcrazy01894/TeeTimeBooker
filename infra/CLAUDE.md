@@ -97,7 +97,7 @@ What agents CAN run autonomously:
 
 What agents MUST NOT run without explicit user instruction (all hard-blocked by
 `az-deploy-guard.sh`):
-- `az deployment group create` / `az deployment sub create`
+- `az deployment group` / `sub` / `mg` / `tenant` `create`
 - `az containerapp job start` / `update` / `delete` (live execution / config change / removal)
 - `az role assignment create` / `delete` (RBAC grant/revoke)
 - `az keyvault secret set` / `delete` / `purge`; `az keyvault set-policy`
