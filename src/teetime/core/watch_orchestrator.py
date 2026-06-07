@@ -80,6 +80,7 @@ Race condition with the 6 AM booking run:
 from __future__ import annotations
 
 import logging
+from dataclasses import replace as dc_replace
 from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -190,16 +191,11 @@ class WatchOrchestrator:
         """
         now = self._clock.now_utc()
 
-        # Gate 1: polling hours (course-local wall-clock time).
-        if self._is_outside_polling_hours(now):
-            log.debug(
-                "watch: outside polling hours (%d-%d), skipping",
-                self._watch_config.polling_start_hour,
-                self._watch_config.polling_end_hour,
-            )
-            return None
-
-        # Gate 2: deadline — if target_date is in the past, stop watching.
+        # The watcher polls on EVERY run (MULTIDAY PR4) — the old time-of-day polling-hours
+        # gate was removed because it blinded us during the 06:00 drop and early-morning
+        # cancellations. The deadline gate below is retained (don't poll a past target date).
+        # Anti-bot rate limiting is the 10-min cron cadence + the poll_interval_s>=300 floor.
+        # Gate: deadline — if target_date is in the past, stop watching.
         if self._is_past_watch_deadline(now, target_date):
             log.info("watch: target_date %s has passed, stopping", target_date)
             return None
@@ -301,17 +297,24 @@ class WatchOrchestrator:
             log.debug("watch: existing reservation for %s on %s", course_id, target_date)
             return None
 
-        # Search for newly available slots.
+        # Search for newly available slots. MULTIDAY PR4 (must-fix 1): scope the request to
+        # THIS target_date before searching so a multi-date watch never searches another
+        # date, and filter ranked candidates to target_date as a STRUCTURAL guarantee
+        # (rank_slots_for_request filters by window/spots/price, NOT by date). Together these
+        # ensure a Saturday watch can only ever book a Saturday slot — the user's contract.
+        scoped = dc_replace(request, target_dates=(target_date,))
         try:
-            slots = await adapter.search(request)
+            slots = await adapter.search(scoped)
         except (NoInventoryError, InventoryNotPublishedError):
             return None  # Nothing on this course; try next.
 
-        candidates = rank_slots_for_request(slots, request)
+        candidates = [
+            c for c in rank_slots_for_request(slots, scoped) if c.tee_time.date() == target_date
+        ]
         if not candidates:
             return None
 
-        return await self._book_candidates(adapter, request, target_date, candidates)
+        return await self._book_candidates(adapter, scoped, target_date, candidates)
 
     async def _book_candidates(
         self,
@@ -444,20 +447,6 @@ class WatchOrchestrator:
         )
 
     # --- time gates -------------------------------------------------------
-
-    def _is_outside_polling_hours(self, now: datetime) -> bool:
-        """Return True if current wall-clock time is outside polling_start/end hours.
-
-        Polling is suppressed outside the configured hours to reduce load
-        during nighttime when cancellations are vanishingly rare.
-        Hours are checked in the scheduler's timezone (course-local wall clock).
-        """
-        tz = ZoneInfo(self._scheduler.timezone)
-        local_hour = now.astimezone(tz).hour
-        return (
-            local_hour < self._watch_config.polling_start_hour
-            or local_hour >= self._watch_config.polling_end_hour
-        )
 
     def _is_past_watch_deadline(self, now: datetime, target_date: date) -> bool:
         """Return True if target_date is in the past (local date > target_date).

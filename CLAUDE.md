@@ -174,14 +174,25 @@ in `core/` — never directly. This is the cut line for parallel work.
   (closer to the 8:45–10:00 midpoint) opens for the booked Sunday, the watcher cancels
   and rebooks it. Safe because the watch target is anchored to that Sunday (PR7), so it
   only ever upgrades the intended date; real effect is prod-only (dry-run suppresses the
-  POSTs). The watch cron runs every 10 min year-round (not Sunday-gated): a Sunday booking is upgradeable all week.
-- **Target date anchors to `target_weekday` (default Sunday), NOT a rolling `today+7`**
-  (M6 PR7, `core/target_date.py`). `_build_request` computes `target = most-recent
-  target_weekday(today) + offset`, so the DAILY watch job locks onto the upcoming target
-  Sunday and holds it all week (instead of drifting — from a Wednesday `today+7` isn't even
-  a Sunday). On the booking weekday the anchor is `today`, so the 6 AM Sunday booker's
-  `today+7` is unchanged. A manual non-Sunday `teetime run` now targets the upcoming Sunday
-  (not `today+7`) — intended. `--date` still overrides for the watch command.
+  POSTs). The watch cron runs every 10 min year-round.
+- **The watcher POLLS ON EVERY RUN — no time-of-day gate** (multi-day PR4; the old
+  `polling_start_hour`/`polling_end_hour` gate + config fields are REMOVED). It blinded us at
+  the 6 AM drop. The only remaining skip is `_is_past_watch_deadline` (don't poll a date that
+  already passed). Rate limiting = the 10-min cron cadence + the `poll_interval_s >= 300`
+  floor. Consequence: an early-morning run that finds the just-dropped window open will BOOK it
+  (a recovery path if the 06:00 booker raced/failed) — safe per-date via the in-lock
+  `get_terminal` re-check.
+- **The watcher checks MULTIPLE dates per run — the next occurrence of each wanted weekday**
+  within the horizon (`core/target_date.next_occurrences_within_horizon`, multi-day PR4);
+  `_watch` loops `check_once` over them (no `break`). **`_check_course` scopes the search to
+  each `target_date` (`dc_replace`) AND filters ranked candidates to that date** — a Saturday
+  watch can NEVER book a Sunday slot (one reservation PER date; the per-date `(RequestId,
+  date)` store key keeps Sat and Sun independent). `--date` still overrides to a single date.
+- **Target date(s) anchor to the `target_weekdays` SET (default Sat+Sun), NOT a rolling
+  `today+7`** (`core/target_date.py`, multi-day re-arch). The booking job books a SINGLE gated
+  date (`today + offset`, gated by `core/booking_day_gate.py` to a wanted weekday: the daily
+  booking cron fast-exits 0 when `today+offset` isn't in `target_weekdays`); the watcher uses
+  `next_occurrences_within_horizon`. `--date` still overrides for the watch command.
 - **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
   This lets `target_offsets = [7]` produce one stable RequestId within a run
   while still targeting a fresh date each week. The key is held in-process

@@ -76,13 +76,11 @@ def test_container_config_enables_watcher(env_set: None) -> None:
     cfg = load(CONTAINER_TOML)
     assert cfg.watcher.enabled is True
     assert cfg.watcher.poll_interval_s == 600
-    assert cfg.watcher.polling_start_hour == 7
-    assert cfg.watcher.polling_end_hour == 22
-    # to_watch_config() round-trips the knobs the WatchOrchestrator consumes.
+    # to_watch_config() round-trips the knobs the WatchOrchestrator consumes. The
+    # polling-hours gate was removed (MULTIDAY PR4) — the watcher polls every run.
     wc = cfg.watcher.to_watch_config()
     assert wc.poll_interval_s == 600
-    assert wc.polling_start_hour == 7
-    assert wc.polling_end_hour == 22
+    assert not hasattr(wc, "polling_start_hour")
 
 
 def test_container_config_enables_one_booking_policy(env_set: None) -> None:

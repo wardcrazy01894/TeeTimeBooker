@@ -9,7 +9,7 @@ match a wrong implementation — fix the implementation instead.
 Coverage areas:
 - Polls and books when a slot appears (happy path).
 - Returns None (no booking) when no slot is available.
-- Suppresses polling outside configured hours (polling_start_hour/end_hour gate).
+- Polls on EVERY run (the time-of-day polling-hours gate was removed in MULTIDAY PR4).
 - Stops and returns None when past the watch deadline (target_date has passed).
 - Does NOT re-book if store already has a BOOKED terminal (idempotency guard).
 - Does NOT re-book if list_reservations returns a matching reservation (§9 layer 2).
@@ -128,11 +128,7 @@ def _scheduler() -> SchedulerConfig:
 
 
 def _watch_config() -> WatchConfig:
-    return WatchConfig(
-        poll_interval_s=600,
-        polling_start_hour=7,
-        polling_end_hour=22,
-    )
+    return WatchConfig(poll_interval_s=600)
 
 
 def _build(
@@ -236,34 +232,34 @@ async def test_watch_notifies_on_successful_booking() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Polling-hours gate
+# Poll-every-run (MULTIDAY PR4): the time-of-day polling-hours gate was REMOVED.
+# The watcher searches on EVERY run, including the 6 AM drop window and overnight.
 # ---------------------------------------------------------------------------
 
 
-async def test_watch_suppressed_before_polling_start_hour() -> None:
-    """check_once() returns None without calling search() when current time is
-    before polling_start_hour. No HTTP calls should be made."""
-    adapter = FakeAdapter(course_id=COURSE_ID)
-    adapter.set_search_response([_slot()])  # slot available — but should never be searched
-    watch, _, _ = _build(adapter, now_utc=BEFORE_POLLING_UTC)
-
-    result = await watch.check_once(_request(), TARGET_DATE)
-
-    assert result is None
-    assert adapter.search_call_count == 0
-
-
-async def test_watch_suppressed_after_polling_end_hour() -> None:
-    """check_once() returns None without calling search() when current time is
-    past polling_end_hour."""
+async def test_watch_polls_before_7am() -> None:
+    """At 06:00 ET (formerly before polling_start_hour) the watcher now SEARCHES instead
+    of skipping — this is what gives us visibility into the 6 AM drop + early cancellations."""
     adapter = FakeAdapter(course_id=COURSE_ID)
     adapter.set_search_response([_slot()])
-    watch, _, _ = _build(adapter, now_utc=AFTER_POLLING_UTC)
+    watch, _, _ = _build(adapter, now_utc=BEFORE_POLLING_UTC)  # 06:00 ET
 
     result = await watch.check_once(_request(), TARGET_DATE)
 
-    assert result is None
-    assert adapter.search_call_count == 0
+    assert adapter.search_call_count >= 1  # searched despite the early hour
+    assert result is not None
+
+
+async def test_watch_polls_at_any_hour() -> None:
+    """At 23:00 ET (formerly after polling_end_hour) the watcher still searches."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot()])
+    watch, _, _ = _build(adapter, now_utc=AFTER_POLLING_UTC)  # 23:00 ET (prev day)
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert adapter.search_call_count >= 1
+    assert result is not None
 
 
 # ---------------------------------------------------------------------------
@@ -790,3 +786,63 @@ async def test_watch_upgrades_from_live_reservation_when_no_store_record() -> No
     stored = await store.get_terminal(req.request_id, TARGET_DATE)
     assert stored is not None
     assert stored.outcome == BookingOutcome.BOOKED
+
+
+# ---------------------------------------------------------------------------
+# MULTIDAY PR4: per-date search scoping (must-fix 1) — a Sat watch NEVER books a
+# Sun slot, even when the Sun slot is closer to the window midpoint.
+# ---------------------------------------------------------------------------
+
+_SUNDAY_AFTER_TARGET = date(2026, 5, 17)  # day after TARGET_DATE (Sat 2026-05-16)
+
+
+def _slot_on(d: date, *, hour: int, minute: int = 0) -> TeeTimeSlot:
+    return TeeTimeSlot(
+        course_id=COURSE_ID,
+        slot_id=SlotId(f"slot-{d.isoformat()}-{hour:02d}{minute:02d}"),
+        tee_time=datetime(d.year, d.month, d.day, hour, minute, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=True,
+    )
+
+
+async def test_check_once_books_only_target_date_slot() -> None:
+    """A Sat watch must book ONLY a Sat slot - even when a Sun slot is strictly closer
+    to the 09:00-10:30 window midpoint (09:45). Guards must-fix 1 + the user contract."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    sat_slot = _slot_on(TARGET_DATE, hour=9, minute=0)  # 45 min from midpoint
+    sun_slot = _slot_on(_SUNDAY_AFTER_TARGET, hour=9, minute=45)  # exactly midpoint (closer)
+    adapter.set_search_response([sat_slot, sun_slot])
+    watch, store, _ = _build(adapter)
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is not None
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.slot is not None
+    assert result.slot.tee_time.date() == TARGET_DATE  # Saturday, NOT the closer Sunday slot
+    # And the Sun slot was never recorded under the Sat row.
+    sun_terminal = await store.get_terminal(_request().request_id, _SUNDAY_AFTER_TARGET)
+    assert sun_terminal is None
+
+
+async def test_watch_recovery_books_just_dropped_window() -> None:
+    """Poll-every-run recovery: a 06:00 ET watch run with an empty store + an open in-window
+    slot BOOKS it (recovery path if the 06:00 booker failed/raced), records the terminal under
+    (request_id, target_date), and a SECOND run returns the existing BOOKED terminal without
+    re-booking — one-booking-per-date respected via the Gate-3 short-circuit."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot()])
+    watch, store, _ = _build(adapter, now_utc=BEFORE_POLLING_UTC)  # 06:00 ET
+    req = _request()
+
+    first = await watch.check_once(req, TARGET_DATE)
+    assert first is not None and first.outcome == BookingOutcome.BOOKED
+    assert await store.get_terminal(req.request_id, TARGET_DATE) is not None
+    assert adapter.book_call_count == 1
+
+    second = await watch.check_once(req, TARGET_DATE)
+    assert second is not None and second.outcome == BookingOutcome.BOOKED
+    assert adapter.book_call_count == 1  # NOT re-booked
