@@ -176,7 +176,7 @@ The former GitHub Actions booking and watch workflows (`book.yml`, `watch-tee-ti
 
 **Cost:** ~$5/month (ACR Basic flat; Container Apps compute is within the free tier).
 
-**IaC status: implemented.** All Bicep modules are complete (`identity`, `registry`, `keyvault`, `logs`, `compute`, `budget`, `killswitch` + `killswitch-rbac-prod`). The active CI workflow is `.github/workflows/azure-iac.yml` — it runs `bicep build` + `what-if` on PRs and **auto-deploys to dev on merge to main** (no required-reviewer gate for dev; prod requires manual approval). Dev runs in permanent dry-run (`dryRun = true`); **prod is live** (`dryRun = false`, deployed at tag `infra/v1.0.0`).
+**IaC status: implemented.** All Bicep modules are complete (`identity`, `registry`, `keyvault`, `logs`, `compute`, `budget`, `killswitch` + `killswitch-rbac-prod`). The active CI workflow is `.github/workflows/azure-iac.yml` — it runs `bicep build` + `what-if` on PRs and **auto-deploys to dev on merge to main** (no required-reviewer gate for dev; prod requires manual approval). Dev runs in permanent dry-run (`dryRun = true`); **prod is live** (`dryRun = false`, latest infra tag `infra/v1.1.1`; the multi-day/per-day code awaits its own `infra/v*` tag).
 
 **Cost killswitch:** a $50 actual-spend budget fires a Logic App that disables and stops all ACA Jobs (live in dev). The $20 email-only budget remains the early-warning tier.
 
