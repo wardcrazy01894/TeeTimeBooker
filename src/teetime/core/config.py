@@ -28,10 +28,23 @@ class MissingEnvVarError(RuntimeError):
 
 
 class TimeWindowConfig(BaseModel):
-    """One acceptable tee-off range. Times in 24h HH:MM, course-local."""
+    """One acceptable tee-off range on a specific weekday. Times 24h HH:MM, course-local.
 
+    `weekday` binds this window to one day (per-day windows, PERDAY_WINDOWS_PLAN). Multiple
+    windows may share a weekday; one-per-day still applies (the best slot across that day's
+    windows wins).
+    """
+
+    weekday: str
     earliest: time
     latest: time
+
+    @model_validator(mode="after")
+    def _validate(self) -> TimeWindowConfig:
+        weekday_from_name(self.weekday)  # raises ValueError("invalid weekday ...")
+        if self.earliest > self.latest:
+            raise ValueError(f"time window earliest {self.earliest} is after latest {self.latest}")
+        return self
 
 
 class CourseConfig(BaseModel):
@@ -64,43 +77,51 @@ class RequestConfig(BaseModel):
     """One BookingRequest's static config."""
 
     target_offsets: list[int]
+    # Per-day windows (PERDAY_WINDOWS_PLAN): each window carries a `weekday`. The wanted
+    # booking weekdays are DERIVED from the distinct weekdays here (see wanted_weekday_indices)
+    # — there is no separate target_weekdays list. Multiple windows may share a weekday;
+    # one reservation per day (best window) still applies. Non-empty.
     time_windows: list[TimeWindowConfig]
     players: list[PlayerConfig]
     holes: int = 18
     max_price_per_player: Decimal | None = None
     cart: CartPreference = CartPreference.EITHER
     course_preferences: list[str]
-    # Wanted booking weekdays. The booking job books `today + offset` ONLY when that
-    # date's weekday is in this set (core/booking_day_gate.py); the watcher checks the
-    # next upcoming occurrence of EACH of these within the horizon (core/target_date.py).
-    # Default Sat+Sun. Helpers convert to weekday indices via wanted_weekday_indices.
-    target_weekdays: list[str] = Field(default_factory=lambda: ["saturday", "sunday"])
-    # Deprecated alias: the old singular key. If present (and target_weekdays was not
-    # also given) it seeds the set. Setting both is an error. See MULTIDAY_PLAN.md PR1.
-    target_weekday: str | None = None
+    # Migration sentinels (PERDAY_WINDOWS_PLAN §7, hard cutover): the multi-day re-arch's
+    # target_weekdays / target_weekday were REMOVED — each window now carries its own
+    # weekday. These typed-but-forbidden fields exist ONLY so an un-migrated config fails
+    # loudly (pydantic's default extra="ignore" would otherwise drop them silently).
+    target_weekdays: object | None = None
+    target_weekday: object | None = None
 
     @model_validator(mode="after")
-    def _resolve_weekdays(self) -> RequestConfig:
-        # `model_fields_set` holds the keys actually present in the input, so we can
-        # tell "user gave target_weekdays" from "default applied".
-        fields_set = self.model_fields_set
-        if "target_weekday" in fields_set and "target_weekdays" in fields_set:
-            raise ValueError("set either target_weekday (deprecated) or target_weekdays, not both")
-        if self.target_weekday is not None:
-            self.target_weekdays = [self.target_weekday]
-        if not self.target_weekdays:
-            raise ValueError("target_weekdays must be non-empty")
-        for name in self.target_weekdays:
-            weekday_from_name(name)  # raises ValueError("invalid weekday ...") on a bad name
-        # Normalise: dedupe + sort by weekday index for a deterministic, legible order.
-        by_index = {weekday_from_name(n): n.strip().lower() for n in self.target_weekdays}
-        self.target_weekdays = [name for _, name in sorted(by_index.items())]
+    def _validate_windows(self) -> RequestConfig:
+        if self.target_weekdays is not None or self.target_weekday is not None:
+            raise ValueError(
+                "target_weekdays/target_weekday have been removed; tag each "
+                "[[request.time_windows]] with a `weekday` instead (see "
+                "PERDAY_WINDOWS_PLAN.md §7)."
+            )
+        if not self.time_windows:
+            raise ValueError("request.time_windows must be non-empty")
+        # Normalise window order by (weekday index, earliest) for deterministic ranking +
+        # a stable RequestId fingerprint.
+        self.time_windows = sorted(
+            self.time_windows,
+            key=lambda w: (weekday_from_name(w.weekday), w.earliest),
+        )
         return self
 
     @property
     def wanted_weekday_indices(self) -> frozenset[int]:
-        """Python weekday() indices (Mon=0..Sun=6) of the wanted set."""
-        return frozenset(weekday_from_name(n) for n in self.target_weekdays)
+        """Python weekday() indices (Mon=0..Sun=6) of the days that have windows."""
+        return frozenset(weekday_from_name(w.weekday) for w in self.time_windows)
+
+    def windows_for(self, weekday: int) -> tuple[TimeWindowConfig, ...]:
+        """The configured windows whose weekday index == `weekday`, in normalised
+        (earliest-first) order. Empty tuple if none — callers never pass a windowless
+        weekday in normal flow (wanted_weekday_indices is derived from these windows)."""
+        return tuple(w for w in self.time_windows if weekday_from_name(w.weekday) == weekday)
 
 
 class SchedulerConfig(BaseModel):

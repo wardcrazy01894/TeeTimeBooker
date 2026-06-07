@@ -67,7 +67,9 @@ def _make_cfg(*, extra_course: bool) -> AppConfig:
             "courses": courses,
             "request": {
                 "target_offsets": [7],
-                "time_windows": [{"earliest": "09:00:00", "latest": "10:30:00"}],
+                "time_windows": [
+                    {"weekday": "sunday", "earliest": "09:00:00", "latest": "10:30:00"}
+                ],
                 "players": [
                     {
                         "first_name": "Alex",
@@ -86,7 +88,7 @@ def _expected_rid() -> object:
     fp = build_request_fingerprint(
         course_ids=[CourseId("foreup:mangrove_bay")],
         target_offsets=[7],
-        time_windows=[TimeWindow(earliest=time(9, 0), latest=time(10, 30))],
+        time_windows=[(6, TimeWindow(earliest=time(9, 0), latest=time(10, 30)))],  # Sunday
         players=[Player(first_name="Alex", last_name="Lancaster", email="alex@example.test")],
     )
     return derive_request_id(fp)
@@ -165,7 +167,9 @@ def test_build_adapters_raises_clear_error_for_unknown_adapter() -> None:
             ],
             "request": {
                 "target_offsets": [7],
-                "time_windows": [{"earliest": "09:00:00", "latest": "10:30:00"}],
+                "time_windows": [
+                    {"weekday": "sunday", "earliest": "09:00:00", "latest": "10:30:00"}
+                ],
                 "players": [{"first_name": "A", "last_name": "L", "email": "a@x.test"}],
                 "course_preferences": ["foreup:imaginary_course"],
             },
@@ -195,7 +199,9 @@ def test_build_adapters_mangrove_bay_resolves_via_registry() -> None:
             ],
             "request": {
                 "target_offsets": [7],
-                "time_windows": [{"earliest": "09:00:00", "latest": "10:30:00"}],
+                "time_windows": [
+                    {"weekday": "sunday", "earliest": "09:00:00", "latest": "10:30:00"}
+                ],
                 "players": [{"first_name": "A", "last_name": "L", "email": "a@x.test"}],
                 "course_preferences": ["foreup:mangrove_bay"],
             },
@@ -227,7 +233,9 @@ def _cfg_with_pref_not_in_courses() -> AppConfig:
             ],
             "request": {
                 "target_offsets": [7],
-                "time_windows": [{"earliest": "09:00:00", "latest": "10:30:00"}],
+                "time_windows": [
+                    {"weekday": "sunday", "earliest": "09:00:00", "latest": "10:30:00"}
+                ],
                 "players": [{"first_name": "A", "last_name": "L", "email": "a@x.test"}],
                 # foreup:twin_brooks is listed here but has no [[courses]] entry
                 "course_preferences": ["foreup:mangrove_bay", "foreup:twin_brooks"],
@@ -272,7 +280,9 @@ def _cfg_with_bare_foreup_adapter() -> AppConfig:
             ],
             "request": {
                 "target_offsets": [7],
-                "time_windows": [{"earliest": "09:00:00", "latest": "10:30:00"}],
+                "time_windows": [
+                    {"weekday": "sunday", "earliest": "09:00:00", "latest": "10:30:00"}
+                ],
                 "players": [{"first_name": "A", "last_name": "L", "email": "a@x.test"}],
                 "course_preferences": ["foreup:mangrove_bay"],
             },

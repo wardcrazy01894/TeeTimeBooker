@@ -38,11 +38,10 @@ extra = { booking_class_id = "2149" }
 # across weekend cron firings; the (RequestId, resolved_date) pair is the actual
 # idempotency key. See PLAN.md §13.
 target_offsets     = [7]
-# Wanted booking weekdays. The booking job books `today + offset` only when that date's
-# weekday is in this set; the daily watcher checks the next occurrence of EACH within the
-# horizon. Default Sat+Sun. (Deprecated singular alias `target_weekday = "sunday"` still
-# parses for backward-compat, but not together with this key.)
-target_weekdays    = ["saturday", "sunday"]
+# Wanted booking days are DERIVED from the [[request.time_windows]] weekdays below — there
+# is no separate target_weekdays list (PERDAY_WINDOWS_PLAN). The booking job books
+# `today + offset` only when that date's weekday has a window; the watcher checks each such
+# weekday, holding one reservation per day (best window).
 holes              = 18
 # Decimal-as-string. Pydantic coerces via Decimal(str) — no float drift.
 max_price_per_player = "55.00"
@@ -73,11 +72,25 @@ first_name    = "Guest"
 last_name     = "Player"
 email_env     = "PLAYER4_EMAIL"
 
-# Morning window targets the best slots at Mangrove Bay.
-# For ad-hoc mid-week bookings, adjust this window or add a second entry.
+# One window per wanted day. Each window is TIED to a weekday; the wanted booking days are
+# derived from these. The morning window targets the best slots at Mangrove Bay.
 [[request.time_windows]]
+weekday  = "saturday"
 earliest = 08:45:00
 latest   = 10:00:00
+
+[[request.time_windows]]
+weekday  = "sunday"
+earliest = 08:45:00
+latest   = 10:00:00
+
+# Multiple windows on one day are allowed — the bot still holds at most ONE reservation that
+# day, booked in whichever window yields the best slot. Window LIST ORDER is preference
+# (earlier window preferred). Uncomment to also chase a Sunday afternoon slot:
+# [[request.time_windows]]
+# weekday  = "sunday"
+# earliest = 17:00:00
+# latest   = 19:00:00
 
 [scheduler]
 timezone               = "America/New_York"   # Mangrove Bay is in ET

@@ -12,11 +12,9 @@ extra = { booking_class_id = "2149" }
 
 [request]
 target_offsets       = [7]
-# Wanted booking weekdays (multi-day re-arch). The booking job books `today + 7` only when
-# that date's weekday is in this set; the daily watcher checks the next occurrence of EACH
-# within the horizon, holding one reservation per date. See core/booking_day_gate.py /
-# core/target_date.py and MULTIDAY_PLAN.md.
-target_weekdays      = ["saturday", "sunday"]
+# Wanted booking days are DERIVED from the [[request.time_windows]] weekdays below
+# (per-day windows, PERDAY_WINDOWS_PLAN). The booking job books `today + 7` only when that
+# date's weekday has a window; the watcher checks each such weekday, one reservation per day.
 holes                = 18
 max_price_per_player = "60.00"
 cart                 = "either"
@@ -47,7 +45,16 @@ last_name  = "Player"
 first_name = "Guest"
 last_name  = "Player"
 
+# One window per wanted day (Sat+Sun, same 08:45-10:00 morning window). Each window is tied
+# to its weekday; the wanted booking days are derived from these. Multiple windows may share
+# a weekday (best slot that day wins; list order = preference).
 [[request.time_windows]]
+weekday  = "saturday"
+earliest = 08:45:00
+latest   = 10:00:00
+
+[[request.time_windows]]
+weekday  = "sunday"
 earliest = 08:45:00
 latest   = 10:00:00
 

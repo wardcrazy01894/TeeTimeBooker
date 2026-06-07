@@ -20,6 +20,7 @@ from click.testing import CliRunner
 
 import teetime.__main__ as main_mod
 from teetime.__main__ import cli
+from teetime.core.config import TimeWindowConfig
 from teetime.core.config import load as _load
 
 EXAMPLE_TOML = Path(__file__).resolve().parent.parent / "config" / "example.toml"
@@ -139,6 +140,7 @@ last_name = "B"
 email_env = "PLAYER1_EMAIL"
 
 [[request.time_windows]]
+weekday  = "sunday"
 earliest = "07:00:00"
 latest   = "10:00:00"
 
@@ -195,6 +197,7 @@ last_name = "B"
 email_env = "PLAYER1_EMAIL"
 
 [[request.time_windows]]
+weekday  = "sunday"
 earliest = "07:00:00"
 latest   = "10:00:00"
 
@@ -474,30 +477,64 @@ def test_gate_skip_exits_zero_without_booking(
     assert spy_run.kwargs() == {}  # orchestrator never constructed → no booking attempt
 
 
-# --- multi-day PR1: _build_request interim (atomic with the config rename) ----
+# --- _build_request: wanted-days derived from per-day windows ----
 
 
-def test_build_request_after_rename_does_not_crash(env_set: None) -> None:
-    """Guards must-fix 2: after target_weekday→target_weekdays, _build_request must NOT
-    crash (the old code called weekday_from_name(cfg.request.target_weekday), now None)."""
-
+def test_build_request_does_not_crash(env_set: None) -> None:
     cfg = _load(EXAMPLE_TOML)
     req = main_mod._build_request(cfg, dry_run=True)
     assert req.target_dates  # non-empty
 
 
-def test_build_request_interim_anchors_min_weekday(env_set: None) -> None:
-    """PR1 interim: _build_request anchors on min(wanted_weekday_indices). Sat+Sun → Sat (5);
-    Sunday-only → Sun (6). resolve_target_dates(+7) preserves the weekday, so this is
-    clock-independent. PR2/PR4 override this per-job; pinning it makes that change visible."""
-
-    cfg = _load(EXAMPLE_TOML)  # target_weekdays = ["saturday", "sunday"]
+def test_build_request_anchors_min_wanted_weekday(env_set: None) -> None:
+    """_build_request anchors target_dates on min(wanted_weekday_indices), which is derived
+    from the window weekdays. Sat+Sun windows → Saturday (5); a Sunday-only window set → Sunday
+    (6). resolve_target_dates(+7) preserves the weekday, so this is clock-independent."""
+    cfg = _load(EXAMPLE_TOML)  # windows: saturday + sunday
     req = main_mod._build_request(cfg, dry_run=True)
     assert req.target_dates[0].weekday() == 5  # Saturday = min({5, 6})
 
-    cfg.request.target_weekdays = ["sunday"]
+    cfg.request.time_windows = [
+        TimeWindowConfig(weekday="sunday", earliest=_dt.time(9, 0), latest=_dt.time(10, 0))
+    ]
     req2 = main_mod._build_request(cfg, dry_run=True)
-    assert req2.target_dates[0].weekday() == 6  # Sunday
+    assert req2.target_dates[0].weekday() == 6  # Sunday-only window set
+
+
+def _cfg_distinct_windows() -> object:
+    """A config with DIFFERENT windows on Sat vs Sun, to prove per-date scoping picks the
+    right day's windows."""
+    cfg = _load(EXAMPLE_TOML)
+    cfg.request.time_windows = [
+        TimeWindowConfig(weekday="saturday", earliest=_dt.time(8, 0), latest=_dt.time(9, 0)),
+        TimeWindowConfig(weekday="sunday", earliest=_dt.time(17, 0), latest=_dt.time(19, 0)),
+    ]
+    return cfg
+
+
+def test_build_booking_request_scopes_windows_to_date_weekday(env_set: None) -> None:
+    cfg = _cfg_distinct_windows()
+    # 2026-06-13 is a Saturday → the booking request must carry ONLY Saturday's window.
+    req = main_mod._build_booking_request(cfg, dry_run=True, target_date=_dt.date(2026, 6, 13))
+    assert len(req.time_windows) == 1
+    assert req.time_windows[0].earliest == _dt.time(8, 0)  # Sat window, not Sun's 17:00
+
+
+def test_scope_request_to_date_narrows_windows(env_set: None) -> None:
+    cfg = _cfg_distinct_windows()
+    base = main_mod._build_request(cfg, dry_run=True)
+    # 2026-06-14 is a Sunday → only Sunday's window.
+    scoped = main_mod._scope_request_to_date(base, cfg, _dt.date(2026, 6, 14))
+    assert scoped.target_dates == (_dt.date(2026, 6, 14),)
+    assert len(scoped.time_windows) == 1
+    assert scoped.time_windows[0].earliest == _dt.time(17, 0)  # Sun window
+
+
+def test_windows_for_date_errors_on_windowless_weekday(env_set: None) -> None:
+    cfg = _cfg_distinct_windows()  # only Sat + Sun windows
+    # 2026-06-15 is a Monday → no window → hard error (Q2).
+    with pytest.raises(Exception, match="no time window configured"):
+        main_mod._windows_for_date(cfg, _dt.date(2026, 6, 15))
 
 
 # ---------------------------------------------------------------------------
