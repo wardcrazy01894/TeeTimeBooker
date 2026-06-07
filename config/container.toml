@@ -71,8 +71,8 @@ backend = "console"
 [watcher]
 enabled            = true
 poll_interval_s    = 600  # 10 minutes; must be >= 300 (anti-bot floor)
-polling_start_hour = 7    # course-local; no polling before 7 AM ET
-polling_end_hour   = 22   # course-local; no polling after 10 PM ET
+# No time-of-day gate (MULTIDAY PR4): the watcher polls every run so it sees the 6 AM drop
+# + early-morning cancellations. Rate limiting is the cron cadence + the poll_interval floor.
 
 # Auto-upgrade (M-feature-2). ENABLED. When the watcher finds a higher-ranked slot
 # (closer to the 8:45-10:00 midpoint) than the current managed booking for the target

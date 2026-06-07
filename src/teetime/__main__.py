@@ -40,7 +40,7 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
-from .core.target_date import resolve_target_dates
+from .core.target_date import next_occurrences_within_horizon, resolve_target_dates
 from .core.watch_orchestrator import WatchOrchestrator
 from .courses.foreup.base import ForeUpAdapter
 from .courses.foreup.captcha import (
@@ -381,16 +381,23 @@ async def _watch(
 
     request = _build_request(cfg, dry_run=dry_run)
 
-    # Derive target_date: explicit override, or first target_date from the request.
+    # Derive the watch date list (MULTIDAY PR4). Explicit --date overrides to a single date;
+    # otherwise watch the next upcoming occurrence of EACH wanted weekday within the bookable
+    # horizon (upcoming Sat AND Sun). horizon = max(target_offsets) — single source of truth.
     if target_date_str:
         try:
-            target_date: date = date.fromisoformat(target_date_str)
+            target_dates: tuple[date, ...] = (date.fromisoformat(target_date_str),)
         except ValueError as e:
             raise click.ClickException(f"--date must be YYYY-MM-DD, got {target_date_str!r}") from e
     else:
-        target_date = request.target_dates[0]
+        today = datetime.now(tz=ZoneInfo(cfg.scheduler.timezone)).date()
+        target_dates = next_occurrences_within_horizon(
+            today,
+            cfg.request.wanted_weekday_indices,
+            max(cfg.request.target_offsets),
+        )
 
-    log.info("Watch check: target=%s dry_run=%s", target_date, dry_run)
+    log.info("Watch check: targets=%s dry_run=%s", [str(d) for d in target_dates], dry_run)
 
     if use_fake_adapter:
         adapters: dict[CourseId, CourseAdapter] = {
@@ -420,13 +427,17 @@ async def _watch(
         creds=creds,
         policy=cfg.one_booking_policy,
     )
-    result = await watch.check_once(request, target_date)
-    if result is not None:
-        log.info(
-            "watch result: outcome=%s confirmation=%s",
-            result.outcome,
-            result.confirmation_code,
-        )
+    # Check every wanted date this run (do NOT break — both Sat and Sun must be checked).
+    # _check_course scopes the search to each target_date, so a Sat check can only book Sat.
+    for target_date in target_dates:
+        result = await watch.check_once(request, target_date)
+        if result is not None:
+            log.info(
+                "watch result: date=%s outcome=%s confirmation=%s",
+                target_date,
+                result.outcome,
+                result.confirmation_code,
+            )
 
 
 async def _resolve_site_keys(cfg: AppConfig) -> dict[CourseId, str]:

@@ -826,7 +826,7 @@ With `dryRun=true` the final POST never fires, so **logs are the only proof**. Q
 - Then a `DRY_RUN` outcome (no booking POST).
 A wrong-season cron instead logs `DST-half gate: wrong-season cron (ET hour != 5) — exiting 0`.
 
-**(b) Watch job actually polled** — look for: `Watch check: target=<target-Sunday> dry_run=True`
+**(b) Watch job actually polled** — look for: `Watch check: targets=['<sat>', '<sun>'] dry_run=True` (plural; the watcher checks the next occurrence of each wanted weekday and polls every run — MULTIDAY PR4)
 (bare date, no brackets), a ranked-slots line, and a `DRY_RUN` result. A run that logs
 `Watch job is disabled` means `watcher.enabled` is false — not what we want in v1.
 

@@ -9,11 +9,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from click.testing import CliRunner
 
+import teetime.__main__ as main_mod
 from teetime.__main__ import cli
 
 _ENV = {
@@ -68,8 +72,6 @@ backend = "console"
 [watcher]
 enabled = {str(enabled).lower()}
 poll_interval_s = 600
-polling_start_hour = 7
-polling_end_hour = 22
 """
     )
     return toml
@@ -101,3 +103,69 @@ def test_watch_disabled_warns_and_exits_clean(
         )
     assert result.exit_code == 0, result.output
     assert any("disabled" in r.message.lower() for r in caplog.records)
+
+
+# --- MULTIDAY PR4: multi-date watch loop -----------------------------------
+
+
+class _SpyWatch:
+    """Records the target_date of each check_once call; returns the scripted result."""
+
+    seen: ClassVar[list] = []
+    result: ClassVar[object] = None
+
+    def __init__(self, **kwargs: object) -> None:
+        pass
+
+    async def check_once(self, request: object, target_date: date) -> object:
+        _SpyWatch.seen.append(target_date)
+        return _SpyWatch.result
+
+
+@pytest.fixture
+def watch_spy(monkeypatch: pytest.MonkeyPatch) -> type[_SpyWatch]:
+    _SpyWatch.seen = []
+    _SpyWatch.result = None
+    monkeypatch.setattr(main_mod, "WatchOrchestrator", _SpyWatch)
+    return _SpyWatch
+
+
+def test_watch_checks_each_wanted_day(tmp_path: Path, watch_spy: type[_SpyWatch]) -> None:
+    # Default target_weekdays = [saturday, sunday] → check_once for the next Sat AND Sun.
+    cfg = _config(tmp_path, enabled=True)
+    result = CliRunner().invoke(
+        cli, ["watch", "--config", str(cfg), "--dry-run", "true", "--use-fake-adapter"]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(watch_spy.seen) == 2
+    assert {d.weekday() for d in watch_spy.seen} == {5, 6}  # Sat + Sun
+
+
+def test_watch_date_override_single(tmp_path: Path, watch_spy: type[_SpyWatch]) -> None:
+    cfg = _config(tmp_path, enabled=True)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "watch",
+            "--config",
+            str(cfg),
+            "--dry-run",
+            "true",
+            "--use-fake-adapter",
+            "--date",
+            "2026-06-14",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert watch_spy.seen == [date(2026, 6, 14)]  # exactly one, the override
+
+
+def test_watch_loop_continues_after_result(tmp_path: Path, watch_spy: type[_SpyWatch]) -> None:
+    # Even when the first date returns a result, the second date is STILL checked (no break).
+    watch_spy.result = SimpleNamespace(outcome="dry_run", confirmation_code=None)
+    cfg = _config(tmp_path, enabled=True)
+    result = CliRunner().invoke(
+        cli, ["watch", "--config", str(cfg), "--dry-run", "true", "--use-fake-adapter"]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(watch_spy.seen) == 2  # both dates checked despite a result on the first

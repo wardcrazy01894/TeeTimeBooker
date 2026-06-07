@@ -103,8 +103,7 @@ backend = "console"
 [watcher]
 enabled             = false
 poll_interval_s     = 600   # 10 minutes; must be >= 300 (anti-bot floor)
-polling_start_hour  = 7     # don't poll before 7 AM course-local
-polling_end_hour    = 22    # don't poll after 10 PM course-local
+# No time-of-day gate (MULTIDAY PR4): the watcher polls on every run.
 
 # One-booking policy (M-feature-2). Disabled by default.
 # When enabled, the watch job will cancel the current managed booking and rebook
