@@ -1,13 +1,14 @@
 // compute.bicep — Container Apps Environment (Consumption) + Container Apps Job.
 //
-// Two scheduled triggers (identical job, one per DST half) book ONE tee time every
-// SUNDAY (M6 — Sunday-only schedule):
-//   50 9 * * 0   = 09:50 UTC = 05:50 EDT Sunday    (UTC-4, Mar-Nov)
-//   50 10 * * 0  = 10:50 UTC = 05:50 EST Sunday    (UTC-5, Nov-Mar)
+// Two scheduled triggers (identical job, one per DST half) fire DAILY at 05:50 ET
+// (multi-day re-arch — books wanted morning days, default Sat+Sun):
+//   50 9 * * *   = 09:50 UTC = 05:50 EDT, every day  (UTC-4, Mar-Nov)
+//   50 10 * * *  = 10:50 UTC = 05:50 EST, every day  (UTC-5, Nov-Mar)
 //
-// Both same-day crons fire; the bot's DST gate (core/dst_gate.py, --wait path:
-// proceed iff ET wall-clock hour == 5) makes the wrong-season one exit 0. This
-// re-homes the deleted book.yml `dst` step.
+// Both same-day crons fire; the bot's DST gate (core/dst_gate.py) makes the wrong-season
+// one exit 0, and the booking-day gate (core/booking_day_gate.py) fast-exits mornings whose
+// today+offset isn't a wanted weekday. Job names are -edt / -est (DST-half labels; the old
+// -sun suffix was dropped now that the crons fire daily — killswitch.bicep matches).
 // See: infra/AZURE_PLAN.md §5.3 (DST), §5.1 (jitter), §5.2 (cold-start)
 //
 // Concurrency control:
@@ -77,11 +78,13 @@ var acaEnvName = 'cae-teetime-${envName}'
 var jobName = 'teetime-job-${envName}'
 var watchJobName = 'teetime-watch-job-${envName}'
 
-// DST cron expressions (UTC). Two crons: Sunday × EDT+EST (Sunday-only schedule, M6).
-// The bot's DST gate (core/dst_gate.py) selects the correct half; the wrong-season
-// cron exits 0. See: infra/AZURE_PLAN.md §5.3
-var cronEdtSun = '50 9 * * 0'    // 09:50 UTC = 05:50 EDT Sunday
-var cronEstSun = '50 10 * * 0'   // 10:50 UTC = 05:50 EST Sunday
+// DST cron expressions (UTC). Two crons, one per DST half, firing DAILY (multi-day re-arch).
+// The bot's DST gate (core/dst_gate.py) selects the correct season half; the booking-day
+// gate (core/booking_day_gate.py) then fast-exits on mornings whose today+offset isn't a
+// wanted weekday. So the crons fire every day but only book the wanted days (Sat+Sun).
+// See: infra/AZURE_PLAN.md §5.3
+var cronEdtDaily = '50 9 * * *'    // 09:50 UTC = 05:50 EDT, every day (gates select wanted days)
+var cronEstDaily = '50 10 * * *'   // 10:50 UTC = 05:50 EST, every day
 
 // Hard-coded parallelism settings. See AZURE_PLAN.md §4.
 // The booking job busy-waits up to ~12 min to T0 (06:00:00 ET) INSIDE the replica
@@ -95,8 +98,8 @@ var replicaRetryLimit = 0     // bot handles retry; ACA retry would bypass idemp
 var parallelism = 1
 var replicaCompletionCount = 1
 
-// Watch job runs every 10 minutes year-round (no DST gate needed; the
-// WatchOrchestrator gates polling hours internally). A normal run is one HTTP
+// Watch job runs every 10 minutes year-round (no DST gate needed; the watcher polls on
+// every run — the time-of-day gate was removed in the multi-day re-arch). A normal run is one HTTP
 // round-trip (~30s), but the adapter now retries transient transport failures on
 // idempotent calls (warm-up/login/search; base.py _send_with_retry). 300s gives
 // headroom so a slow-upstream run that retries can never hit the replica cap and
@@ -110,8 +113,8 @@ var watchReplicaTimeout = 300
 // can be disabled without touching the others (a single job with multiple
 // scheduleTriggerConfigs is NOT supported by the ACA ARM/Bicep API — see stub).
 var bookingJobs = [
-  { name: '${jobName}-edt-sun', cron: cronEdtSun }
-  { name: '${jobName}-est-sun', cron: cronEstSun }
+  { name: '${jobName}-edt', cron: cronEdtDaily }
+  { name: '${jobName}-est', cron: cronEstDaily }
 ]
 
 // Derive the ACR login server from the container image reference. The image is
@@ -209,7 +212,7 @@ resource acaEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
   }
 }
 
-// Two booking jobs (Sun EDT, Sun EST) via a loop over the bookingJobs table.
+// Two booking jobs (EDT, EST — daily crons) via a loop over the bookingJobs table.
 // Each is an independent Microsoft.App/jobs resource sharing the same image,
 // identity, registries, secrets, and env — only name + cron vary.
 //
@@ -343,7 +346,7 @@ resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
 // Outputs
 // ---------------------------------------------------------------------------
 
-@description('Container Apps Job base name. Two jobs are created: -edt-sun, -est-sun (Sunday-only schedule). This output is index 0 (-edt-sun). For az containerapp job start, target a specific job by appending the suffix.')
+@description('Container Apps Job base name. Two jobs are created: -edt, -est (daily crons; DST-half labels). This output is index 0 (-edt). For az containerapp job start, target a specific job by appending the suffix.')
 output jobName string = bookingJob[0].name
 
 @description('Container Apps Environment resource ID.')

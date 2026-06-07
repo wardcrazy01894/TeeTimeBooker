@@ -122,10 +122,10 @@ var logicAppName = 'logic-teetime-killswitch-${envName}'
 var actionGroupName = 'ag-teetime-killswitch-${envName}'
 
 // The three ACA Job names that the Logic App will PATCH + POST /stop.
-// Naming must match compute.bicep: teetime-job-{envName}-edt-sun, -est-sun,
+// Naming must match compute.bicep: teetime-job-{envName}-edt, -est,
 // and teetime-watch-job-{envName}.
-var bookingJobEdtSun  = 'teetime-job-${envName}-edt-sun'
-var bookingJobEstSun  = 'teetime-job-${envName}-est-sun'
+var bookingJobEdt  = 'teetime-job-${envName}-edt'
+var bookingJobEst  = 'teetime-job-${envName}-est'
 var watchJob          = 'teetime-watch-job-${envName}'
 
 // Both envs' resource group names. The Logic App patches jobs in the SAME RG it is
@@ -134,8 +134,8 @@ var watchJob          = 'teetime-watch-job-${envName}'
 var devRgName = resourceGroup().name
 
 // Prod ACA Job names: same naming convention but for the prod env.
-var bookingJobEdtSunProd  = 'teetime-job-prod-edt-sun'
-var bookingJobEstSunProd  = 'teetime-job-prod-est-sun'
+var bookingJobEdtProd  = 'teetime-job-prod-edt'
+var bookingJobEstProd  = 'teetime-job-prod-est'
 var watchJobProd          = 'teetime-watch-job-prod'
 
 // Resource tags applied to all resources in this module.
@@ -183,19 +183,19 @@ var patchBodyDisable = {
 // The 12 actions (all parallel — runAfter: {}):
 //
 //   Lever (a) — 6 PATCH calls (Schedule → Manual):
-//   Patch_booking_edt_sun_dev:   PATCH .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-job-dev-edt-sun?api-version=2024-03-01
-//   Patch_booking_est_sun_dev:   PATCH .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-job-dev-est-sun?api-version=2024-03-01
+//   Patch_booking_edt_dev:   PATCH .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-job-dev-edt?api-version=2024-03-01
+//   Patch_booking_est_dev:   PATCH .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-job-dev-est?api-version=2024-03-01
 //   Patch_watch_dev:             PATCH .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-watch-job-dev?api-version=2024-03-01
-//   Patch_booking_edt_sun_prod:  PATCH .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-job-prod-edt-sun?api-version=2024-03-01
-//   Patch_booking_est_sun_prod:  PATCH .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-job-prod-est-sun?api-version=2024-03-01
+//   Patch_booking_edt_prod:  PATCH .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-job-prod-edt?api-version=2024-03-01
+//   Patch_booking_est_prod:  PATCH .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-job-prod-est?api-version=2024-03-01
 //   Patch_watch_prod:            PATCH .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-watch-job-prod?api-version=2024-03-01
 //
 //   Lever (b) — 6 POST /stop calls (stop in-flight executions):
-//   Stop_booking_edt_sun_dev:    POST .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-job-dev-edt-sun/stop?api-version=2024-03-01
-//   Stop_booking_est_sun_dev:    POST .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-job-dev-est-sun/stop?api-version=2024-03-01
+//   Stop_booking_edt_dev:    POST .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-job-dev-edt/stop?api-version=2024-03-01
+//   Stop_booking_est_dev:    POST .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-job-dev-est/stop?api-version=2024-03-01
 //   Stop_watch_dev:              POST .../rg-teetime-dev/providers/Microsoft.App/jobs/teetime-watch-job-dev/stop?api-version=2024-03-01
-//   Stop_booking_edt_sun_prod:   POST .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-job-prod-edt-sun/stop?api-version=2024-03-01
-//   Stop_booking_est_sun_prod:   POST .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-job-prod-est-sun/stop?api-version=2024-03-01
+//   Stop_booking_edt_prod:   POST .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-job-prod-edt/stop?api-version=2024-03-01
+//   Stop_booking_est_prod:   POST .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-job-prod-est/stop?api-version=2024-03-01
 //   Stop_watch_prod:             POST .../rg-teetime-prod/providers/Microsoft.App/jobs/teetime-watch-job-prod/stop?api-version=2024-03-01
 //
 // All 12 HTTP actions authenticate with:
@@ -236,11 +236,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
         // RG names, and job names from Bicep variables, producing static strings
         // in the ARM deployment output. The Logic App then calls these literal
         // endpoints at runtime.
-        Patch_booking_edt_sun_dev: {
+        Patch_booking_edt_dev: {
           type: 'Http'
           inputs: {
             method: 'PATCH'
-            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSun}?api-version=2024-03-01'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEdt}?api-version=2024-03-01'
             body: patchBodyDisable
             authentication: {
               type: 'ManagedServiceIdentity'
@@ -249,11 +249,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
           }
           runAfter: {}
         }
-        Patch_booking_est_sun_dev: {
+        Patch_booking_est_dev: {
           type: 'Http'
           inputs: {
             method: 'PATCH'
-            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEstSun}?api-version=2024-03-01'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEst}?api-version=2024-03-01'
             body: patchBodyDisable
             authentication: {
               type: 'ManagedServiceIdentity'
@@ -275,11 +275,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
           }
           runAfter: {}
         }
-        Patch_booking_edt_sun_prod: {
+        Patch_booking_edt_prod: {
           type: 'Http'
           inputs: {
             method: 'PATCH'
-            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSunProd}?api-version=2024-03-01'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEdtProd}?api-version=2024-03-01'
             body: patchBodyDisable
             authentication: {
               type: 'ManagedServiceIdentity'
@@ -288,11 +288,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
           }
           runAfter: {}
         }
-        Patch_booking_est_sun_prod: {
+        Patch_booking_est_prod: {
           type: 'Http'
           inputs: {
             method: 'PATCH'
-            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEstSunProd}?api-version=2024-03-01'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEstProd}?api-version=2024-03-01'
             body: patchBodyDisable
             authentication: {
               type: 'ManagedServiceIdentity'
@@ -317,11 +317,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
         // Lever (b) — 6 POST /stop calls: stop all in-flight executions.
         // Runs in parallel with lever (a). Idempotent: returns 200 + empty list
         // when no executions are running (not an error). See COST_KILLSWITCH_PLAN §1.
-        Stop_booking_edt_sun_dev: {
+        Stop_booking_edt_dev: {
           type: 'Http'
           inputs: {
             method: 'POST'
-            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSun}/stop?api-version=2024-03-01'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEdt}/stop?api-version=2024-03-01'
             body: {}
             authentication: {
               type: 'ManagedServiceIdentity'
@@ -330,11 +330,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
           }
           runAfter: {}
         }
-        Stop_booking_est_sun_dev: {
+        Stop_booking_est_dev: {
           type: 'Http'
           inputs: {
             method: 'POST'
-            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEstSun}/stop?api-version=2024-03-01'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/jobs/${bookingJobEst}/stop?api-version=2024-03-01'
             body: {}
             authentication: {
               type: 'ManagedServiceIdentity'
@@ -356,11 +356,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
           }
           runAfter: {}
         }
-        Stop_booking_edt_sun_prod: {
+        Stop_booking_edt_prod: {
           type: 'Http'
           inputs: {
             method: 'POST'
-            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEdtSunProd}/stop?api-version=2024-03-01'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEdtProd}/stop?api-version=2024-03-01'
             body: {}
             authentication: {
               type: 'ManagedServiceIdentity'
@@ -369,11 +369,11 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
           }
           runAfter: {}
         }
-        Stop_booking_est_sun_prod: {
+        Stop_booking_est_prod: {
           type: 'Http'
           inputs: {
             method: 'POST'
-            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEstSunProd}/stop?api-version=2024-03-01'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${bookingJobEstProd}/stop?api-version=2024-03-01'
             body: {}
             authentication: {
               type: 'ManagedServiceIdentity'

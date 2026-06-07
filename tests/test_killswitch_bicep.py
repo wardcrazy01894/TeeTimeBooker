@@ -133,19 +133,22 @@ def test_killswitch_patches_all_six_jobs(ks_non_comment_lines: str) -> None:
     comment-stripped source to prevent false-green against comment-only strings.
     """
     # All three job name patterns must appear outside comment lines.
-    # Note: the var declarations (bookingJobEdtSun etc.) are already non-comment
-    # lines, so 'edt-sun'/'est-sun'/'watch-job' appear in both stub and final.
+    # Note: the var declarations (bookingJobEdt etc.) are already non-comment lines, so
+    # 'edt'/'est'/'watch-job' appear in both stub and final. The `-sun` suffix was dropped
+    # in the multi-day re-arch (crons fire daily); the killswitch tracks the renamed jobs.
     # The critical guards that make this test RED on the stub are:
     #   (a) "'PATCH'" must appear in non-comment source (only in real action)
     #   (b) "Stub_placeholder" must NOT appear (placeholder must be replaced)
-    # The job-name assertions confirm naming coverage once the stub is implemented.
-    assert "edt-sun" in ks_non_comment_lines
-    assert "est-sun" in ks_non_comment_lines
+    assert "-edt'" in ks_non_comment_lines
+    assert "-est'" in ks_non_comment_lines
     assert "watch-job" in ks_non_comment_lines
     # Prod job name constants must appear in the non-comment source.
-    assert "teetime-job-prod-edt-sun" in ks_non_comment_lines
-    assert "teetime-job-prod-est-sun" in ks_non_comment_lines
+    assert "teetime-job-prod-edt'" in ks_non_comment_lines
+    assert "teetime-job-prod-est'" in ks_non_comment_lines
     assert "teetime-watch-job-prod" in ks_non_comment_lines
+    # The stale -sun suffix must be fully gone.
+    assert "edt-sun" not in ks_non_comment_lines
+    assert "est-sun" not in ks_non_comment_lines
     # PATCH method must appear in the non-comment source (i.e. in a real action,
     # not just in a comment example).
     assert "'PATCH'" in ks_non_comment_lines or '"PATCH"' in ks_non_comment_lines
