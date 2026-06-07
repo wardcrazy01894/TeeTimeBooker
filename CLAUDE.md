@@ -92,7 +92,7 @@ src/teetime/
   courses/chronogolf/  # placeholder; not used in v0
 config/             # example.toml; secrets via env-var refs only
 .github/workflows/  # ci.yml (lint / type-check / test / docker-smoke / secret-scan / bicep-lint) + azure-iac.yml (Bicep deploy)
-tests/              # pytest; vcrpy cassettes go in tests/cassettes/
+tests/              # pytest; respx for httpx mocking (no vcrpy cassettes)
 ```
 
 The orchestrator is the only thing that knows about all four subsystems.
