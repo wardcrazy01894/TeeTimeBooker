@@ -129,6 +129,26 @@ def test_redacts_player_pii() -> None:
     assert out["course_id"] == "foreup:mangrove_bay"
 
 
+def test_redacts_gnsvc_camelcase_name_and_payment_token() -> None:
+    # The real GNSVC booking POST uses camelCase name fields (bookerFirstName/bookerLastName,
+    # and firstName/lastName in the profile body) NOT under the Payment* namespace, plus a
+    # short-lived bearer payment token. None contain underscores, so the snake_case
+    # first_name/last_name tokens miss them. See courses/teeitup/base.py:503,544,557.
+    out = redact_payload(
+        {
+            "bookerFirstName": "Alex",
+            "bookerLastName": "Lancaster",
+            "firstName": "Alex",
+            "lastName": "Lancaster",
+            "Token": "tr-bearer-abc123",
+            "ReservationId": 42,  # NOT sensitive — preserved
+        }
+    )
+    for k in ("bookerFirstName", "bookerLastName", "firstName", "lastName", "Token"):
+        assert out[k] == "***", k
+    assert out["ReservationId"] == 42
+
+
 def test_redacts_nested_lists_of_lists() -> None:
     # The recursive guard must descend into nested lists (M2.T3 payload shapes are unknown).
     out = redact_payload({"deep": [[{"cvv": "9"}], [{"ok": "keep"}]]})

@@ -32,14 +32,21 @@ _SENSITIVE_KEY_TOKENS = (
     "password",
     "securitycode",
     "name_on_card",
+    "token",  # tr_token: short-lived GNSVC bearer payment credential (replayable in-window)
     # player PII (§10.1)
     "email",
     "mail",
     "phone",
     "mobile",
     "member",
+    # name fields appear snake_case (CourseCredentials.extra: first_name) AND camelCase
+    # (the GNSVC POST: bookerFirstName/bookerLastName, firstName/lastName). The no-underscore
+    # tokens catch the camelCase forms once the key is lowercased; keep the underscore tokens
+    # for the snake_case ones. Still avoids bare "name" (course_name/job_name are audit fields).
     "first_name",
     "last_name",
+    "firstname",
+    "lastname",
 )
 
 
