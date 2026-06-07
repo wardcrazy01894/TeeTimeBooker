@@ -1,8 +1,7 @@
 """Unit tests for captcha.py — 2captcha provider logic.
 
 The Playwright provider is an integration test (requires a real browser + Google);
-those live in tests/cassettes or are marked integration. These tests cover the
-2captcha HTTP flow using respx mocks.
+those are marked integration. These tests cover the 2captcha HTTP flow using respx mocks.
 """
 
 from __future__ import annotations

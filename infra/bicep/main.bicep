@@ -138,7 +138,8 @@ module logs 'modules/logs.bicep' = {
 
 // ---------------------------------------------------------------------------
 // Module: compute
-// Container Apps Environment (Consumption) + Container Apps Job (two booking crons: Sunday × DST (EDT+EST)).
+// Container Apps Environment (Consumption) + Container Apps Job (two booking crons,
+// one per DST half (EDT+EST), firing DAILY; the booking-day gate selects wanted weekdays).
 // See: infra/AZURE_PLAN.md §5 (race), §6.2 (parallelism=1)
 // ---------------------------------------------------------------------------
 

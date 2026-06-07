@@ -3,7 +3,7 @@
 Pattern (from PLAN.md "Testing strategy"):
     - Build a fake adapter that satisfies the CourseAdapter Protocol.
     - Drive the orchestrator with FakeClock + in-memory store + NoopNotifier.
-    - For real ForeUP adapter: vcrpy/respx cassettes recorded in Spike S1.
+    - For the real ForeUP adapter: respx mocks (+ the test_foreup_canary.py live-drift canary).
 """
 
 from __future__ import annotations

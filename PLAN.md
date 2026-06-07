@@ -421,14 +421,14 @@ exists today so the guard is in place before that wiring lands.
 |-------------|-----------------------|-------------------------------------------------------------------|
 | Unit (pure) | pytest                | models invariants, config validation, busy-wait math (FakeClock) |
 | Adapter unit | respx                | ForeUP request shape, error mapping, captcha detection            |
-| Adapter integration | vcrpy cassettes recorded in Spike S1 | Full search+book against canned responses |
+| Adapter integration | respx + the `test_foreup_canary.py` live-drift canary | Full search+book against mocked responses; canary catches real ForeUP drift |
 | Orchestrator | FakeAdapter + FakeClock + InMemoryStore | the race, fallback, idempotency |
 | End-to-end dry-run | live ForeUP, `--dry-run` | All HTTP up to but not including the final POST |
 | Cron lint    | actionlint            | Workflow syntax + cron expression sanity |
 
 **6:00 AM race testing without waiting 7 days:** `FakeClock` lets a test set "now" to T0 - 1.5 s and assert the orchestrator's first `search()` lands within ±50 ms of T0. This is the spec for `clock.busy_wait_until`.
 
-**Cassette policy:** cassettes go in `tests/cassettes/`, scrubbed of cookies, JWTs, and personally identifying info before commit. Re-recording is a Spike S1 sub-task.
+**Live-drift policy:** there are no recorded cassettes (vcrpy was dropped in #82 — cassettes were never recorded). `tests/test_foreup_canary.py` is an opt-in `integration`-marked canary that hits live ForeUP (gated on real creds) to catch endpoint/shape drift; respx mocks cover the deterministic adapter-unit layer.
 
 ---
 
@@ -582,8 +582,8 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 ### M5 — ForeUP adapter (DONE — live dry-run confirmed)
 | ID    | Task                                                        | Inputs              | Outputs                                                          | Owner-files                                                          | Deps         |
 |-------|-------------------------------------------------------------|---------------------|------------------------------------------------------------------|----------------------------------------------------------------------|--------------|
-| **S1** | **Spike: confirm ForeUP endpoints, request shapes, captcha posture, schedule_id** for Mangrove Bay | live ForeUP, browser devtools | recorded vcrpy cassettes + a 1-page note in `docs/foreup-spike.md` (committed) | `tests/cassettes/foreup_*.yaml`, `docs/foreup-spike.md`              | M1.*         |
-| M5.T1 | Implement `ForeUpAdapter.authenticate`                      | S1 cassettes        | auth round-trip; JWT extracted; AuthError on bad creds          | `courses/foreup/base.py`, `tests/test_foreup_auth.py`                | S1           |
+| **S1** | **Spike: confirm ForeUP endpoints, request shapes, captcha posture, schedule_id** for Mangrove Bay | live ForeUP, browser devtools | the `test_foreup_canary.py` live-drift canary + a 1-page note in `docs/foreup-spike.md` (committed) | `tests/test_foreup_canary.py`, `docs/foreup-spike.md`              | M1.*         |
+| M5.T1 | Implement `ForeUpAdapter.authenticate`                      | S1 findings         | auth round-trip; JWT extracted; AuthError on bad creds          | `courses/foreup/base.py`, `tests/test_foreup_auth.py`                | S1           |
 | M5.T2 | Implement `ForeUpAdapter.search` + criteria filtering       | S1, M5.T1           | parse `/api/booking/times`; map to `TeeTimeSlot`; raise InventoryNotPublishedError for empty-pre-T0 | `courses/foreup/base.py`, `tests/test_foreup_search.py` | M5.T1        |
 | M5.T3 | Implement `ForeUpAdapter.book` + `ForeUpAdapter.list_reservations` (Protocol method already defined in `core/adapter.py`; M5.T3 implements its body) | S1, M5.T1, M5.T2    | book POST happy path; conflict → SlotGoneError; list_reservations returns matching ExistingReservation; orchestrator-driven reconciliation works end-to-end | `courses/foreup/base.py`, `tests/test_foreup_book.py`                | M5.T2        |
 | M5.T4 | Captcha + rate-limit detection                              | S1                  | adapter raises `CaptchaError` / `RateLimitError` from canned responses | `courses/foreup/base.py`, `tests/test_foreup_protection.py`           | M5.T1        |
@@ -638,7 +638,7 @@ Each item from the brief, addressed:
 ## 19. Open risks (eyes open)
 
 1. **GH Actions doesn't actually fire.** Mitigation in v1; v0 accepts the loss.
-2. **ForeUP changes endpoints.** Adapter is one file; vcrpy cassettes go red loud. Manageable.
+2. **ForeUP changes endpoints.** Adapter is one file; the `test_foreup_canary.py` live-drift canary goes red loud. Manageable.
 3. ~~**`api-key: no_limits` is a known-bot signal.**~~ Resolved in S1: login uses `api_key=""` (empty); search uses `api_key="no_limits"`. No adverse response observed.
 4. **The user's ForeUP account gets restricted.** §12. Accepted v0 risk; would invalidate v0 entirely until manual unlock.
 5. **Time-window picker logic ("best slot")** is under-specified. v0 picks the slot whose `tee_time` is closest to the midpoint of the user's window. Revisit in v1 with explicit ranking config.
