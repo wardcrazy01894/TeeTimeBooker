@@ -363,23 +363,24 @@ class ForeUpAdapter(CourseAdapter):
 
         return results
 
-    async def prepare_book(self, slot: TeeTimeSlot, request: BookingRequest) -> None:
+    async def prepare_book(self, slot: TeeTimeSlot | None, request: BookingRequest) -> None:
         """Pre-solve CAPTCHA and cache the token for use in book().
 
-        Called by UpgradeOrchestrator BEFORE cancel_reservation() so that the
-        cancel-to-book window is ~1-2 seconds (two HTTP round-trips) rather than
-        ~60 seconds (CAPTCHA solve time). After this returns, book(slot, request)
-        will use the cached token instead of calling the CAPTCHA provider.
+        Two callers (see CourseAdapter.prepare_book):
+        - UpgradeOrchestrator (slot set) — shrinks the cancel-to-book window.
+        - Orchestrator on the race path (slot=None) — moves the ~75s CAPTCHA solve
+          off the post-T0 critical path so book() at the 06:00 drop fires immediately.
+        The CAPTCHA is a page-level reCAPTCHA, so `slot` is unused either way.
 
-        If no CAPTCHA provider is configured (dry-run or test), this is a no-op.
-        Raises any exception from the CAPTCHA provider as-is; the caller should
-        abort the upgrade and leave the original booking untouched.
+        After this returns, book() will use the cached token instead of calling the
+        CAPTCHA provider. If no CAPTCHA provider is configured (dry-run or test), this
+        is a no-op. Raises any exception from the CAPTCHA provider as-is.
         """
         if self._captcha_provider is None:
             return
-        _log.info("ForeUP: pre-fetching CAPTCHA token for upgrade (this can take 15-30s)...")
+        _log.info("ForeUP: pre-fetching CAPTCHA token (this can take 15-30s)...")
         self._captcha_token = await self._captcha_provider()
-        _log.info("ForeUP: CAPTCHA token pre-fetched — cancel can now proceed.")
+        _log.info("ForeUP: CAPTCHA token pre-fetched — booking can now proceed.")
 
     async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
         """POST /reservations echoing slot raw fields with overridden player/fee totals."""

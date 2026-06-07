@@ -265,6 +265,10 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
         clock=clock,
         scheduler=scheduler,
         creds=creds,
+        # Pre-solve the CAPTCHA during the busy-wait ONLY on the --wait race path (the
+        # ACA booking cron). The watcher / local demo never pre-fetch — a token is only
+        # solved when actually booking. See core/orchestrator._prefetch_captcha.
+        prefetch_book=wait,
     )
     result = await orch.run(request)
     if result.outcome.value not in {"booked", "dry_run", "already_booked"}:

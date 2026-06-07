@@ -60,6 +60,7 @@ class Orchestrator:
         clock: Clock,
         scheduler: SchedulerConfig,
         creds: Mapping[CourseId, CourseCredentials] | None = None,
+        prefetch_book: bool = False,
     ) -> None:
         self._adapters = adapters
         self._store = store
@@ -67,6 +68,11 @@ class Orchestrator:
         self._clock = clock
         self._scheduler = scheduler
         self._creds = creds or {}
+        # Race path only: pre-solve the CAPTCHA during the pre-T0 busy-wait so the
+        # book() POST fires within seconds of the 06:00 drop. Set True by the --wait
+        # ACA booking job; left False everywhere else (watcher, local demo) so a token
+        # is only ever solved when we are actually about to book. See PLAN.md §9.
+        self._prefetch_book = prefetch_book
 
     async def run(self, request: BookingRequest) -> BookingResult:
         resolved_date = request.target_dates[0]
@@ -77,6 +83,14 @@ class Orchestrator:
                 return prior
 
             t0_target = self._compute_t0_minus_early()
+            if self._prefetch_book:
+                # Race path: pre-solve the CAPTCHA DURING the busy-wait. Wait to
+                # T0 - lead, pre-fetch the token, then wait the remainder to T0 so the
+                # post-T0 book() POST fires immediately. The 2026-06-07 prod failure was
+                # the ~78s solve running AFTER T0, pushing the POST ~100s past the drop.
+                lead = timedelta(seconds=self._scheduler.captcha_prefetch_lead_s)
+                await busy_wait_until(t0_target - lead, self._clock)
+                await self._prefetch_captcha(request)
             await busy_wait_until(t0_target, self._clock)
             fired = self._clock.now_utc()
             # Verification surface (M6 PR6): proves the bot busy-waited and fired at T0.
@@ -162,6 +176,32 @@ class Orchestrator:
         if last_exc is not None:
             raise last_exc
         raise _CourseSkippedError()
+
+    # --- race-path pre-fetch -------------------------------------------
+
+    async def _prefetch_captcha(self, request: BookingRequest) -> None:
+        """Pre-solve the CAPTCHA for the primary (first-preference) adapter so book()
+        at T0 consumes a cached token instead of blocking ~75s on the solve.
+
+        Best-effort: any failure is logged and swallowed — the race still proceeds and
+        book() solves the token inline if needed (a pre-fetch hiccup must never cost the
+        booking). Only the first preference with a registered adapter is pre-solved (the
+        slot we will almost certainly book); a fallback course solves its own token in
+        book(). No-op for adapters without a CAPTCHA (TeeItUp, Fake).
+        """
+        for course_id in request.course_preferences:
+            adapter = self._adapters.get(course_id)
+            if adapter is None:
+                continue
+            try:
+                await adapter.prepare_book(None, request)
+            except Exception as exc:
+                log.warning(
+                    "race: CAPTCHA pre-fetch failed for %s (%s) — will solve inline in book()",
+                    course_id,
+                    exc,
+                )
+            return
 
     # --- timing ---------------------------------------------------------
 

@@ -235,13 +235,29 @@ in `core/` — never directly. This is the cut line for parallel work.
   therefore cancels first, then books. This leaves a ~1-2 second no-booking window
   (two HTTP round-trips). If book() fails after cancel, the next watch invocation
   recovers by booking any available slot.
-- **`prepare_book()` on `CourseAdapter` Protocol**: called by `UpgradeOrchestrator`
-  BEFORE `cancel_reservation()` to pre-fetch expensive prerequisites (CAPTCHA token,
-  ~15-60 s). `ForeUpAdapter.prepare_book()` calls the CAPTCHA provider and caches
-  the resulting token in `self._captcha_token`; `book()` consumes it (single-use,
-  cleared after use). Adapters with no pre-fetch cost (FakeAdapter, TeeItUpAdapter,
-  future Chronogolf) implement it as a no-op. This shrinks the cancel-to-book
-  no-booking window from ~60 s to ~1-2 s.
+- **`prepare_book()` on `CourseAdapter` Protocol**: pre-fetches expensive prerequisites
+  (CAPTCHA token, ~15-60 s). `ForeUpAdapter.prepare_book()` calls the CAPTCHA provider
+  and caches the resulting token in `self._captcha_token`; `book()` consumes it
+  (single-use, cleared after use). Adapters with no pre-fetch cost (FakeAdapter,
+  TeeItUpAdapter, future Chronogolf) implement it as a no-op. Its `slot` arg is
+  `TeeTimeSlot | None` (the CAPTCHA is page-level, slot-independent). **Two callers:**
+  (1) `UpgradeOrchestrator` calls it with the chosen slot BEFORE `cancel_reservation()`,
+  shrinking the cancel-to-book no-booking window from ~60 s to ~1-2 s; (2) the main
+  booking `Orchestrator`, on the race path only, calls it with `slot=None` DURING the
+  pre-T0 busy-wait (see next bullet).
+- **The booking race pre-fetches the CAPTCHA before T0 (`Orchestrator(prefetch_book=True)`).**
+  The 2026-06-07 prod Sunday booker fired at T0 perfectly but then solved the CAPTCHA
+  (~78 s) AFTER the drop, posting the booking ~100 s late → the prime slot was gone →
+  HTTP 400 → no tee time. Fix: on the `--wait` race path the orchestrator does a
+  TWO-PHASE busy-wait — wait to `T0 − scheduler.captcha_prefetch_lead_s` (default 90 s),
+  `_prefetch_captcha()` (first-preference adapter, best-effort: failures are logged and
+  swallowed, book() then solves inline), then wait the remainder to exactly T0 — so the
+  post-T0 `book()` POST fires within seconds of the drop with a token already in hand.
+  `prefetch_book` is set **only** by the `--wait` ACA booking job (`__main__._run` passes
+  `prefetch_book=wait`). The watcher and local-demo runs leave it False: a token is
+  solved only when actually about to book (the watcher's upgrade path still pre-fetches
+  inside `maybe_upgrade`, just-in-time). Lead is tuned so the ~75 s solve finishes just
+  before T0 while the ~120 s reCAPTCHA token stays fresh for the POST.
 - **Each run is independent** — there is no shared state cache between the watch
   job and the main booking job. The live `list_reservations()` call is the source
   of truth across runs. Concurrent-run serialization is handled by ACA Job /

@@ -83,6 +83,8 @@ def _build(
     *,
     store: InMemoryStore | None = None,
     clock: FakeClock | None = None,
+    scheduler: SchedulerConfig | None = None,
+    prefetch_book: bool = False,
 ) -> tuple[Orchestrator, InMemoryStore, FakeClock]:
     store = store or InMemoryStore()
     clock = clock or FakeClock(start=datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC))
@@ -92,8 +94,9 @@ def _build(
         store=store,
         notifier=NoopNotifier(),
         clock=clock,
-        scheduler=_scheduler(),
+        scheduler=scheduler or _scheduler(),
         creds=creds,
+        prefetch_book=prefetch_book,
     )
     return orch, store, clock
 
@@ -462,3 +465,95 @@ async def test_run_logs_race_complete_at_t0(caplog: pytest.LogCaptureFixture) ->
     race = [r.message for r in caplog.records if "race: busy-wait complete" in r.message]
     assert race, "race-complete verification log not emitted"
     assert "drift_ms" in race[0]  # firing-vs-target drift is logged for the runbook
+
+
+# --- Race-path CAPTCHA pre-fetch (the 2026-06-07 fix) -------------------
+
+
+def _scheduler_with_lead(lead_s: int, *, early_ms: int = 100) -> SchedulerConfig:
+    return SchedulerConfig(
+        timezone="America/New_York",
+        fire_time=time(6, 0, 0),
+        early_arrival_ms=early_ms,
+        poll_interval_ms=10,
+        max_poll_seconds=1,
+        captcha_prefetch_lead_s=lead_s,
+    )
+
+
+async def test_run_prefetches_captcha_before_t0_when_enabled() -> None:
+    """On the race path (prefetch_book=True), the orchestrator must call prepare_book()
+    DURING the busy-wait — ~lead seconds BEFORE T0 — so book() at T0 consumes a cached
+    token. The 2026-06-07 prod failure was the ~78s CAPTCHA solve running AFTER T0, which
+    pushed the booking POST ~100s past the drop and lost the race."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    lead = 30
+    clock = FakeClock(start=t0 - timedelta(seconds=lead + 2))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(lead), prefetch_book=True
+    )
+
+    # Record the clock instant at which the (collaborator) prepare_book is invoked.
+    prefetch_at: list[datetime] = []
+    orig_prepare = fa.prepare_book
+
+    async def _recording_prepare(slot: object, request: object) -> None:
+        prefetch_at.append(clock.now_utc())
+        await orig_prepare(slot, request)  # type: ignore[arg-type]
+
+    fa.prepare_book = _recording_prepare  # type: ignore[assignment]
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.prepare_book_call_count == 1, "captcha was not pre-fetched"
+    assert fa.book_call_count == 1
+    # The pre-fetch happened before T0 and roughly `lead` seconds early (within tolerance).
+    assert len(prefetch_at) == 1
+    before_t0 = (t0 - prefetch_at[0]).total_seconds()
+    assert before_t0 > 0, "prefetch must run BEFORE T0"
+    assert lead - 1 <= before_t0 <= lead + 1, f"prefetch fired {before_t0:.1f}s before T0"
+
+
+async def test_run_does_not_prefetch_when_disabled() -> None:
+    """Off the race path (prefetch_book=False, the default), the orchestrator must NOT
+    pre-fetch the CAPTCHA. This is the watcher/every-10-min posture: a token is only
+    solved if we are actually about to book (inside book()/the upgrade path)."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    clock = FakeClock(start=t0 - timedelta(seconds=2))
+    orch, _, _ = _build({cid: fa}, clock=clock)  # prefetch_book defaults to False
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.prepare_book_call_count == 0, "must not pre-fetch when prefetch_book is False"
+
+
+async def test_run_prefetch_failure_does_not_abort_race() -> None:
+    """If the pre-fetch (CAPTCHA solve) fails, the race must still proceed to book —
+    degrading to solving the token inside book(). A pre-fetch hiccup must never cost the
+    booking outright."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+    fa.set_prepare_book_to_raise(RuntimeError("2captcha timeout"))
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    clock = FakeClock(start=t0 - timedelta(seconds=12))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(10), prefetch_book=True
+    )
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.prepare_book_call_count == 1
+    assert fa.book_call_count == 1
