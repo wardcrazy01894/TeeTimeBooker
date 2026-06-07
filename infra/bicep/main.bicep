@@ -119,6 +119,9 @@ module keyvault 'modules/keyvault.bicep' = {
     kvSku: kvSku
     jobPrincipalId: identity.outputs.principalId
     enablePurgeProtection: enablePurgeProtection
+    // Implicit dependency: consuming the logs output makes Bicep deploy logs first,
+    // so the Key Vault AuditEvent diagnostic setting has a workspace to target.
+    logAnalyticsWorkspaceId: logs.outputs.workspaceId
   }
 }
 
