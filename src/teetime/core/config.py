@@ -147,8 +147,9 @@ class NotifierConfig(BaseModel):
 class WatcherConfig(BaseModel):
     """Config for the cancellation-monitor job (M-feature-1).
 
-    The watcher job runs on its own cron schedule (every 10 minutes during
-    reasonable hours) and polls for newly available slots on the target date.
+    The watcher job runs on its own cron schedule (every 10 minutes, year-round; it polls
+    on every run — the time-of-day gate was removed) for newly available slots on each
+    wanted target date.
 
     All fields are optional so this block may be omitted from TOML configs
     that do not use the watch feature; defaults are applied automatically.

@@ -481,24 +481,11 @@ def test_gate_skip_exits_zero_without_booking(
 
 
 def test_build_request_does_not_crash(env_set: None) -> None:
+    # _build_request builds the RequestId/players/windows; its target_dates is a placeholder
+    # (both callers override it). Just assert it builds a non-empty request without raising.
     cfg = _load(EXAMPLE_TOML)
     req = main_mod._build_request(cfg, dry_run=True)
-    assert req.target_dates  # non-empty
-
-
-def test_build_request_anchors_min_wanted_weekday(env_set: None) -> None:
-    """_build_request anchors target_dates on min(wanted_weekday_indices), which is derived
-    from the window weekdays. Sat+Sun windows → Saturday (5); a Sunday-only window set → Sunday
-    (6). resolve_target_dates(+7) preserves the weekday, so this is clock-independent."""
-    cfg = _load(EXAMPLE_TOML)  # windows: saturday + sunday
-    req = main_mod._build_request(cfg, dry_run=True)
-    assert req.target_dates[0].weekday() == 5  # Saturday = min({5, 6})
-
-    cfg.request.time_windows = [
-        TimeWindowConfig(weekday="sunday", earliest=_dt.time(9, 0), latest=_dt.time(10, 0))
-    ]
-    req2 = main_mod._build_request(cfg, dry_run=True)
-    assert req2.target_dates[0].weekday() == 6  # Sunday-only window set
+    assert req.target_dates  # non-empty placeholder
 
 
 def _cfg_distinct_windows() -> object:
