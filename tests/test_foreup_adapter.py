@@ -776,3 +776,37 @@ def test_parse_reservation_foreup_login_shape() -> None:
     assert res.confirmation_code == "TTID_05271417087kr17"
     assert res.tee_time == datetime(2026, 6, 3, 14, 15, 0, tzinfo=tz)
     assert res.party_size == 4
+
+
+@respx.mock
+async def test_book_does_not_log_response_pii(caplog: pytest.LogCaptureFixture) -> None:
+    """A successful book must NOT log the full ForeUP response body — it echoes the account
+    holder's name/email/phone, and ACA ships stdout to Log Analytics. Only the confirmation
+    id (already safe) should be logged. Security review High finding."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "reservation": {"id": "CONF-42", "email": "leak@example.test", "phone": "555-LEAK"}
+            },
+        )
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with caplog.at_level("INFO"):
+            result = await adapter.book(slot, _request())
+    assert result.confirmation_code == "TTB:CONF-42"
+    assert "CONF-42" in caplog.text  # the confirmation id IS logged (safe)
+    assert "leak@example.test" not in caplog.text  # PII must NOT be logged
+    assert "555-LEAK" not in caplog.text
