@@ -236,8 +236,17 @@ class Orchestrator:
                 return await adapter.book(candidate, request)
             except SlotGoneError as exc:
                 last_exc = exc
+        # Every ranked candidate was gone (a 4xx book rejection means NO reservation was
+        # created — the prod 2026-06-07 failure mode at a competitive drop). Treat exhaustion
+        # like an empty course: fall through to the next course preference, and if none book,
+        # the run records a NO_INVENTORY terminal (+ notifies) instead of crashing the job.
         if last_exc is not None:
-            raise last_exc
+            log.info(
+                "course %s: all %d ranked candidates gone (last: %s) — trying next course",
+                course_id,
+                len(candidates),
+                last_exc,
+            )
         raise _CourseSkippedError()
 
     # --- race-path pre-fetch -------------------------------------------

@@ -119,6 +119,22 @@ TEEITUP_BOOKING_BASE = "https://{slug}.book.teeitup.com"
 _USER_AGENT = "TeeTimeBooker/0.0.0 (+https://github.com/wardcrazy01894/TeeTimeBooker)"
 _MIN_BETWEEN_S = 0.25
 _HTTP_RATE_LIMIT = 429
+_HTTP_SERVER_ERROR = 500
+
+
+def _raise_for_booking_step(r: httpx.Response, slot_id: str, step: str) -> None:
+    """Map a non-success response at a PRE-PAYMENT reservation step to the right exception.
+
+    A 4xx client error means the slot could not be held (taken / lock contention / stale
+    cart) and NO reservation or charge was created — raise SlotGoneError so the orchestrator
+    falls through to the next candidate, mirroring ForeUP's 4xx->SlotGoneError contract
+    (see root CLAUDE.md "A book-POST 4xx is a try-next-slot signal"). A 5xx is AMBIGUOUS —
+    the request may have landed — so it propagates via raise_for_status (the §9 UNCERTAIN
+    case). Drop-in for ``r.raise_for_status()``: a no-op on 2xx. MUST only be called at a
+    step BEFORE the irreversible GNSVC payment (steps 3-7), never on the card POST."""
+    if _HTTP_BAD_REQUEST <= r.status_code < _HTTP_SERVER_ERROR:
+        raise SlotGoneError(f"Slot {slot_id}: {step} returned {r.status_code} (slot unavailable)")
+    r.raise_for_status()
 
 
 class TeeItUpAdapter:
@@ -417,7 +433,7 @@ class TeeItUpAdapter:
         r = await self._http.post(cart_item_url, json=cart_body, headers=h)
         if r.status_code == _HTTP_CONFLICT:
             raise SlotGoneError(f"Slot {slot.slot_id} unavailable adding to cart")
-        r.raise_for_status()
+        _raise_for_booking_step(r, slot.slot_id, "add to cart")
         cart_item_id: str = r.json()["items"][0]["id"]
 
         # Step 4: Lock tee time
@@ -427,7 +443,7 @@ class TeeItUpAdapter:
             headers=h,
         )
         if r.status_code not in (_HTTP_OK, _HTTP_NO_CONTENT):
-            r.raise_for_status()
+            _raise_for_booking_step(r, slot.slot_id, "lock tee time")
 
         # Step 5: Create order
         r = await self._http.post(
@@ -436,7 +452,7 @@ class TeeItUpAdapter:
             headers=h,
         )
         if r.status_code not in (_HTTP_OK, _HTTP_CREATED):
-            r.raise_for_status()
+            _raise_for_booking_step(r, slot.slot_id, "create order")
 
         # Step 6: Check bookable (graceful 404 — endpoint may be browser-session-scoped)
         r = await self._http.post(
@@ -477,7 +493,7 @@ class TeeItUpAdapter:
         )
         if r.status_code == _HTTP_CONFLICT:
             raise SlotGoneError(f"Slot {slot.slot_id} taken at order-teetime (409)")
-        r.raise_for_status()
+        _raise_for_booking_step(r, slot.slot_id, "order tee time")
         order_teetime_data: dict[str, Any] = r.json()
 
         kenna_invoice: dict[str, Any] | None = None

@@ -569,6 +569,57 @@ async def test_book_slot_gone_on_is_bookable_false() -> None:
             await adapter.book(slots[0], _request(party_size=2, holes=9))
 
 
+@respx.mock
+async def test_book_slot_gone_on_non_409_4xx_at_lock() -> None:
+    """Parity with ForeUP's 4xx->SlotGoneError: a non-409 client error (e.g. 400/422) at a
+    pre-payment reservation step (here the lock PUT) means the slot could not be held and NO
+    booking/charge happened — it must map to SlotGoneError so the orchestrator tries the next
+    candidate, not crash the candidate loop with an uncaught HTTPStatusError."""
+    _mock_auth()
+    _mock_search()
+    respx.get(url__regex=r".*/tee-times/rate/\d+/invoice.*").mock(
+        return_value=httpx.Response(200, json=_INVOICE_RESPONSE)
+    )
+    respx.post(f"{_KENNA_API_BASE}{_SHOPPING_CART_PATH}").mock(
+        return_value=httpx.Response(201, json=_CART_RESPONSE)
+    )
+    respx.post(url__regex=r".*/shopping-cart/[^/]+/cart-item$").mock(
+        return_value=httpx.Response(200, json=_CART_ITEM_RESPONSE)
+    )
+    # Lock fails with a 400 (slot taken / lock contention), NOT a 409.
+    respx.put(url__regex=r".*/tee-time/lock$").mock(return_value=httpx.Response(400))
+    async with httpx.AsyncClient() as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        slots = await adapter.search(_request(party_size=2, holes=9))
+        with pytest.raises(SlotGoneError):
+            await adapter.book(slots[0], _request(party_size=2, holes=9))
+
+
+@respx.mock
+async def test_book_propagates_5xx_at_lock_as_uncertain() -> None:
+    """A 5xx at a pre-payment step is AMBIGUOUS (the request may have landed) — it must NOT
+    be swallowed as SlotGoneError; it propagates as HTTPStatusError (the UNCERTAIN case)."""
+    _mock_auth()
+    _mock_search()
+    respx.get(url__regex=r".*/tee-times/rate/\d+/invoice.*").mock(
+        return_value=httpx.Response(200, json=_INVOICE_RESPONSE)
+    )
+    respx.post(f"{_KENNA_API_BASE}{_SHOPPING_CART_PATH}").mock(
+        return_value=httpx.Response(201, json=_CART_RESPONSE)
+    )
+    respx.post(url__regex=r".*/shopping-cart/[^/]+/cart-item$").mock(
+        return_value=httpx.Response(200, json=_CART_ITEM_RESPONSE)
+    )
+    respx.put(url__regex=r".*/tee-time/lock$").mock(return_value=httpx.Response(503))
+    async with httpx.AsyncClient() as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        slots = await adapter.search(_request(party_size=2, holes=9))
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.book(slots[0], _request(party_size=2, holes=9))
+
+
 def _setup_full_book_mocks() -> tuple[respx.Route, respx.Route]:
     """Register all mocks; return (order_teetime_route, add_reservation_route)."""
     respx.post(f"{_KENNA_API_BASE}{_AUTH_PATH}").mock(

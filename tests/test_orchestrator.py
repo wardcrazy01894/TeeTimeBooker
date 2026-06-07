@@ -226,15 +226,43 @@ async def test_run_retries_next_slot_when_first_is_gone() -> None:
 
 
 async def test_run_returns_no_inventory_when_all_slots_gone() -> None:
-    """If every candidate slot is taken, orchestrator raises the last SlotGoneError."""
+    """If every candidate slot for the only course is taken, the orchestrator records a
+    NO_INVENTORY terminal (and notifies) rather than crashing the job with an uncaught
+    SlotGoneError — slot-exhaustion is a graceful 'no bookable inventory', not a fatal."""
     cid = CourseId("fake:course")
     fa = FakeAdapter(course_id=cid)
     fa.set_search_response([_slot(cid, hour=7), _slot(cid, hour=8)])
     fa.set_book_side_effects([SlotGoneError("slot1 taken"), SlotGoneError("slot2 taken")])
 
-    orch, _, _ = _build({cid: fa})
-    with pytest.raises(SlotGoneError):
-        await orch.run(_request(course_ids=(cid,)))
+    orch, store, _ = _build({cid: fa})
+    req = _request(course_ids=(cid,))
+    result = await orch.run(req)
+
+    assert result.outcome == BookingOutcome.NO_INVENTORY
+    assert fa.book_call_count == 2  # both candidates were attempted
+    # The terminal was recorded (a re-run short-circuits to the same NO_INVENTORY result).
+    persisted = await store.get_terminal(req.request_id, req.target_dates[0])
+    assert persisted is not None and persisted.outcome == BookingOutcome.NO_INVENTORY
+
+
+async def test_run_falls_back_to_next_course_when_all_slots_gone() -> None:
+    """All candidates gone on the first course must fall through to the next course
+    (not crash) — the inter-course fallback now covers slot-exhaustion, not just empties."""
+    c1 = CourseId("fake:c1")
+    c2 = CourseId("fake:c2")
+    fa1 = FakeAdapter(course_id=c1)
+    fa1.set_search_response([_slot(c1, hour=7), _slot(c1, hour=8)])
+    fa1.set_book_side_effects([SlotGoneError("c1 slot1 gone"), SlotGoneError("c1 slot2 gone")])
+    fa2 = FakeAdapter(course_id=c2)
+    fa2.set_search_response([_slot(c2)])
+    orch, _, _ = _build({c1: fa1, c2: fa2})
+
+    result = await orch.run(_request(course_ids=(c1, c2)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.course_id == c2
+    assert fa1.book_call_count == 2  # both c1 candidates tried before falling through
+    assert fa2.book_call_count == 1
 
 
 async def test_run_falls_back_on_no_inventory_error() -> None:
