@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -593,3 +594,32 @@ def test_run_no_wait_bypasses_booking_day_gate(
     # --no-wait still books a single date (today + offset).
     assert _SpyOrchestrator.last_request is not None
     assert len(_SpyOrchestrator.last_request.target_dates) == 1
+
+
+def test_booking_day_skip_log_emitted(
+    spy_run: SimpleNamespace,
+    gate_spy: SimpleNamespace,
+    booking_gate_spy: SimpleNamespace,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verification surface (MULTIDAY PR6): a non-booking-day --wait run emits a clear
+    'booking-day gate: ... not a wanted booking day' INFO line so an operator can confirm
+    the daily cron fast-exited on purpose (vs failing)."""
+
+    gate_spy.proceed = True  # correct season
+    booking_gate_spy.book = False  # today+offset is not a wanted weekday
+    with caplog.at_level(logging.INFO):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "run",
+                "--config",
+                str(EXAMPLE_TOML),
+                "--dry-run",
+                "true",
+                "--use-fake-adapter",
+                "--wait",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert any("not a wanted booking day" in r.message for r in caplog.records)

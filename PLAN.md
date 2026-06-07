@@ -215,7 +215,14 @@ GH Actions cron is documented as best-effort with potentially **15+ minute** del
 | 06:00 ET     | 10:00 UTC     | 11:00 UTC     |
 | Cron (Sunday)   | `50 9 * * 0` (09:50 UTC, 10 min early in EDT) | `50 10 * * 0` (10:50 UTC, 10 min early in EST) |
 
-We register **both Sunday** crons (one per DST half), year-round — one tee time per Sunday (M6 Sunday-only schedule; the Saturday crons were dropped in M6 PR5). To avoid the maintenance burden of seasonal cron edits, both same-day crons fire and the DST-half gate (`core/dst_gate.py`) proceeds only when the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET) — otherwise the wrong-season cron exits without booking. This is what prevents the "second cron of the day runs anyway" failure mode (review item 1).
+We register **two DAILY** crons (one per DST half), year-round (multi-day re-arch — supersedes
+the M6 Sunday-only schedule; see MULTIDAY_PLAN.md). To avoid the maintenance burden of seasonal
+cron edits, both same-day crons fire and the DST-half gate (`core/dst_gate.py`) proceeds only
+when the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET) —
+otherwise the wrong-season cron exits without booking (prevents the "second cron of the day runs
+anyway" failure mode, review item 1). On top of the DST gate, the **booking-day gate**
+(`core/booking_day_gate.py`) fast-exits 0 on mornings whose `today+offset` weekday isn't in
+`target_weekdays` (default Sat+Sun) — so the daily crons book only the wanted days, one per day.
 
 > **Status (M6):** the gate has been re-homed from the removed `book.yml` `dst` step
 > into the container entrypoint. It now lives in `core/dst_gate.py` (`should_proceed`,

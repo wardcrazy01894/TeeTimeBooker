@@ -1,8 +1,8 @@
 # TeeTimeBooker
 
-Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET every Sunday, 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via Azure Container Apps Jobs; the golf course sends booking confirmations directly.
+Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). Primary target: **Mangrove Bay Golf Course** (St. Petersburg, FL) at exactly 6:00 AM ET on **Saturday and Sunday** mornings (configurable `target_weekdays`), 7 days in advance. Also supports TeeItUp-backed courses (e.g. **Sydney R. Marovitz**, Chicago Park District). Runs unattended via Azure Container Apps Jobs; the golf course sends booking confirmations directly.
 
-**Status:** M1 + M5 + M-feature-1 + M-feature-2 + M-feature-3 + M-azure complete. M2 core (orchestrator, idempotency) is done; only M2.T3 (post-mortem reconciliation) remains. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented and dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run. Prod is deployed (tag `infra/v1.0.0`, `dryRun=false`); the only remaining v0 code task is M2.T3 (post-mortem reconciliation). M3 (SQLite persistence) and M4 (email notifications) were intentionally cut — the live `list_reservations()` pre-book check is the double-booking guard, and the golf course sends confirmations directly. Cancellation watch job live (ACA watch job); auto-upgrade (M-feature-2) shipped — cancel-before-book + CAPTCHA pre-fetch, Spike S4 resolved.
+**Status:** M1 + M5 + M-feature-1 + M-feature-2 + M-feature-3 + M-azure complete. M2 core (orchestrator, idempotency) is done; only M2.T3 (post-mortem reconciliation) remains. ForeUP adapter implemented (live dry-run confirmed, Mangrove Bay). TeeItUp adapter implemented (live booking + cancel confirmed, Sydney Marovitz, 2026-05-29). Azure v1 Bicep IaC implemented and dev auto-deploys on merge to main via `.github/workflows/azure-iac.yml` in permanent dry-run. Prod is deployed (tag `infra/v1.0.0`, `dryRun=false`); the only remaining v0 code task is M2.T3 (post-mortem reconciliation). M3 (SQLite persistence) and M4 (email notifications) were intentionally cut — the live `list_reservations()` pre-book check is the double-booking guard, and the golf course sends confirmations directly. Cancellation watch job live (ACA watch job); auto-upgrade (M-feature-2) shipped — cancel-before-book + CAPTCHA pre-fetch, Spike S4 resolved. **Multi-day re-architecture complete in code** (plan-with-review ratified): books Saturday **and** Sunday (one reservation per day) via daily booking crons + a booking-day gate; the watcher polls every run and checks each wanted weekday; race-path CAPTCHA pre-fetch + 4xx multi-slot fallback merged. Activates in prod on the next `infra/v*` tag (dev auto-deploys dry-run).
 
 **Where to look:**
 - [PLAN.md](./PLAN.md) — full design, milestone roadmap, state machine, DST math, spikes
@@ -17,16 +17,15 @@ Python bot that books tee times at golf courses (ForeUP and TeeItUp platforms). 
 ## How it works
 
 **6 AM booking job** (ACA Job — `compute.bicep`):
-1. Two Azure Container Apps Jobs fire ~10 minutes before 6:00 AM ET on Sunday (two jobs, one per DST half; the wrong-season one exits via the DST gate)
-2. The bot busy-waits until T0 (±250 ms)
-3. It polls for available slots, picks the slot **closest to the midpoint** of the 08:45–10:00 ET window (midpoint-distance sort), and POSTs the booking
+1. Two Azure Container Apps Jobs fire ~10 minutes before 6:00 AM ET **every morning** (two jobs, one per DST half; the wrong-season one exits via the DST gate). Each run computes `today + 7` and **fast-exits** unless that weekday is in `target_weekdays` (default Sat+Sun) — the booking-day gate. So the daily crons book only the wanted days.
+2. On a wanted day the bot busy-waits until T0 (±250 ms), pre-solving the CAPTCHA during the wait so the POST fires at the drop
+3. It polls for available slots, picks the slot **closest to the midpoint** of the 08:45–10:00 ET window (midpoint-distance sort), and POSTs the booking (on a 4xx it tries the next-ranked slot)
 4. A live `list_reservations()` check immediately before the book POST guards against double-booking; the golf course sends the booking confirmation directly
 
 **Cancellation watch job** (ACA Job — `compute.bicep`):
-1. A third ACA Job fires every 10 minutes, year-round
-2. Each run performs one availability check for the upcoming target Sunday (anchored to `target_weekday` + offset, so it holds that date all week — it does not drift daily)
-3. If a slot opens in the preferred window, it books immediately
-4. Polling is suppressed outside 7 AM – 10 PM ET (handled internally — no DST gate needed)
+1. A third ACA Job fires every 10 minutes, year-round, and **polls on every run** (no time-of-day gate — so it sees the 6 AM drop + early cancellations)
+2. Each run checks the next upcoming occurrence of **each** wanted weekday within the horizon (upcoming Sat **and** Sun), one reservation per day; the search is scoped per date (a Saturday check never books a Sunday slot)
+3. If a slot opens in the preferred window, it books immediately (including an early-morning recovery if the 6 AM race missed)
 
 ---
 
@@ -125,14 +124,14 @@ uv run teetime watch --config config/local.toml --dry-run true
 # Live check — book immediately if a slot is found.
 uv run teetime watch --config config/local.toml --dry-run false
 
-# Watch a specific date instead of the default (the upcoming target Sunday + offset).
+# Watch a specific date instead of the default (the next occurrence of each wanted weekday).
 uv run teetime watch --config config/local.toml --dry-run true --date 2026-06-07
 ```
 
 The watch feature is **enabled by default in the v1 configs** (`config/container.toml`
 and `config/local.toml`, `watcher.enabled = true`). With `--dry-run true` it does all the
 looking/ranking/logging but never books. When disabled, the command logs a warning and
-exits 0. `one_booking_policy` (cancel + rebook to a closer-to-midpoint slot) is **enabled** — the watcher upgrades the booked Sunday if a better slot opens. Real effect is prod-only (dry-run suppresses the cancel/book POSTs).
+exits 0. `one_booking_policy` (cancel + rebook to a closer-to-midpoint slot) is **enabled** — the watcher upgrades a booked day if a better slot opens (per date — Sat and Sun independent). Real effect is prod-only (dry-run suppresses the cancel/book POSTs).
 
 ---
 
