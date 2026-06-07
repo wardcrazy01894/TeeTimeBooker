@@ -47,7 +47,11 @@ jobs:
         run: uv run pytest -m "not integration"
 
       - name: Dependency vulnerability scan (pip-audit)
-        run: uv run pip-audit
+        # PYSEC-2026-196 is an advisory in `pip` itself (26.1.1; fixed 26.1.2). pip is the
+        # toolchain installer seeded into the uv venv, NOT a teetime runtime dependency, so
+        # it cannot reach the bot at runtime. Ignored so it doesn't block unrelated PRs;
+        # remove this --ignore-vuln once the runner/uv ships pip >= 26.1.2.
+        run: uv run pip-audit --ignore-vuln PYSEC-2026-196
 
   # -------------------------------------------------------------------------
   # Secret scan: catch accidentally committed credentials
