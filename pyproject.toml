@@ -11,8 +11,6 @@ license = { text = "Proprietary" }
 dependencies = [
     "httpx>=0.27",          # async-capable HTTP client; cleaner than requests
     "pydantic>=2.7",        # config + payload validation
-    "tenacity>=8.3",        # retry policies
-    "structlog>=24.1",      # structured logging
     "click>=8.1",           # CLI
     "playwright>=1.37",     # headless browser for reCAPTCHA v2 invisible token harvest
     "idna>=3.15",           # CVE-2026-45409 fixed in 3.15; transitive via httpx
@@ -26,12 +24,13 @@ dev = [
     "respx>=0.21",          # httpx mock for unit tests
     "ruff>=0.5",
     "mypy>=2.0",            # 2.x strict defaults verified clean against this codebase
-    "types-pytz",
     "pip-audit>=2.10",      # dependency vulnerability scanning (CVE check)
 ]
 # Removed (unused): vcrpy (cassettes were never recorded — the live-API drift canary in
 # tests/test_foreup_canary.py replaced them); freezegun (the injectable FakeClock is used
-# everywhere instead). See full-repo-scan dependency-hygiene finding.
+# everywhere instead); tenacity (retry is hand-rolled in ForeUpAdapter._send_with_retry);
+# structlog (the code uses stdlib logging, not structlog); types-pytz (the code uses
+# zoneinfo, never pytz). See full-repo-scan dependency-hygiene finding.
 
 [project.scripts]
 teetime = "teetime.__main__:main"
