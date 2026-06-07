@@ -431,9 +431,10 @@ async def _watch(
         creds=creds,
         policy=cfg.one_booking_policy,
     )
-    # Check every wanted date this run (do NOT break — both Sat and Sun must be checked).
-    # Each check_once gets a request scoped to that date AND that date's weekday's windows,
-    # so a Sat check searches/books only Sat (and only Sat's windows). See PERDAY §8.
+    # Check EVERY wanted target date this run, whatever weekday we execute on (do NOT break —
+    # the upcoming Sat AND Sun are both checked, and either can be booked). Each check_once gets
+    # a request scoped to ITS target date + that date's weekday's windows, so the Saturday-target
+    # check uses Saturday's windows and the Sunday-target check uses Sunday's. See PERDAY §8.
     for target_date in target_dates:
         scoped_request = _scope_request_to_date(request, cfg, target_date)
         result = await watch.check_once(scoped_request, target_date)
@@ -681,9 +682,10 @@ def _scope_request_to_date(
 ) -> BookingRequest:
     """Return a copy of `request` scoped to a single date AND that date's weekday's windows.
 
-    Used by `_watch` to hand `check_once` a per-date-scoped request: a Saturday check then
-    searches/ranks only Saturday's windows, a Sunday check only Sunday's. Keeps the domain
-    TimeWindow weekday-free (the narrowing lives in the CLI config layer). See PERDAY §8.
+    Called once per TARGET DATE by `_watch` (which checks every wanted upcoming date each run,
+    regardless of execution day). Scoping pairs each target date with its own weekday's windows:
+    the check for a Saturday-dated target ranks Saturday's windows, the Sunday-dated target uses
+    Sunday's. Keeps the domain TimeWindow weekday-free (narrowing lives in the CLI). See PERDAY §8.
     """
     return dc_replace(
         request,

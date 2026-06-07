@@ -301,7 +301,8 @@ class WatchOrchestrator:
         # THIS target_date before searching so a multi-date watch never searches another
         # date, and filter ranked candidates to target_date as a STRUCTURAL guarantee
         # (rank_slots_for_request filters by window/spots/price, NOT by date). Together these
-        # ensure a Saturday watch can only ever book a Saturday slot — the user's contract.
+        # ensure the check for a Saturday-dated TARGET books only a Saturday slot (per target
+        # date, not per execution day — a run still checks every wanted date). User contract.
         scoped = dc_replace(request, target_dates=(target_date,))
         try:
             slots = await adapter.search(scoped)
