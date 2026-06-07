@@ -235,11 +235,13 @@ class _SpyOrchestrator:
     without a real T0 busy-wait or network call."""
 
     last_kwargs: ClassVar[dict] = {}
+    last_request: ClassVar[object] = None
 
     def __init__(self, **kwargs: object) -> None:
         _SpyOrchestrator.last_kwargs = dict(kwargs)
 
     async def run(self, request: object) -> object:
+        _SpyOrchestrator.last_request = request
         return SimpleNamespace(outcome=SimpleNamespace(value="dry_run"))
 
 
@@ -249,6 +251,7 @@ def spy_run(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     measure_ntp_offset. TEETIME_WAIT is cleared so tests start from a known state."""
     monkeypatch.delenv("TEETIME_WAIT", raising=False)
     _SpyOrchestrator.last_kwargs = {}
+    _SpyOrchestrator.last_request = None
     demo_calls: list = []
     ntp_calls: list = []
 
@@ -494,3 +497,99 @@ def test_build_request_interim_anchors_min_weekday(env_set: None) -> None:
     cfg.request.target_weekdays = ["sunday"]
     req2 = main_mod._build_request(cfg, dry_run=True)
     assert req2.target_dates[0].weekday() == 6  # Sunday
+
+
+# ---------------------------------------------------------------------------
+# MULTIDAY PR2: the booking-day gate runs on the --wait path AFTER the DST gate
+# and BEFORE the busy-wait. A non-wanted target weekday exits 0 without booking;
+# a wanted target proceeds and the booking request is pinned to that SINGLE date.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def booking_gate_spy(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Replace the booking-day gate with a recorder. `.book` controls its return."""
+    holder = SimpleNamespace(calls=[], book=True)
+
+    def fake_gate(
+        clock: object, *, timezone: str, target_offset: int, wanted_weekdays: object
+    ) -> bool:
+        holder.calls.append((timezone, target_offset, wanted_weekdays))
+        return holder.book
+
+    monkeypatch.setattr(main_mod, "should_book_today", fake_gate)
+    return holder
+
+
+def test_run_wait_dst_first_then_booking_day_gate(
+    spy_run: SimpleNamespace, gate_spy: SimpleNamespace, booking_gate_spy: SimpleNamespace
+) -> None:
+    # Wrong-season cron: the DST gate short-circuits BEFORE the booking-day gate is consulted.
+    gate_spy.proceed = False
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--use-fake-adapter", "--wait"],
+    )
+    assert result.exit_code == 0, result.output
+    assert gate_spy.calls  # DST gate evaluated
+    assert booking_gate_spy.calls == []  # booking-day gate NOT reached (DST first)
+    assert _SpyOrchestrator.last_kwargs == {}  # never booked
+
+
+def test_run_wait_booking_day_skip_exits_zero_no_book(
+    spy_run: SimpleNamespace, gate_spy: SimpleNamespace, booking_gate_spy: SimpleNamespace
+) -> None:
+    gate_spy.proceed = True  # correct season
+    booking_gate_spy.book = False  # today+offset is not a wanted weekday
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--use-fake-adapter", "--wait"],
+    )
+    assert result.exit_code == 0, result.output  # not-a-booking-day is NOT an error
+    assert len(booking_gate_spy.calls) == 1  # gate evaluated
+    assert _SpyOrchestrator.last_kwargs == {}  # orchestrator never constructed/run
+    assert _SpyOrchestrator.last_request is None  # never reached the booking request build
+
+
+def test_run_wait_booking_day_proceed_books_single_date(
+    spy_run: SimpleNamespace, gate_spy: SimpleNamespace, booking_gate_spy: SimpleNamespace
+) -> None:
+    gate_spy.proceed = True
+    booking_gate_spy.book = True
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--use-fake-adapter", "--wait"],
+    )
+    assert result.exit_code == 0, result.output
+    req = _SpyOrchestrator.last_request
+    assert req is not None
+    # Single-date target (reviewer must-fix 4 corollary: a multi-date booking request would
+    # let another day's reservation vacuously pass the pre-book guard).
+    assert len(req.target_dates) == 1
+
+
+def test_run_no_wait_bypasses_booking_day_gate(
+    spy_run: SimpleNamespace, gate_spy: SimpleNamespace, booking_gate_spy: SimpleNamespace
+) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run",
+            "--config",
+            str(EXAMPLE_TOML),
+            "--dry-run",
+            "true",
+            "--use-fake-adapter",
+            "--no-wait",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert booking_gate_spy.calls == []  # bypassed off the wait path (always-proceed)
+    assert gate_spy.calls == []  # DST gate also bypassed
+    # --no-wait still books a single date (today + offset).
+    assert _SpyOrchestrator.last_request is not None
+    assert len(_SpyOrchestrator.last_request.target_dates) == 1
