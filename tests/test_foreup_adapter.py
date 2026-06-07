@@ -444,6 +444,59 @@ async def test_book_slot_gone_raises() -> None:
 
 
 @respx.mock
+async def test_book_400_raises_slot_gone_so_orchestrator_tries_next() -> None:
+    """A 400 from the reservation POST means ForeUP definitively rejected the booking
+    (no reservation created — the usual cause is the slot was claimed between search and
+    book). It must surface as SlotGoneError so the orchestrator's candidate loop tries the
+    next-ranked slot instead of crashing with an uncaught HTTPStatusError (the 2026-06-07
+    prod failure: a 400 killed the job and the 5 backup slots were never attempted)."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(400, json={"msg": "That time is no longer available."})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError):
+            await adapter.book(slot, _request())
+
+
+@respx.mock
+async def test_book_logs_response_body_on_error(caplog: pytest.LogCaptureFixture) -> None:
+    """On any non-2xx reservation POST, the response body must be logged (it used to be
+    thrown away by raise_for_status, leaving us blind to WHY ForeUP rejected the booking —
+    see the 2026-06-07 prod 400). The distinctive server message must appear in the logs."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(400, json={"msg": "unique-server-rejection-reason"})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with caplog.at_level("WARNING"), pytest.raises(SlotGoneError):
+            await adapter.book(slot, _request())
+    assert "unique-server-rejection-reason" in caplog.text
+
+
+@respx.mock
 async def test_book_includes_captchaid_when_provider_given() -> None:
     """book() must include captchaid in the POST body when captcha_provider is set."""
     captcha_token = "test-captcha-token-xyz"

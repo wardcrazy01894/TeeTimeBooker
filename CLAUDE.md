@@ -122,6 +122,19 @@ in `core/` — never directly. This is the cut line for parallel work.
   has the full flow; §9.1 has the explicit state machine that M2.T1
   implements. `list_reservations` is on the `CourseAdapter` Protocol from
   M0 — it is NOT optional.
+- **A book-POST 4xx is a try-next-slot signal, not a crash.** `ForeUpAdapter.book()`
+  maps both `409` and `400` to `SlotGoneError`: a 4xx rejection means ForeUP
+  definitively created NO reservation (the prod 2026-06-07 failure was a `400` when
+  the prime slot was claimed in the ~100 s between search and book), so the
+  orchestrator's candidate loop (`_run_course`) falls through to the next-ranked slot
+  instead of dying with an uncaught `HTTPStatusError`. This is distinct from the §9
+  UNCERTAIN case (timeout/5xx — ambiguous whether the POST landed), which still
+  propagates. `book()` ALSO logs the full status + response body on any non-2xx before
+  raising (the body used to be discarded by `raise_for_status`, leaving us blind to the
+  reason). A captcha-challenge `400` is still classified as `CaptchaError` first (the
+  `_guard_captcha` check runs before the 400→SlotGone mapping). Caveat: each fallback
+  candidate re-solves a fresh CAPTCHA (~75 s, single-use token), so at a competitive
+  drop the fallbacks are best-effort.
 - **Transient-failure retry is for IDEMPOTENT ForeUP calls only.** `ForeUpAdapter.
   _send_with_retry` retries on `httpx.TransportError` (read/connect timeouts,
   network blips — the observed prod failure was a lone `httpx.ReadTimeout` that
