@@ -50,3 +50,25 @@ def resolve_target_dates(today: date, offsets: list[int], weekday: int) -> tuple
     """
     anchor = most_recent_weekday(today, weekday)
     return tuple(anchor + timedelta(days=o) for o in sorted(offsets))
+
+
+def next_occurrences_within_horizon(
+    today: date, wanted_weekdays: frozenset[int], horizon_days: int
+) -> tuple[date, ...]:
+    """The next upcoming occurrence of EACH wanted weekday within `horizon_days` of today.
+
+    For each weekday w in `wanted_weekdays`, includes the smallest date d with
+    d.weekday() == w and 0 <= (d - today).days <= horizon_days. "Today counts": if today
+    is a wanted weekday, today itself is the occurrence (delta 0) — never a past date,
+    never next week's same weekday. Returned dates are sorted ascending and de-duplicated;
+    a weekday whose next occurrence is strictly beyond the horizon is omitted.
+
+    The watcher passes `horizon_days = max(target_offsets)` so the bookable window is
+    defined in ONE place (config), never hardcoded here. See MULTIDAY_PLAN.md PR3.
+    """
+    out: set[date] = set()
+    for w in wanted_weekdays:
+        delta = (w - today.weekday()) % 7  # 0 when today is that weekday (today counts)
+        if delta <= horizon_days:
+            out.add(today + timedelta(days=delta))
+    return tuple(sorted(out))
