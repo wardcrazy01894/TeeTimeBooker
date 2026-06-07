@@ -101,6 +101,7 @@ What agents MUST NOT run without explicit user instruction (all hard-blocked by
 - `az containerapp job start` / `update` / `delete` (live execution / config change / removal)
 - `az role assignment create` / `delete` (RBAC grant/revoke)
 - `az keyvault secret set` / `delete` / `purge`; `az keyvault set-policy`
+- `az keyvault purge` / `delete` (vault-level — destroys/permanently-removes the whole vault)
 - `az group delete` / `az resource delete`
 - Any `az` command that modifies, creates, or deletes Azure resources
 

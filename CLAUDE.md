@@ -407,5 +407,7 @@ safety rules**, and the open-questions pointer) lives in
 
 **Safety rule that always applies (also enforced by `.claude/hooks/az-deploy-guard.sh`):**
 an agent MUST NOT run `az deployment … create`, `az containerapp job start`,
-`az keyvault secret set/delete`, or `az group delete` without explicit user
-approval. Read-only `az` (list/show/validate/what-if) and `az bicep build` are fine.
+`az keyvault secret set/delete` or vault-level `az keyvault purge/delete`, or
+`az group delete` without explicit user approval. Read-only `az` (list/show/validate/
+what-if) and `az bicep build` are fine. (The guard's block-list is regression-tested in
+`tests/test_az_deploy_guard.py`.)

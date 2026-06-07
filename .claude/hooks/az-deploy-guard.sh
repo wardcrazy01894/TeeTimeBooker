@@ -21,7 +21,7 @@ except Exception:
 norm="$(printf '%s' "$cmd" | tr -s "[:space:]" " ")"
 
 if printf '%s' "$norm" | grep -Eiq \
-  'az (deployment (group|sub|mg|tenant) create|containerapp job (start|update|delete)|role assignment (create|delete)|keyvault (secret (set|delete|purge)|set-policy)|group delete|resource delete)'; then
+  'az (deployment (group|sub|mg|tenant) create|containerapp job (start|update|delete)|role assignment (create|delete)|keyvault (purge|delete|secret (set|delete|purge)|set-policy)|group delete|resource delete)'; then
   {
     echo "BLOCKED by az-deploy-guard: this command creates, modifies, or deletes"
     echo "live Azure resources, which CLAUDE.md forbids without explicit user"
