@@ -113,6 +113,34 @@ async def test_append_attempt_records_event() -> None:
     assert store._attempts[0][2] == "SEARCH_START"
 
 
+async def test_append_attempt_redacts_card_and_pii_before_storing() -> None:
+    """PCI guard at the STORE boundary: append_attempt MUST drop card fields + player
+    PII before the payload lands in the attempt_log, so no caller can leak PAN/CVV by
+    forgetting to redact. See PLAN.md §10.1 and the full-repo-scan security finding."""
+    store = InMemoryStore()
+    rid = _rid()
+    await store.initialize()
+    await store.append_attempt(
+        rid,
+        attempt=1,
+        event="BOOK_POST",
+        payload={
+            "card_number": "4111111111111111",
+            "cvv": "123",
+            "Payment": {"CC": {"CreditCardNumber": "4111111111111111", "CVVCode": "999"}},
+            "email": "alex@example.test",
+            "course_id": "teeitup:sydney_marovitz",  # non-sensitive — preserved
+        },
+        at=datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC),
+    )
+    stored = store._attempts[0][3]
+    assert stored["card_number"] == "***"
+    assert stored["cvv"] == "***"
+    assert stored["Payment"] == "***"
+    assert stored["email"] == "***"
+    assert stored["course_id"] == "teeitup:sydney_marovitz"
+
+
 async def test_request_lock_holds_for_duration() -> None:
     store = InMemoryStore()
     await store.initialize()

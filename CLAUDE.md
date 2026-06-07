@@ -130,9 +130,10 @@ in `core/` — never directly. This is the cut line for parallel work.
   DOES POST PAN + CVV + expiry + billing to `tr.gnsvc.com` on every booking
   (sourced from `*_env` vars, never committed). This is a deliberate scope
   expansion past the original "no card data, ever" rule — see PLAN.md §7.
-  Consequence: handling raw PAN/CVV brings PCI scope; card fields MUST be dropped
-  by `_redact_payload` before any `attempt_log` write (PLAN.md §10.1), and the
-  card POST uses `follow_redirects=False`.
+  Consequence: handling raw PAN/CVV brings PCI scope; card fields are dropped by
+  `core.redaction.redact_payload`, which `BookingStore.append_attempt` applies at the
+  store boundary on every `attempt_log` write (PLAN.md §10.1) — so no caller can leak
+  card data by forgetting to scrub. The card POST uses `follow_redirects=False`.
 - **Double-booking defense is layered.** Live pre-book `list_reservations`
   check, single-attempt-per-slot rule, in-process advisory lock, ACA Job /
   GH Actions concurrency groups. There is no durable cross-run idempotency

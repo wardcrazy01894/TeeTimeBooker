@@ -929,7 +929,7 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
 | Killswitch custom role | "ACA Job Schedule Manager" (operator creates, subscription-scoped) | Actions: Microsoft.App/jobs/read + write + stop/action. Assigned to Logic App system-assigned MI on rg-teetime-dev + rg-teetime-prod. See §9.2 for the az CLI command. |
 | CI service principal | Contributor + User Access Admin, RG-scoped | Not subscription-level Contributor |
 | OIDC auth (no client secrets in GitHub) | Required | GitHub stores only AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID |
-| Credit-card data | Platform-specific | ForeUP keeps card on file → bot never sends PAN/CVV. **TeeItUp has no wallet → the TeeItUp adapter DOES POST PAN/CVV/expiry/billing to tr.gnsvc.com** (from env vars, never committed); card fields are dropped by `_redact_payload` before any attempt_log write (PLAN.md §10.1), and the card POST uses `follow_redirects=False`. |
+| Credit-card data | Platform-specific | ForeUP keeps card on file → bot never sends PAN/CVV. **TeeItUp has no wallet → the TeeItUp adapter DOES POST PAN/CVV/expiry/billing to tr.gnsvc.com** (from env vars, never committed); card fields are dropped by `redact_payload` at the `append_attempt` store boundary on every attempt_log write (PLAN.md §10.1), and the card POST uses `follow_redirects=False`. |
 | PII redaction in logs | Inherited from v0 | PLAN.md §10.1 rules apply; attempt_log is in Log Analytics (stdout) |
 
 ---

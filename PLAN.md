@@ -403,15 +403,16 @@ from `BookingRequest.players` or `CourseCredentials`, the orchestrator MUST:
   entirely (not hashed). Raw PAN/CVV in any log is a PCI incident.
 - Confirmation codes ARE persisted (we need them for reconciliation).
 
-A helper `_redact_payload(d: dict) -> dict` lives in `core/orchestrator.py` (recursive — nested
+A helper `redact_payload(d: dict) -> dict` lives in `core/redaction.py` (recursive — nested
 dicts AND lists). It drops to `"***"` both the CARD fields (the `Payment.*`/`Payments_*` GNSVC
 namespace + the cred-style keys: card_number, cvv, expiry_*, billing_*, name_on_card, password)
 AND player PII (email, phone, mobile, member number, first/last name). (It DROPS PII rather than
 SHA-256-hashing it — stronger for an audit blob, since a hash of a low-entropy phone number is
-reversible.) Any caller that builds a payload MUST route it through `_redact_payload` before
-`store.append_attempt`. NOTE: `append_attempt` is not yet called by any flow — the post-mortem
-reconciliation path (M2.T3) is the intended first caller and must apply this helper. The helper
-exists today so the guard is in place before that wiring lands.
+reversible.) `BookingStore.append_attempt` applies `redact_payload` at the store boundary on
+every write, so redaction is non-bypassable — a caller cannot leak card data by forgetting to
+scrub. NOTE: `append_attempt` is not yet called by any flow — the post-mortem reconciliation
+path (M2.T3) is the intended first caller; the store-boundary guard means its writes are
+redacted by default. The guard is in place before that wiring lands.
 
 ---
 
@@ -625,7 +626,7 @@ Each item from the brief, addressed:
 - **Double-booking risk:** §9. Six layers of defense; reconciliation is the load-bearing one.
 - **ForeUP captcha:** §8 row "Captcha challenge"; §12. The booking step is gated by an invisible reCAPTCHA, which the bot solves via 2captcha (Playwright fallback) — see `foreup/captcha.py`. S1 confirmed no login captcha. Caveat: a synchronous solve (~15–30 s) in the booking POST can blow the T0 race window — see §19 / `infra/AZURE_PLAN.md` for the pre-fetch consideration.
 - **Account lockout:** §8.1. Three auth failures → halt current run + notify (in-run only; no durable cooldown across runs).
-- **Credit-card storage:** §7. **By platform.** ForeUP: none (card-on-file). TeeItUp: PAN/CVV/expiry/billing are passed to `tr.gnsvc.com` on each booking (no wallet); sourced from env vars, never committed, and must be dropped by `_redact_payload` before any `attempt_log` write (§10.1).
+- **Credit-card storage:** §7. **By platform.** ForeUP: none (card-on-file). TeeItUp: PAN/CVV/expiry/billing are passed to `tr.gnsvc.com` on each booking (no wallet); sourced from env vars, never committed, and dropped by `redact_payload` at the `append_attempt` store boundary on every `attempt_log` write (§10.1).
 - **ForeUP ToS:** §12, stated honestly. Risks accepted by user.
 - **Concurrency / accidental double trigger:** §9 layers 5 & 6. ACA Job `parallelism=1` / workflow concurrency group + in-process advisory lock. `ConcurrentRunError` fails fast.
 - **Mid-run runner kill:** Next run has no prior state; §9 layer 2 (`list_reservations`) catches any existing booking before re-POSTing. See §9.2.

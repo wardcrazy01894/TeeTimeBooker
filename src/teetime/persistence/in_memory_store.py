@@ -15,6 +15,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, date, datetime
 
 from ..core.models import BookingResult, CourseId, RequestId
+from ..core.redaction import redact_payload
 from .store import ConcurrentRunError
 
 
@@ -63,7 +64,9 @@ class InMemoryStore:
         payload: dict[str, object],
         at: datetime,
     ) -> None:
-        self._attempts.append((request_id, attempt, event, payload, at))
+        # PCI/PII guard at the store boundary (PLAN.md §10.1): redact card fields + player
+        # PII here so no caller can leak PAN/CVV by forgetting to scrub the payload first.
+        self._attempts.append((request_id, attempt, event, redact_payload(payload), at))
 
     async def cache_session(
         self,

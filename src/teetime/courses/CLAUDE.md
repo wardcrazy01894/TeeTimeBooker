@@ -63,6 +63,7 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
 - **`tr.gnsvc.com` response time**: payment endpoint takes ~5-10 s. The adapter sets a 60 s timeout for that specific call.
 
 > **Card-data / PCI note:** the card fields above are real PAN/CVV passed to
-> `tr.gnsvc.com` on every TeeItUp booking. They must be dropped by `_redact_payload`
-> before any `attempt_log` write (PLAN.md §10.1), and the card POST uses
-> `follow_redirects=False`. See the root CLAUDE.md "Credit-card data" invariant.
+> `tr.gnsvc.com` on every TeeItUp booking. They are dropped by `redact_payload`, which
+> `BookingStore.append_attempt` applies at the store boundary on every `attempt_log` write
+> (PLAN.md §10.1), and the card POST uses `follow_redirects=False`. See the root CLAUDE.md
+> "Credit-card data" invariant.
