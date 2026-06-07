@@ -70,7 +70,7 @@ warn_unreachable = true
 no_implicit_reexport = true
 
 [[tool.mypy.overrides]]
-module = ["vcr.*", "freezegun.*", "ntplib.*"]
+module = ["ntplib.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
