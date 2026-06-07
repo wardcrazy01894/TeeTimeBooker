@@ -921,6 +921,7 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
 | No secrets in container env vars (direct) | Required | All env vars are `secretRef:` pointing to Key Vault references |
 | Key Vault soft-delete | On (90 days, default) | Confirmed default for new vaults created since 2019 |
 | Key Vault purge protection | **Dev: disabled (fast iteration); Prod: enabled** | NOT on by default; must be set for prod; irreversible once enabled |
+| Key Vault audit logging | On (both envs) | `keyvault.bicep` ships a `diagnosticSettings` (categoryGroup `audit` = AuditEvent) to the Log Analytics workspace — the forensic record of who/what read which secret. Audit volume is tiny (well under the 5 GB/mo free tier). |
 | ACA Job has no public ingress | By design | ACA Jobs (scheduled trigger type) do NOT expose HTTP ingress — unlike Container Apps services, which can have HTTP listeners. There is no public endpoint, no port binding, and no inbound network surface for the job resources. |
 | Outbound-only network | By design | Bot makes outbound HTTPS to ForeUP only; no inbound surface |
 | VNet integration | Not required for v0/v1 | ForeUP is a public internet endpoint; VNet adds cost and complexity with no security benefit |

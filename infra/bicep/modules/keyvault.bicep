@@ -2,6 +2,7 @@
 // Grants Key Vault Secrets User role to the Container Apps Job MI.
 // Soft-delete: 90 days (default for new vaults, always on since 2019).
 // Purge protection: EXPLICITLY ENABLED here — not on by default. Irreversible.
+// Audit logging: AuditEvent logs shipped to Log Analytics (diagnosticSettings) for forensics.
 //
 // Secret names stored here (operator must populate after deploy):
 //   MB-USERNAME, MB-PASSWORD, PLAYER1-EMAIL, PLAYER1-PHONE, PLAYER1-MB-MEMBER,
@@ -46,6 +47,11 @@ param jobPrincipalId string
 // protection enabled (soft-delete means it lands in deleted state; purge
 // protection prevents the permanent purge). For dev iteration, pass false.
 param enablePurgeProtection bool = true
+
+@description('Log Analytics workspace resource ID (from logs.bicep) that receives Key Vault AuditEvent logs. Wiring it here creates an implicit dependency so logs deploys before this module.')
+// Captures the data-plane audit trail (who/what read which secret, when) so a suspected
+// credential leak has a forensic record. See AZURE_PLAN.md §11 (security checklist).
+param logAnalyticsWorkspaceId string
 
 // ---------------------------------------------------------------------------
 // Variables
@@ -115,6 +121,24 @@ resource kvSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-0
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', kvSecretsUserRoleId)
     principalId: jobPrincipalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// Audit logging: ship Key Vault AuditEvent (data-plane secret reads/writes + control-plane
+// events) to Log Analytics. This is the forensic record for a suspected credential leak —
+// without it, secret access is invisible. Audit volume for a single-user bot is tiny (well
+// under the workspace's 5 GB/month free tier). See AZURE_PLAN.md §11.
+resource kvAuditDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'kv-audit-to-loganalytics'
+  scope: keyVault
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      {
+        categoryGroup: 'audit'
+        enabled: true
+      }
+    ]
   }
 }
 
