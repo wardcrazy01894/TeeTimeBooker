@@ -345,7 +345,7 @@ class TeeItUpAdapter:
         _log.info("TeeItUp search: found %d matching slots", len(slots))
         return slots
 
-    async def prepare_book(self, slot: TeeTimeSlot, request: BookingRequest) -> None:
+    async def prepare_book(self, slot: TeeTimeSlot | None, request: BookingRequest) -> None:
         """No-op — TeeItUp uses session auth, no CAPTCHA pre-fetch required."""
         return
 

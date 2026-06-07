@@ -79,11 +79,14 @@ earliest = 08:45:00
 latest   = 10:00:00
 
 [scheduler]
-timezone         = "America/New_York"   # Mangrove Bay is in ET
-fire_time        = 06:00:00              # local wall-clock; DST handled by zoneinfo
-early_arrival_ms = 500                   # land 0.5 s before T0
-poll_interval_ms = 250
-max_poll_seconds = 30                    # give up polling after this
+timezone               = "America/New_York"   # Mangrove Bay is in ET
+fire_time              = 06:00:00              # local wall-clock; DST handled by zoneinfo
+early_arrival_ms       = 500                   # land 0.5 s before T0
+poll_interval_ms       = 250
+max_poll_seconds       = 30                    # give up polling after this
+captcha_prefetch_lead_s = 90                   # race path (--wait): start the CAPTCHA solve
+                                               # this many seconds before T0 so book() at the
+                                               # drop fires with a token already in hand
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from

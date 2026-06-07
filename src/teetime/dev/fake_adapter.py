@@ -95,7 +95,7 @@ class FakeAdapter:
     async def authenticate(self, creds: CourseCredentials) -> None:
         self.authenticate_call_count += 1
 
-    async def prepare_book(self, slot: TeeTimeSlot, request: BookingRequest) -> None:
+    async def prepare_book(self, slot: TeeTimeSlot | None, request: BookingRequest) -> None:
         self.prepare_book_call_count += 1
         if self._prepare_book_exc is not None:
             raise self._prepare_book_exc
