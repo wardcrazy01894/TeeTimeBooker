@@ -82,11 +82,11 @@ poll_interval_s    = 600  # 10 minutes; must be >= 300 (anti-bot floor)
 # + early-morning cancellations. Rate limiting is the cron cadence + the poll_interval floor.
 
 # Auto-upgrade (M-feature-2). ENABLED. When the watcher finds a higher-ranked slot
-# (closer to the 8:45-10:00 midpoint) than the current managed booking for the target
-# Sunday, it cancels and rebooks the better slot. Safe to run daily now that the watch
-# target is anchored to the booked Sunday (target_weekday, PR7) — it only ever acts on
-# that one date, never a drifting today+7. Real effect is prod-only: in dev (--dry-run
-# true) the cancel/book POSTs are suppressed. priority_slots omitted → defaults to
-# course_preferences order + time_windows[0] (the midpoint ranking).
+# (closer to that day's window midpoint) than the current managed booking for a wanted
+# day, it cancels and rebooks the better slot. Safe to run daily because the watch request
+# is scoped per target date — each check only ever acts on its own date+window, never a
+# drifting today+7. Real effect is prod-only: in dev (--dry-run true) the cancel/book POSTs
+# are suppressed. priority_slots omitted → defaults to course_preferences order +
+# the per-day time_windows (the midpoint ranking).
 [one_booking_policy]
 enabled = true

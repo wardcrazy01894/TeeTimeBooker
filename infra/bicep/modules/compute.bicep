@@ -280,15 +280,16 @@ resource bookingJob 'Microsoft.App/jobs@2024-03-01' = [for job in bookingJobs: {
 
 // Watch job (M-feature-1): polls every 10 minutes for cancellation slots.
 // Same identity / registries / secrets / env as the booking jobs.
-// Safety: this is safe to run unconditionally because (a) watcher.enabled = false
-// in config/container.toml makes the watch CLI exit 0 with no booking, and
-// (b) dry-run blocks any booking POST regardless. No DST gate needed — the
-// WatchOrchestrator gates polling hours internally via zoneinfo.
+// Safety: the watcher is ENABLED (watcher.enabled = true) and polls on every run —
+// the time-of-day polling gate was removed in the multi-day re-arch. It is safe to run
+// unconditionally because (a) in dev dryRun=true suppresses every booking POST, and
+// (b) the watch request is scoped per target date, so an upgrade only ever acts within
+// the intended date+window. No DST gate needed (the watcher is season-agnostic).
 resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
   name: watchJobName
   location: location
   tags: tags
-  // Provision the watch job AFTER the four booking jobs (not concurrently) for
+  // Provision the watch job AFTER the two booking jobs (not concurrently) for
   // the same cold-environment reason as @batchSize(1) above — avoids the
   // "Operation expired" control-plane timeout on first deploy.
   dependsOn: [bookingJob]

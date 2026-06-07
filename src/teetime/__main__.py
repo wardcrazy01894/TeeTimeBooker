@@ -226,7 +226,7 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
 
     # One-shot NTP offset for the T0 race. Gated on `wait` (NOT dry_run) so the dev
     # `--wait --dry-run true` run probes UDP:123 reachability before the first real
-    # prod Sunday; best-effort, degrades to 0 on failure. Skipped for the fake adapter
+    # prod booking run; best-effort, degrades to 0 on failure. Skipped for the fake adapter
     # (no network in tests/demo) and off the wait path (offset is meaningless there).
     clock_offset = measure_ntp_offset() if wait and not use_fake_adapter else timedelta(0)
     clock = RealClock(offset=clock_offset)

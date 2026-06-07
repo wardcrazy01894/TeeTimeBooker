@@ -1,5 +1,13 @@
 # MULTIDAY_PLAN — Saturday + Sunday booking re-architecture
 
+> **Status: SHIPPED (PRs #70–#75), then partly SUPERSEDED.** The Sat+Sun daily-cron
+> re-architecture described here is fully implemented and on `main`. The `target_weekday(s)`
+> config scheme this plan introduces was itself subsequently **superseded by per-day time
+> windows** (`PERDAY_WINDOWS_PLAN.md`, #76/#77): wanted days are now **derived from the
+> `[[request.time_windows]]` weekdays**, not a separate `target_weekdays` list, and the
+> `target_weekday`/`target_weekdays` keys were removed. Read the design below as historical —
+> the root `CLAUDE.md` is the authoritative description of current behavior.
+
 Architect plan to extend the bot from "one managed reservation on the target Sunday" to
 "one managed reservation **per wanted morning day**" — the upcoming Saturday AND the
 upcoming Sunday, same morning window for each — by replacing the booking-weekday-specific

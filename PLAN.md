@@ -421,14 +421,14 @@ exists today so the guard is in place before that wiring lands.
 |-------------|-----------------------|-------------------------------------------------------------------|
 | Unit (pure) | pytest                | models invariants, config validation, busy-wait math (FakeClock) |
 | Adapter unit | respx                | ForeUP request shape, error mapping, captcha detection            |
-| Adapter integration | vcrpy cassettes recorded in Spike S1 | Full search+book against canned responses |
+| Adapter integration | respx + the `test_foreup_canary.py` live-drift canary | Full search+book against mocked responses; canary catches real ForeUP drift |
 | Orchestrator | FakeAdapter + FakeClock + InMemoryStore | the race, fallback, idempotency |
 | End-to-end dry-run | live ForeUP, `--dry-run` | All HTTP up to but not including the final POST |
 | Cron lint    | actionlint            | Workflow syntax + cron expression sanity |
 
 **6:00 AM race testing without waiting 7 days:** `FakeClock` lets a test set "now" to T0 - 1.5 s and assert the orchestrator's first `search()` lands within ±50 ms of T0. This is the spec for `clock.busy_wait_until`.
 
-**Cassette policy:** cassettes go in `tests/cassettes/`, scrubbed of cookies, JWTs, and personally identifying info before commit. Re-recording is a Spike S1 sub-task.
+**Live-drift policy:** there are no recorded cassettes (vcrpy was dropped in #82 — cassettes were never recorded). `tests/test_foreup_canary.py` is an opt-in `integration`-marked canary that hits live ForeUP (gated on real creds) to catch endpoint/shape drift; respx mocks cover the deterministic adapter-unit layer.
 
 ---
 
@@ -582,8 +582,8 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 ### M5 — ForeUP adapter (DONE — live dry-run confirmed)
 | ID    | Task                                                        | Inputs              | Outputs                                                          | Owner-files                                                          | Deps         |
 |-------|-------------------------------------------------------------|---------------------|------------------------------------------------------------------|----------------------------------------------------------------------|--------------|
-| **S1** | **Spike: confirm ForeUP endpoints, request shapes, captcha posture, schedule_id** for Mangrove Bay | live ForeUP, browser devtools | recorded vcrpy cassettes + a 1-page note in `docs/foreup-spike.md` (committed) | `tests/cassettes/foreup_*.yaml`, `docs/foreup-spike.md`              | M1.*         |
-| M5.T1 | Implement `ForeUpAdapter.authenticate`                      | S1 cassettes        | auth round-trip; JWT extracted; AuthError on bad creds          | `courses/foreup/base.py`, `tests/test_foreup_auth.py`                | S1           |
+| **S1** | **Spike: confirm ForeUP endpoints, request shapes, captcha posture, schedule_id** for Mangrove Bay | live ForeUP, browser devtools | the `test_foreup_canary.py` live-drift canary + a 1-page note in `docs/foreup-spike.md` (committed) | `tests/test_foreup_canary.py`, `docs/foreup-spike.md`              | M1.*         |
+| M5.T1 | Implement `ForeUpAdapter.authenticate`                      | S1 findings         | auth round-trip; JWT extracted; AuthError on bad creds          | `courses/foreup/base.py`, `tests/test_foreup_auth.py`                | S1           |
 | M5.T2 | Implement `ForeUpAdapter.search` + criteria filtering       | S1, M5.T1           | parse `/api/booking/times`; map to `TeeTimeSlot`; raise InventoryNotPublishedError for empty-pre-T0 | `courses/foreup/base.py`, `tests/test_foreup_search.py` | M5.T1        |
 | M5.T3 | Implement `ForeUpAdapter.book` + `ForeUpAdapter.list_reservations` (Protocol method already defined in `core/adapter.py`; M5.T3 implements its body) | S1, M5.T1, M5.T2    | book POST happy path; conflict → SlotGoneError; list_reservations returns matching ExistingReservation; orchestrator-driven reconciliation works end-to-end | `courses/foreup/base.py`, `tests/test_foreup_book.py`                | M5.T2        |
 | M5.T4 | Captcha + rate-limit detection                              | S1                  | adapter raises `CaptchaError` / `RateLimitError` from canned responses | `courses/foreup/base.py`, `tests/test_foreup_protection.py`           | M5.T1        |
@@ -638,7 +638,7 @@ Each item from the brief, addressed:
 ## 19. Open risks (eyes open)
 
 1. **GH Actions doesn't actually fire.** Mitigation in v1; v0 accepts the loss.
-2. **ForeUP changes endpoints.** Adapter is one file; vcrpy cassettes go red loud. Manageable.
+2. **ForeUP changes endpoints.** Adapter is one file; the `test_foreup_canary.py` live-drift canary goes red loud. Manageable.
 3. ~~**`api-key: no_limits` is a known-bot signal.**~~ Resolved in S1: login uses `api_key=""` (empty); search uses `api_key="no_limits"`. No adverse response observed.
 4. **The user's ForeUP account gets restricted.** §12. Accepted v0 risk; would invalidate v0 entirely until manual unlock.
 5. **Time-window picker logic ("best slot")** is under-specified. v0 picks the slot whose `tee_time` is closest to the midpoint of the user's window. Revisit in v1 with explicit ranking config.
@@ -852,12 +852,12 @@ touched. If the user manually creates a second booking, the system ignores it.
 | ID | Task | Inputs | Outputs | Owner-files | Deps |
 |----|------|--------|---------|-------------|------|
 | **S4 (Spike)** | Confirm ForeUP cancellation endpoint. Questions: (1) What HTTP method and path? (2) What identifier does the server expect (pending_reservation_id, confirmation_code, other)? (3) Is there a notes/comments field in list_reservations that echoes user-supplied text from the booking POST? (4) Is 404 returned for already-cancelled reservations? (5) What is the cancellation window (minutes before tee time)? | Browser devtools on ForeUP booking page | Exit criterion: `cancel_endpoint`, `cancel_id_field`, `notes_field_echo`, `cancel_404_on_gone`, `cancel_window_minutes` all confirmed and documented in `docs/foreup-cancel-spike.md` | `docs/foreup-cancel-spike.md` | M5 done |
-| M-feature-2.T1 | Implement `ForeUpAdapter.cancel_reservation()` using confirmed S4 endpoint; handle 404 as success; raise `CancelError` on other 4xx/5xx | S4, `tests/test_foreup_book.py` (add cancel tests) | `ForeUpAdapter.cancel_reservation` passing tests | `src/teetime/courses/foreup/base.py`, `tests/test_foreup_book.py` | S4 |
-| M-feature-2.T2 | Implement `UpgradeOrchestrator._build_priority_list()` and `_current_booking_priority()` | `core/upgrade_orchestrator.py` stub | unit tests for priority list construction | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-3.T2 |
-| M-feature-2.T3 | Implement `UpgradeOrchestrator.maybe_upgrade()` with full cancel-before-book protocol (ForeUP enforces one active booking/day, so the new slot cannot be booked while the old one is live; `prepare_book()` pre-fetches the CAPTCHA token to shrink the cancel→book gap); cancel-failure path; idempotency key handling; notification | `tests/test_upgrade_orchestrator.py` (red tests on disk), M-feature-2.T1, M-feature-2.T2 | all upgrade tests green; state machine correct under FakeAdapter | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-2.T1, M-feature-2.T2 |
+| ~~M-feature-2.T1~~ | ~~Implement `ForeUpAdapter.cancel_reservation()` using confirmed S4 endpoint; handle 404 as success; raise `CancelError` on other 4xx/5xx~~ **DONE** | S4, `tests/test_foreup_book.py` (add cancel tests) | `ForeUpAdapter.cancel_reservation` passing tests | `src/teetime/courses/foreup/base.py`, `tests/test_foreup_book.py` | S4 |
+| ~~M-feature-2.T2~~ | ~~Implement `UpgradeOrchestrator._build_priority_list()` and `_current_booking_priority()`~~ **DONE** | `core/upgrade_orchestrator.py` stub | unit tests for priority list construction | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-3.T2 |
+| ~~M-feature-2.T3~~ | ~~Implement `UpgradeOrchestrator.maybe_upgrade()` with full cancel-before-book protocol (ForeUP enforces one active booking/day, so the new slot cannot be booked while the old one is live; `prepare_book()` pre-fetches the CAPTCHA token to shrink the cancel→book gap); cancel-failure path; idempotency key handling; notification~~ **DONE** | `tests/test_upgrade_orchestrator.py` (red tests on disk), M-feature-2.T1, M-feature-2.T2 | all upgrade tests green; state machine correct under FakeAdapter | `src/teetime/core/upgrade_orchestrator.py`, `tests/test_upgrade_orchestrator.py` | M-feature-2.T1, M-feature-2.T2 |
 | ~~M-feature-2.T4~~ | ~~Implement `SqliteStore.delete_terminal()`~~ **DONE / DROPPED**: `delete_terminal` is implemented on `InMemoryStore` (M3 is dropped; `SqliteStore` removed). No further work needed. | — | — | — | — |
-| M-feature-2.T5 | Wire `UpgradeOrchestrator` into `WatchOrchestrator.check_once()` — after finding a slot, check if it is higher priority than the current booking; if so, delegate to `UpgradeOrchestrator.maybe_upgrade()` | M-feature-1.T2, M-feature-2.T3 | integration test: watch finds higher-priority slot, triggers upgrade | `src/teetime/core/watch_orchestrator.py` | M-feature-1.T2, M-feature-2.T3 |
-| M-feature-2.T6 | GH Actions + ACA Bicep: the watch workflow already fires UpgradeOrchestrator via WatchOrchestrator — no separate job needed. Update `watch-tee-time.yml` to pass `--one-booking-policy` flag | M-feature-1.T3, M-feature-2.T5 | `gh workflow run watch-tee-time` with one-booking policy enabled works in dry-run | `.github/workflows/watch-tee-time.yml` | M-feature-1.T3, M-feature-2.T5 |
+| ~~M-feature-2.T5~~ | ~~Wire `UpgradeOrchestrator` into `WatchOrchestrator.check_once()` — after finding a slot, check if it is higher priority than the current booking; if so, delegate to `UpgradeOrchestrator.maybe_upgrade()`~~ **DONE** | M-feature-1.T2, M-feature-2.T3 | integration test: watch finds higher-priority slot, triggers upgrade | `src/teetime/core/watch_orchestrator.py` | M-feature-1.T2, M-feature-2.T3 |
+| ~~M-feature-2.T6~~ | ~~GH Actions + ACA Bicep: the watch workflow already fires UpgradeOrchestrator via WatchOrchestrator — no separate job needed~~ **DONE / SUPERSEDED**: the watch schedule now runs as an ACA Job (`compute.bicep`); `watch-tee-time.yml` was removed. `one_booking_policy` is enabled via `config/container.toml`, not a CLI flag. | M-feature-1.T3, M-feature-2.T5 | one-booking policy active in the watch ACA Job (dry-run in dev) | `infra/bicep/modules/compute.bicep`, `config/container.toml` | M-feature-1.T3, M-feature-2.T5 |
 
 **Reviewer pre-emption (adversarial checklist):**
 

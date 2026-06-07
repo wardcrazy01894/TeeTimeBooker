@@ -20,7 +20,8 @@ v0 is single-user, run as Azure Container Apps Jobs (GitHub Actions is CI/deploy
 
 ## Status
 
-M1 + M5 + M-feature-1 (watch job) + M-feature-3 (slot ranking) complete. M2 is
+M1 + M5 + M-feature-1 (watch job) + M-feature-2 (auto-upgrade) + M-feature-3 (slot ranking)
+complete. M2 is
 PARTIAL — the core orchestrator is done, but M2.T3 (post-mortem reconciliation,
 the UNCERTAIN→RECONCILING→BOOKED/LOST path) is not yet implemented. ForeUP adapter
 fully implemented; live dry-run confirmed against Mangrove Bay. TeeItUp adapter

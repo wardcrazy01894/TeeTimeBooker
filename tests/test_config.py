@@ -89,8 +89,9 @@ def test_container_config_enables_one_booking_policy(env_set: None) -> None:
     """Auto-upgrade: with one_booking_policy.enabled the watcher cancels the current
     booking and rebooks a higher-ranked (closer-to-midpoint) slot. Real effect only in
     prod (dryRun=false); dev's dry-run suppresses the cancel/book POSTs. Safe to enable
-    now that the watch target is anchored to the booked Sunday (PR7, not a rolling
-    today+7). Empty priority_slots → uses course_preferences + time_windows[0] ranking."""
+    because the watch request is scoped per target date (not a rolling today+7) — each
+    check only acts on its own date+window. Empty priority_slots → uses
+    course_preferences + the per-day time_windows ranking."""
     cfg = load(CONTAINER_TOML)
     assert cfg.one_booking_policy.enabled is True
 
