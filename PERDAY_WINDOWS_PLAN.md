@@ -1,6 +1,7 @@
 # PERDAY_WINDOWS_PLAN.md — Per-day (and multiple-per-day) booking windows
 
-Status: PROPOSED (plan + stubs; no implementation). TDD mandatory.
+Status: IMPLEMENTED (PRs #76 schema + scoping, #77 window-list-order priority). Ratified via
+plan-with-review. TDD throughout.
 
 ## 1. Executive summary
 

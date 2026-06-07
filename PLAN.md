@@ -11,7 +11,7 @@ This plan is structured for parallel execution. Milestones are sequential; tasks
 ```
                      +-----------------------------+
                      |   ACA Job cron (v1)         |
-                     | (UTC; Sunday × DST half)    |
+                     | (UTC; daily × DST half)     |
                      +--------------+--------------+
                                     |  workflow_dispatch / cron fires ~10 min early
                                     v
@@ -213,7 +213,7 @@ GH Actions cron is documented as best-effort with potentially **15+ minute** del
 | Local target | EDT (Mar–Nov) | EST (Nov–Mar) |
 |--------------|---------------|---------------|
 | 06:00 ET     | 10:00 UTC     | 11:00 UTC     |
-| Cron (Sunday)   | `50 9 * * 0` (09:50 UTC, 10 min early in EDT) | `50 10 * * 0` (10:50 UTC, 10 min early in EST) |
+| Cron (daily)    | `50 9 * * *` (09:50 UTC, 10 min early in EDT) | `50 10 * * *` (10:50 UTC, 10 min early in EST) |
 
 We register **two DAILY** crons (one per DST half), year-round (multi-day re-arch — supersedes
 the M6 Sunday-only schedule; see MULTIDAY_PLAN.md). To avoid the maintenance burden of seasonal
@@ -221,8 +221,9 @@ cron edits, both same-day crons fire and the DST-half gate (`core/dst_gate.py`) 
 when the ET wall-clock hour equals 5 (the cron fires at :50 of the hour preceding T0=06:00 ET) —
 otherwise the wrong-season cron exits without booking (prevents the "second cron of the day runs
 anyway" failure mode, review item 1). On top of the DST gate, the **booking-day gate**
-(`core/booking_day_gate.py`) fast-exits 0 on mornings whose `today+offset` weekday isn't in
-`target_weekdays` (default Sat+Sun) — so the daily crons book only the wanted days, one per day.
+(`core/booking_day_gate.py`) fast-exits 0 on mornings whose `today+offset` weekday has no
+configured window (the wanted days are derived from `[[request.time_windows]]`; default
+Sat+Sun) — so the daily crons book only the wanted days, one per day.
 
 > **Status (M6):** the gate has been re-homed from the removed `book.yml` `dst` step
 > into the container entrypoint. It now lives in `core/dst_gate.py` (`should_proceed`,
@@ -483,14 +484,16 @@ Across runs (multiple days):
   player. Email/phone are EXCLUDED (so rotating a player's contact info
   doesn't break idempotency).
 
-**Resolved dates are excluded from the fingerprint.** The reason: `target_offsets = [7]`
-(anchored to `target_weekday`, default Sunday) books the upcoming Sunday 7 days out; the
-resolved date changes each week but the goal is the same. The in-process idempotency key is
+**Resolved dates are excluded from the fingerprint.** The reason: `target_offsets = [7]` books
+each wanted day 7 days out (the wanted weekdays are derived from the per-day windows, currently
+Sat+Sun); the resolved date changes but the goal is the same. The in-process idempotency key is
 `(RequestId, resolved_date)` — composite. This:
 
-- Lets the Sunday cron book day N+7 this Sunday and day N+14 next Sunday without conflict within a run.
-- Keeps the user's "I always want a Sunday at 8:45-10:00 AM 7 days out" rule a single
+- Lets the daily cron book day N+7 and a later run book day N+14 without conflict within a run.
+- Keeps the user's "I always want these morning windows 7 days out" rule a single
   RequestId for the §9 layer-5 in-process advisory lock.
+  (NOTE: the per-day window WEEKDAY is now in the fingerprint — a Sat vs Sun window is a
+  distinct RequestId; see PERDAY_WINDOWS_PLAN §6.)
 - A BOOKED terminal for resolved_date X does NOT block resolved_date Y for the same
   RequestId within the same run. (See review failure mode "Two target_dates with overlapping
   windows" — explicitly NOT closing all dates.)
@@ -514,7 +517,7 @@ resolved date changes each week but the goal is the same. The in-process idempot
 
 > **Superseded by v1 (Azure).** The v0 GitHub Actions operation below is historical: the
 > `book.yml` / `watch-tee-time.yml` cron workflows were **removed in #43**, and the bot now
-> runs as Azure Container Apps Jobs (Sunday-only). The authoritative deploy + verification +
+> runs as Azure Container Apps Jobs (daily booking crons + booking-day gate). The authoritative deploy + verification +
 > cutover runbook is **infra/AZURE_PLAN.md §10**; the DST gate now lives in `core/dst_gate.py`.
 
 **v0 (historical):**
@@ -582,9 +585,9 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 ### M6 — End-to-end (depends on M2 + M5)
 | ID    | Task                                              | Inputs           | Outputs                                              | Owner-files                          | Deps        |
 |-------|---------------------------------------------------|------------------|------------------------------------------------------|--------------------------------------|-------------|
-| M6.T1 | Real-timing booker wiring + DST gate + watcher enable + Sunday-only + anchored target (PRs 1–7). **DONE.** | all stubs done | `run --wait` busy-waits to 06:00:00 ET (`core/dst_gate.py`, `bookingReplicaTimeout=1200`); watcher enabled; Sunday-only crons; target anchored to `target_weekday` (`core/target_date.py`). Full suite green. | `__main__.py`, `core/dst_gate.py`, `core/target_date.py`, `compute.bicep`, configs | M5.* |
+| M6.T1 | Real-timing booker wiring + DST gate + watcher enable (PRs 1–7). **DONE** (the Sunday-only schedule + `target_weekday` anchor were later SUPERSEDED by the multi-day re-arch — daily crons + booking-day gate + per-day windows). | all stubs done | `run --wait` busy-waits to 06:00:00 ET (`core/dst_gate.py`, `bookingReplicaTimeout=1200`); watcher enabled. Full suite green. | `__main__.py`, `core/dst_gate.py`, `core/booking_day_gate.py`, `compute.bicep`, configs | M5.* |
 | M6.T2 | First production dry-run against Mangrove Bay     | M6.T1            | dry-run log proof (AZURE_PLAN §10.4): `race: busy-wait complete` + watcher `Watch check`/`DRY_RUN`; one clean dev dry-run Sunday | runbook §10.4 | M6.T1 |
-| M6.T3 | First live booking (prod cutover §10.5)           | M6.T2 green      | **Prod DEPLOYED 2026-05-31** (tag `infra/v1.0.0`; jobs live, `dryRun=false`, secrets set, watcher + auto-upgrade on). Dev isolated via a separate ForeUP account (no silencing needed). The first real Sunday booking-job race lands 2026-06-14. | runbook §10.5 | M6.T2 |
+| M6.T3 | First live booking (prod cutover §10.5)           | M6.T2 green      | **Prod DEPLOYED** (jobs live, `dryRun=false`, secrets set, watcher + auto-upgrade on; latest infra tag `infra/v1.1.1`). A real booking race ran **2026-06-07** (fired at T0 but lost on CAPTCHA latency → fixed in #67/#68). The multi-day + per-day code is on `main` but awaits its own `infra/v*` prod tag. | runbook §10.5 | M6.T2 |
 
 **Parallel-execution map (post M1):**
 ```
@@ -718,9 +721,9 @@ ACA Job execution time limit: the Consumption plan imposes a 10-minute timeout b
 
 **DST for the watch cron:** The watch cron (`*/10 * * * *`) fires every 10 minutes regardless
 of DST. It does not need a DST gate because it is not racing a wall-clock window — it just
-polls whenever it fires. The polling-hours gate (7 AM – 10 PM course-local) inside the
-WatchOrchestrator handles time-of-day filtering correctly using `zoneinfo`. No extra cron
-entries needed.
+polls whenever it fires. (SUPERSEDED: the original 7 AM–10 PM polling-hours gate was REMOVED
+in the multi-day re-arch — the watcher now polls on every run so it sees the 6 AM drop and
+early-morning cancellations; only the past-deadline gate remains.) No extra cron entries needed.
 
 **GH Actions equivalent:** A separate `watch-tee-time.yml` workflow running `*/10 * * * *`
 during hours 7-22 ET (simplified to avoid hourly gates — the WatchOrchestrator itself gates
@@ -734,9 +737,10 @@ watch runs. A watch run that fires simultaneously with the 6 AM run will lose th
 lock and exit cleanly (ConcurrentRunError caught, returns None). The next 10-minute poll
 will see the BOOKED terminal and short-circuit.
 
-**Polling hours gate:** Polling is suppressed from 10 PM to 7 AM course-local time. This is
-NOT a security measure — it is anti-bot etiquette (§12). Cancellations at off-peak hours
-are essentially zero; polling then provides no benefit and accumulates unnecessary traffic.
+**Polling hours gate (SUPERSEDED — removed in the multi-day re-arch):** Originally polling was
+suppressed 10 PM–7 AM course-local as anti-bot etiquette (§12). This gate was REMOVED so the
+watcher polls on every run (it was blinding us at the 6 AM drop and to early-morning
+cancellations); the 10-min cron cadence + the `poll_interval_s >= 300` floor remain the rate limit.
 
 **Watch deadline:** Polling stops when `now > target_date midnight (course-local)`. The round
 has passed; the booking window has closed.
@@ -762,7 +766,8 @@ is eligible for watching. Within a run, the WatchOrchestrator checks `store.get_
    holds the advisory lock for its entire duration.
 
 2. **Anti-bot etiquette on 10-min poll:** 600-second floor enforced in WatchConfig.__post_init__.
-   Polls only during 7 AM – 10 PM. Each poll is a single HTTP GET (same as a search). The
+   (The original "polls only during 7 AM – 10 PM" gate was REMOVED in the multi-day re-arch — the
+   watcher now polls every run; the 10-min cadence + 300s floor are the rate limit.) Each poll is a single HTTP GET (same as a search). The
    ForeUP terms (§12) do not prohibit checking availability; they prohibit bulk booking bots.
    One GET per 10 minutes is comparable to a human checking the website.
 

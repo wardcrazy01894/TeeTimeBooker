@@ -31,7 +31,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–7): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (tag `infra/v1.0.0`, 2026-05-31), `dryRun=false`.
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v1.1.1`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -164,8 +164,9 @@ in `core/` — never directly. This is the cut line for parallel work.
   watch ACA Job's `replicaTimeout` is 300s (not 120s) to give these retries
   headroom — see `compute.bicep` / AZURE_PLAN §5.4.
 - **DST handled by `zoneinfo`** (the bot computes T0 in `America/New_York`,
-  which resolves the ambiguous/skipped-hour edge cases) + two Sunday ACA Job
-  booking crons (one per DST half) in `infra/bicep/modules/compute.bicep`. Math
+  which resolves the ambiguous/skipped-hour edge cases) + two DAILY ACA Job
+  booking crons (one per DST half; the booking-day gate restricts to wanted weekdays) in
+  `infra/bicep/modules/compute.bicep`. Math
   in PLAN.md §6.3. The booking and watch schedules run as ACA Jobs;
   `book.yml`/`watch-tee-time.yml` have been removed. The precise T0 busy-wait is
   wired (M6 PR1): `teetime run --wait` uses the real `cfg.scheduler` (busy-waits to
@@ -188,9 +189,9 @@ in `core/` — never directly. This is the cut line for parallel work.
   it does ALL the looking/ranking/logging and suppresses ONLY the final POST
   (`WatchOrchestrator` returns `DRY_RUN` before the lock+POST). `one_booking_policy`
   (cancel+rebook upgrade) is **ENABLED** (`config/*.toml`): when a higher-ranked slot
-  (closer to the 8:45–10:00 midpoint) opens for the booked Sunday, the watcher cancels
-  and rebooks it. Safe because the watch target is anchored to that Sunday (PR7), so it
-  only ever upgrades the intended date; real effect is prod-only (dry-run suppresses the
+  (closer to that day's window midpoint) opens for a booked day, the watcher cancels
+  and rebooks it. Safe because the watch request is scoped per target date, so it
+  only ever upgrades within the intended date+window; real effect is prod-only (dry-run suppresses the
   POSTs). The watch cron runs every 10 min year-round.
 - **The watcher POLLS ON EVERY RUN — no time-of-day gate** (multi-day PR4; the old
   `polling_start_hour`/`polling_end_hour` gate + config fields are REMOVED). It blinded us at

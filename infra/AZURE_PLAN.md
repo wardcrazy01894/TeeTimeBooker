@@ -30,7 +30,7 @@
   │  └──────────┬──────────┘    │  ┌────────────────────────┐  │  │
   │             │ image pull    │  │  Container Apps Job     │  │  │
   │             └───────────────┼─►│  Booking Jobs (×2)      │  │  │
-  │                             │  │  2 Sunday crons (EDT/EST)│  │  │
+  │                             │  │  2 daily crons (EDT/EST) │  │  │
   │                             │  ├────────────────────────┤  │  │
   │                             │  │  Watch Job (×1)         │  │  │
   │                             │  │  cron: */10 * * * *     │  │  │
@@ -234,8 +234,9 @@ and `-est`, the `-sun` suffix was dropped) are implemented in `compute.bicep`:
 
 Both crons fire every morning year-round. The bot's DST gate selects the correct season half,
 and the booking-day gate (`core/booking_day_gate.py`) fast-exits 0 on mornings whose
-`today+offset` weekday isn't in `target_weekdays` (default Sat+Sun) — so the daily crons book
-only the wanted days. The bot's own DST gate — re-homed
+`today+offset` weekday has no configured window (the wanted days are derived from
+`[[request.time_windows]]`; default Sat+Sun) — so the daily crons book only the wanted days.
+The bot's own DST gate — re-homed
 from the deleted `book.yml` `dst` step into `core/dst_gate.py` (`should_proceed`, M6 PR2) —
 is evaluated in `_run` on the `--wait` path, BEFORE the busy-wait:
 
@@ -263,8 +264,8 @@ Key differences from the booking jobs:
 
 | Property | Booking jobs (×2) | Watch job (×1) |
 |---|---|---|
-| Cron | 2 entries (Sunday, one per DST half) | `*/10 * * * *` (single, year-round) |
-| DST gate | Required (races a wall-clock moment) | Not required (WatchOrchestrator gates on polling hours internally via zoneinfo) |
+| Cron | 2 entries (daily, one per DST half; booking-day gate restricts to wanted weekdays) | `*/10 * * * *` (single, year-round) |
+| DST gate | Required (races a wall-clock moment) | Not required (watcher polls on every run; only the past-deadline gate skips) |
 | `replicaTimeout` | 1200 s (20 min — covers the in-replica busy-wait to 06:00 ET) | 300 s (5 min — one HTTP round-trip plus headroom for idempotent-call retries) |
 | Command | `teetime run --config ...` | `teetime watch --config ...` |
 | Enabled | Always | `watcher.enabled = true` in v1 configs (M6 PR4); look-but-don't-book under `--dry-run true`. Uses the SAME `MB-*`/`PLAYER1-*` KV secrets — no new secrets. |
@@ -805,8 +806,8 @@ For IaC changes (Bicep edits):
 ### 10.3 v0 → v1 cutover (DONE)
 
 The v0 GitHub Actions cron workflows (`book.yml`, `watch-tee-time.yml`) were **removed in
-#43** — the booking and watch schedules now run exclusively as ACA Jobs (Sunday-only;
-`compute.bicep`). There is therefore no longer a v0/v1 dual-run hazard: no GitHub Actions
+#43** — the booking and watch schedules now run exclusively as ACA Jobs (daily booking crons
++ booking-day gate; `compute.bicep`). There is therefore no longer a v0/v1 dual-run hazard: no GitHub Actions
 schedule exists to conflict with the ACA Jobs. The only remaining GitHub Actions workflows
 are `ci.yml` (lint/test on PRs) and `azure-iac.yml` (deploy).
 
