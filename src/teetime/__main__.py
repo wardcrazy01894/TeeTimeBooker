@@ -42,7 +42,6 @@ from .core.models import (
 from .core.orchestrator import Orchestrator
 from .core.target_date import (
     next_occurrences_within_horizon,
-    resolve_target_dates,
     weekday_from_name,
 )
 from .core.watch_orchestrator import WatchOrchestrator
@@ -326,8 +325,9 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
     "target_date_str",
     type=str,
     default="",
-    help="Date to watch (YYYY-MM-DD). Defaults to the booking target date — "
-    "(most-recent target_weekday) + target_offsets[0], same anchor as the booking job.",
+    help="Date to watch (YYYY-MM-DD). Defaults to the next upcoming occurrence of EACH wanted "
+    "weekday within the horizon (the wanted days are derived from the configured time windows). "
+    "An explicit date whose weekday has no configured window is rejected.",
 )
 @click.option(
     "--use-fake-adapter",
@@ -586,18 +586,11 @@ def _local_demo_scheduler(base: SchedulerConfig) -> SchedulerConfig:
 def _build_request(cfg: AppConfig, *, dry_run: bool) -> BookingRequest:
     tz = ZoneInfo(cfg.scheduler.timezone)
     today = datetime.now(tz=tz).date()
-    # MULTIDAY_PLAN PR1 interim (atomic with the target_weekday→target_weekdays rename):
-    # anchor on the EARLIEST wanted weekday so the historical single-target_dates contract
-    # holds and nothing crashes (weekday_from_name(None) would otherwise blow up at startup).
-    # This is INTERIM — PR2 overrides it for the booking job (single gated date) and PR4 for
-    # the watcher (multi-date list). resolve_target_dates(+offset) preserves the weekday, so
-    # the result is clock-independent. min() derives from config (no second weekday literal).
-    anchor_weekday = min(cfg.request.wanted_weekday_indices)
-    target_dates = resolve_target_dates(
-        today,
-        cfg.request.target_offsets,
-        anchor_weekday,
-    )
+    # `_build_request` produces the RequestId fingerprint + players/windows; its `target_dates`
+    # is a PLACEHOLDER (today + offset) that BOTH callers override before use:
+    # `_build_booking_request` pins the single gated date, and `_watch` pins each date via
+    # `_scope_request_to_date`. Nothing consumes this value directly (it is never the date booked).
+    target_dates = (today + timedelta(days=cfg.request.target_offsets[0]),)
 
     # Use course_preferences (not cfg.courses) for the fingerprint.
     # cfg.courses may contain standby/disabled courses not in course_preferences;

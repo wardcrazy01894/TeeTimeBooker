@@ -61,13 +61,12 @@ COURSE_ID = CourseId("fake:course")
 TARGET_DATE = date(2026, 5, 16)
 ET = ZoneInfo("America/New_York")
 
-# During EDT (UTC-4):
-#   10:00 ET  = 14:00 UTC  (inside polling window 07-22)
-#    6:00 ET  = 10:00 UTC  (before polling_start_hour=7)
-#   11:00 PM ET = 03:00 UTC next day (after polling_end_hour=22)
-DURING_POLLING_UTC = datetime(2026, 5, 9, 14, 0, 0, tzinfo=UTC)  # 10 AM ET
-BEFORE_POLLING_UTC = datetime(2026, 5, 9, 10, 0, 0, tzinfo=UTC)  # 6 AM ET
-AFTER_POLLING_UTC = datetime(2026, 5, 10, 3, 0, 0, tzinfo=UTC)  # 11 PM ET (prev day)
+# Generic time-of-day anchors during EDT (UTC-4). The watcher now polls on every run (the
+# old time-of-day gate was removed), so these are just convenient instants — the 6 AM one
+# exercises the early-morning drop window, the 11 PM one an overnight run.
+TEN_AM_ET_UTC = datetime(2026, 5, 9, 14, 0, 0, tzinfo=UTC)  # 10:00 ET
+SIX_AM_ET_UTC = datetime(2026, 5, 9, 10, 0, 0, tzinfo=UTC)  # 06:00 ET
+ELEVEN_PM_ET_UTC = datetime(2026, 5, 10, 3, 0, 0, tzinfo=UTC)  # 23:00 ET (prev day)
 
 # Past deadline: now is the day AFTER target_date.
 PAST_DEADLINE_UTC = datetime(2026, 5, 17, 14, 0, 0, tzinfo=UTC)  # day after TARGET_DATE
@@ -134,7 +133,7 @@ def _watch_config() -> WatchConfig:
 def _build(
     adapter: FakeAdapter,
     *,
-    now_utc: datetime = DURING_POLLING_UTC,
+    now_utc: datetime = TEN_AM_ET_UTC,
     store: InMemoryStore | None = None,
     policy: OneBookingPolicyConfig | None = None,
 ) -> tuple[WatchOrchestrator, InMemoryStore, FakeClock]:
@@ -212,7 +211,7 @@ async def test_watch_notifies_on_successful_booking() -> None:
     adapter = FakeAdapter(course_id=COURSE_ID)
     adapter.set_search_response([_slot()])
     store = InMemoryStore()
-    clock = FakeClock(start=DURING_POLLING_UTC)
+    clock = FakeClock(start=TEN_AM_ET_UTC)
     creds = {COURSE_ID: CourseCredentials(username="u", password="p")}
     watch = WatchOrchestrator(
         adapters={COURSE_ID: adapter},
@@ -242,7 +241,7 @@ async def test_watch_polls_before_7am() -> None:
     of skipping — this is what gives us visibility into the 6 AM drop + early cancellations."""
     adapter = FakeAdapter(course_id=COURSE_ID)
     adapter.set_search_response([_slot()])
-    watch, _, _ = _build(adapter, now_utc=BEFORE_POLLING_UTC)  # 06:00 ET
+    watch, _, _ = _build(adapter, now_utc=SIX_AM_ET_UTC)  # 06:00 ET
 
     result = await watch.check_once(_request(), TARGET_DATE)
 
@@ -254,7 +253,7 @@ async def test_watch_polls_at_any_hour() -> None:
     """At 23:00 ET (formerly after polling_end_hour) the watcher still searches."""
     adapter = FakeAdapter(course_id=COURSE_ID)
     adapter.set_search_response([_slot()])
-    watch, _, _ = _build(adapter, now_utc=AFTER_POLLING_UTC)  # 23:00 ET (prev day)
+    watch, _, _ = _build(adapter, now_utc=ELEVEN_PM_ET_UTC)  # 23:00 ET (prev day)
 
     result = await watch.check_once(_request(), TARGET_DATE)
 
@@ -299,7 +298,7 @@ async def test_watch_does_not_rebook_when_store_has_booked_terminal() -> None:
         course_id=COURSE_ID,
         slot=_slot(),
         confirmation_code="TTB:prior-123",
-        booked_at=DURING_POLLING_UTC,
+        booked_at=TEN_AM_ET_UTC,
         attempts=1,
     )
     await store.record_terminal(prior, TARGET_DATE)
@@ -412,7 +411,7 @@ async def test_watch_reraises_captcha_error_after_notify() -> None:
     adapter.set_search_to_raise(CaptchaError("captcha required"))
 
     store = InMemoryStore()
-    clock = FakeClock(start=DURING_POLLING_UTC)
+    clock = FakeClock(start=TEN_AM_ET_UTC)
     creds = {COURSE_ID: CourseCredentials(username="u", password="p")}
     watch = WatchOrchestrator(
         adapters={COURSE_ID: adapter},
@@ -444,7 +443,7 @@ async def test_watch_reraises_auth_error_after_notify() -> None:
     adapter.authenticate = AsyncMock(side_effect=AuthError("bad creds"))  # type: ignore[method-assign]
 
     store = InMemoryStore()
-    clock = FakeClock(start=DURING_POLLING_UTC)
+    clock = FakeClock(start=TEN_AM_ET_UTC)
     creds = {COURSE_ID: CourseCredentials(username="u", password="p")}
     watch = WatchOrchestrator(
         adapters={COURSE_ID: adapter},
@@ -538,7 +537,7 @@ async def test_watch_transient_error_on_first_course_still_tries_second() -> Non
     )
 
     store = InMemoryStore()
-    clock = FakeClock(start=DURING_POLLING_UTC)
+    clock = FakeClock(start=TEN_AM_ET_UTC)
     creds = {
         COURSE_ID: CourseCredentials(username="u", password="p"),
         COURSE_ID_2: CourseCredentials(username="u", password="p"),
@@ -643,7 +642,7 @@ async def test_watch_upgrades_from_store_booked_terminal_when_policy_enabled() -
         course_id=COURSE_ID,
         slot=_pm_slot(hour=14, minute=15),
         confirmation_code="TTB:prior-1415",
-        booked_at=DURING_POLLING_UTC,
+        booked_at=TEN_AM_ET_UTC,
         attempts=1,
     )
     await store.record_terminal(prior, TARGET_DATE)
@@ -676,7 +675,7 @@ async def test_watch_does_not_upgrade_when_policy_is_none() -> None:
         course_id=COURSE_ID,
         slot=_pm_slot(hour=14, minute=15),
         confirmation_code="TTB:prior-1415",
-        booked_at=DURING_POLLING_UTC,
+        booked_at=TEN_AM_ET_UTC,
         attempts=1,
     )
     await store.record_terminal(prior, TARGET_DATE)
@@ -705,7 +704,7 @@ async def test_watch_already_at_highest_priority_returns_prior_unchanged() -> No
         course_id=COURSE_ID,
         slot=_pm_slot(hour=14, minute=2),
         confirmation_code="TTB:prior-1402",
-        booked_at=DURING_POLLING_UTC,
+        booked_at=TEN_AM_ET_UTC,
         attempts=1,
     )
     await store.record_terminal(prior, TARGET_DATE)
@@ -733,7 +732,7 @@ async def test_watch_no_upgrade_when_higher_priority_slot_unavailable() -> None:
         course_id=COURSE_ID,
         slot=_pm_slot(hour=14, minute=15),
         confirmation_code="TTB:prior-1415",
-        booked_at=DURING_POLLING_UTC,
+        booked_at=TEN_AM_ET_UTC,
         attempts=1,
     )
     await store.record_terminal(prior, TARGET_DATE)
@@ -835,7 +834,7 @@ async def test_watch_recovery_books_just_dropped_window() -> None:
     re-booking — one-booking-per-date respected via the Gate-3 short-circuit."""
     adapter = FakeAdapter(course_id=COURSE_ID)
     adapter.set_search_response([_slot()])
-    watch, store, _ = _build(adapter, now_utc=BEFORE_POLLING_UTC)  # 06:00 ET
+    watch, store, _ = _build(adapter, now_utc=SIX_AM_ET_UTC)  # 06:00 ET
     req = _request()
 
     first = await watch.check_once(req, TARGET_DATE)

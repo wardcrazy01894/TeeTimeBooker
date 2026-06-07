@@ -37,10 +37,11 @@ State management:
     The watch job shares the same in-process `InMemoryStore` as the main booking
     job (single ACA Job invocation; durable SQLite/Blob state was cut — see PLAN.md
     M3). It needs to know:
-    1. What date to watch — `resolve_target_dates(today, target_offsets, target_weekday)[0]`,
-       anchored to the most-recent booking weekday (Sunday), NOT a rolling
-       `today + offset`. Same anchor as the booking job. The caller (`teetime watch`
-       CLI) may also pass `--date YYYY-MM-DD` to override.
+    1. What date(s) to watch — the CLI (`teetime watch`) computes the next upcoming
+       occurrence of EACH wanted weekday within the horizon via
+       `next_occurrences_within_horizon` and calls `check_once` once per date with a
+       request scoped to that date + its weekday's windows. `--date YYYY-MM-DD` overrides
+       to a single date.
     2. Whether a booking already exists — `list_reservations` and `get_terminal`
        short-circuit the poll.
     3. The deadline past which watching is pointless — after the target_date has
@@ -127,10 +128,9 @@ class WatchOrchestrator:
 
     The caller (CLI command `teetime watch`) is responsible for:
     - Starting the process on each poll interval (via the ACA Job cron).
-    - Passing the `target_date` to watch. The date is computed by the CLI via
-      `resolve_target_dates(...)` — anchored to the most-recent booking weekday
-      (Sunday) + offset, same as the booking job — or overridden via `--date
-      YYYY-MM-DD`. There is no durable `watch_state`; the watch job is stateless
+    - Passing each per-date-scoped request + `target_date` to `check_once` (one call per
+      wanted date, computed via `next_occurrences_within_horizon`), or a single date via
+      `--date YYYY-MM-DD`. There is no durable `watch_state`; the watch job is stateless
       across runs beyond the live `list_reservations` check.
 
     This class does NOT loop internally. Each invocation does one check and exits.
