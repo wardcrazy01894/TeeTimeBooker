@@ -128,10 +128,14 @@ def _raise_for_booking_step(r: httpx.Response, slot_id: str, step: str) -> None:
     A 4xx client error means the slot could not be held (taken / lock contention / stale
     cart) and NO reservation or charge was created — raise SlotGoneError so the orchestrator
     falls through to the next candidate, mirroring ForeUP's 4xx->SlotGoneError contract
-    (see root CLAUDE.md "A book-POST 4xx is a try-next-slot signal"). A 5xx is AMBIGUOUS —
-    the request may have landed — so it propagates via raise_for_status (the §9 UNCERTAIN
-    case). Drop-in for ``r.raise_for_status()``: a no-op on 2xx. MUST only be called at a
-    step BEFORE the irreversible GNSVC payment (steps 3-7), never on the card POST."""
+    (see root CLAUDE.md "A book-POST 4xx is a try-next-slot signal"). EXCEPT a 429, which is
+    a throttle signal, not a gone slot — surface it as RateLimitError (consistent with
+    authenticate/search) so it is not silently swallowed. A 5xx is AMBIGUOUS — the request
+    may have landed — so it propagates via raise_for_status (the §9 UNCERTAIN case). Drop-in
+    for ``r.raise_for_status()``: a no-op on 2xx. MUST only be called at a step BEFORE the
+    irreversible GNSVC payment (steps 3-7), never on the card POST."""
+    if r.status_code == _HTTP_RATE_LIMIT:
+        raise RateLimitError(f"Rate limited at {step} (429)")
     if _HTTP_BAD_REQUEST <= r.status_code < _HTTP_SERVER_ERROR:
         raise SlotGoneError(f"Slot {slot_id}: {step} returned {r.status_code} (slot unavailable)")
     r.raise_for_status()
@@ -465,7 +469,9 @@ class TeeItUpAdapter:
         elif r.is_success and not r.json().get("bookable"):
             raise SlotGoneError(f"Slot {slot.slot_id} is no longer bookable")
         elif not r.is_success and r.status_code != _HTTP_NOT_FOUND:
-            r.raise_for_status()
+            # Same pre-payment 4xx->SlotGone / 429->RateLimit / 5xx->propagate contract as
+            # the other steps (this is the last remaining non-404 client-error path here).
+            _raise_for_booking_step(r, slot.slot_id, "is-bookable check")
 
         # dry_run: halt before irreversible GNSVC calls
         if request.dry_run:

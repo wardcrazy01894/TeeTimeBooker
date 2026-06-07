@@ -21,6 +21,7 @@ from teetime.core.adapter import (
     CancelError,
     CourseAdapter,
     InventoryNotPublishedError,
+    RateLimitError,
     SlotGoneError,
 )
 from teetime.core.models import (
@@ -593,6 +594,31 @@ async def test_book_slot_gone_on_non_409_4xx_at_lock() -> None:
         await adapter.authenticate(CREDS)
         slots = await adapter.search(_request(party_size=2, holes=9))
         with pytest.raises(SlotGoneError):
+            await adapter.book(slots[0], _request(party_size=2, holes=9))
+
+
+@respx.mock
+async def test_book_raises_rate_limit_not_slot_gone_at_lock() -> None:
+    """A 429 at a pre-payment step is a THROTTLE signal, not a gone slot — it must surface
+    as RateLimitError (consistent with authenticate/search), not be swallowed as SlotGoneError
+    and silently burn the candidate."""
+    _mock_auth()
+    _mock_search()
+    respx.get(url__regex=r".*/tee-times/rate/\d+/invoice.*").mock(
+        return_value=httpx.Response(200, json=_INVOICE_RESPONSE)
+    )
+    respx.post(f"{_KENNA_API_BASE}{_SHOPPING_CART_PATH}").mock(
+        return_value=httpx.Response(201, json=_CART_RESPONSE)
+    )
+    respx.post(url__regex=r".*/shopping-cart/[^/]+/cart-item$").mock(
+        return_value=httpx.Response(200, json=_CART_ITEM_RESPONSE)
+    )
+    respx.put(url__regex=r".*/tee-time/lock$").mock(return_value=httpx.Response(429))
+    async with httpx.AsyncClient() as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        slots = await adapter.search(_request(party_size=2, holes=9))
+        with pytest.raises(RateLimitError):
             await adapter.book(slots[0], _request(party_size=2, holes=9))
 
 

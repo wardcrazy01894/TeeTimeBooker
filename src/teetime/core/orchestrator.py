@@ -230,6 +230,8 @@ class Orchestrator:
                 attempts=1,
             )
 
+        # candidates is non-empty here (an empty list raised _CourseSkippedError above), so
+        # the loop runs at least once and last_exc is set if we reach this point.
         last_exc: SlotGoneError | None = None
         for candidate in candidates:
             try:
@@ -240,13 +242,12 @@ class Orchestrator:
         # created — the prod 2026-06-07 failure mode at a competitive drop). Treat exhaustion
         # like an empty course: fall through to the next course preference, and if none book,
         # the run records a NO_INVENTORY terminal (+ notifies) instead of crashing the job.
-        if last_exc is not None:
-            log.info(
-                "course %s: all %d ranked candidates gone (last: %s) — trying next course",
-                course_id,
-                len(candidates),
-                last_exc,
-            )
+        log.info(
+            "course %s: all %d ranked candidates gone (last: %s) — trying next course",
+            course_id,
+            len(candidates),
+            last_exc,
+        )
         raise _CourseSkippedError()
 
     # --- race-path pre-fetch -------------------------------------------
