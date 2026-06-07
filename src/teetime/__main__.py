@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import sys
+from dataclasses import replace as dc_replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -19,6 +20,7 @@ from zoneinfo import ZoneInfo
 import click
 
 from .core.adapter import CourseAdapter
+from .core.booking_day_gate import should_book_today
 from .core.clock import RealClock, measure_ntp_offset
 from .core.config import (
     AppConfig,
@@ -195,14 +197,7 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
-    request = _build_request(cfg, dry_run=dry_run)
     log = logging.getLogger(__name__)
-    log.info(
-        "Booking run: target=%s dry_run=%s players=%d",
-        [str(d) for d in request.target_dates],
-        dry_run,
-        len(request.players),
-    )
 
     if use_fake_adapter:
         adapters: dict[CourseId, CourseAdapter] = {
@@ -248,6 +243,27 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
         )
         return
 
+    # Booking-day gate (MULTIDAY PR2, ONLY on the real cron path). The booking job now
+    # fires DAILY; on the 5/7 mornings whose target (today+offset) isn't a wanted weekday
+    # it fast-exits here — after the DST gate (so we never decide off a wrong-season clock)
+    # and before the busy-wait. The --no-wait path bypasses this (always-proceed), matching
+    # the manual/local semantics. See core/booking_day_gate.py.
+    offset = cfg.request.target_offsets[0]
+    tz = ZoneInfo(cfg.scheduler.timezone)
+    if wait and not should_book_today(
+        clock,
+        timezone=cfg.scheduler.timezone,
+        target_offset=offset,
+        wanted_weekdays=cfg.request.wanted_weekday_indices,
+    ):
+        target = clock.now_utc().astimezone(tz).date() + timedelta(days=offset)
+        log.info(
+            "booking-day gate: today+%d is %s, not a wanted booking day — exiting 0.",
+            offset,
+            target.strftime("%A %Y-%m-%d"),
+        )
+        return
+
     if wait:
         # Verification surface (M6 PR6): confirms the REAL scheduler was selected (not
         # the immediate demo path) and shows the NTP correction the busy-wait applies.
@@ -257,6 +273,18 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
             cfg.scheduler.timezone,
             clock_offset.total_seconds() * 1000.0,
         )
+
+    # The booking run targets a SINGLE date — the gated today+offset (course-local). A
+    # multi-date request would let another day's reservation vacuously satisfy the pre-book
+    # list_reservations guard (_first_matching_reservation), so this MUST be one date.
+    booking_target = clock.now_utc().astimezone(tz).date() + timedelta(days=offset)
+    request = _build_booking_request(cfg, dry_run=dry_run, target_date=booking_target)
+    log.info(
+        "Booking run: target=%s dry_run=%s players=%d",
+        [str(d) for d in request.target_dates],
+        dry_run,
+        len(request.players),
+    )
 
     orch = Orchestrator(
         adapters=adapters,
@@ -588,6 +616,19 @@ def _build_request(cfg: AppConfig, *, dry_run: bool) -> BookingRequest:
         cart=cfg.request.cart,
         dry_run=dry_run,
     )
+
+
+def _build_booking_request(cfg: AppConfig, *, dry_run: bool, target_date: date) -> BookingRequest:
+    """Build the booking request pinned to a SINGLE target date (the gated today+offset).
+
+    Wraps _build_request and overrides target_dates=(target_date,). The booking run MUST
+    target exactly one date: _first_matching_reservation matches r.tee_time.date() in
+    request.target_dates, so a multi-date request would let another wanted day's existing
+    reservation vacuously satisfy this date's pre-book guard. RequestId is unaffected (the
+    fingerprint excludes dates). See MULTIDAY_PLAN.md PR2.
+    """
+    base = _build_request(cfg, dry_run=dry_run)
+    return dc_replace(base, target_dates=(target_date,))
 
 
 def main() -> int:
