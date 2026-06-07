@@ -7,6 +7,7 @@ forensic record for a suspected credential leak — full-repo-scan security find
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -33,9 +34,19 @@ def test_keyvault_declares_diagnostic_settings(keyvault: str) -> None:
 
 
 def test_keyvault_audit_logs_enabled(keyvault: str) -> None:
-    """AuditEvent (categoryGroup 'audit') must be enabled — that is the secret-access trail."""
-    assert "categoryGroup: 'audit'" in keyvault
-    assert "enabled: true" in keyvault
+    """AuditEvent (categoryGroup 'audit') must be ENABLED — assert the `enabled: true` flag
+    co-occurs with the audit category block, so a stray `enabled: true` elsewhere can't mask
+    the audit log being turned off."""
+    assert re.search(r"categoryGroup:\s*'audit'\s+enabled:\s*true", keyvault), (
+        "audit categoryGroup must be immediately followed by enabled: true"
+    )
+
+
+def test_keyvault_diagnostics_send_no_metrics(keyvault: str) -> None:
+    """Cost guard: only audit LOGS are shipped — no metrics block (AllMetrics would add
+    ingestion). A future accidental metrics add must trip this test."""
+    assert "AllMetrics" not in keyvault
+    assert "metrics:" not in keyvault
 
 
 def test_keyvault_diagnostics_target_the_workspace_param(keyvault: str) -> None:

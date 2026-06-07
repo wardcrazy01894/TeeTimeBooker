@@ -126,8 +126,13 @@ resource kvSecretsUserAssignment 'Microsoft.Authorization/roleAssignments@2022-0
 
 // Audit logging: ship Key Vault AuditEvent (data-plane secret reads/writes + control-plane
 // events) to Log Analytics. This is the forensic record for a suspected credential leak —
-// without it, secret access is invisible. Audit volume for a single-user bot is tiny (well
-// under the workspace's 5 GB/month free tier). See AZURE_PLAN.md §11.
+// without it, secret access is invisible. Only the `audit` categoryGroup is sent (no
+// metrics) so ingestion stays minimal — audit volume for a single-user bot is tiny
+// (well under the workspace's 5 GB/month free tier). See AZURE_PLAN.md §11.
+//
+// API version 2021-05-01-preview is the latest for Microsoft.Insights/diagnosticSettings;
+// there is NO GA (non-preview) version (a known Azure naming quirk — the API is production-
+// stable). Don't "downgrade" to an older GA-looking version; none exists.
 resource kvAuditDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'kv-audit-to-loganalytics'
   scope: keyVault
