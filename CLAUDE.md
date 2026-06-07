@@ -402,8 +402,8 @@ checks — they run on push/tags, not PRs.
 - Adding a new course (ForeUP / TeeItUp / Chronogolf)? See the step-by-step and
   per-course IDs in [`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md).
 - Touching the orchestrator? Make sure FakeAdapter + FakeClock + InMemoryStore
-  tests still cover your change. Fixtures live in `tests/conftest.py`. The
-  race-window test is the canary.
+  tests still cover your change. Tests construct these collaborators inline (see
+  `tests/test_orchestrator.py::_build`); the race-window test is the canary.
 - Modifying anti-bot etiquette? Re-read PLAN.md §12 first. ToS posture is not
   ours to negotiate around.
 
@@ -416,5 +416,7 @@ safety rules**, and the open-questions pointer) lives in
 
 **Safety rule that always applies (also enforced by `.claude/hooks/az-deploy-guard.sh`):**
 an agent MUST NOT run `az deployment … create`, `az containerapp job start`,
-`az keyvault secret set/delete`, or `az group delete` without explicit user
-approval. Read-only `az` (list/show/validate/what-if) and `az bicep build` are fine.
+`az keyvault secret set/delete` or vault-level `az keyvault purge/delete`, or
+`az group delete` without explicit user approval. Read-only `az` (list/show/validate/
+what-if) and `az bicep build` are fine. (The guard's block-list is regression-tested in
+`tests/test_az_deploy_guard.py`.)
