@@ -29,16 +29,27 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 + `ConsoleNotifier` are the final production wiring, not stubs.
 
 **M6 wiring is DONE** (PRs 1–7): `run --wait` busy-waits to the 06:00:00 ET drop;
-`core/dst_gate.py` exits the wrong-season cron; watcher enabled (look-but-don't-book
-under dry-run); Sunday-only crons (`bookingReplicaTimeout=1200`); target anchored to
-`target_weekday` via `core/target_date.py` (daily watcher no longer drifts); the
-`enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (tag `infra/v1.0.0`, 2026-05-31): the 3 jobs
-are live with `dryRun=false`, secrets set, watcher + auto-upgrade (`one_booking_policy`)
-enabled; the watcher logs into ForeUP from Azure successfully (Q11 resolved). The first
-real Sunday booking-job race lands **2026-06-14** (June 7's drop already passed). Remaining
-v0 task: **M2.T3** (post-mortem reconciliation, `UNCERTAIN→RECONCILING→BOOKED/LOST`) — still
-unimplemented and independent of M6.
+`core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
+the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (tag `infra/v1.0.0`, 2026-05-31), `dryRun=false`.
+
+**Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
+ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
+(config `target_weekdays = ["saturday","sunday"]`), holding one reservation PER day:
+- Booking crons fire **DAILY** (`50 9/10 * * *`), jobs renamed `teetime-job-<env>-edt`/`-est`
+  (the `-sun` suffix dropped). Each run computes `today+7` and **fast-exits 0** unless that
+  weekday is wanted (`core/booking_day_gate.py`), after the DST gate.
+- The watcher **polls on every run** (the time-of-day gate was removed) and checks the next
+  occurrence of EACH wanted weekday within the horizon (`core/target_date.next_occurrences_within_horizon`);
+  `_check_course` scopes the search per date so a Sat watch can never book a Sun slot. Removing
+  the hours gate also enables an early-morning recovery booking.
+- Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
+  multi-slot fallback (#67).
+
+**Not yet activated in PROD:** the multi-day code is on `main` (dev auto-deploys, `dryRun=true`).
+Prod still runs the previously-deployed image until a new `infra/v*` tag — and that prod deploy
+will show a **delete+create** of the two booking jobs (rename `-edt-sun`→`-edt`). Remaining
+v0 task: **M2.T3** (post-mortem reconciliation) — still unimplemented, independent of all the above.
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge

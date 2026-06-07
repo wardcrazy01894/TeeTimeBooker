@@ -827,9 +827,14 @@ With `dryRun=true` the final POST never fires, so **logs are the only proof**. Q
   line: it fired within a few ms of T0. (Emitted by `orchestrator.run` after `busy_wait_until`.)
 - Then a `DRY_RUN` outcome (no booking POST).
 A wrong-season cron instead logs `DST-half gate: wrong-season cron (ET hour != 5) — exiting 0`.
+On a NON-booking day (multi-day re-arch: the cron fires daily) a correct-season run logs
+`booking-day gate: today+7 is <Weekday> <date>, not a wanted booking day — exiting 0.` and
+exits without auth/search/busy-wait (sub-cent, free-tier). 5/7 mornings this is the expected
+fast-exit; a wanted day (Sat/Sun) proceeds to the busy-wait + race lines above.
 
-**(b) Watch job actually polled** — look for: `Watch check: targets=['<sat>', '<sun>'] dry_run=True` (plural; the watcher checks the next occurrence of each wanted weekday and polls every run — MULTIDAY PR4)
-(bare date, no brackets), a ranked-slots line, and a `DRY_RUN` result. A run that logs
+**(b) Watch job actually polled** — look for: `Watch check: targets=['<sat>', '<sun>'] dry_run=True`
+(plural; the watcher checks the next occurrence of each wanted weekday and polls EVERY run —
+multi-day re-arch), a ranked-slots line, and a `DRY_RUN` result. A run that logs
 `Watch job is disabled` means `watcher.enabled` is false — not what we want in v1.
 
 **On-demand check (no need to wait for Sunday)** — the `--fire-time` hatch makes the
