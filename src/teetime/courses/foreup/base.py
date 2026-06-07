@@ -458,7 +458,15 @@ class ForeUpAdapter(CourseAdapter):
             raise SlotGoneError(f"Slot unbookable (HTTP 400): {r.text[:300]}")
         r.raise_for_status()
         data: Any = r.json() if r.text else {}
-        _log.info("ForeUP: booking response: %s", data)
+        # Do NOT log the full response body — ForeUP echoes the account holder's
+        # name/email/phone, and ACA forwards stdout to Log Analytics. Only the extracted
+        # confirmation id is logged (below), which is safe. The full body is retained in
+        # BookingResult.diagnostics (in-process only; never logged or persisted). See the
+        # security review (PII-in-logs). For debugging, raise the level deliberately.
+        _log.debug(
+            "ForeUP: booking response keys=%s",
+            list(data) if isinstance(data, dict) else type(data).__name__,
+        )
         # ForeUP returns {"reservation": {"pending_reservation_id": ..., ...}}
         # Fall back through several field names seen across ForeUP API versions.
         reservation: Any = data.get("reservation") if isinstance(data, dict) else None
