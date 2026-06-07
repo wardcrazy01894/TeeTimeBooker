@@ -23,7 +23,7 @@ from .core.adapter import CourseAdapter
 from .core.booking_day_gate import should_book_today
 from .core.clock import RealClock, measure_ntp_offset
 from .core.config import (
-    _SENSITIVE_EXTRA_KEYS,
+    SECRET_EXTRA_KEYS,
     AppConfig,
     MissingEnvVarError,
     SchedulerConfig,
@@ -554,7 +554,7 @@ def _resolve_creds(cfg: AppConfig) -> dict[CourseId, CourseCredentials]:
             # Guard: a sensitive credential field (card_number/cvv/password/…) MUST be an
             # env-var ref, never a literal — a raw PAN/CVV in a config file is a PCI footgun.
             # Force the `*_env` form. Note: the literal VALUE is never echoed in the error.
-            if not key.endswith("_env") and key in _SENSITIVE_EXTRA_KEYS:
+            if not key.endswith("_env") and key in SECRET_EXTRA_KEYS:
                 raise click.ClickException(
                     f"course {c.id!r} extra has {key!r} as a literal value — sensitive "
                     f"credential fields MUST use the {key + '_env'!r} env-var form so a raw "
