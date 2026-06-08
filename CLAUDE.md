@@ -55,8 +55,11 @@ reservation PER day:
   multi-slot fallback (#67).
 
 **Not yet activated in PROD:** the multi-day code is on `main` (dev auto-deploys, `dryRun=true`).
-Prod still runs the previously-deployed image until a new `infra/v*` tag — and that prod deploy
-will show a **delete+create** of the two booking jobs (rename `-edt-sun`→`-edt`). Remaining
+Prod still runs the previously-deployed image until a new `infra/v*` tag. That prod deploy runs
+in ARM **incremental** mode, so it **creates** the renamed jobs (`-edt`/`-est`) but does NOT
+delete the old `-edt-sun`/`-est-sun` jobs — they orphan and keep firing the old Sunday-only cron
+(un-killswitched) until manually removed. See AZURE_PLAN.md §10.2 for the required
+`az containerapp job delete` orphan-cleanup + verification runbook. Remaining
 v0 task: **M2.T3** (post-mortem reconciliation) — still unimplemented, independent of all the above.
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
@@ -136,8 +139,8 @@ in `core/` — never directly. This is the cut line for parallel work.
   store boundary on every `attempt_log` write (PLAN.md §10.1) — so no caller can leak
   card data by forgetting to scrub. The card POST uses `follow_redirects=False`.
 - **Double-booking defense is layered.** Live pre-book `list_reservations`
-  check, single-attempt-per-slot rule, in-process advisory lock, ACA Job /
-  GH Actions concurrency groups. There is no durable cross-run idempotency
+  check, single-attempt-per-slot rule, in-process advisory lock, ACA Job
+  concurrency (`parallelism=1`, one execution per job). There is no durable cross-run idempotency
   record; the live remote check is the primary cross-run guard. PLAN.md §9
   has the full flow; §9.1 has the explicit state machine that M2.T1
   implements. `list_reservations` is on the `CourseAdapter` Protocol from

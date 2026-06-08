@@ -65,8 +65,9 @@
 ```
 
 **One-line summary.** Three ACA Jobs: two booking jobs (one per DST half) fire 10 minutes before
-6:00 AM ET every **Sunday**; one watch job fires every 10 minutes year-round to monitor for
-cancellation slots. Each job is fully stateless — it pulls the bot image from ACR using a
+6:00 AM ET **daily** (the booking-day gate then fast-exits any non-wanted weekday, so they book
+only the wanted days — default Sat+Sun); one watch job fires every 10 minutes year-round to
+monitor for cancellation slots. Each job is fully stateless — it pulls the bot image from ACR using a
 user-assigned managed identity, runs the booking or watch logic entirely in process memory
 (`InMemoryStore`), and exits. There is no durable state blob; the live `list_reservations()`
 pre-book check is the cross-run source of truth for existing reservations. Secrets flow from Key
@@ -269,7 +270,7 @@ Key differences from the booking jobs:
 | `replicaTimeout` | 1200 s (20 min — covers the in-replica busy-wait to 06:00 ET) | 300 s (5 min — one HTTP round-trip plus headroom for idempotent-call retries) |
 | Command | `teetime run --config ...` | `teetime watch --config ...` |
 | Enabled | Always | `watcher.enabled = true` in v1 configs (M6 PR4); look-but-don't-book under `--dry-run true`. Uses the SAME `MB-*`/`PLAYER1-*` KV secrets — no new secrets. |
-| Concurrency group | `book-tee-time` | `watch-tee-time` (separate; but a watch+book overlap is safe — advisory lock in code handles it) |
+| Concurrency | Serialized at the ACA-Job level (one execution per job) | Separate job; a watch+book overlap is safe because the in-process advisory lock handles it |
 
 The watch job is fully stateless (same as the booking jobs — `InMemoryStore`).
 It acquires `request_lock` only for the booking phase (if a cancellation slot is
@@ -578,7 +579,7 @@ in the parameter file and redeploy — this is the intended release workflow.
 
 | Component | SKU | Monthly cost | Notes |
 |---|---|---|---|
-| Container Apps Job compute | Consumption | **$0.00** | Free tier: 180,000 vCPU-s/month. Booking: ~11-min busy-wait run × 0.25 vCPU ≈ 165 vCPU-s × ~9 Sunday runs/mo ≈ 1.5k. Watch (every 10 min, ~30 s): ~4,320 runs × ~7.5 vCPU-s ≈ 32k. Combined ≈ 34k vCPU-s/mo — ~80% below free tier. (The every-10-min watch job, not the booker, is the dominant consumer.) |
+| Container Apps Job compute | Consumption | **$0.00** | Free tier: 180,000 vCPU-s/month. Booking: ~11-min busy-wait run × 0.25 vCPU ≈ 165 vCPU-s × ~8-9 weekend runs/mo (Sat+Sun) ≈ 1.5k. Watch (every 10 min, ~30 s): ~4,320 runs × ~7.5 vCPU-s ≈ 32k. Combined ≈ 34k vCPU-s/mo — ~80% below free tier. (The every-10-min watch job, not the booker, is the dominant consumer.) |
 | Container Apps Job memory | Consumption | **$0.00** | Free tier: 360,000 GiB-s/month. Same run profile at 0.5 GiB ≈ 68k GiB-s/mo — ~80% below free tier. |
 | Container Apps Environment | Consumption | **$0.00** | No per-environment fee on Consumption plan. |
 | Azure Container Registry | Basic | **~$5.00** | $5.00/mo flat for Basic SKU. Includes 10 GiB storage. Our image is ~300 MB; well within limits. |
