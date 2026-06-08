@@ -16,8 +16,8 @@ Polling interval:
     making normal bookings" tier of any reasonable anti-bot policy. PLAN.md §12
     forbids hammering. 10 minutes respects that.
 
-    NOTE: GH Actions `*/10` cron firing is best-effort; real-world intervals can
-    be 10-20 minutes depending on runner load. The "144 polls/day" figure assumes
+    NOTE: ACA Job `*/10` cron firing is best-effort; real-world intervals can
+    be 10-20 minutes depending on scheduler load. The "144 polls/day" figure assumes
     exact 10-minute intervals and is an upper bound. See PLAN.md §20 SF-4 note.
 
 ACA Job scheduling (ACA Jobs are not long-running):
@@ -26,8 +26,9 @@ ACA Job scheduling (ACA Jobs are not long-running):
     Instead, each ACA Job invocation runs once, checks for availability, then
     exits. The cron on the ACA Job fires every 10 minutes (*/10 * * * *).
     The job runs for at most ~30 seconds per invocation (one HTTP round-trip).
-    This is the correct pattern for ACA Jobs. The v0 GH Actions equivalent is
-    a separate workflow with a schedule of every 10 minutes during watch hours.
+    This is the correct pattern for ACA Jobs. (An earlier design ran this as a
+    GH Actions workflow; that was removed — the ACA Job watch cron is the only
+    scheduler now.)
 
     IMPORTANT: ACA Job scheduled triggers use standard cron syntax and fire in
     UTC. The watch job's cron does not need a DST gate because it is not racing
@@ -134,7 +135,7 @@ class WatchOrchestrator:
       across runs beyond the live `list_reservations` check.
 
     This class does NOT loop internally. Each invocation does one check and exits.
-    The polling loop is handled externally by the scheduler (ACA cron / GH Actions).
+    The polling loop is handled externally by the scheduler (the ACA Job watch cron).
 
     LOCK OWNERSHIP: check_once() acquires `request_lock` only for the booking
     phase (book + record_terminal), matching the Orchestrator pattern. The

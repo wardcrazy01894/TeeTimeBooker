@@ -262,10 +262,10 @@ This is a deliberate scope expansion past the original "no card data, ever" post
 |----------------------------------|-------------------------------------------|---------------------------------------------------|
 | Inventory not yet published      | 200 + empty list, or specific 4xx         | Poll every 250 ms up to `max_poll_seconds` (30 s) |
 | Inventory published, no match    | 200 + non-empty, but criteria filter empties | Try next course in `course_preferences`; else NO_INVENTORY |
-| Slot gone between search & book  | book() returns specific error             | Re-search once, pick next-best, retry book once   |
-| Transient network error          | httpx `RequestError`, 502/503             | tenacity exponential backoff, max 3 attempts      |
+| Slot gone between search & book  | book() 4xx (400/409) -> `SlotGoneError`   | Fall through to the next-ranked candidate (each re-solves a fresh CAPTCHA); the book POST itself is single-attempt, never retried |
+| Transient network error          | httpx `TransportError` (read/connect)     | Hand-rolled retry in `ForeUpAdapter._send_with_retry` (linear backoff, default 2 attempts) around IDEMPOTENT calls only — book()'s POST is never wrapped |
 | Rate limited (429)               | HTTP 429 + Retry-After                    | Honor Retry-After up to a 10 s cap; else abort    |
-| Captcha challenge                | Adapter detects challenge response shape  | `CaptchaError` -> notify user, stop. v0 does not solve. |
+| Captcha challenge                | Adapter detects challenge response shape  | ForeUP path SOLVES the reCAPTCHA via the 2captcha provider (ToS posture reversed, §7/§12); a solve failure raises `CaptchaError` -> notify, stop. |
 | Auth failed                      | 401/403 on login                          | One retry after 2s (transient JWT). Then `AUTH_FAILED`, **lock cooldown** (§8.1). |
 | Account lockout risk             | Three login failures in 1 hour            | Halt all runs for 24 h; record in store; notify.  |
 | Partial-book state (booked but no confirmation) | book() raised but POST may have landed | See §9. |
@@ -382,10 +382,10 @@ calls `list_reservations`, and sees any booking that landed — no phantom booki
 
 ## 10. Observability
 
-- **Structured logs** via `structlog` -> JSON to stderr. Every log line carries `request_id`, `course_id`, `attempt`. Captured by GH Actions / ACA Job logs; tailed locally.
-- **In-memory event log** (`attempt_log`). Every state transition (per §9.1 state machine) gets an entry: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `RECONCILING`, `BOOKED`, `LOST`, etc. Lives in process memory only; useful for within-run correlation and structured-log emission.
+- **Logs** via the stdlib `logging` module -> plain text to stderr (NOT `structlog`/JSON; that dep was dropped). Captured by the ACA Job logs; tailed locally. Critical-path lines (T0 fire, DST/booking-day skip, booking outcome, NO_INVENTORY) are greppable.
+- **In-memory event log** (`attempt_log`). Every state transition (per §9.1 state machine) gets an entry: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `RECONCILING`, `BOOKED`, `LOST`, etc. Lives in process memory only; useful for within-run correlation and log emission.
 - **Notify-on-failure** is the alert. Non-`BOOKED` outcomes print to console (ConsoleNotifier). The golf course sends booking confirmation emails directly to the user's account email.
-- **Metric surface (v1):** count + duration of each event keyed by course; alert if `T_RACE_BEGIN -> BOOK_OK` latency exceeds 5s for two consecutive runs.
+- **Metric surface (future, UNIMPLEMENTED):** count + duration of each event keyed by course; alert if `T_RACE_BEGIN -> BOOK_OK` latency exceeds 5s for two consecutive runs. v0/v1 ship no metrics emission or latency alerting — state is in-process and ConsoleNotifier is the only sink.
 
 ### 10.1 PII handling (review failure mode "Player PII in attempt_log")
 
@@ -733,15 +733,16 @@ polls whenever it fires. (SUPERSEDED: the original 7 AM–10 PM polling-hours ga
 in the multi-day re-arch — the watcher now polls on every run so it sees the 6 AM drop and
 early-morning cancellations; only the past-deadline gate remains.) No extra cron entries needed.
 
-**GH Actions equivalent:** A separate `watch-tee-time.yml` workflow running `*/10 * * * *`
-during hours 7-22 ET (simplified to avoid hourly gates — the WatchOrchestrator itself gates
-on polling hours). The workflow uses its own concurrency group (`watch-tee-time`) separate
-from `book-tee-time`.
+**Scheduler (SUPERSEDED — the `watch-tee-time.yml` GH Actions workflow was REMOVED):** the
+watch runs only as an ACA Job cron (`*/10 * * * *`), year-round, with no time-of-day gate (the
+WatchOrchestrator polls on every run; only the past-deadline gate remains). The original plan
+ran a separate GH Actions workflow gated on 7-22 ET polling hours — both the workflow and the
+polling-hours gate are gone.
 
 **Race condition with 6 AM run:** Both the watch job and the 6 AM booking job acquire
 `request_lock` before any mutating operation. ACA Jobs run at most one replica simultaneously
-(parallelism=1). The GH Actions `concurrency: group: watch-tee-time` prevents simultaneous
-watch runs. A watch run that fires simultaneously with the 6 AM run will lose the advisory
+(parallelism=1; the ACA Job `concurrency` settings prevent simultaneous watch runs). A watch
+run that fires simultaneously with the 6 AM run will lose the advisory
 lock and exit cleanly (ConcurrentRunError caught, returns None). The next 10-minute poll
 will see the BOOKED terminal and short-circuit.
 
@@ -762,9 +763,9 @@ is eligible for watching. Within a run, the WatchOrchestrator checks `store.get_
 | ID | Task | Inputs | Outputs | Owner-files | Deps |
 |----|------|--------|---------|-------------|------|
 | M-feature-1.T1 | Add `WatchConfig` to `AppConfig` (pydantic model + TOML section `[watcher]`); `WatchConfig` validation tests; `teetime watch` CLI command stub | `src/teetime/core/config.py` (done), `src/teetime/__main__.py` | `teetime watch --config ... --date YYYY-MM-DD` CLI entry; WatchConfig validation tests green | `src/teetime/core/config.py`, `src/teetime/__main__.py`, `tests/test_config.py` (extended) | M1.* |
-| M-feature-1.T2 | Implement `WatchOrchestrator.check_once` with full §9.1 state machine for any booking POST; polling-hours gate; deadline gate; idempotency guards; error handling contract | `tests/test_watch_orchestrator.py` (red tests on disk) | all watch tests green; `mypy --strict` passes | `src/teetime/core/watch_orchestrator.py`, `tests/test_watch_orchestrator.py` | M-feature-3.T2 |
-| M-feature-1.T3 | GH Actions `watch-tee-time.yml` workflow (cron `*/10 * * * *`; own concurrency group; shares secrets with book.yml) | M-feature-1.T2 | `gh workflow run watch-tee-time --dry-run true` succeeds | `.github/workflows/watch-tee-time.yml` | M-feature-1.T2 |
-| M-feature-1.T4 | ACA Bicep additions: new `compute-watch.bicep` module with `*/10 * * * *` cron; own `replicaTimeout=30`; no DST gate needed | M-feature-1.T3 | `az deployment group validate` passes | `infra/bicep/modules/compute-watch.bicep`, `infra/bicep/main.bicep` (module ref) | M-feature-1.T3 |
+| M-feature-1.T2 | Implement `WatchOrchestrator.check_once` with full §9.1 state machine for any booking POST; deadline gate; idempotency guards; error handling contract (NOTE: the polling-hours gate this row mentions was later REMOVED in the multi-day re-arch) | `tests/test_watch_orchestrator.py` (red tests on disk) | all watch tests green; `mypy --strict` passes | `src/teetime/core/watch_orchestrator.py`, `tests/test_watch_orchestrator.py` | M-feature-3.T2 |
+| M-feature-1.T3 | ~~GH Actions `watch-tee-time.yml`~~ (SUPERSEDED) — shipped as an ACA Job watch cron instead; the GH Actions watch workflow was removed | M-feature-1.T2 | watch ACA Job runs `*/10 * * * *` | (no `watch-tee-time.yml`) | M-feature-1.T2 |
+| M-feature-1.T4 | ACA Bicep watch cron — shipped INSIDE `compute.bicep` (the `teetime-watch-job-<env>` job, `*/10 * * * *`, `replicaTimeout=300`), NOT a separate `compute-watch.bicep` module | M-feature-1.T3 | `az deployment group validate` passes | `infra/bicep/modules/compute.bicep` | M-feature-1.T3 |
 
 **Reviewer pre-emption (adversarial checklist):**
 

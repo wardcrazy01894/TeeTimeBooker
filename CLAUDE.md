@@ -38,7 +38,8 @@ AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
 (wanted days derived from the per-day `[[request.time_windows]]` weekdays), holding one
 reservation PER day:
-- Booking crons fire **DAILY** (`50 9/10 * * *`), jobs renamed `teetime-job-<env>-edt`/`-est`
+- Booking crons fire **DAILY** — two crons, one per DST half: `50 9 * * *` (EDT) and
+  `50 10 * * *` (EST), both 05:50 ET. Jobs renamed `teetime-job-<env>-edt`/`-est`
   (the `-sun` suffix dropped). Each run computes `today+7` and **fast-exits 0** unless that
   weekday is wanted (`core/booking_day_gate.py`), after the DST gate.
 - The watcher **polls on every run** (the time-of-day gate was removed) and, on EVERY run
