@@ -344,8 +344,8 @@ def watch_cmd(
 ) -> None:
     """Perform one cancellation-availability check for the target date.
 
-    Designed to be called on a recurring schedule (every ~10 minutes via
-    GH Actions cron or ACA Job). Exits 0 whether or not a slot was found.
+    Designed to be called on a recurring schedule (every ~10 minutes via the
+    ACA Job watch cron). Exits 0 whether or not a slot was found.
     Re-exits non-zero only on CaptchaError or AuthError (operator action needed).
     """
     try:
