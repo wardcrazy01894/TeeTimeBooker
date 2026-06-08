@@ -101,7 +101,7 @@ What agents MUST NOT run without explicit user instruction (all hard-blocked by
 - `az containerapp job start` / `stop` / `create` / `update` / `delete` (live execution / config change / removal — `stop` is the verb the killswitch itself uses)
 - `az role assignment` / `role definition` `create` / `delete` (RBAC grant/revoke + custom-role escalation)
 - `az keyvault secret set` / `delete` / `purge`; `az keyvault set-policy`
-- `az keyvault update` (network-ACL / config change — can lock the vault and DoS the jobs); `az keyvault purge` / `delete` (vault-level — destroys/permanently-removes the whole vault)
+- `az keyvault update` / `network-rule add` / `network-rule remove` (network-ACL / config change — can lock the vault and DoS the jobs); `az keyvault purge` / `delete` (vault-level — destroys/permanently-removes the whole vault)
 - `az group delete` / `az resource delete`
 - Any `az` command that modifies, creates, or deletes Azure resources
 
