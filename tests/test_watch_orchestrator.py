@@ -236,9 +236,10 @@ async def test_watch_notifies_on_successful_booking() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_watch_polls_before_7am() -> None:
-    """At 06:00 ET (formerly before polling_start_hour) the watcher now SEARCHES instead
-    of skipping — this is what gives us visibility into the 6 AM drop + early cancellations."""
+async def test_watch_polls_at_early_morning() -> None:
+    """At 06:00 ET (formerly suppressed by the removed polling-hours gate) the watcher now
+    SEARCHES instead of skipping — this is what gives us visibility into the 6 AM drop +
+    early cancellations."""
     adapter = FakeAdapter(course_id=COURSE_ID)
     adapter.set_search_response([_slot()])
     watch, _, _ = _build(adapter, now_utc=SIX_AM_ET_UTC)  # 06:00 ET

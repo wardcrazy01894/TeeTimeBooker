@@ -739,7 +739,7 @@ the loop is sequential, not concurrent. "No new lock semantics."
 - `test_watch_logs_plural_targets` — assert the new `Watch check: targets=[...]` line.
 
 **Red tests (poll-every-run) — `tests/test_watch_orchestrator.py`.**
-- `test_watch_polls_before_7am` — FakeClock at 06:10 ET, a future `target_date` (not past
+- `test_watch_polls_at_early_morning` — FakeClock at 06:10 ET, a future `target_date` (not past
   deadline); assert `check_once` performs a search (FakeAdapter `search` is called) instead of
   early-returning. Pre-removal this fails because the polling gate short-circuits.
 - `test_watch_polls_at_any_hour` — FakeClock at 03:00 ET; assert `check_once` still searches.

@@ -137,7 +137,8 @@ def watch_spy(monkeypatch: pytest.MonkeyPatch) -> type[_SpyWatch]:
 
 
 def test_watch_checks_each_wanted_day(tmp_path: Path, watch_spy: type[_SpyWatch]) -> None:
-    # Default target_weekdays = [saturday, sunday] → check_once for the next Sat AND Sun.
+    # Default config has windows on Sat + Sun → wanted days derived from them →
+    # check_once runs for the next Sat AND Sun.
     cfg = _config(tmp_path, enabled=True)
     result = CliRunner().invoke(
         cli, ["watch", "--config", str(cfg), "--dry-run", "true", "--use-fake-adapter"]
