@@ -17,8 +17,12 @@ try:
 except Exception:
     print("")' 2>/dev/null)"
 
-# Normalize runs of whitespace so "az   deployment" still matches.
-norm="$(printf '%s' "$cmd" | tr -s "[:space:]" " ")"
+# Normalize: strip quote chars (so a quoted binary `"az" deployment …` can't
+# slip past the leading `az ` anchor) and squeeze runs of whitespace (so
+# "az   deployment" still matches). Quote-stripping is fail-closed: it can only
+# cause MORE matching, never less. A path-prefixed binary (`/usr/bin/az …`) is
+# already caught by the substring match.
+norm="$(printf '%s' "$cmd" | tr -d "\"'" | tr -s "[:space:]" " ")"
 
 # keyvault alternation notes: the bare `purge`/`delete` cover the vault-level
 # `az keyvault purge` / `az keyvault delete`. `delete` (no boundary) also matches
@@ -28,7 +32,7 @@ norm="$(printf '%s' "$cmd" | tr -s "[:space:]" " ")"
 # delete-/purge-, immediately after "keyvault "). Both behaviours are pinned in
 # tests/test_az_deploy_guard.py.
 if printf '%s' "$norm" | grep -Eiq \
-  'az (deployment (group|sub|mg|tenant) create|containerapp job (start|update|delete)|role assignment (create|delete)|keyvault (purge|delete|secret (set|delete|purge)|set-policy)|group delete|resource delete)'; then
+  'az (deployment (group|sub|mg|tenant) (create|delete)|containerapp job (start|stop|create|update|delete)|role (assignment|definition) (create|delete)|keyvault (purge|delete|update|secret (set|delete|purge)|set-policy)|group delete|resource delete)'; then
   {
     echo "BLOCKED by az-deploy-guard: this command creates, modifies, or deletes"
     echo "live Azure resources, which CLAUDE.md forbids without explicit user"
