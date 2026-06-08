@@ -50,7 +50,6 @@ from .courses.foreup.base import ForeUpAdapter
 from .courses.foreup.captcha import (
     FOREUP_RECAPTCHA_SITE_KEY,
     make_2captcha_provider,
-    make_captcha_provider,
     resolve_invisible_site_key,
 )
 from .courses.foreup.mangrove_bay import MangroveBayAdapter
@@ -480,8 +479,9 @@ def _build_adapters(
     """Build a CourseAdapter for each [[courses]] entry via _ADAPTER_REGISTRY.
 
     In dry_run mode, captcha_provider is always None (no CAPTCHA solving needed
-    because the final booking POST is skipped). In live mode, 2captcha is used
-    when TWOCAPTCHA_API_KEY is set; otherwise falls back to the inline solver.
+    because the final booking POST is skipped). In live mode a ForeUP course
+    requires TWOCAPTCHA_API_KEY (2captcha is the only supported live solver);
+    a missing key raises a clear error instead of silently degrading.
 
     The booking_page_url on each ForeUpAdapter subclass determines which page
     the captcha provider targets — every course has its own booking page.
@@ -523,11 +523,16 @@ def _build_adapters(
                         f"Adapter {cls.__name__!r} (for course {c.id!r}) has no booking_page_url. "
                         "Set booking_page_url = <url> in the adapter class before live use."
                     )
+                if not twocaptcha_key:
+                    raise click.ClickException(
+                        f"Live ForeUP booking for course {c.id!r} requires a CAPTCHA solver, "
+                        "but TWOCAPTCHA_API_KEY is unset. Set it (the 2captcha API key) in the "
+                        "environment, or run with --dry-run true. "
+                        "(The Playwright inline solver was removed — the deployed image has no "
+                        "browser; 2captcha is the only supported live solver.)"
+                    )
                 site_key = site_keys.get(CourseId(c.id), FOREUP_RECAPTCHA_SITE_KEY)
-                if twocaptcha_key:
-                    cp = make_2captcha_provider(twocaptcha_key, cls.booking_page_url, site_key)
-                else:
-                    cp = make_captcha_provider(cls.booking_page_url, site_key)
+                cp = make_2captcha_provider(twocaptcha_key, cls.booking_page_url, site_key)
             adapters[CourseId(c.id)] = cls(captcha_provider=cp)  # type: ignore[call-arg]
         else:
             # Non-ForeUP adapters (TeeItUp, future platforms): no CAPTCHA, simpler construction.

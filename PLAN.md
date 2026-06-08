@@ -59,7 +59,7 @@ This plan is structured for parallel execution. Milestones are sequential; tasks
                                        +-----------------+
 ```
 
-**One-line summary:** an Orchestrator drives one or more CourseAdapters at T0, persists in-run state via BookingStore (InMemoryStore — not persisted across runs), and reports via Notifier. Every component except the orchestrator is a Protocol so we can swap impls (cloud KV, Slack, Playwright fallback) without rewiring.
+**One-line summary:** an Orchestrator drives one or more CourseAdapters at T0, persists in-run state via BookingStore (InMemoryStore — not persisted across runs), and reports via Notifier. Every component except the orchestrator is a Protocol so we can swap impls (cloud KV, Slack notifier, another course adapter) without rewiring.
 
 ---
 
@@ -98,7 +98,7 @@ TeeTimeBooker/
       foreup/
         __init__.py
         base.py                 # shared HTTP, auth, rate limit, error mapping
-        captcha.py              # reCAPTCHA token harvest (2captcha + Playwright)
+        captcha.py              # reCAPTCHA token harvest (2captcha)
         mangrove_bay.py         # course IDs only
       teeitup/
         __init__.py
@@ -447,7 +447,7 @@ What we DO:
 - Self-imposed minimum 250 ms between calls outside the T0 race window.
 - Honor `Retry-After`. Cap polling at 30 s after T0.
 - One booking per request, ever (idempotency + reconciliation).
-- **Solve the ForeUP reCAPTCHA** on the booking step via a third-party human-solver service (2captcha) with a headless-Playwright fallback (`foreup/captcha.py`). The Playwright path uses a spoofed Chrome UA and `--disable-blink-features=AutomationControlled` specifically to pass reCAPTCHA's automation scoring — i.e. it is browser impersonation for the purpose of clearing a technical control.
+- **Solve the ForeUP reCAPTCHA** on the booking step via a third-party human-solver service (2captcha) (`foreup/captcha.py`). Delegating the solve to a paid human/AI solver pool is itself a deliberate circumvention of a technical control — see §12 ToS posture. (A headless-Playwright fallback that impersonated a browser to pass reCAPTCHA's automation scoring was removed: it was unreliable and the deployed image carries no browser.)
 - **Handle card data** for TeeItUp (PAN/CVV passed to the payment endpoint each booking; see §7).
 
 What we still DO NOT:
@@ -625,7 +625,7 @@ Each item from the brief, addressed:
 - **GH Actions cron jitter (~1–15 min):** §6.2. Fire 10 min early; bot's busy-wait nails T0. Worst case (no run that day) is accepted; v1 mitigation is Cloud Scheduler.
 - **DST and 6:00 AM ET:** §6.3. Two crons + DST-half check + `zoneinfo` for actual T0 computation. Math shown.
 - **Double-booking risk:** §9. Six layers of defense; reconciliation is the load-bearing one.
-- **ForeUP captcha:** §8 row "Captcha challenge"; §12. The booking step is gated by an invisible reCAPTCHA, which the bot solves via 2captcha (Playwright fallback) — see `foreup/captcha.py`. S1 confirmed no login captcha. Caveat: a synchronous solve (~15–30 s) in the booking POST can blow the T0 race window — see §19 / `infra/AZURE_PLAN.md` for the pre-fetch consideration.
+- **ForeUP captcha:** §8 row "Captcha challenge"; §12. The booking step is gated by an invisible reCAPTCHA, which the bot solves via 2captcha — see `foreup/captcha.py`. S1 confirmed no login captcha. Caveat: a synchronous solve (~15–30 s) in the booking POST can blow the T0 race window — see §19 / `infra/AZURE_PLAN.md` for the pre-fetch consideration.
 - **Account lockout:** §8.1. Three auth failures → halt current run + notify (in-run only; no durable cooldown across runs).
 - **Credit-card storage:** §7. **By platform.** ForeUP: none (card-on-file). TeeItUp: PAN/CVV/expiry/billing are passed to `tr.gnsvc.com` on each booking (no wallet); sourced from env vars, never committed, and dropped by `redact_payload` at the `append_attempt` store boundary on every `attempt_log` write (§10.1).
 - **ForeUP ToS:** §12, stated honestly. Risks accepted by user.
