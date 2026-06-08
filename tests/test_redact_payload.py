@@ -154,3 +154,29 @@ def test_redacts_nested_lists_of_lists() -> None:
     out = redact_payload({"deep": [[{"cvv": "9"}], [{"ok": "keep"}]]})
     assert out["deep"][0][0]["cvv"] == "***"
     assert out["deep"][1][0]["ok"] == "keep"
+
+
+def test_pan_shaped_value_redacted_regardless_of_key() -> None:
+    # Belt-and-suspenders (security finding, /full-repo-scan): the key-based allowlist
+    # can't catch a PAN that arrives under an UNRECOGNISED key (e.g. a future GNSVC field
+    # rename like {"acctRef": "<PAN>"}). A value that is card-number-shaped — 13-19 digits,
+    # Luhn-valid, digits+separators only — is masked no matter the key. The Luhn gate keeps
+    # ordinary long IDs (reservation ids, timestamps) from being over-redacted.
+    out = redact_payload(
+        {
+            "acctRef": "4111111111111111",  # Luhn-valid 16-digit PAN under an innocuous key
+            "spaced": "4111 1111 1111 1111",  # separators tolerated
+            "dashed": "5555-5555-5555-4444",  # Luhn-valid Mastercard test number
+            "nested": {"renamed_pan": "4012888888881881"},  # caught at depth
+            "order_id": "4111111111111112",  # 16 digits but FAILS Luhn → preserved (not a PAN)
+            "short_num": "123456789012",  # 12 digits, too short → preserved
+            "ReservationId": 42,  # small int control → preserved
+        }
+    )
+    assert out["acctRef"] == "***"
+    assert out["spaced"] == "***"
+    assert out["dashed"] == "***"
+    assert out["nested"]["renamed_pan"] == "***"
+    assert out["order_id"] == "4111111111111112"  # non-Luhn long number is not a PAN
+    assert out["short_num"] == "123456789012"
+    assert out["ReservationId"] == 42

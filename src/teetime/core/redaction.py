@@ -59,13 +59,58 @@ def _is_sensitive_key(key: str) -> bool:
     return any(tok in k for tok in _SENSITIVE_KEY_TOKENS)
 
 
+# Card numbers (PANs) are 13-19 digits; the value-level guard masks any scalar in this
+# length range that also passes the Luhn checksum (digits + separators only).
+_PAN_MIN_DIGITS = 13
+_PAN_MAX_DIGITS = 19
+_LUHN_DOUBLED_MAX = 9  # a doubled digit > 9 has 9 subtracted (equivalent to summing its digits)
+
+
+def _luhn_ok(digits: str) -> bool:
+    """Standard Luhn mod-10 checksum. Real card numbers always pass; random long IDs
+    almost never do, so it sharply limits false positives in the value-level PAN guard."""
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = ord(ch) - 48
+        if i % 2 == 1:
+            d *= 2
+            if d > _LUHN_DOUBLED_MAX:
+                d -= _LUHN_DOUBLED_MAX
+        total += d
+    return total % 10 == 0
+
+
+def _looks_like_pan(v: object) -> bool:
+    """True if a SCALAR value is card-number-shaped: 13-19 digits, Luhn-valid, and made of
+    digits + separators (spaces/dashes) only. Value-level backstop for the key-based
+    allowlist — a PAN arriving under an unrecognised key (e.g. a renamed GNSVC field) is
+    still masked. Whole-string-only (not a substring scan), so it never redacts prose; the
+    Luhn gate keeps ordinary long IDs / timestamps from being over-redacted. bool is an int
+    subclass and is excluded."""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        s = str(abs(v))
+    elif isinstance(v, str):
+        s = v
+    else:
+        return False
+    if any(not (ch.isdigit() or ch in " -") for ch in s):
+        return False
+    digits = "".join(ch for ch in s if ch.isdigit())
+    return _PAN_MIN_DIGITS <= len(digits) <= _PAN_MAX_DIGITS and _luhn_ok(digits)
+
+
 def _redact_value(v: object) -> object:
     """Recursively redact a value: dict → redact_payload, list/tuple → element-wise
-    (including nested lists), scalar → returned as-is. Returns new containers (no aliasing)."""
+    (including nested lists), a card-number-shaped scalar → "***", any other scalar →
+    returned as-is. Returns new containers (no aliasing)."""
     if isinstance(v, Mapping):
         return redact_payload(v)
     if isinstance(v, (list, tuple)):
         return [_redact_value(i) for i in v]
+    if _looks_like_pan(v):
+        return "***"
     return v
 
 

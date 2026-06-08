@@ -728,9 +728,9 @@ class TeeItUpAdapter:
         if r.status_code == _HTTP_RATE_LIMIT:
             raise RateLimitError("TeeItUp rate-limited cancel_reservation()")
         if not r.is_success:
-            raise CancelError(
-                f"TeeItUp cancel failed for {raw_id}: HTTP {r.status_code} {r.text[:200]}"
-            )
+            # Status code only — the Kenna error body can echo the holder's name (PII).
+            # Parity with the ForeUP path, which logs only StatusCode/Message.
+            raise CancelError(f"TeeItUp cancel failed for {raw_id}: HTTP {r.status_code}")
 
     def __repr__(self) -> str:
         return f"<TeeItUpAdapter course={self.course_id!r}>"
