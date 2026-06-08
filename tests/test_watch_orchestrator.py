@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
-from teetime.core.adapter import AuthError, CaptchaError, NoInventoryError
+from teetime.core.adapter import AuthError, CaptchaError, NoInventoryError, RateLimitError
 from teetime.core.clock import FakeClock
 from teetime.core.config import OneBookingPolicyConfig, PrioritySlotConfig, SchedulerConfig
 from teetime.core.models import (
@@ -561,6 +561,82 @@ async def test_watch_transient_error_on_first_course_still_tries_second() -> Non
     assert result.outcome == BookingOutcome.BOOKED
     assert result.course_id == COURSE_ID_2
     assert adapter2.book_call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit (429) is NOT a generic transient blip — it must back off, not hammer
+# the next course/date (PLAN §12 anti-bot etiquette).
+# ---------------------------------------------------------------------------
+
+
+async def test_watch_reraises_rate_limit_error_without_notify() -> None:
+    """A RateLimitError (429) must propagate out of check_once() so the run aborts
+    and the 10-min cron cadence becomes the backoff floor — NOT be swallowed as a
+    generic transient error (which would let the next run hammer the throttled API).
+    Unlike CaptchaError/AuthError it is not operator-actionable, so it does NOT
+    notify."""
+    notified: list[BookingResult] = []
+
+    class _CapturingNotifier:
+        async def notify(self, result: BookingResult) -> None:
+            notified.append(result)
+
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_to_raise(RateLimitError("throttled", retry_after_s=60.0))
+
+    store = InMemoryStore()
+    clock = FakeClock(start=TEN_AM_ET_UTC)
+    creds = {COURSE_ID: CourseCredentials(username="u", password="p")}
+    watch = WatchOrchestrator(
+        adapters={COURSE_ID: adapter},
+        store=store,
+        notifier=_CapturingNotifier(),
+        clock=clock,
+        scheduler=_scheduler(),
+        watch_config=_watch_config(),
+        creds=creds,
+    )
+
+    with pytest.raises(RateLimitError):
+        await watch.check_once(_request(), TARGET_DATE)
+
+    # Rate-limit is a back-off signal, not an operator-action alert.
+    assert notified == []
+
+
+async def test_watch_rate_limit_on_first_course_does_not_try_second() -> None:
+    """A 429 on the first course must abort immediately — NOT fall through to the
+    next course (which would keep hammering the throttled platform). This is the
+    key distinction from a generic transient error, which DOES try the next course.
+    """
+    adapter1 = FakeAdapter(course_id=COURSE_ID)
+    adapter1.set_search_to_raise(RateLimitError("throttled", retry_after_s=60.0))
+
+    adapter2 = FakeAdapter(course_id=COURSE_ID_2)
+    adapter2.search = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("second course must NOT be searched after a 429")
+    )
+
+    store = InMemoryStore()
+    clock = FakeClock(start=TEN_AM_ET_UTC)
+    creds = {
+        COURSE_ID: CourseCredentials(username="u", password="p"),
+        COURSE_ID_2: CourseCredentials(username="u", password="p"),
+    }
+    watch = WatchOrchestrator(
+        adapters={COURSE_ID: adapter1, COURSE_ID_2: adapter2},
+        store=store,
+        notifier=NoopNotifier(),
+        clock=clock,
+        scheduler=_scheduler(),
+        watch_config=_watch_config(),
+        creds=creds,
+    )
+
+    with pytest.raises(RateLimitError):
+        await watch.check_once(_request(course_ids=(COURSE_ID, COURSE_ID_2)), TARGET_DATE)
+
+    assert adapter2.search.call_count == 0
 
 
 # ---------------------------------------------------------------------------
