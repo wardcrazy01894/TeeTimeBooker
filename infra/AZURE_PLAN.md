@@ -776,7 +776,7 @@ az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TWOCAPTCHA-A
   performs the live CAPTCHA solve (dev dry-run skips it).
 - Valid ForeUP / Mangrove Bay credentials in `MB-USERNAME` / `MB-PASSWORD`.
 - **M6 implemented and verified in dev** (the `--wait` real-timing path, the DST gate, and
-  watcher enablement). The prod cutover is the LAST step, after a clean dev dry-run Sunday.
+  watcher enablement). The prod cutover is the LAST step, after a clean dev dry-run on a wanted booking day (Sat or Sun).
 
 **Secret ordering (corrected — this bit us on the first prod deploy):** ACA validates a job's
 `keyVaultUrl` secret references at DEPLOY (job-creation) time, NOT lazily at run time. So a
