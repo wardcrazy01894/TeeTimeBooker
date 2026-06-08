@@ -180,3 +180,45 @@ def test_pan_shaped_value_redacted_regardless_of_key() -> None:
     assert out["order_id"] == "4111111111111112"  # non-Luhn long number is not a PAN
     assert out["short_num"] == "123456789012"
     assert out["ReservationId"] == 42
+
+
+# Every card / payment-credential key that actually appears in the live TeeItUp GNSVC
+# booking payload (extracted from courses/teeitup/base.py). This is the authoritative
+# set the store-boundary redaction MUST mask. It pins BOTH coverage paths in
+# core/redaction.py: the `payment` namespace prefix (covers the Payment.*/Payments_*
+# keys) AND the `_SENSITIVE_KEY_TOKENS` substrings (cover the non-namespaced cred-style
+# keys — e.g. `card_number` relies solely on the "card" token). A future edit that drops
+# a token or renames a GNSVC field then fails loudly here instead of silently leaking a
+# raw PAN/CVV into the in-memory attempt_log. (Security finding from /full-repo-scan: the
+# redaction is an allowlist, so a dropped token is otherwise an invisible regression.)
+_LIVE_CARD_KEYS = (
+    "Payment.CC.CreditCardNumber",
+    "Payment.CC.CVVCode",
+    "Payment.CC.ExpirationMonth",
+    "Payment.CC.ExpirationYear",
+    "Payment.Address.Line1",
+    "Payment.Address.PostalCode",
+    "Payment.Address.Country",
+    "Payment.Name",
+    "Payment.PhoneNumber",
+    "Payments_1_CreditCard_NameOnCard",
+    "Token",  # short-lived GNSVC bearer payment credential
+    "card_number",
+    "name_on_card",
+    "expiry_month",
+    "expiry_year",
+    "billing_address",
+    "billing_postal_code",
+)
+
+
+def test_redacts_every_live_card_field() -> None:
+    # A single sentinel value per key; if any key survives unmasked, the PAN/CVV leaks.
+    payload = {k: "SECRET-4111111111111111" for k in _LIVE_CARD_KEYS}
+    payload["ReservationStatusID"] = 3  # non-sensitive control
+    out = redact_payload(payload)
+    leaked = [k for k in _LIVE_CARD_KEYS if out[k] != "***"]
+    assert not leaked, f"card fields NOT redacted (raw PAN/CVV would reach attempt_log): {leaked}"
+    # The raw sentinel must appear nowhere in the redacted output's values.
+    assert "SECRET-4111111111111111" not in repr(out)
+    assert out["ReservationStatusID"] == 3  # control preserved
