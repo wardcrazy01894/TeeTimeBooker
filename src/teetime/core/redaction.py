@@ -61,6 +61,11 @@ def _is_sensitive_key(key: str) -> bool:
 
 # Card numbers (PANs) are 13-19 digits; the value-level guard masks any scalar in this
 # length range that also passes the Luhn checksum (digits + separators only).
+# KNOWN TRADE-OFF: ~10% of random 13-digit numbers pass Luhn, and a 13-digit epoch-
+# MILLISECOND timestamp sits in this window — so a millis int could be over-redacted to
+# "***". This is the intended masking-over-leaking default for an audit blob. To avoid it
+# in real payloads, store timestamps as ISO-8601 strings (the '-'/':'/'T' fail the
+# whole-string guard) or epoch SECONDS (10 digits, below the floor) rather than millis ints.
 _PAN_MIN_DIGITS = 13
 _PAN_MAX_DIGITS = 19
 _LUHN_DOUBLED_MAX = 9  # a doubled digit > 9 has 9 subtracted (equivalent to summing its digits)
