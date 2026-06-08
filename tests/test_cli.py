@@ -769,3 +769,87 @@ def test_booking_day_skip_log_emitted(
         )
     assert result.exit_code == 0, result.output
     assert any("not a wanted booking day" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Cost/etiquette: the DST + booking-day gates must short-circuit BEFORE the
+# (real-adapter) site-key fetch / adapter / credential resolution. _resolve_site_keys
+# makes a live ForeUP GET per course in prod; a wrong-season or non-booking-day cron
+# fires DAILY and must not pay that cost (or touch ForeUP) on the ~5/7 idle mornings.
+# The gates are pure functions of the clock, so they can gate the expensive work.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def resolve_spy(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Count calls to the (potentially expensive) resolution helpers, delegating to
+    the originals so the real-adapter path still builds correctly when it proceeds."""
+    holder = SimpleNamespace(build_adapters=0, resolve_creds=0, site_keys=0)
+    orig_build = main_mod._build_adapters
+    orig_creds = main_mod._resolve_creds
+    orig_site = main_mod._resolve_site_keys
+
+    def build_spy(*a: object, **k: object) -> object:
+        holder.build_adapters += 1
+        return orig_build(*a, **k)
+
+    def creds_spy(*a: object, **k: object) -> object:
+        holder.resolve_creds += 1
+        return orig_creds(*a, **k)
+
+    async def site_spy(*a: object, **k: object) -> object:
+        holder.site_keys += 1
+        return await orig_site(*a, **k)
+
+    monkeypatch.setattr(main_mod, "_build_adapters", build_spy)
+    monkeypatch.setattr(main_mod, "_resolve_creds", creds_spy)
+    monkeypatch.setattr(main_mod, "_resolve_site_keys", site_spy)
+    return holder
+
+
+def test_dst_skip_does_not_resolve_adapters(
+    spy_run: SimpleNamespace, gate_spy: SimpleNamespace, resolve_spy: SimpleNamespace
+) -> None:
+    gate_spy.proceed = False  # wrong-season cron
+    result = CliRunner().invoke(
+        cli, ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--wait"]
+    )
+    assert result.exit_code == 0, result.output
+    assert resolve_spy.build_adapters == 0  # gated out before adapter construction
+    assert resolve_spy.resolve_creds == 0
+    assert resolve_spy.site_keys == 0  # no live ForeUP GET on a wrong-season cron
+
+
+def test_booking_day_skip_does_not_resolve_adapters(
+    spy_run: SimpleNamespace,
+    gate_spy: SimpleNamespace,
+    booking_gate_spy: SimpleNamespace,
+    resolve_spy: SimpleNamespace,
+) -> None:
+    gate_spy.proceed = True  # correct season
+    booking_gate_spy.book = False  # today+offset is not a wanted weekday
+    result = CliRunner().invoke(
+        cli, ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--wait"]
+    )
+    assert result.exit_code == 0, result.output
+    assert resolve_spy.build_adapters == 0  # non-booking-day cron skips resolution
+    assert resolve_spy.resolve_creds == 0
+    assert resolve_spy.site_keys == 0
+
+
+def test_gate_proceed_resolves_adapters(
+    spy_run: SimpleNamespace,
+    gate_spy: SimpleNamespace,
+    booking_gate_spy: SimpleNamespace,
+    resolve_spy: SimpleNamespace,
+) -> None:
+    # Happy path: when both gates proceed, resolution still happens exactly once.
+    gate_spy.proceed = True
+    booking_gate_spy.book = True
+    result = CliRunner().invoke(
+        cli, ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--wait"]
+    )
+    assert result.exit_code == 0, result.output
+    assert resolve_spy.build_adapters == 1
+    assert resolve_spy.resolve_creds == 1
+    assert resolve_spy.site_keys == 0  # --dry-run true short-circuits the live ForeUP GET
