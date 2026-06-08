@@ -416,7 +416,7 @@ When an operator rotates a credential (e.g., `MB_PASSWORD`):
 If an operator wants to force immediate pickup (e.g., to test a rotated
 password before the next scheduled run), use:
 ```
-az containerapp job start --name teetime-job-<envName> --resource-group rg-teetime-<envName>
+az containerapp job start --name teetime-job-<envName>-edt --resource-group rg-teetime-<envName>
 ```
 This triggers a manual execution that will pick up the new secret.
 
@@ -579,8 +579,8 @@ in the parameter file and redeploy — this is the intended release workflow.
 
 | Component | SKU | Monthly cost | Notes |
 |---|---|---|---|
-| Container Apps Job compute | Consumption | **$0.00** | Free tier: 180,000 vCPU-s/month. Booking: ~11-min busy-wait run × 0.25 vCPU ≈ 165 vCPU-s × ~8-9 weekend runs/mo (Sat+Sun) ≈ 1.5k. Watch (every 10 min, ~30 s): ~4,320 runs × ~7.5 vCPU-s ≈ 32k. Combined ≈ 34k vCPU-s/mo — ~80% below free tier. (The every-10-min watch job, not the booker, is the dominant consumer.) |
-| Container Apps Job memory | Consumption | **$0.00** | Free tier: 360,000 GiB-s/month. Same run profile at 0.5 GiB ≈ 68k GiB-s/mo — ~80% below free tier. |
+| Container Apps Job compute | Consumption | **$0.00** | Free tier: 180,000 vCPU-s/month, **shared per-subscription across BOTH envs** (not per-env). Booking: ~11-min busy-wait run × 0.25 vCPU ≈ 165 vCPU-s × ~8-9 weekend runs/mo (Sat+Sun) ≈ 1.5k. Watch (every 10 min): ~4,320 runs/env × 0.25 vCPU; billed on the full replica lifetime (cold start + image pull + Python startup), realistically ~45-60 s/run not the ~30 s of actual work ≈ ~50k vCPU-s/env. Both envs combined ≈ **~110k vCPU-s/mo ≈ ~60-65% of the shared free grant** (~35-40% headroom — NOT the ~80% an optimistic 30 s/run implies). The every-10-min watch job, not the booker, is the dominant consumer and the first thing to push past the grant if cadence or course count grows. |
+| Container Apps Job memory | Consumption | **$0.00** | Free tier: 360,000 GiB-s/month, shared per-subscription. Same run profile at 0.5 GiB ≈ ~110k GiB-s/env; both envs combined ≈ **~219k GiB-s/mo ≈ ~61% of the shared free grant**. |
 | Container Apps Environment | Consumption | **$0.00** | No per-environment fee on Consumption plan. |
 | Azure Container Registry | Basic | **~$5.00** | $5.00/mo flat for Basic SKU. Includes 10 GiB storage. Our image is ~300 MB; well within limits. |
 | Key Vault | Standard | **~$0.03** | $0.03/10k operations. ACA caches KV-referenced secrets (~30-min refresh, not per-execution), so ≈ 6 secrets × ~48 refreshes/day × 30 ≈ ~9k reads/month. Negligible — around the 10k mark, well under $0.10. |
@@ -707,7 +707,7 @@ az acr build --registry teetimedev --image teetime:dev --file Dockerfile .
 
 # 5. Trigger a manual dry-run to validate
 az containerapp job start \
-  --name teetime-job-dev \
+  --name teetime-job-dev-edt \
   --resource-group rg-teetime-dev
 # Check logs in Log Analytics; verify dry-run output is correct.
 
@@ -835,7 +835,7 @@ With `dryRun=true` the final POST never fires, so **logs are the only proof**. Q
 `ContainerAppConsoleLogs_CL` (or `az containerapp job logs show`) for the job execution.
 
 **(a) Booking job fired at the 6:00:00 ET drop** — look for, in order:
-- `Booking run: target=['<next-target-Sunday>'] dry_run=True players=4` (quoted list)
+- `Booking run: target=['<next-target-day>'] dry_run=True players=4` (quoted list)
 - `run: real-timing path (--wait); fire_time=06:00:00 America/New_York, NTP offset_ms=…`
   (confirms the REAL scheduler was selected, not the immediate demo path)
 - `race: busy-wait complete; firing at <ts> (target=<ts>, drift_ms=…)` — the load-bearing
@@ -852,7 +852,7 @@ fast-exit; a wanted day (Sat/Sun) proceeds to the busy-wait + race lines above.
 multi-day re-arch), a ranked-slots line, and a `DRY_RUN` result. A run that logs
 `Watch job is disabled` means `watcher.enabled` is false — not what we want in v1.
 
-**On-demand check (no need to wait for Sunday)** — the `--fire-time` hatch makes the
+**On-demand check (no need to wait for a booking day)** — the `--fire-time` hatch makes the
 `--wait` busy-wait + DST gate reachable at any hour, refused unless `--dry-run true`:
 ```bash
 az containerapp job start -n teetime-job-dev-edt -g rg-teetime-dev \
@@ -862,14 +862,15 @@ az containerapp job start -n teetime-job-dev-edt -g rg-teetime-dev \
 is short). NOTE: `az containerapp job start` is an agent-guarded command — operator runs it.
 
 **Exit criterion (accepted):** production-identical timing (the real cron landing on T0) is
-observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock tests + a clean
-`--fire-time` on-demand dev run + **one clean dev dry-run Sunday** (the cron-driven race).
+observable ONLY on a live cron landing on a wanted booking day. So M6's go/no-go is: green
+FakeClock tests + a clean `--fire-time` on-demand dev run + **one clean dev dry-run on a wanted
+booking day (Sat or Sun)** (the cron-driven race).
 
 ### 10.5 Prod cutover checklist (in order)
 
-1. **M6 verified in dev** (§10.4) — incl. one clean dev dry-run Sunday.
+1. **M6 verified in dev** (§10.4) — incl. one clean dev dry-run on a wanted booking day (Sat or Sun).
 2. **Credential isolation between dev and prod.** Dev and prod must NOT log into the same
-   ForeUP account — concurrent logins (especially at the Sunday 6 AM race) can invalidate
+   ForeUP account — concurrent logins (especially at the weekend Sat/Sun 6 AM race) can invalidate
    each other's session. **Resolved by giving dev its own ForeUP account** (set
    `MB-USERNAME`/`MB-PASSWORD` in the dev vault `kv-teetime-dev-s66g` to a separate account;
    done 2026-05-31). With distinct accounts, dev (dry-run) and prod (live) never share a
@@ -893,11 +894,16 @@ observable ONLY on a live Sunday cron. So M6's go/no-go is: green FakeClock test
 6. **Grant yourself KV access + set the 6 secrets** (§10.1.1 steps 5b–6), then **re-run the
    deploy** (`workflow_dispatch` env=prod, approve) — now job creation succeeds and the 3 jobs
    land. (Done 2026-05-31.)
-7. **Monitor** the first prod Sunday: confirm the `race: busy-wait complete` line, a real
+7. **Monitor** the first prod booking day (Sat or Sun): confirm the `race: busy-wait complete` line, a real
    `BOOKED` outcome (NOT dry_run), and the course's confirmation email. Watch for
    `CAPTCHA_BLOCKED` / `AUTH_FAILED` (operator-action outcomes).
 8. **Rollback:** if the first run misbehaves, redeploy prod with `enableSchedules=false` (or
    re-enable dev) to stop further attempts while you investigate.
+9. **Multi-day activation deploy (next `infra/v*` tag) — DELETE the orphaned `-sun` jobs.** The
+   prod deploy that first ships the multi-day re-arch creates the renamed `-edt`/`-est` jobs but,
+   under ARM **incremental** mode, leaves the old `teetime-job-prod-edt-sun`/`-est-sun` jobs in
+   place — they keep firing the old Sunday-only cron and are NOT covered by the killswitch. Run
+   the manual orphan-cleanup + verification runbook in **§10.2** immediately after that deploy.
 
 **Notes on two non-blocking observations:**
 - **Budget deploy is skipped** by design here: the `Deploy budget` step (`az deployment sub
