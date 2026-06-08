@@ -118,16 +118,19 @@ def test_critical_runtime_env_vars_are_wired_in_compute_bicep() -> None:
 
     ``_referenced_env_vars`` only finds config ``*_env`` references. Some env vars
     the container needs are read directly (not via a config ref) — most
-    importantly ``TWOCAPTCHA_API_KEY``, whose absence fails SILENTLY at booking
-    time rather than crashing at load, so the generic guard above can't catch it.
+    importantly ``TWOCAPTCHA_API_KEY``, which the bot reads straight from the
+    environment, so the generic guard above can't catch a missing bicep wiring.
+    If it's dropped from compute.bicep the deployed live job has no CAPTCHA solver
+    and now fails fast at startup (``_build_adapters`` raises) instead of booking.
     Assert them by name. See ``_REQUIRED_RUNTIME_ENV_VARS``.
     """
     provided = _bicep_env_var_names(_COMPUTE_BICEP.read_text())
     missing = _REQUIRED_RUNTIME_ENV_VARS - provided
     assert not missing, (
         f"compute.bicep is missing critical runtime env var(s): {sorted(missing)}. "
-        "These are not config *_env refs, so dropping them fails silently at run "
-        "time. Re-add them to commonEnv (and the matching jobSecrets) in "
+        "These are not config *_env refs, so the generic parity guard can't catch a "
+        "missing wiring — and the deployed live job would fail fast at startup with no "
+        "CAPTCHA solver. Re-add them to commonEnv (and the matching jobSecrets) in "
         "infra/bicep/modules/compute.bicep."
     )
 

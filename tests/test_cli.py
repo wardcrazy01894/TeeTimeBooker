@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -853,3 +854,25 @@ def test_gate_proceed_resolves_adapters(
     assert resolve_spy.build_adapters == 1
     assert resolve_spy.resolve_creds == 1
     assert resolve_spy.site_keys == 0  # --dry-run true short-circuits the live ForeUP GET
+
+
+# ---------------------------------------------------------------------------
+# Live mode requires a 2captcha key. The Playwright inline solver was dropped
+# (the prod image has no browser), so a live ForeUP build with no
+# TWOCAPTCHA_API_KEY must fail fast with a clear error rather than silently
+# selecting a solver that crashes at browser launch mid-booking.
+# ---------------------------------------------------------------------------
+
+
+def test_build_adapters_live_requires_2captcha_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TWOCAPTCHA_API_KEY", raising=False)
+    cfg = _load(EXAMPLE_TOML)  # first course is the Mangrove Bay ForeUP adapter
+    with pytest.raises(click.ClickException, match="TWOCAPTCHA_API_KEY"):
+        main_mod._build_adapters(cfg, dry_run=False, site_keys={})
+
+
+def test_build_adapters_live_builds_with_2captcha_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TWOCAPTCHA_API_KEY", "test-key")
+    cfg = _load(EXAMPLE_TOML)
+    adapters = main_mod._build_adapters(cfg, dry_run=False, site_keys={})
+    assert adapters  # ForeUP adapter builds fine once the key is present

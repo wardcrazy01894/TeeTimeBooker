@@ -1,17 +1,16 @@
-"""reCAPTCHA v2 invisible token providers for ForeUP bookings.
+"""reCAPTCHA v2 invisible token provider for ForeUP bookings.
 
 ForeUP's booking POST requires a valid reCAPTCHA v2 invisible token in the
-`captchaid` field. Two providers are available:
+`captchaid` field. Solving is delegated to 2captcha:
 
-1. Playwright (get_foreup_captcha_token / make_captcha_provider):
-   Launches a headless browser and executes reCAPTCHA on the real ForeUP page.
-   Free but unreliable — Google's risk scorer often rejects Playwright browsers.
-   Use only from residential IPs where bot detection is lenient.
+  2captcha (get_foreup_captcha_token_2captcha / make_2captcha_provider):
+    Delegates solving to 2captcha.com's human/AI solver pool. Reliable, costs
+    ~$0.003/solve (~$0.15/year for weekly bookings). Requires an API key from
+    https://2captcha.com; set TWOCAPTCHA_API_KEY in .env.
 
-2. 2captcha (get_foreup_captcha_token_2captcha / make_2captcha_provider):
-   Delegates solving to 2captcha.com's human/AI solver pool. Reliable, costs
-   ~$0.003/solve (~$0.15/year for weekly bookings). Requires an API key from
-   https://2captcha.com; set TWOCAPTCHA_API_KEY in .env.
+  (A Playwright headless-browser solver existed previously but was removed: it was
+  unreliable — Google's risk scorer rejected the automated browser — and the deployed
+  container image carries no browser binary. 2captcha is the only live solver now.)
 
 Invisible site key confirmed from ForeUP's booking page source (CAPTCHA_INVISIBLE_SITE_KEY):
     6Le0bf4pAAAAALufPGSllYP0-QN79MW_XTUa-24h
@@ -32,7 +31,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
-from playwright.async_api import async_playwright
 
 _log = logging.getLogger(__name__)
 
@@ -48,75 +46,10 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-# Arrow function: takes siteKey, returns Promise<string>.
-# Renders a fresh invisible widget, executes it, resolves on the callback.
-_RECAPTCHA_JS = """\
-(siteKey) => new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('reCAPTCHA timeout')), 25000);
-    const el = document.createElement('div');
-    document.body.appendChild(el);
-    const id = window.grecaptcha.render(el, {
-        sitekey: siteKey,
-        size: 'invisible',
-        callback: token => { clearTimeout(t); resolve(token); },
-        'error-callback': () => {
-            clearTimeout(t);
-            reject(new Error('reCAPTCHA error-callback fired'));
-        }
-    });
-    window.grecaptcha.execute(id);
-})
-"""
-
 _TWOCAPTCHA_SUBMIT_URL = "https://2captcha.com/in.php"
 _TWOCAPTCHA_RESULT_URL = "https://2captcha.com/res.php"
 _TWOCAPTCHA_DEFAULT_POLL_INTERVAL_S = 5.0
 _TWOCAPTCHA_DEFAULT_MAX_POLLS = 24  # 24 x 5 s = 2 min max wait
-
-
-# ---------------------------------------------------------------------------
-# Playwright provider (free, may be blocked by Google bot detection)
-# ---------------------------------------------------------------------------
-
-
-async def get_foreup_captcha_token(
-    *,
-    booking_page_url: str,
-    site_key: str = FOREUP_RECAPTCHA_SITE_KEY,
-) -> str:
-    """Launch a headless browser, navigate to the ForeUP booking page, and return
-    a fresh reCAPTCHA v2 invisible token.
-
-    Unreliable if Google's risk scorer detects the automated browser. Use
-    get_foreup_captcha_token_2captcha for a reliable alternative.
-    """
-    _log.info("Playwright: launching headless browser...")
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = await browser.new_context(
-            user_agent=_USER_AGENT,
-            viewport={"width": 1280, "height": 800},
-        )
-        page = await context.new_page()
-        _log.info("Playwright: navigating to ForeUP booking page...")
-        await page.goto(booking_page_url, wait_until="load")
-
-        _log.info("Playwright: waiting for reCAPTCHA to load...")
-        await page.wait_for_function(
-            "typeof window.grecaptcha !== 'undefined' "
-            "&& typeof window.grecaptcha.render === 'function'",
-            timeout=15_000,
-        )
-
-        _log.info("Playwright: executing reCAPTCHA widget (up to 25s)...")
-        raw: object = await page.evaluate(_RECAPTCHA_JS, site_key)
-        await browser.close()
-
-    _log.info("Playwright: reCAPTCHA token obtained")
-    return str(raw)
 
 
 async def resolve_invisible_site_key(
@@ -159,18 +92,6 @@ async def resolve_invisible_site_key(
             live,
         )
     return live
-
-
-def make_captcha_provider(
-    booking_page_url: str,
-    site_key: str = FOREUP_RECAPTCHA_SITE_KEY,
-) -> Callable[[], Awaitable[str]]:
-    """Return a zero-argument async callable that fetches a fresh Playwright token."""
-
-    async def _provider() -> str:
-        return await get_foreup_captcha_token(booking_page_url=booking_page_url, site_key=site_key)
-
-    return _provider
 
 
 # ---------------------------------------------------------------------------

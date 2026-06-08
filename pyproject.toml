@@ -12,7 +12,6 @@ dependencies = [
     "httpx>=0.27",          # async-capable HTTP client; cleaner than requests
     "pydantic>=2.7",        # config + payload validation
     "click>=8.1",           # CLI
-    "playwright>=1.37",     # headless browser for reCAPTCHA v2 invisible token harvest
     "idna>=3.15",           # CVE-2026-45409 fixed in 3.15; transitive via httpx
     "ntplib>=0.4",          # best-effort NTP clock-offset for the 6 AM race (RealClock)
 ]
@@ -31,6 +30,9 @@ dev = [
 # everywhere instead); tenacity (retry is hand-rolled in ForeUpAdapter._send_with_retry);
 # structlog (the code uses stdlib logging, not structlog); types-pytz (the code uses
 # zoneinfo, never pytz). See full-repo-scan dependency-hygiene finding.
+# Removed playwright: the headless-browser reCAPTCHA solver was unreliable (Google's risk
+# scorer rejected it) and the deployed image carried no browser binary — 2captcha is the
+# only supported live solver now (a missing TWOCAPTCHA_API_KEY fails fast in live mode).
 
 [project.scripts]
 teetime = "teetime.__main__:main"
