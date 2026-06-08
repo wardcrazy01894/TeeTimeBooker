@@ -203,34 +203,17 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
     )
     log = logging.getLogger(__name__)
 
-    if use_fake_adapter:
-        adapters: dict[CourseId, CourseAdapter] = {
-            CourseId(c.id): FakeAdapter(course_id=CourseId(c.id)) for c in cfg.courses
-        }
-        creds: dict[CourseId, CourseCredentials] = {}
-    else:
-        # Pre-flight (off the race path): resolve the live reCAPTCHA site key so a
-        # ForeUP key rotation is detected before T0, not after every solve fails.
-        site_keys = await _resolve_site_keys(cfg) if not dry_run else {}
-        adapters = _build_adapters(cfg, dry_run=dry_run, site_keys=site_keys)
-        creds = _resolve_creds(cfg)
-
-    # State is in-process only (InMemoryStore). The source of truth for existing
-    # bookings is the live `list_reservations()` pre-book check, not a durable store.
-    store = InMemoryStore()
-    await store.initialize()
-
-    # --wait (the ACA booking cron): use cfg.scheduler verbatim so the orchestrator
-    # busy-waits to the configured fire_time (06:00:00 ET). --no-wait (local default):
-    # T0 = now via _local_demo_scheduler, so busy_wait returns immediately.
-    scheduler = cfg.scheduler if wait else _local_demo_scheduler(cfg.scheduler)
-
     # One-shot NTP offset for the T0 race. Gated on `wait` (NOT dry_run) so the dev
     # `--wait --dry-run true` run probes UDP:123 reachability before the first real
     # prod booking run; best-effort, degrades to 0 on failure. Skipped for the fake adapter
     # (no network in tests/demo) and off the wait path (offset is meaningless there).
     clock_offset = measure_ntp_offset() if wait and not use_fake_adapter else timedelta(0)
     clock = RealClock(offset=clock_offset)
+
+    # The DST + booking-day gates are pure functions of the clock, so they run FIRST —
+    # before any adapter construction or the live `_resolve_site_keys` ForeUP GET. The
+    # booking job fires DAILY; on a wrong-season or non-booking-day morning it must
+    # fast-exit cheaply WITHOUT touching ForeUP (cost + anti-bot etiquette, PLAN §12).
 
     # DST-half gate (ONLY on the real cron path). compute.bicep registers both a EDT and
     # an EST cron per day; only one is correct each season. The wrong-season cron would
@@ -267,6 +250,31 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
             target.strftime("%A %Y-%m-%d"),
         )
         return
+
+    # Past the gates — NOW resolve adapters/credentials (the expensive part: a live
+    # ForeUP site-key GET per course in prod). A wrong-season or non-booking-day cron
+    # never reaches here, so it pays none of this cost and never touches ForeUP.
+    if use_fake_adapter:
+        adapters: dict[CourseId, CourseAdapter] = {
+            CourseId(c.id): FakeAdapter(course_id=CourseId(c.id)) for c in cfg.courses
+        }
+        creds: dict[CourseId, CourseCredentials] = {}
+    else:
+        # Pre-flight (off the race path): resolve the live reCAPTCHA site key so a
+        # ForeUP key rotation is detected before T0, not after every solve fails.
+        site_keys = await _resolve_site_keys(cfg) if not dry_run else {}
+        adapters = _build_adapters(cfg, dry_run=dry_run, site_keys=site_keys)
+        creds = _resolve_creds(cfg)
+
+    # State is in-process only (InMemoryStore). The source of truth for existing
+    # bookings is the live `list_reservations()` pre-book check, not a durable store.
+    store = InMemoryStore()
+    await store.initialize()
+
+    # --wait (the ACA booking cron): use cfg.scheduler verbatim so the orchestrator
+    # busy-waits to the configured fire_time (06:00:00 ET). --no-wait (local default):
+    # T0 = now via _local_demo_scheduler, so busy_wait returns immediately.
+    scheduler = cfg.scheduler if wait else _local_demo_scheduler(cfg.scheduler)
 
     if wait:
         # Verification surface (M6 PR6): confirms the REAL scheduler was selected (not
