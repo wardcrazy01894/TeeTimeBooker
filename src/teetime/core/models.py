@@ -254,9 +254,10 @@ class WatchConfig:
     """
 
     poll_interval_s: int = 600  # 10 minutes default; must be >= 300 (anti-bot floor)
-    max_watch_duration_s: int = 518400  # 6 days = just under the 7-day window opening
     # NOTE: the time-of-day polling-hours gate was REMOVED (MULTIDAY PR4) — the watcher
     # polls on every run. Rate limiting is the cron cadence + the poll_interval_s floor.
+    # The stop condition is purely the past-deadline check (local_date > target_date), so
+    # there is no watch-duration field.
 
     def __post_init__(self) -> None:
         _min_poll_s = 300

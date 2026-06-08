@@ -3,7 +3,9 @@
 Background: in the multi-day design the booking ACA Job no longer fires only on the
 booking weekday — it fires DAILY (two crons, one per DST half). On most mornings the
 date it would book (``today + offset``) is NOT a wanted booking weekday, so the run must
-fast-exit cheaply (~2 s) without doing any auth / search / busy-wait.
+fast-exit cheaply (~2 s) without doing any auth / search / busy-wait. ``__main__._run``
+evaluates this gate (and the DST gate) BEFORE building adapters or resolving ForeUP site
+keys, so a non-booking-day cron makes no live ForeUP request at all.
 
 This gate is a PURE function of ``(clock, timezone, target_offset, wanted_weekdays)``.
 It computes the candidate target date the booking run WOULD book (``today + offset``,
