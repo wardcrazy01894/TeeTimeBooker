@@ -68,7 +68,9 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # validate — PR only. Read-only: bicep build (the gate) + advisory what-if.
+  # validate — PR only. Read-only: bicep build + advisory what-if. NOTE: this job
+  # is NOT a required check (it needs OIDC, which is unavailable on some PRs). The
+  # authoritative merge-gating Bicep check is ci.yml's required `bicep lint` job.
   # ---------------------------------------------------------------------------
   validate:
     name: Bicep build + what-if (advisory)
@@ -84,7 +86,7 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Bicep build (lint) — PR gate
+      - name: Bicep build (lint) — advisory (real gate is ci.yml / bicep lint)
         run: az bicep build --file infra/bicep/main.bicep
       - name: Deployment what-if (advisory, never fails the PR)
         run: |
