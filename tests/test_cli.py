@@ -21,6 +21,7 @@ from click.testing import CliRunner
 
 import teetime.__main__ as main_mod
 from teetime.__main__ import _resolve_creds, cli
+from teetime.core.clock import FakeClock
 from teetime.core.config import TimeWindowConfig
 from teetime.core.config import load as _load
 
@@ -43,6 +44,25 @@ _REQUIRED_ENV = {
 def env_set(monkeypatch: pytest.MonkeyPatch) -> None:
     for k, v in _REQUIRED_ENV.items():
         monkeypatch.setenv(k, v)
+
+
+@pytest.fixture(autouse=True)
+def pin_run_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the `run` command's clock to a fixed Saturday.
+
+    `teetime run` derives its target date as today + offset (offset 7, i.e. the
+    SAME weekday) from the live clock. example.toml configures only Sat/Sun
+    windows, so these CLI tests passed ONLY when the real wall-clock day was a
+    Saturday or Sunday and were silently RED Mon-Fri (today+7 lands on a weekday
+    with no time window, so the run errors with exit 1). Every prior merge landed
+    on a weekend, masking it. Pinning RealClock to 2026-06-13 (a Saturday) makes
+    the default target a Saturday deterministically, decoupling the suite from
+    the day it happens to run. Tests that need a specific date pass it
+    explicitly and are unaffected (they never build a clock)."""
+
+    # noon UTC = 08:00 ET -- unambiguously still Saturday in America/New_York.
+    saturday = _dt.datetime(2026, 6, 13, 12, 0, tzinfo=_dt.UTC)
+    monkeypatch.setattr(main_mod, "RealClock", lambda **_kw: FakeClock(start=saturday))
 
 
 def test_show_config_redacts_secrets() -> None:
