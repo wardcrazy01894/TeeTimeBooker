@@ -20,6 +20,18 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ---
 
+## Observability / reliability
+
+- **A *persistent* 429 (or repeated CAPTCHA/auth failure) is currently invisible.**
+  The watcher now backs off cleanly on a rate-limit and exits 0 (the 10-min cron is the
+  retry — correct, since the notifier is `ConsoleNotifier` and M4 email was cut, so there's
+  no alert channel anyway). But that means a platform that throttles us for hours makes every
+  watch run show "Succeeded" while the bot silently stops booking. If any "ACA run
+  Succeeded-vs-Failed" alerting is ever added, repeated 429-backoff (and the booker's
+  `NO_INVENTORY` terminals) should surface somewhere. No action while there's no alert sink.
+
+---
+
 ## Frontend (single-user web UI)
 
 A full, ratified design already exists: **[FRONTEND_PLAN.md](./FRONTEND_PLAN.md)**

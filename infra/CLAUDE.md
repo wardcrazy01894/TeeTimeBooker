@@ -24,7 +24,7 @@ infra/
     main.bicepparam.prod     # prod parameter values (dryRun=false, enablePurgeProtection=true)
     modules/
       identity.bicep         # user-assigned MI for all ACA Jobs
-      registry.bicep         # ACR Basic; AcrPull RBAC to job MI
+      registry.bicep         # ACR Basic; AcrPull RBAC to job MI; weekly `acr purge` task (keep last 10 tags)
       keyvault.bicep         # Key Vault Standard; Secrets User RBAC to job MI
                              #   dev: enablePurgeProtection=false
                              #   prod: enablePurgeProtection=true

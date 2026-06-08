@@ -105,15 +105,14 @@ async def busy_wait_until(
     coarse_threshold_s: float = 2.0,
     coarse_step_s: float = 0.5,
     fine_step_s: float = 0.001,
-    fine_accuracy_s: float = 0.05,
 ) -> None:
     """Sleep coarsely until ~`coarse_threshold_s` before target, then short-sleep
     `fine_step_s` (default 1 ms) per iteration until target — yielding the event
     loop each iteration so a hot Python loop can't starve the runner.
 
     Test contract: with a FakeClock, the wall-clock returned from `clock.now_utc()`
-    on exit is within `fine_accuracy_s` of `target_utc`. `fine_accuracy_s` is the
-    desired ACCURACY of the wakeup; `fine_step_s` is the loop CADENCE.
+    on exit is at or just past `target_utc` (the loop returns when `delta <= 0`), so
+    the wakeup accuracy is bounded by `fine_step_s`, the loop CADENCE.
     """
     while True:
         delta = (target_utc - clock.now_utc()).total_seconds()
