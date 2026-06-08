@@ -156,10 +156,7 @@ class WatcherConfig(BaseModel):
 
     Use `to_watch_config()` to translate to the frozen `WatchConfig` dataclass
     consumed by `WatchOrchestrator`. The conversion happens in the CLI's
-    `teetime watch` command before constructing `WatchOrchestrator`. Note that
-    `WatcherConfig` does NOT have `max_watch_duration_s` — that field lives
-    only in `WatchConfig` (the dataclass) and is always set to its default
-    (518400 s = 6 days) since there is no user-facing knob for it.
+    `teetime watch` command before constructing `WatchOrchestrator`.
     """
 
     enabled: bool = False
@@ -171,10 +168,7 @@ class WatcherConfig(BaseModel):
         """Translate pydantic WatcherConfig to the frozen WatchConfig dataclass.
 
         This conversion is performed in the CLI's `teetime watch` command before
-        constructing `WatchOrchestrator`. `WatchConfig.max_watch_duration_s` has no
-        corresponding TOML field — it is always the default (518400 s = 6 days). If
-        a future need arises to expose it, add `max_watch_duration_s` to this class
-        and pass it through here.
+        constructing `WatchOrchestrator`.
         """
         return WatchConfig(
             poll_interval_s=self.poll_interval_s,
