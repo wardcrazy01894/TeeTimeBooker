@@ -143,7 +143,7 @@ See `config/example.toml`. Schema enforced by `core/config.py` via pydantic v2. 
 
 ## 5. Persistence layer
 
-**Decision: `InMemoryStore` for all runs (v0 and v1).** A durable cross-run store was considered and deliberately cut. The single-user, low-frequency bot does not benefit from a local record of past bookings: the live `list_reservations()` pre-book check (§9 layer 2) already prevents double-booking, and a stale in-process record of a prior booking risks MISSING a real booking more than it prevents anything. Cross-PROCESS serialization is handled at the scheduler level (ACA Job parallelism=1, GH Actions concurrency groups) — no advisory DB lock is needed across processes.
+**Decision: `InMemoryStore` for all runs (v0 and v1).** A durable cross-run store was considered and deliberately cut. The single-user, low-frequency bot does not benefit from a local record of past bookings: the live `list_reservations()` pre-book check (§9 layer 2) already prevents double-booking, and a stale in-process record of a prior booking risks MISSING a real booking more than it prevents anything. Cross-PROCESS serialization is handled at the scheduler level (ACA Job `parallelism=1` — one execution per job) — no advisory DB lock is needed across processes.
 
 **What `InMemoryStore` tracks within a single run:**
 
@@ -288,7 +288,7 @@ This is the subtlest correctness property. Scenario: bot calls `POST /reservatio
 3. **Single attempt per slot, by default.** `book()` is non-retryable EXCEPT on `SlotGoneError`. A book-POST **4xx** (both `409` and `400`) is mapped to `SlotGoneError`: a 4xx means ForeUP definitively created no reservation, so the orchestrator advances to the next-ranked slot (prod 2026-06-07: a `400` when the prime slot was claimed mid-race must NOT crash the job and abandon the other ranked slots). The full response body is logged before raising. Anything ambiguous (timeout/5xx) raises as-is and the orchestrator reaches the post-mortem path:
 4. **Post-mortem reconciliation.** Any failure during/after POST that didn't return a clean adapter error triggers: wait 5 s, list reservations again, match by tee_time + party_size. If found, treat as success and persist the confirmation. If not, treat as no-op and try next course.
 5. **In-process advisory lock.** `BookingStore.request_lock(request_id)` is held for the duration of `Orchestrator.run`. Attempting a second concurrent code path in the same process raises `ConcurrentRunError` immediately (no waiting).
-6. **ACA Job / GH Actions concurrency group.** ACA Jobs run with `parallelism=1`; `concurrency: { group: book-tee-time, cancel-in-progress: false }` in the workflow stops two cron-fired runs from overlapping at all. This is the cross-PROCESS serialization layer — it replaces any need for a cross-run durable lock.
+6. **ACA Job concurrency.** ACA Jobs run with `parallelism=1` — at most one replica per job runs at a time, so two cron-fired runs of the same job can't overlap. This is the cross-PROCESS serialization layer — it replaces any need for a cross-run durable lock. (The former `book.yml` GH Actions `concurrency:` group served this role before scheduling moved to ACA Jobs.)
 
 This is belt-and-suspenders by design. The single most important rule: **after any POST whose result is uncertain, ALWAYS reconcile via list-reservations before doing anything else.**
 
@@ -372,8 +372,9 @@ record can go wrong in both directions (false "already booked" OR false "nothing
 while the live remote check is always authoritative.
 
 Cross-PROCESS serialization is enforced at the scheduler level:
-- **ACA Jobs:** `parallelism=1` — at most one replica runs at a time.
-- **GH Actions:** `concurrency: { group: book-tee-time, cancel-in-progress: false }`.
+- **ACA Jobs:** `parallelism=1` — at most one replica per job runs at a time. (Before
+  scheduling moved to ACA Jobs, the removed `book.yml`/`watch-tee-time.yml` workflows used a
+  GH Actions `concurrency:` group for this.)
 
 A mid-run runner kill leaves no UNCERTAIN state on disk. The next run re-authenticates,
 calls `list_reservations`, and sees any booking that landed — no phantom booking risk.
@@ -628,7 +629,7 @@ Each item from the brief, addressed:
 - **Account lockout:** §8.1. Three auth failures → halt current run + notify (in-run only; no durable cooldown across runs).
 - **Credit-card storage:** §7. **By platform.** ForeUP: none (card-on-file). TeeItUp: PAN/CVV/expiry/billing are passed to `tr.gnsvc.com` on each booking (no wallet); sourced from env vars, never committed, and dropped by `redact_payload` at the `append_attempt` store boundary on every `attempt_log` write (§10.1).
 - **ForeUP ToS:** §12, stated honestly. Risks accepted by user.
-- **Concurrency / accidental double trigger:** §9 layers 5 & 6. ACA Job `parallelism=1` / workflow concurrency group + in-process advisory lock. `ConcurrentRunError` fails fast.
+- **Concurrency / accidental double trigger:** §9 layers 5 & 6. ACA Job `parallelism=1` (one execution per job) + in-process advisory lock. `ConcurrentRunError` fails fast.
 - **Mid-run runner kill:** Next run has no prior state; §9 layer 2 (`list_reservations`) catches any existing booking before re-POSTing. See §9.2.
 - **Testing the 6 AM race without waiting 7 days:** §11. `FakeClock` + `clock.busy_wait_until` test asserts ±50 ms.
 - **Stop conditions:** §13.
@@ -789,7 +790,7 @@ is eligible for watching. Within a run, the WatchOrchestrator checks `store.get_
    advisory lock. WatchOrchestrator.check_once attempts the lock at entry and raises
    ConcurrentRunError, which is caught and returned as None. Safe.
 
-5. **No shared state file:** The watch job and the main booking job each start with a fresh `InMemoryStore`. The single source of truth for booking state is the live `list_reservations()` call. The two GH Actions concurrency groups (`book-tee-time`, `watch-tee-time`) prevent simultaneous runs of the same type. See §20.1 Q1 (resolved — the shared-cache approach was superseded when the durable store was dropped).
+5. **No shared state file:** The watch job and the main booking job each start with a fresh `InMemoryStore`. The single source of truth for booking state is the live `list_reservations()` call. ACA Job-level concurrency (one execution per job) prevents simultaneous runs of the same job; a watch+book overlap is safe because the in-process advisory lock serializes the booking phase. (The former `book.yml`/`watch-tee-time.yml` GH Actions concurrency groups were removed when those workflows were superseded by ACA Jobs.) See §20.1 Q1 (resolved — the shared-cache approach was superseded when the durable store was dropped).
 
 ---
 
@@ -921,7 +922,7 @@ proceed to T2 without S4 since WatchOrchestrator.check_once does not call cancel
 
 | # | Question | Blocks | Exit criterion |
 |---|----------|--------|----------------|
-| ~~Q1~~ | ~~**Shared vs separate SQLite file for watch job.**~~ **SUPERSEDED**: the durable store (M3) was dropped entirely. Both jobs use `InMemoryStore` and start each run fresh. The single source of truth for booking state is `list_reservations()`. Concurrent-run serialization is handled by ACA Job `parallelism=1` and GH Actions concurrency groups — no shared file needed. | — | Resolved/superseded |
+| ~~Q1~~ | ~~**Shared vs separate SQLite file for watch job.**~~ **SUPERSEDED**: the durable store (M3) was dropped entirely. Both jobs use `InMemoryStore` and start each run fresh. The single source of truth for booking state is `list_reservations()`. Concurrent-run serialization is handled by ACA Job `parallelism=1` (one execution per job) — no shared file needed. | — | Resolved/superseded |
 | ~~Q2~~ | ~~**Watch job enabled by default or opt-in?**~~ **RESOLVED**: When `watcher.enabled = false`, the watch job logs a **warning** (`"Watch job is disabled in config — set watcher.enabled = true to activate"`) and exits cleanly (exit 0). GH Actions run must not show as ❌ for an intentionally disabled feature. | — | Resolved |
 | ~~Q3~~ | ~~**MANAGED_BOOKING_TAG echo.**~~ **RESOLVED**: We use **Option A** (TTB: prefix stored in `BookingResult.confirmation_code`, not echoed to/from server). `is_managed` works by checking the stored `confirmation_code` in `booking_history`, not by reading a notes field from the server. Whether or not ForeUP echoes a notes field is irrelevant. See §20 "MANAGED_BOOKING_TAG implementation (Option A — LOCKED IN)". | — | Resolved |
 | ~~Q4~~ | ~~**Cancellation window.**~~ **RESOLVED**: Use **18-hour safe default** (`cancellation_deadline_hours = 18`). User believes Mangrove Bay permits same-day cancellations but wants 18h as a guard against attempting a cancel+rebook so close to tee time that the player drives to the wrong course. Spike S4 will confirm the actual policy. | — | Resolved (default set; S4 confirms) |
