@@ -29,6 +29,16 @@ param acrSku string = 'Basic'
 // See: infra/AZURE_PLAN.md §7.2
 param jobPrincipalId string
 
+@description('Create the scheduled image-purge ACR task (keeps unbounded SHA-tag growth in check).')
+param enablePurgeTask bool = true
+
+@description('Cron schedule (UTC) for the image-purge task. Default: 04:00 UTC every Sunday.')
+param purgeSchedule string = '0 4 * * Sun'
+
+@description('Number of most-recent matching tags to KEEP per repository when purging.')
+@minValue(1)
+param purgeKeepCount int = 10
+
 // ---------------------------------------------------------------------------
 // Variables
 // ---------------------------------------------------------------------------
@@ -44,6 +54,14 @@ var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
+
+// acr purge command: keep the `purgeKeepCount` most-recent tags matching the bot
+// image repo, delete older ones plus any untagged (dangling) manifests. `--ago 0d`
+// = count-based purge (no age floor). Single quotes around the filter are escaped
+// (\') for the Bicep string; the whole thing is base64-wrapped as an EncodedTask.
+var purgeFilter = 'teetime:.*'
+var purgeCmd = 'acr purge --filter \'${purgeFilter}\' --keep ${purgeKeepCount} --ago 0d --untagged'
+var purgeTaskYaml = 'version: v1.1.0\nsteps:\n  - cmd: ${purgeCmd}\n    disableWorkingDirectoryOverride: true\n    timeout: 3600\n'
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: acrName
@@ -75,6 +93,42 @@ resource acrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' 
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
     principalId: jobPrincipalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// Scheduled image-purge task. Every merge to main pushes a new teetime:<sha>
+// image; nothing ever deletes old tags, so ACR Basic's 10 GiB allowance would
+// creep toward overage over time. This timer-triggered ACR task runs `acr purge`
+// weekly, keeping the most-recent `purgeKeepCount` tags. The task runs in the
+// registry's own context and needs no extra identity/RBAC for the delete.
+// See: infra/AZURE_PLAN.md §9.1 (ACR cost).
+resource purgeTask 'Microsoft.ContainerRegistry/registries/tasks@2019-06-01-preview' = if (enablePurgeTask) {
+  parent: acr
+  name: 'purge-old-images'
+  location: location
+  properties: {
+    status: 'Enabled'
+    platform: {
+      os: 'Linux'
+      architecture: 'amd64'
+    }
+    agentConfiguration: {
+      cpu: 2
+    }
+    timeout: 3600
+    step: {
+      type: 'EncodedTask'
+      encodedTaskContent: base64(purgeTaskYaml)
+    }
+    trigger: {
+      timerTriggers: [
+        {
+          name: 'weekly'
+          schedule: purgeSchedule
+          status: 'Enabled'
+        }
+      ]
+    }
   }
 }
 

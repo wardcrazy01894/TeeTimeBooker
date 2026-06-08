@@ -148,7 +148,7 @@ async def test_busy_wait_lands_within_accuracy_of_target() -> None:
     """The race-window contract: from 1.5 s before T0, lands within 50 ms."""
     t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
     fc = FakeClock(start=t0 - timedelta(seconds=1.5))
-    await busy_wait_until(t0, fc, fine_accuracy_s=0.05)
+    await busy_wait_until(t0, fc)
     delta = abs((fc.now_utc() - t0).total_seconds())
     assert delta <= 0.05, f"landed {delta * 1000:.1f}ms off target (>50ms)"
 
