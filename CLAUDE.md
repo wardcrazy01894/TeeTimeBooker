@@ -29,7 +29,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 (2026-05-29). M3 (SQLite) and M4 (email notifications) are CUT — `InMemoryStore`
 + `ConsoleNotifier` are the final production wiring, not stubs.
 
-**M6 wiring is DONE** (PRs 1–7): `run --wait` busy-waits to the 06:00:00 ET drop;
+**M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
 AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v1.1.1`).
