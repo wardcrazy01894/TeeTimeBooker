@@ -246,9 +246,10 @@ class CourseCredentials:
 class WatchConfig:
     """Configuration for the cancellation-monitor job.
 
-    The watch job polls for newly available slots on a target date that
-    has already been attempted (either succeeded or failed at 6 AM). It
-    operates at a much lower frequency than the 6 AM race window.
+    The watch job polls on every run (no time-of-day gate) for newly available
+    slots on each wanted upcoming date, whether or not that date was already
+    attempted — so it both catches early cancellations and can perform an
+    early-morning recovery booking on a date the 06:00 booker raced or missed.
 
     See PLAN.md M-feature-1 for the full design.
     """
