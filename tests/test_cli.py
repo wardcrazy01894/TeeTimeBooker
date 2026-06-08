@@ -21,6 +21,7 @@ from click.testing import CliRunner
 
 import teetime.__main__ as main_mod
 from teetime.__main__ import _resolve_creds, cli
+from teetime.core.adapter import RateLimitError
 from teetime.core.clock import FakeClock
 from teetime.core.config import TimeWindowConfig
 from teetime.core.config import load as _load
@@ -896,3 +897,43 @@ def test_build_adapters_live_builds_with_2captcha_key(monkeypatch: pytest.Monkey
     cfg = _load(EXAMPLE_TOML)
     adapters = main_mod._build_adapters(cfg, dry_run=False, site_keys={})
     assert adapters  # ForeUP adapter builds fine once the key is present
+
+
+# ---------------------------------------------------------------------------
+# A 429 (RateLimitError) during a watch run is a back-off, not a crash: the
+# watch command must still exit 0 (the 10-min cron is the retry). Non-zero exit
+# is reserved for Captcha/Auth (operator action). PLAN §12.
+# ---------------------------------------------------------------------------
+
+
+def test_watch_rate_limited_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class _RateLimitedWatch:
+        def __init__(self, **_kw: object) -> None:
+            pass
+
+        async def check_once(self, *_a: object, **_k: object) -> None:
+            raise RateLimitError("throttled by ForeUP", retry_after_s=45.0)
+
+    # example.toml ships with the watcher off (it's the template); force it on so the
+    # command reaches the check loop where the 429 is raised.
+    real_load = main_mod.load
+
+    def _load_watch_enabled(path: object) -> object:
+        cfg = real_load(path)
+        cfg.watcher.enabled = True
+        return cfg
+
+    monkeypatch.setattr(main_mod, "load", _load_watch_enabled)
+    monkeypatch.setattr(main_mod, "WatchOrchestrator", _RateLimitedWatch)
+    runner = CliRunner()
+    with caplog.at_level(logging.WARNING, logger="teetime.__main__"):
+        result = runner.invoke(
+            cli,
+            ["watch", "--config", str(EXAMPLE_TOML), "--dry-run", "true", "--use-fake-adapter"],
+        )
+    # 429 → clean exit 0 (the cron is the retry), NOT a non-zero crash.
+    assert result.exit_code == 0, result.output
+    assert result.exception is None  # not a propagated RateLimitError
+    assert any("backing off" in r.message.lower() for r in caplog.records)

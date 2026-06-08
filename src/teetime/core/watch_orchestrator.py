@@ -94,6 +94,7 @@ from .adapter import (
     CaptchaError,
     InventoryNotPublishedError,
     NoInventoryError,
+    RateLimitError,
     SlotGoneError,
 )
 from .models import (
@@ -188,6 +189,9 @@ class WatchOrchestrator:
         Raises:
             CaptchaError: re-raised after notifying (operator must disable the job).
             AuthError: re-raised after notifying (operator must fix credentials).
+            RateLimitError: re-raised (logged, NOT notified) so the run aborts and
+                the 10-min cron cadence is the backoff floor (PLAN §12) — never
+                folded into the try-next-course transient path.
             All other exceptions are caught, logged, and result in None return.
         """
         now = self._clock.now_utc()
@@ -247,6 +251,21 @@ class WatchOrchestrator:
                     await self._notifier.notify(error_result)
                 except Exception:
                     log.warning("watch: notifier raised during fatal error handling", exc_info=True)
+                raise
+
+            except RateLimitError as exc:
+                # A 429 is NOT a generic transient blip: it is an explicit "back off"
+                # from the platform. Do NOT fall through to the next course (that just
+                # hammers the same throttled API) and do NOT keep polling more dates this
+                # run — re-raise so the run aborts cleanly and the 10-min cron cadence
+                # becomes the backoff floor (PLAN §12). Unlike Captcha/Auth it is not
+                # operator-actionable, so we log (honouring retry-after) but do not notify.
+                log.warning(
+                    "watch: rate-limited on course %s (retry_after=%ss) — backing off, "
+                    "deferring to the next cron run",
+                    course_id,
+                    exc.retry_after_s,
+                )
                 raise
 
             except Exception as exc:

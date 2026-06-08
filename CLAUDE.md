@@ -213,6 +213,14 @@ in `core/` — never directly. This is the cut line for parallel work.
   floor. Consequence: an early-morning run that finds the just-dropped window open will BOOK it
   (a recovery path if the 06:00 booker raced/failed) — safe per-date via the in-lock
   `get_terminal` re-check.
+- **A `RateLimitError` (HTTP 429) ABORTS the whole watch run — it is NOT a try-next-course
+  transient blip.** `check_once` catches `RateLimitError` explicitly (before the generic
+  `except Exception`), logs it honouring `retry_after_s`, and re-raises — so it does NOT fall
+  through to the next course (which would keep hammering the throttled platform) and `_watch`
+  stops polling further dates. `_watch` catches it at the date loop and **exits 0** (the 10-min
+  cron is the backoff floor; PLAN §12). Non-zero watch exit stays reserved for `CaptchaError`/
+  `AuthError` (operator action). Distinct from the generic transient handler, which DOES
+  `continue` to the next course on a network blip.
 - **The watcher checks MULTIPLE dates per run — the next occurrence of each wanted weekday**
   within the horizon (`core/target_date.next_occurrences_within_horizon`, multi-day PR4);
   `_watch` loops `check_once` over them (no `break`). **`_check_course` scopes the search to

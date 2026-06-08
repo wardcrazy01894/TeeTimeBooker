@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import click
 
-from .core.adapter import CourseAdapter
+from .core.adapter import CourseAdapter, RateLimitError
 from .core.booking_day_gate import should_book_today
 from .core.clock import RealClock, measure_ntp_offset
 from .core.config import (
@@ -443,16 +443,26 @@ async def _watch(
     # the upcoming Sat AND Sun are both checked, and either can be booked). Each check_once gets
     # a request scoped to ITS target date + that date's weekday's windows, so the Saturday-target
     # check uses Saturday's windows and the Sunday-target check uses Sunday's. See PERDAY §8.
-    for target_date in target_dates:
-        scoped_request = _scope_request_to_date(request, cfg, target_date)
-        result = await watch.check_once(scoped_request, target_date)
-        if result is not None:
-            log.info(
-                "watch result: date=%s outcome=%s confirmation=%s",
-                target_date,
-                result.outcome,
-                result.confirmation_code,
-            )
+    try:
+        for target_date in target_dates:
+            scoped_request = _scope_request_to_date(request, cfg, target_date)
+            result = await watch.check_once(scoped_request, target_date)
+            if result is not None:
+                log.info(
+                    "watch result: date=%s outcome=%s confirmation=%s",
+                    target_date,
+                    result.outcome,
+                    result.confirmation_code,
+                )
+    except RateLimitError as exc:
+        # A 429 aborts the whole run (all remaining dates) — re-raised by check_once
+        # so we stop hammering the throttled platform. This is a back-off, NOT an
+        # operator-action failure, so exit 0 (the 10-min cron is the retry). Non-zero
+        # exit stays reserved for Captcha/Auth. PLAN §12.
+        log.warning(
+            "watch: rate-limited (retry_after=%ss) — backing off; the next cron run is the retry",
+            exc.retry_after_s,
+        )
 
 
 async def _resolve_site_keys(cfg: AppConfig) -> dict[CourseId, str]:
