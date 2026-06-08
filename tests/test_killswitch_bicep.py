@@ -173,6 +173,49 @@ def test_killswitch_stops_all_six_jobs(ks_non_comment_lines: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Call-COUNT assertions: the killswitch's whole job is to silence EVERY cron.
+# The presence tests above pass even if one job's PATCH or /stop is dropped (the
+# other five keep the strings present). These count the actual actions so adding
+# or removing a job — or losing one action — forces a matching test change.
+# Invariant (CLAUDE.md / COST_KILLSWITCH_PLAN): exactly 6 PATCH + 6 POST = 12 calls
+# (3 jobs: -edt, -est, watch  x  2 envs: dev, prod).
+# ---------------------------------------------------------------------------
+
+_EXPECTED_JOBS_PER_ENV = 3  # -edt, -est, watch
+_EXPECTED_ENVS = 2  # dev, prod
+_EXPECTED_CALLS_PER_LEVER = _EXPECTED_JOBS_PER_ENV * _EXPECTED_ENVS  # 6
+
+
+def test_killswitch_has_exactly_six_patch_actions(ks_non_comment_lines: str) -> None:
+    """Lever (a): exactly 6 PATCH (Schedule→Manual) actions — one per cron, no more, no less."""
+    patch_methods = ks_non_comment_lines.count("method: 'PATCH'")
+    assert patch_methods == _EXPECTED_CALLS_PER_LEVER, (
+        f"expected {_EXPECTED_CALLS_PER_LEVER} PATCH actions (3 jobs x 2 envs), "
+        f"found {patch_methods} — a dropped PATCH leaves a cron un-disabled at the $50 trip"
+    )
+    # The named action keys must also number 6 (guards against two methods in one action).
+    patch_keys = sum(
+        1 for ln in ks_non_comment_lines.splitlines() if ln.strip().startswith("Patch_")
+    )
+    assert patch_keys == _EXPECTED_CALLS_PER_LEVER
+
+
+def test_killswitch_has_exactly_six_stop_actions(ks_non_comment_lines: str) -> None:
+    """Lever (b): exactly 6 POST /stop actions — one per cron, halting in-flight replicas."""
+    post_methods = ks_non_comment_lines.count("method: 'POST'")
+    stop_uris = ks_non_comment_lines.count("/stop?api-version")
+    assert post_methods == _EXPECTED_CALLS_PER_LEVER, (
+        f"expected {_EXPECTED_CALLS_PER_LEVER} POST actions, found {post_methods} — "
+        f"a dropped /stop leaves a running replica burning spend the killswitch can't halt"
+    )
+    assert stop_uris == _EXPECTED_CALLS_PER_LEVER, (
+        f"expected {_EXPECTED_CALLS_PER_LEVER} /stop URIs, found {stop_uris}"
+    )
+    stop_keys = sum(1 for ln in ks_non_comment_lines.splitlines() if ln.strip().startswith("Stop_"))
+    assert stop_keys == _EXPECTED_CALLS_PER_LEVER
+
+
+# ---------------------------------------------------------------------------
 # Nested module assertions (GREEN — PR-KS1 implemented)
 # ---------------------------------------------------------------------------
 
