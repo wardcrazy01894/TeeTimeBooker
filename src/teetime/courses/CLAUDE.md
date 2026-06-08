@@ -67,3 +67,13 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
 > `BookingStore.append_attempt` applies at the store boundary on every `attempt_log` write
 > (PLAN.md §10.1), and the card POST uses `follow_redirects=False`. See the root CLAUDE.md
 > "Credit-card data" invariant.
+
+> **Deployment scope (local-dev only):** TeeItUp booking is **not in scope for the deployed
+> prod/dev ACA Jobs** — the hosted bot books **ForeUP (Mangrove Bay) only**. The `SM_*` card
+> credentials therefore have **no Key Vault wiring** (`keyvault.bicep` / `compute.bicep` carry
+> only `MB-*` / `PLAYER1-*` / `TWOCAPTCHA-*`); they are sourced from a local `.env` for
+> developer/manual runs against Sydney Marovitz. Consequence: a `[[courses]]` entry using a
+> TeeItUp adapter must NOT appear in the deployed `container.toml` `course_preferences`, since
+> the hosted job has no card secrets to fulfil it. If TeeItUp ever moves into hosted scope,
+> wire its card into Key Vault first — and note that storing the CVV (which must be sent on
+> every booking, unlike ForeUP's card-on-file) is a deliberate PCI-scope expansion to ratify.

@@ -2,7 +2,8 @@
 //
 // When the $50 monthly budget threshold (Actual >= 100%) fires, the Azure Monitor
 // Action Group triggers this Logic App via its HTTP trigger. The Logic App issues
-// TWELVE HTTP calls — 3 jobs × 2 envs (dev + prod) × 2 actions (PATCH + POST /stop):
+// TWELVE HTTP calls — 3 job names per env × 2 envs (dev + prod) = 6 jobs, each
+// getting 2 actions (PATCH + POST /stop):
 //
 //   LEVER (a) — 6 PATCH calls to Microsoft.App/jobs (api-version 2024-03-01):
 //     Sets triggerType=Manual on each ACA Job so FUTURE scheduled fires are suppressed.
@@ -121,8 +122,8 @@ param prodRgName string = 'rg-teetime-prod'
 var logicAppName = 'logic-teetime-killswitch-${envName}'
 var actionGroupName = 'ag-teetime-killswitch-${envName}'
 
-// The three ACA Job names that the Logic App will PATCH + POST /stop.
-// Naming must match compute.bicep: teetime-job-{envName}-edt, -est,
+// The three ACA Job names per env that the Logic App will PATCH + POST /stop
+// (× 2 envs = 6 jobs total). Naming must match compute.bicep: teetime-job-{envName}-edt, -est,
 // and teetime-watch-job-{envName}.
 var bookingJobEdt  = 'teetime-job-${envName}-edt'
 var bookingJobEst  = 'teetime-job-${envName}-est'

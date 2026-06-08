@@ -8,6 +8,9 @@ Pattern (from PLAN.md "Testing strategy"):
 
 from __future__ import annotations
 
+from datetime import date, time
+from uuid import uuid4
+
 from teetime.core.adapter import CourseAdapter
 from teetime.core.models import (
     BookingRequest,
@@ -15,7 +18,10 @@ from teetime.core.models import (
     CourseCredentials,
     CourseId,
     ExistingReservation,
+    Player,
+    RequestId,
     TeeTimeSlot,
+    TimeWindow,
 )
 
 
@@ -64,9 +70,17 @@ def test_fake_adapter_satisfies_protocol() -> None:
 
 async def test_search_returns_list() -> None:
     # asyncio_mode=auto in pyproject.toml means no @pytest.mark.asyncio needed.
+    # Proves the Protocol shape end-to-end (authenticate + search); real
+    # search coverage lives in test_foreup_adapter.py / test_teeitup_adapter.py.
     fake = _FakeAdapter()
     creds = CourseCredentials(username="u", password="p")
     await fake.authenticate(creds)
-    # We don't construct a real BookingRequest yet; that's M2.T2's job. This
-    # test only proves the Protocol shape; real coverage lives alongside the
-    # real implementation.
+    request = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(date(2026, 6, 13),),
+        time_windows=(TimeWindow(earliest=time(8, 45), latest=time(10, 0)),),
+        players=(Player(first_name="A", last_name="B", email="a@b.test"),),
+        course_preferences=(fake.course_id,),
+    )
+    slots = await fake.search(request)
+    assert isinstance(slots, list)
