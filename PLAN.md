@@ -789,7 +789,7 @@ is eligible for watching. Within a run, the WatchOrchestrator checks `store.get_
    advisory lock. WatchOrchestrator.check_once attempts the lock at entry and raises
    ConcurrentRunError, which is caught and returned as None. Safe.
 
-5. **No shared state file:** The watch job and the main booking job each start with a fresh `InMemoryStore`. The single source of truth for booking state is the live `list_reservations()` call. The two GH Actions concurrency groups (`book-tee-time`, `watch-tee-time`) prevent simultaneous runs of the same type. See §20.1 Q1 (resolved — the shared-cache approach was superseded when the durable store was dropped).
+5. **No shared state file:** The watch job and the main booking job each start with a fresh `InMemoryStore`. The single source of truth for booking state is the live `list_reservations()` call. ACA Job-level concurrency (one execution per job) prevents simultaneous runs of the same job; a watch+book overlap is safe because the in-process advisory lock serializes the booking phase. (The former `book.yml`/`watch-tee-time.yml` GH Actions concurrency groups were removed when those workflows were superseded by ACA Jobs.) See §20.1 Q1 (resolved — the shared-cache approach was superseded when the durable store was dropped).
 
 ---
 

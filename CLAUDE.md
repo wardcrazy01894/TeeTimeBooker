@@ -55,8 +55,11 @@ reservation PER day:
   multi-slot fallback (#67).
 
 **Not yet activated in PROD:** the multi-day code is on `main` (dev auto-deploys, `dryRun=true`).
-Prod still runs the previously-deployed image until a new `infra/v*` tag — and that prod deploy
-will show a **delete+create** of the two booking jobs (rename `-edt-sun`→`-edt`). Remaining
+Prod still runs the previously-deployed image until a new `infra/v*` tag. That prod deploy runs
+in ARM **incremental** mode, so it **creates** the renamed jobs (`-edt`/`-est`) but does NOT
+delete the old `-edt-sun`/`-est-sun` jobs — they orphan and keep firing the old Sunday-only cron
+(un-killswitched) until manually removed. See AZURE_PLAN.md §10.2 for the required
+`az containerapp job delete` orphan-cleanup + verification runbook. Remaining
 v0 task: **M2.T3** (post-mortem reconciliation) — still unimplemented, independent of all the above.
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
