@@ -927,3 +927,23 @@ async def test_cancel_reservation_raises_cancel_error_on_failure() -> None:
         await adapter.authenticate(CREDS)
         with pytest.raises(CancelError):
             await adapter.cancel_reservation(f"TTB:{_FAKE_CANCEL_ID}")
+
+
+@respx.mock
+async def test_cancel_error_does_not_echo_response_body() -> None:
+    """The CancelError must carry the status code but NOT the raw upstream body — a Kenna
+    error body can echo the reservation holder's name (PII). Parity with the ForeUP booking
+    path, which logs only StatusCode/Message. (security finding, /full-repo-scan)"""
+    _mock_auth()
+    holder_pii = "Alexander Lancaster reservation holder"
+    respx.put(url__regex=r".*/reservations/.*/cancel$").mock(
+        return_value=httpx.Response(403, json={"holder": holder_pii})
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        with pytest.raises(CancelError) as exc_info:
+            await adapter.cancel_reservation(f"TTB:{_FAKE_CANCEL_ID}")
+    msg = str(exc_info.value)
+    assert "403" in msg  # status code is still useful for diagnosis
+    assert holder_pii not in msg  # but the response body (potential PII) must not leak
