@@ -139,8 +139,8 @@ in `core/` — never directly. This is the cut line for parallel work.
   store boundary on every `attempt_log` write (PLAN.md §10.1) — so no caller can leak
   card data by forgetting to scrub. The card POST uses `follow_redirects=False`.
 - **Double-booking defense is layered.** Live pre-book `list_reservations`
-  check, single-attempt-per-slot rule, in-process advisory lock, ACA Job /
-  GH Actions concurrency groups. There is no durable cross-run idempotency
+  check, single-attempt-per-slot rule, in-process advisory lock, ACA Job
+  concurrency (`parallelism=1`, one execution per job). There is no durable cross-run idempotency
   record; the live remote check is the primary cross-run guard. PLAN.md §9
   has the full flow; §9.1 has the explicit state machine that M2.T1
   implements. `list_reservations` is on the `CourseAdapter` Protocol from
