@@ -54,6 +54,20 @@ _BLOCKED = [
     "az resource delete --ids /subscriptions/x",
     # normalization: extra whitespace must still match
     "az   keyvault    purge  --name kv",
+    # full-repo-scan security review: verbs the guard previously MISSED
+    "az containerapp job stop -n j -g rg",  # the exact verb the cost killswitch uses
+    "az containerapp job create -n j -g rg --image x --trigger-type Schedule",
+    "az deployment group delete -n d -g rg",
+    "az deployment sub delete -n d",
+    "az role definition create --role-definition role.json",  # custom-role escalation
+    "az role definition delete --name custom-role",
+    "az keyvault update --name kv --default-action Deny",  # network-ACL lockout (DoS)
+    # network-rule add/remove perform the SAME vault-ACL mutation as `keyvault update`
+    "az keyvault network-rule add --name kv --ip-address 1.2.3.4",
+    "az keyvault network-rule remove --name kv --ip-address 1.2.3.4",
+    # quoted-binary evasion: quoting the az token must NOT bypass the gate
+    '"az" deployment group create -g rg -f main.bicep',
+    "/usr/bin/az keyvault purge --name kv",  # path-prefixed binary still caught
 ]
 
 _ALLOWED = [
@@ -64,6 +78,11 @@ _ALLOWED = [
     "az deployment group what-if -g rg -f main.bicep",
     "az deployment group validate -g rg -f main.bicep",
     "az containerapp job show -n j -g rg",
+    "az containerapp job list -g rg",  # read-only; not stop/create/update/delete
+    "az containerapp job execution list -n j -g rg",  # read-only history
+    "az role definition list",  # read-only; must NOT be caught by 'definition create|delete'
+    "az deployment group list -g rg",  # read-only; not create|delete
+    "az keyvault network-rule list --name kv",  # read-only; not add/remove
     "az bicep build --file main.bicep",
     "echo hello",
     "git status",
