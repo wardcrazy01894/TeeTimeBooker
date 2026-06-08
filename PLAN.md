@@ -383,7 +383,7 @@ calls `list_reservations`, and sees any booking that landed — no phantom booki
 ## 10. Observability
 
 - **Logs** via the stdlib `logging` module -> plain text to stderr (NOT `structlog`/JSON; that dep was dropped). Captured by the ACA Job logs; tailed locally. Critical-path lines (T0 fire, DST/booking-day skip, booking outcome, NO_INVENTORY) are greppable.
-- **In-memory event log** (`attempt_log`). Every state transition (per §9.1 state machine) gets an entry: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `RECONCILING`, `BOOKED`, `LOST`, etc. Lives in process memory only; useful for within-run correlation and structured-log emission.
+- **In-memory event log** (`attempt_log`). Every state transition (per §9.1 state machine) gets an entry: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `RECONCILING`, `BOOKED`, `LOST`, etc. Lives in process memory only; useful for within-run correlation and log emission.
 - **Notify-on-failure** is the alert. Non-`BOOKED` outcomes print to console (ConsoleNotifier). The golf course sends booking confirmation emails directly to the user's account email.
 - **Metric surface (future, UNIMPLEMENTED):** count + duration of each event keyed by course; alert if `T_RACE_BEGIN -> BOOK_OK` latency exceeds 5s for two consecutive runs. v0/v1 ship no metrics emission or latency alerting — state is in-process and ConsoleNotifier is the only sink.
 
