@@ -34,11 +34,16 @@ param enablePurgeProtection = true
 
 // Cost-killswitch safety latch. Defaults false (schedules run normally).
 // If the $50 budget killswitch fires: set this to true in BOTH param files and push.
-// CI will then enforce enableSchedules=false regardless of the enableSchedules value,
-// preventing any subsequent merge from re-arming the cron schedules.
+// CI parses THIS value out of the param file and passes it into every deploy, so
+// effectiveEnableSchedules (= enableSchedules && !killswitchFired) goes false and no
+// subsequent merge can re-arm the cron schedules until this bit is cleared.
 // WARNING: do NOT clear this param until the overspend root cause is resolved.
 // See: infra/COST_KILLSWITCH_PLAN.md §2/Item2 + §5 (operator runbook)
 param killswitchFired = false
+
+// Cron schedules on/off. Default true (booking + watch jobs auto-fire). CI parses this
+// from the param file (the other half of effectiveEnableSchedules). See AZURE_PLAN.md §10.3.
+param enableSchedules = true
 
 // Killswitch module enabled on deploy (true = Logic App + Action Group + RBAC deployed).
 // Enabled by default per operator decision (2026-05-31): full killswitch chain deploys

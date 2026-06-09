@@ -181,6 +181,13 @@ Three-layer protection:
    subsequent CI deploy will compute `effectiveEnableSchedules = false`
    regardless of the `enableSchedules` value — no concurrent infra PR can
    re-arm. This is the checked-in safety bit that survives across PR merges.
+   NOTE: CI passes deployment parameters INLINE (a `.bicepparam` file cannot be
+   combined with `--template-file`), so `azure-iac.yml` has a "Read killswitch
+   latch from param file" step that greps `killswitchFired`/`enableSchedules`
+   out of `main.bicepparam.${ENVNAME}` and threads them into every
+   `az deployment group create`. Without that step the params would fall back
+   to their bicep defaults and the latch would be inert on the auto-deploy path
+   (full-repo-scan finding H1).
    The param files contain an explicit warning comment:
    ```
    // WARNING: do NOT clear this param until the overspend root cause is resolved.
