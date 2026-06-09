@@ -191,6 +191,7 @@ def test_watch_cli_drops_skipped_dates_before_poll(
     unskipped one."""
     today = datetime.now(tz=ZoneInfo("America/New_York")).date()
     upcoming = sorted(next_occurrences_within_horizon(today, frozenset({5, 6}), 7))
+    assert len(upcoming) == 2, f"expected 2 upcoming wanted days, got {upcoming}"  # fail loud
     skip_one, keep = upcoming[0], upcoming[1]
     monkeypatch.setenv("TEETIME_SKIP_DATES", str(skip_one))
     cfg = _config(tmp_path, enabled=True, skip_dates_env=True)

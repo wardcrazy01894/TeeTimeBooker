@@ -437,13 +437,17 @@ async def test_check_once_no_book_when_date_skipped() -> None:
 
     assert result is None
     assert adapter.search_call_count == 0
+    assert adapter.list_reservations_call_count == 0
     assert adapter.book_call_count == 0
 
 
 async def test_check_once_no_upgrade_when_date_skipped() -> None:
     """A skipped date with a BOOKED terminal + upgrade policy enabled is frozen before the
-    Gate-3 upgrade path — maybe_upgrade / cancel never run; the held booking is untouched."""
+    Gate-3 upgrade path — maybe_upgrade / cancel never run; the held booking is untouched.
+    A higher-ranked slot is made available as TEMPTATION so this proves the upgrade path was
+    BYPASSED, not merely that no better candidate existed."""
     adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot(hour=9, minute=15)])  # closer to midpoint than the held 9:45
     req = _request()
     store = InMemoryStore()
     prior = BookingResult(
@@ -467,6 +471,7 @@ async def test_check_once_no_upgrade_when_date_skipped() -> None:
 
     assert result is None
     assert adapter.search_call_count == 0
+    assert adapter.list_reservations_call_count == 0  # _check_course never reached
     assert adapter.book_call_count == 0
     assert adapter.cancel_call_count == 0
     still = await store.get_terminal(req.request_id, TARGET_DATE)
@@ -507,6 +512,22 @@ async def test_skipped_date_with_stale_store_terminal_does_not_rebook() -> None:
     assert adapter.book_call_count == 0
     assert adapter.cancel_call_count == 0
     assert adapter.search_call_count == 0
+    assert adapter.list_reservations_call_count == 0
+
+
+async def test_check_once_skip_execution_day_not_target_proceeds() -> None:
+    """Off-by-one pin (watcher path): skip is compared against the TARGET date passed to
+    check_once, NEVER the execution day. A skip set containing only the execution day (the
+    clock's date, a week before TARGET_DATE) must NOT freeze the target — the watcher books."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot(hour=9, minute=15)])
+    execution_day = TEN_AM_ET_UTC.astimezone(ET).date()  # 2026-05-09, != TARGET_DATE 2026-05-16
+    watch, _, _ = _build(adapter, skip_dates=frozenset({execution_day}))
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is not None
+    assert result.outcome == BookingOutcome.BOOKED
 
 
 async def test_skip_freeze_logs_distinct_line(caplog: pytest.LogCaptureFixture) -> None:
