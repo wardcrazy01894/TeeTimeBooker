@@ -129,6 +129,14 @@ in `core/` — never directly. This is the cut line for parallel work.
   is otherwise untestable.
 - **No secrets in TOML.** Config files reference env vars by name. Loader
   resolves them; missing env raises a clear error.
+- **Hard booking cutoff (LEADTIME_SKIP_PLAN F1).** `request.booking_cutoff`
+  (`{days_before, time_of_day}`, default 16:00 ET the day before) FREEZES a target
+  date once wall-clock passes `time_of_day` on `days_before` days before it: no new
+  booking AND no upgrade — whatever is held at the cutoff is final (held bookings are
+  never auto-cancelled). The pure, clock-injected, zoneinfo-correct predicate is
+  `core/booking_cutoff.py::is_past_booking_cutoff`; it is composed into the watcher's
+  stop-acting gate and added defense-in-depth to the booking-day gate. It is booking
+  POLICY, not request identity — it does NOT feed the RequestId fingerprint.
 - **Credit-card data is platform-specific.** ForeUP keeps card-on-file; the
   ForeUP path never POSTs PAN/CVV. TeeItUp has no wallet, so the TeeItUp adapter
   DOES POST PAN + CVV + expiry + billing to `tr.gnsvc.com` on every booking

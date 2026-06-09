@@ -57,6 +57,8 @@ cp config/example.toml config/local.toml
 
 Secrets are never stored in TOML — the config file references env var names, and the loader resolves them at runtime.
 
+**Booking cutoff.** `request.booking_cutoff = { days_before = 1, time_of_day = 16:00:00 }` (the default) freezes a target date once wall-clock passes that time on the day before it — after the cutoff the bot makes no new booking and no upgrade for that date, so you're never surprised by a last-minute booking. Tune `days_before`/`time_of_day` to move the cutoff.
+
 Copy `.env.example` to `.env` and fill in your values. Wrap any value that contains special characters (`&`, `!`, `$`, etc.) in **single quotes**:
 
 ```bash
