@@ -6,7 +6,7 @@ the loader resolves them at config-load time. Missing envs fail loudly.
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, time
 from decimal import Decimal
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from teetime.core.config import (
     PlayerConfig,
     RequestConfig,
     TimeWindowConfig,
+    _hydrate_skip,
     load,
     redact,
 )
@@ -70,6 +71,66 @@ def test_loads_example_toml(env_set: None) -> None:
     assert cfg.request.holes == 18
     assert cfg.request.max_price_per_player == Decimal("55.00")
     assert len(cfg.request.players) == 4
+
+
+def test_load_example_toml_no_skip_dates_is_empty(env_set: None) -> None:
+    """LEADTIME_SKIP_PLAN PR3: example.toml has no `skip_dates_env`, so the resolved
+    `skip_dates` is empty — proves `load()` wires the hydration and defaults to no skips."""
+    cfg = load(EXAMPLE_TOML)
+    assert cfg.request.skip_dates == frozenset()
+
+
+def test_hydrate_skip_resolves_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEETIME_SKIP_DATES", "2026-06-14")
+    rc = _rc(skip_dates_env="TEETIME_SKIP_DATES")
+    assert _hydrate_skip(rc) == frozenset({date(2026, 6, 14)})
+
+
+def test_hydrate_skip_env_unset_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip dates are OPTIONAL: `skip_dates_env` set but the env var ABSENT yields an empty
+    set, NOT a MissingEnvVarError — the asymmetry vs credential `*_env` fields is deliberate."""
+    monkeypatch.delenv("TEETIME_SKIP_DATES", raising=False)
+    rc = _rc(skip_dates_env="TEETIME_SKIP_DATES")
+    assert _hydrate_skip(rc) == frozenset()
+
+
+def test_hydrate_skip_no_env_field_is_empty() -> None:
+    assert _hydrate_skip(_rc()) == frozenset()
+
+
+def test_load_resolves_skip_dates_end_to_end(
+    env_set: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End-to-end: a TOML declaring `skip_dates_env` resolves the env value through `load()`."""
+    monkeypatch.setenv("TEETIME_SKIP_DATES", "2026-06-14, 2026-06-21")
+    toml = tmp_path / "skip.toml"
+    toml.write_text(
+        "\n".join(
+            [
+                "[[courses]]",
+                'id = "foreup:mangrove_bay"',
+                'adapter = "foreup.mangrove_bay"',
+                'username_env = "MB_USERNAME"',
+                'password_env = "MB_PASSWORD"',
+                "",
+                "[request]",
+                "target_offsets = [7]",
+                'course_preferences = ["foreup:mangrove_bay"]',
+                'skip_dates_env = "TEETIME_SKIP_DATES"',
+                "",
+                "[[request.time_windows]]",
+                'weekday = "sunday"',
+                "earliest = 08:45:00",
+                "latest = 10:00:00",
+                "",
+                "[[request.players]]",
+                'first_name = "A"',
+                'last_name = "B"',
+            ]
+        )
+    )
+    cfg = load(toml)
+    assert cfg.request.skip_dates == frozenset({date(2026, 6, 14), date(2026, 6, 21)})
 
 
 def test_config_default_cutoff(env_set: None) -> None:

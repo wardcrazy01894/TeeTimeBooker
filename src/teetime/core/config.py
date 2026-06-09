@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import os
 import tomllib
-from datetime import time
+from datetime import date, time
 from decimal import Decimal
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
 from .models import CartPreference, WatchConfig
+from .skip_dates import parse_skip_dates
 from .target_date import weekday_from_name
 
 
@@ -113,6 +114,15 @@ class RequestConfig(BaseModel):
     # unchanged. Does NOT feed the RequestId fingerprint (see models.build_request_fingerprint)
     # — it is booking POLICY, not request identity, so in-process idempotency keys are stable.
     booking_cutoff: BookingCutoffConfig = BookingCutoffConfig()
+    # No-redeploy "skip this day" control (LEADTIME_SKIP_PLAN F2). `skip_dates_env` is an
+    # env-var NAME (never a literal date list in TOML), following the `*_env` convention; in
+    # prod it is injected from a Key Vault secret editable in the Portal. It is resolved at
+    # load() time (fail-open) into `skip_dates`. NOTE: unlike credential `*_env` fields, an
+    # UNSET/empty/malformed skip env is NOT an error (absence = no skips) — so it is hydrated
+    # in load(), never via the raising _resolve_env. Like booking_cutoff, neither field feeds
+    # the RequestId fingerprint.
+    skip_dates_env: str | None = None
+    skip_dates: frozenset[date] = Field(default_factory=frozenset)
     # Migration sentinels (PERDAY_WINDOWS_PLAN §7, hard cutover): the multi-day re-arch's
     # target_weekdays / target_weekday were REMOVED — each window now carries its own
     # weekday. These typed-but-forbidden fields exist ONLY so an un-migrated config fails
@@ -246,6 +256,19 @@ def _resolve_env(var_name: str, field_path: str) -> str:
     return val
 
 
+def _hydrate_skip(req: RequestConfig) -> frozenset[date]:
+    """Resolve `skip_dates_env` -> a frozenset[date], FAIL-OPEN.
+
+    Unlike `_resolve_env` (credentials), an unset / empty / malformed value is NOT an error:
+    it yields an empty set (no skips). The job must never crash on a fat-fingered Portal edit
+    of TEETIME_SKIP_DATES — a typo that took down the 06:00 booker would be a worse failure
+    than missing a skip. See LEADTIME_SKIP_PLAN §F2 / Edge E6.
+    """
+    if req.skip_dates_env is None:
+        return frozenset()
+    return parse_skip_dates(os.environ.get(req.skip_dates_env))
+
+
 def _hydrate_player(p: PlayerConfig, idx: int) -> PlayerConfig:
     base = f"request.players[{idx}]"
     if p.email_env is not None:
@@ -266,6 +289,7 @@ def load(path: Path) -> AppConfig:
         raw = tomllib.load(f)
     cfg = AppConfig.model_validate(raw)
     cfg.request.players = [_hydrate_player(p, i) for i, p in enumerate(cfg.request.players)]
+    cfg.request.skip_dates = _hydrate_skip(cfg.request)
     return cfg
 
 
@@ -300,6 +324,9 @@ def redact(cfg: AppConfig) -> AppConfig:
     intact (they are env-var names, not values).
     """
     masked = cfg.model_copy(deep=True)
+    # `request.skip_dates` (and its `skip_dates_env` NAME) are intentionally left UNMASKED:
+    # they are calendar dates, not secrets/PII, and surfacing the active skip set in
+    # show-config is a deliberate operator affordance (LEADTIME_SKIP_PLAN Q2).
     for p in masked.request.players:
         if p.email is not None:
             p.email = "***"
