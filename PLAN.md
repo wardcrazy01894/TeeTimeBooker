@@ -169,8 +169,13 @@ unset/empty/partially-malformed value yields the dates it can parse (or none) an
 raises — a fat-fingered edit must not crash the booker/watcher (PLAN cut: no durable store,
 so the env/secret is the only runtime source). In prod the env var is injected into the ACA
 Jobs from a Key Vault secret editable in the Portal with **no redeploy** (LEADTIME_SKIP_PLAN
-§7). The booking-day gate and watcher honor it (wired in a later PR); like `booking_cutoff`,
-it does NOT feed the RequestId fingerprint.
+§7). Both gates honor it: the **booking-day gate** refuses a skipped `today+offset`, and the
+**watcher** drops skipped dates before polling AND folds the skip into the same
+`_should_stop_acting_on_date` freeze (so a skipped held date is never upgraded either —
+defense-in-depth). `watch --date <skipped>` is **refused** with a clear error (operator-intent
+conflict), not silently booked. The skip is compared against the RESERVATION date (`today+offset`
+/ the watcher's target), never the execution day. Like `booking_cutoff`, it does NOT feed the
+RequestId fingerprint.
 
 
 ---

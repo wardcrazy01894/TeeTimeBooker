@@ -14,7 +14,7 @@ correct-season :50 to mirror the real cron, but the gate ignores the clock's hou
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -104,6 +104,52 @@ def test_booking_gate_never_blocks_normal_seven_day_out(clock: FakeClock) -> Non
             target_offset=7,
             wanted_weekdays=SAT_SUN,
             cutoff=BookingCutoffConfig(),
+        )
+        is True
+    )
+
+
+def test_booking_gate_skips_skipped_date() -> None:
+    """LEADTIME_SKIP_PLAN PR4: today+offset is a wanted weekday BUT in skip_dates → refuse."""
+    clock = _clock(2026, 5, 31, 9, 50)  # today 2026-05-31 (Sun); target = 2026-06-07 (Sun)
+    assert (
+        should_book_today(
+            clock,
+            timezone=ET,
+            target_offset=7,
+            wanted_weekdays=SAT_SUN,
+            skip_dates=frozenset({date(2026, 6, 7)}),
+        )
+        is False
+    )
+
+
+def test_booking_gate_books_unskipped_wanted_date() -> None:
+    """A skip set that does NOT contain the target does not break a normal booking."""
+    clock = _clock(2026, 5, 31, 9, 50)  # target = 2026-06-07
+    assert (
+        should_book_today(
+            clock,
+            timezone=ET,
+            target_offset=7,
+            wanted_weekdays=SAT_SUN,
+            skip_dates=frozenset({date(2026, 6, 14)}),  # a different Sunday
+        )
+        is True
+    )
+
+
+def test_skip_execution_day_not_target_does_not_block() -> None:
+    """Off-by-one pin: skip is compared against the RESERVATION date (today+offset), NEVER the
+    execution day. A skip date equal to *today* but not the target must NOT block."""
+    clock = _clock(2026, 5, 31, 9, 50)  # execution day 2026-05-31; target 2026-06-07
+    assert (
+        should_book_today(
+            clock,
+            timezone=ET,
+            target_offset=7,
+            wanted_weekdays=SAT_SUN,
+            skip_dates=frozenset({date(2026, 5, 31)}),  # today, not the target
         )
         is True
     )

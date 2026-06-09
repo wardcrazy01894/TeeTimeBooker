@@ -30,7 +30,7 @@ horizon from ``max(target_offsets)`` so the 7-day window is defined in exactly o
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -47,6 +47,7 @@ def should_book_today(
     timezone: str,
     target_offset: int,
     wanted_weekdays: frozenset[int],
+    skip_dates: frozenset[date] = frozenset(),
     cutoff: BookingCutoffConfig | None = None,
 ) -> bool:
     """Return True iff ``today + target_offset`` (course-local) falls on a wanted weekday.
@@ -72,6 +73,10 @@ def should_book_today(
     today = clock.now_utc().astimezone(ZoneInfo(timezone)).date()
     target = today + timedelta(days=target_offset)
     if target.weekday() not in wanted_weekdays:
+        return False
+    # Skip control (LEADTIME_SKIP_PLAN F2): refuse a target date the operator marked to skip.
+    # Compared against the RESERVATION date (today+offset), NEVER the execution day.
+    if target in skip_dates:
         return False
     # Defense-in-depth (LEADTIME_SKIP_PLAN F1): also refuse if the target is already past its
     # hard 4PM-day-before cutoff. The watcher is the primary enforcer; this is belt-and-
