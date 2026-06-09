@@ -20,6 +20,7 @@ import pytest
 
 from teetime.core.booking_day_gate import should_book_today
 from teetime.core.clock import FakeClock
+from teetime.core.config import BookingCutoffConfig
 
 ET = "America/New_York"
 SAT_SUN = frozenset({5, 6})
@@ -61,6 +62,50 @@ def test_should_book_today(
     assert (
         should_book_today(clock, timezone=ET, target_offset=offset, wanted_weekdays=wanted)
         is expect
+    )
+
+
+def test_booking_gate_defense_blocks_past_cutoff() -> None:
+    """LEADTIME_SKIP_PLAN PR2 (defense-in-depth): when the candidate target is already past
+    its 4PM-day-before cutoff, the gate refuses even though the weekday is wanted. Synthetic:
+    Fri 17:00 ET + offset 1 → Sat target whose cutoff (Fri 16:00 ET) has passed."""
+    clock = _clock(2026, 5, 29, 21, 0)  # Fri 2026-05-29 17:00 ET (past the Sat target's cutoff)
+    # Without a cutoff the gate would book (Saturday is wanted) — proves it's the cutoff blocking.
+    assert should_book_today(clock, timezone=ET, target_offset=1, wanted_weekdays=SAT_SUN) is True
+    assert (
+        should_book_today(
+            clock,
+            timezone=ET,
+            target_offset=1,
+            wanted_weekdays=SAT_SUN,
+            cutoff=BookingCutoffConfig(),
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "clock",
+    [
+        _clock(2026, 5, 30, 9, 50),  # EDT Sat→ target Sat 06-06
+        _clock(2026, 5, 31, 9, 50),  # EDT Sun→ target Sun 06-07
+        _clock(2026, 12, 5, 10, 50),  # EST Sat
+        _clock(2026, 12, 6, 10, 50),  # EST Sun
+    ],
+)
+def test_booking_gate_never_blocks_normal_seven_day_out(clock: FakeClock) -> None:
+    """Edge E10: with the default cutoff a legit today+7 booking is NEVER cut — the cutoff
+    for a 7-day-out target is ~6 days in the future at the 05:50 cron. The cutoff param must
+    not change the weekday-only decision for a normal run."""
+    assert (
+        should_book_today(
+            clock,
+            timezone=ET,
+            target_offset=7,
+            wanted_weekdays=SAT_SUN,
+            cutoff=BookingCutoffConfig(),
+        )
+        is True
     )
 
 

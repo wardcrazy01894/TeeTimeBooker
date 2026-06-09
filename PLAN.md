@@ -152,6 +152,13 @@ notifier is `ConsoleNotifier`/logs). The pure predicate lives in `core/booking_c
 into the watcher's stop-acting gate and (defense-in-depth) the booking-day gate. `booking_cutoff`
 is booking POLICY, not request identity — it does NOT feed the RequestId fingerprint.
 
+The watcher composes it into a single `_should_stop_acting_on_date(now, target_date)` predicate
+at the top of `check_once` — it **composes (OR)** with the existing watch deadline (it does NOT
+replace it): the cutoff is strictly EARLIER than the day-after deadline, so it bites first while
+the deadline still covers the after-the-round case. The predicate sits ABOVE both upgrade entry
+points and the search loop, so one check freezes new bookings AND upgrades. Each freeze reason
+(deadline / cutoff; skip in F2) logs its OWN distinct line so an operator can tell WHY a date froze.
+
 ### 4.2 Skip dates (LEADTIME_SKIP_PLAN F2)
 
 `request.skip_dates_env` names an env var (e.g. `"TEETIME_SKIP_DATES"`) whose VALUE is a
@@ -164,6 +171,7 @@ so the env/secret is the only runtime source). In prod the env var is injected i
 Jobs from a Key Vault secret editable in the Portal with **no redeploy** (LEADTIME_SKIP_PLAN
 §7). The booking-day gate and watcher honor it (wired in a later PR); like `booking_cutoff`,
 it does NOT feed the RequestId fingerprint.
+
 
 ---
 

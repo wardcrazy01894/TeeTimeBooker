@@ -241,6 +241,7 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
         timezone=cfg.scheduler.timezone,
         target_offset=offset,
         wanted_weekdays=cfg.request.wanted_weekday_indices,
+        cutoff=cfg.request.booking_cutoff,
     ):
         target = clock.now_utc().astimezone(tz).date() + timedelta(days=offset)
         log.info(
@@ -438,6 +439,7 @@ async def _watch(
         watch_config=watch_config,
         creds=creds,
         policy=cfg.one_booking_policy,
+        booking_cutoff=cfg.request.booking_cutoff,
     )
     # Check EVERY wanted target date this run, whatever weekday we execute on (do NOT break —
     # the upcoming Sat AND Sun are both checked, and either can be booked). Each check_once gets

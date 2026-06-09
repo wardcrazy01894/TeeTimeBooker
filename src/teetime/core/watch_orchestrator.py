@@ -97,6 +97,7 @@ from .adapter import (
     RateLimitError,
     SlotGoneError,
 )
+from .booking_cutoff import cutoff_instant
 from .models import (
     MANAGED_BOOKING_TAG,
     BookingOutcome,
@@ -119,7 +120,7 @@ if TYPE_CHECKING:
     from ..persistence.store import BookingStore
     from .adapter import CourseAdapter
     from .clock import Clock
-    from .config import OneBookingPolicyConfig, SchedulerConfig
+    from .config import BookingCutoffConfig, OneBookingPolicyConfig, SchedulerConfig
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +165,7 @@ class WatchOrchestrator:
         watch_config: WatchConfig,
         creds: Mapping[CourseId, CourseCredentials] | None = None,
         policy: OneBookingPolicyConfig | None = None,
+        booking_cutoff: BookingCutoffConfig | None = None,
     ) -> None:
         self._adapters = adapters
         self._store = store
@@ -173,6 +175,10 @@ class WatchOrchestrator:
         self._watch_config = watch_config
         self._creds = creds or {}
         self._policy = policy
+        # Hard booking cutoff (LEADTIME_SKIP_PLAN F1). None = no cutoff (back-compat for
+        # existing callers/tests). When set, a date past its cutoff is frozen for BOTH new
+        # bookings and upgrades via _should_stop_acting_on_date at the top of check_once.
+        self._cutoff = booking_cutoff
 
     async def check_once(
         self,
@@ -200,9 +206,16 @@ class WatchOrchestrator:
         # gate was removed because it blinded us during the 06:00 drop and early-morning
         # cancellations. The deadline gate below is retained (don't poll a past target date).
         # Anti-bot rate limiting is the 10-min cron cadence + the poll_interval_s>=300 floor.
-        # Gate: deadline — if target_date is in the past, stop watching.
-        if self._is_past_watch_deadline(now, target_date):
+        # Gate: stop-acting — freeze this date (NO new booking AND NO upgrade) if it is past
+        # the watch deadline OR past the hard 4PM-day-before booking cutoff (LEADTIME_SKIP_PLAN
+        # F1; PR4 adds the skip set). Evaluated ABOVE the Gate-3 upgrade and the search loop, so
+        # a frozen date is never booked or upgraded. Each reason logs its OWN distinct line.
+        stop_reason = self._should_stop_acting_on_date(now, target_date)
+        if stop_reason == "deadline":
             log.info("watch: target_date %s has passed, stopping", target_date)
+            return None
+        if stop_reason == "cutoff":
+            log.info("watch: target_date %s frozen by 4PM-day-before cutoff, stopping", target_date)
             return None
 
         # Gate 3: idempotency — already BOOKED in the store (main job or prior watch run).
@@ -480,3 +493,27 @@ class WatchOrchestrator:
         tz = ZoneInfo(self._scheduler.timezone)
         local_date = now.astimezone(tz).date()
         return local_date > target_date
+
+    def _should_stop_acting_on_date(self, now: datetime, target_date: date) -> str | None:
+        """The single 'stop acting on this date' predicate (LEADTIME_SKIP_PLAN).
+
+        Returns a distinct REASON string when the date is frozen (NO new booking AND NO
+        upgrade), or None when it is still actionable. Evaluated at the top of `check_once`,
+        ABOVE both the Gate-3 store-BOOKED upgrade and the `_check_course` live-reservation
+        upgrade, so a frozen date never reaches `book()` or cancel+rebook.
+
+        Reasons (each maps to its OWN `check_once` log line so an operator can tell WHY a date
+        froze — do NOT collapse to one generic message):
+        - ``"deadline"``: past the watch deadline (the round has happened / day after target).
+        - ``"cutoff"``: past the hard 4PM-day-before booking cutoff (F1). Strictly EARLIER than
+          the deadline, so it bites first. Compared against the passed `now` (consistent with the
+          deadline check) via `cutoff_instant`, not by re-reading the clock.
+        (PR4 adds ``"skip"`` for a date in the skip set.)
+        """
+        if self._is_past_watch_deadline(now, target_date):
+            return "deadline"
+        if self._cutoff is not None and now >= cutoff_instant(
+            target_date, timezone=self._scheduler.timezone, cutoff=self._cutoff
+        ):
+            return "cutoff"
+        return None

@@ -84,6 +84,10 @@ class BookingCutoffConfig(BaseModel):
     last-minute booking they don't learn about in time. Whatever is held at the cutoff is
     final (held bookings are never auto-cancelled). Default (shipped): 16:00 ET the day
     before. See LEADTIME_SKIP_PLAN.md §F1.
+
+    ``days_before = 0`` is INTENTIONALLY valid: it places the cutoff at ``time_of_day`` on the
+    reservation day itself (e.g. freeze same-day bookings after 16:00). Only a NEGATIVE
+    ``days_before`` (which would target a date AFTER the reservation) is rejected.
     """
 
     days_before: int = 1
