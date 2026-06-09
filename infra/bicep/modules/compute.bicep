@@ -151,6 +151,11 @@ var jobSecrets = [
   { name: 'player1-phone',      keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-PHONE',      identity: userAssignedIdentityResourceId }
   { name: 'player1-mb-member',  keyVaultUrl: '${keyVaultUri}secrets/PLAYER1-MB-MEMBER',  identity: userAssignedIdentityResourceId }
   { name: 'twocaptcha-api-key', keyVaultUrl: '${keyVaultUri}secrets/TWOCAPTCHA-API-KEY', identity: userAssignedIdentityResourceId }
+  // No-redeploy "skip this day" (LEADTIME_SKIP_PLAN F2). The KV secret TEETIME-SKIP-DATES MUST
+  // already exist (operator pre-creates it, value "" = no skips) — ACA validates KV secret refs
+  // at job-CREATE time, so a missing secret FAILS the deploy. Edit the value in the Portal later
+  // with no redeploy. The bot reads it fail-open, so an empty/garbage value never crashes a run.
+  { name: 'teetime-skip-dates', keyVaultUrl: '${keyVaultUri}secrets/TEETIME-SKIP-DATES', identity: userAssignedIdentityResourceId }
 ]
 
 // Registry block: the job pulls the image from ACR using the user-assigned MI
@@ -179,6 +184,7 @@ var commonEnv = [
   { name: 'PLAYER1_PHONE',              secretRef: 'player1-phone' }
   { name: 'PLAYER1_MB_MEMBER',          secretRef: 'player1-mb-member' }
   { name: 'TWOCAPTCHA_API_KEY',         secretRef: 'twocaptcha-api-key' }
+  { name: 'TEETIME_SKIP_DATES',         secretRef: 'teetime-skip-dates' }
   { name: 'TEETIME_ENV',                value: envName }
 ]
 

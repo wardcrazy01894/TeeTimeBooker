@@ -324,6 +324,7 @@ involved.
 | `PLAYER1-PHONE` | Player 1 (account holder) phone (PII) | Bot env var `PLAYER1_PHONE` |
 | `PLAYER1-MB-MEMBER` | Player 1 Mangrove Bay member number | Bot env var `PLAYER1_MB_MEMBER` |
 | `TWOCAPTCHA-API-KEY` | 2captcha.com API key for CAPTCHA solving | Bot env var `TWOCAPTCHA_API_KEY` |
+| `TEETIME-SKIP-DATES` | Comma/space ISO date list of days to NOT book (LEADTIME_SKIP_PLAN F2); `""` = no skips | Bot env var `TEETIME_SKIP_DATES` |
 
 **Only Player 1 needs secrets — guests do not.** The bot books a full foursome
 (4 player slots), but ForeUP's booking POST transmits only the player *count*,
@@ -431,6 +432,43 @@ This triggers a manual execution that will pick up the new secret.
   during the soft-delete period. This is a one-way operation; once enabled on
   a vault it cannot be disabled for that vault's lifetime. The prod param file
   sets this explicitly.
+
+### 7.5 Skip dates — no-redeploy "don't book this day" (LEADTIME_SKIP_PLAN F2)
+
+`TEETIME-SKIP-DATES` is a Key Vault secret whose value is a comma/space-separated ISO date
+list (e.g. `2026-06-14, 2026-06-21`). The booking job and the watcher skip those dates (and
+won't upgrade a held booking on them). Empty/unset/malformed = no skips (fail-open — a typo can
+never crash the 06:00 booker). It does NOT feed the RequestId, so editing it never disturbs
+idempotency.
+
+**⚠️ ONE-TIME PRE-DEPLOY STEP (required before PR5 / the bicep change lands).** `compute.bicep`
+references this secret via `keyVaultUrl`, and **ACA validates KV secret refs at job-CREATE time**
+— so the secret MUST already exist or the deploy fails (`InvalidParameterValueInContainerTemplate`).
+Dev **auto-deploys on merge**, so create it in BOTH vaults **before merging**:
+```
+az keyvault secret set --vault-name <kv-dev>  --name TEETIME-SKIP-DATES --value ""
+az keyvault secret set --vault-name <kv-prod> --name TEETIME-SKIP-DATES --value ""
+```
+(`--value ""` seeds it empty = no skips. These are operator-run; the agent is hard-blocked from
+`az keyvault secret set`.)
+
+**Editing later (no redeploy):** Portal → the Key Vault → Secrets → `TEETIME-SKIP-DATES` →
+**+ New Version** → set the value (e.g. `2026-06-14`) → Create. No new job revision, no redeploy.
+
+**When it takes effect:** the ACA KV reference is NOT version-pinned, so the next job execution
+re-resolves it at container start (same mechanism as secret rotation, §7.4). The watch cron fires
+every 10 min and the booking cron at 05:50 ET, so a Portal edit is normally in effect by the next
+run. **Conservative guidance: make the edit the night before** the day you want skipped — correct
+regardless of any platform-side refresh latency. NOTE the cutoff (§F1) does NOT un-book: if a skip
+edit lands too late and the bot already booked that day, you must cancel manually on the course
+site (with the date now skipped, the watcher won't re-book it).
+
+**Verify (read-only, agent-safe):**
+```
+az keyvault secret show --vault-name <kv> --name TEETIME-SKIP-DATES --query value -o tsv   # source value
+```
+To confirm a JOB sees it, trigger/await a watch run and read its log: the `Watch check: targets=[…]`
+line will OMIT a skipped date. (`az containerapp job start` is operator-only — guard-blocked.)
 
 ---
 

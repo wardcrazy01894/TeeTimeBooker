@@ -47,6 +47,16 @@ holes              = 18
 max_price_per_player = "55.00"
 cart               = "either"     # "either" | "cart" | "walking"
 course_preferences = ["foreup:mangrove_bay"]
+# Hard booking cutoff (LEADTIME_SKIP_PLAN F1): never create OR modify a booking for a target
+# date once wall-clock passes `time_of_day` on the day `days_before` days before it. Default
+# (shown) = 16:00 ET the day before, so you're never surprised by a last-minute booking.
+booking_cutoff     = { days_before = 1, time_of_day = 16:00:00 }
+# No-redeploy "skip this day" (LEADTIME_SKIP_PLAN F2): env-var NAME only. Set the named env var
+# to a comma/space-separated ISO date list to skip those days, e.g.
+#   export TEETIME_SKIP_DATES="2026-06-14, 2026-06-21"
+# Unset/empty/malformed = no skips (never crashes). In the hosted deploy this is a Key Vault
+# secret editable in the Azure Portal with no redeploy (see infra/AZURE_PLAN.md §7).
+skip_dates_env     = "TEETIME_SKIP_DATES"
 
 # Party size = len(players). Each player is one row. PII fields prefer env-var
 # refs; inline only if you accept the file is gitignored.
