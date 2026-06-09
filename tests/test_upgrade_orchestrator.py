@@ -75,13 +75,16 @@ class CapturingNotifier:
         self.calls.append(result)
 
 
-def _make_request(*, course_prefs: tuple[CourseId, ...] = (COURSE_B, COURSE_A)) -> BookingRequest:
+def _make_request(
+    *, course_prefs: tuple[CourseId, ...] = (COURSE_B, COURSE_A), dry_run: bool = False
+) -> BookingRequest:
     return BookingRequest(
         request_id=RequestId(uuid4()),
         target_dates=(TARGET_DATE,),
         time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
         players=PLAYERS,
         course_preferences=course_prefs,
+        dry_run=dry_run,
     )
 
 
@@ -233,6 +236,58 @@ async def test_upgrade_proceeds_for_managed_booking() -> None:
     assert result is not None
     assert result.outcome == BookingOutcome.BOOKED
     assert result.course_id == COURSE_B
+
+
+# ---------------------------------------------------------------------------
+# Dry-run suppression (the upgrade path must NOT POST under --dry-run true)
+# ---------------------------------------------------------------------------
+
+
+async def test_upgrade_dry_run_suppresses_cancel_and_book() -> None:
+    """Under request.dry_run=True the watcher's upgrade path must do all the
+    looking/ranking/logging but issue NO real cancel or book POST. It returns a
+    DRY_RUN result so the run is reported as side-effect-free. Regression guard for
+    the full-repo-scan C1 finding: ForeUP book()/cancel_reservation() POST
+    unconditionally, so the dry-run gate MUST live in the orchestrator."""
+    orc, fa, fb, st, _nt = _make_orchestrator()
+    request = _make_request(dry_run=True)
+    current = _managed_booking(request=request)
+
+    await st.record_terminal(current, TARGET_DATE)
+    fa.set_existing_reservations(
+        [
+            ExistingReservation(
+                course_id=COURSE_A,
+                confirmation_code="FAKE-old-slot-1",
+                tee_time=datetime(2026, 6, 7, 9, 45, tzinfo=ET),
+                party_size=4,
+            )
+        ]
+    )
+
+    # A strictly-better slot is available — without the dry-run gate this would
+    # trigger a real cancel+rebook.
+    better_slot = _make_slot(
+        course_id=COURSE_B,
+        tee_time=datetime(2026, 6, 7, 9, 15, tzinfo=ET),
+        slot_id="better-1",
+    )
+    fb.set_search_response([better_slot])
+
+    result = await orc.maybe_upgrade(request, TARGET_DATE, current)
+
+    # The upgrade opportunity is surfaced (looking/ranking happened) ...
+    assert result is not None
+    assert result.outcome == BookingOutcome.DRY_RUN
+    assert result.course_id == COURSE_B
+    assert result.slot == better_slot
+    # ... but NO mutating POST was issued.
+    assert fb.book_call_count == 0
+    assert fa.cancel_call_count == 0
+    # The original store record is untouched.
+    persisted = await st.get_terminal(request.request_id, TARGET_DATE)
+    assert persisted is not None
+    assert persisted.confirmation_code == current.confirmation_code
 
 
 # ---------------------------------------------------------------------------

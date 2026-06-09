@@ -282,6 +282,29 @@ class UpgradeOrchestrator:
         if not candidates:
             return None
 
+        if request.dry_run:
+            # Dry run: the looking/ranking/logging above all happened, but suppress
+            # the mutating cancel+book POSTs. Mirrors WatchOrchestrator._book_candidates
+            # and Orchestrator._run_course. CRITICAL: the ForeUP adapter's book()/
+            # cancel_reservation() POST unconditionally (no per-adapter dry-run check),
+            # so this gate MUST live here or a dev (--dry-run true) watch run would
+            # cancel+rebook a real reservation. See full-repo-scan finding C1.
+            log.info(
+                "upgrade: DRY RUN — would upgrade %s to %s slot %s (no POST issued)",
+                current_booking.confirmation_code,
+                priority_slot.course_id,
+                candidates[0].slot_id,
+            )
+            return BookingResult(
+                request_id=request.request_id,
+                outcome=BookingOutcome.DRY_RUN,
+                course_id=candidates[0].course_id,
+                slot=candidates[0],
+                confirmation_code=None,
+                booked_at=None,
+                attempts=0,
+            )
+
         return await self._cancel_and_book_slot(
             adapter, candidates[0], request, target_date, current_booking, priority_slot
         )
