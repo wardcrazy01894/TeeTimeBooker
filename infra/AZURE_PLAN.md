@@ -635,7 +635,7 @@ in the parameter file and redeploy — this is the intended release workflow.
 | Container Apps Job memory | Consumption | **$0.00** | Free tier: 360,000 GiB-s/month, shared per-subscription. Same run profile at 0.5 GiB ≈ ~110k GiB-s/env; both envs combined ≈ **~219k GiB-s/mo ≈ ~61% of the shared free grant**. |
 | Container Apps Environment | Consumption | **$0.00** | No per-environment fee on Consumption plan. |
 | Azure Container Registry | Basic | **~$5.00** | $5.00/mo flat for Basic SKU. Includes 10 GiB storage. Our image is ~300 MB; well within limits. Every merge pushes a new `teetime:<sha>` tag, so a weekly `acr purge` ACR task (`registry.bicep`, keep last 10 tags + reap untagged) caps unbounded storage growth before it can approach the 10 GiB allowance. |
-| Key Vault | Standard | **~$0.03** | $0.03/10k operations. ACA caches KV-referenced secrets (~30-min refresh, not per-execution), so ≈ 6 secrets × ~48 refreshes/day × 30 ≈ ~9k reads/month. Negligible — around the 10k mark, well under $0.10. |
+| Key Vault | Standard | **~$0.03** | $0.03/10k operations. ACA caches KV-referenced secrets (~30-min refresh, not per-execution), so ≈ 7 secrets × ~48 refreshes/day × 30 ≈ ~10k reads/month. Negligible — around the 10k mark, well under $0.10. |
 | Log Analytics | Pay-per-use | **~$0.00–$0.50** | First 5 GB/month free. Bot produces <10 MB logs/month. |
 | Application Insights | Pay-per-use | **~$0.00** | First 5 GB/month free. |
 | Network egress | — | **~$0.00** | First 100 GB/month free. Bot does <10 MB/run. |
@@ -750,6 +750,10 @@ az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-EMAIL --value 
 az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-PHONE --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-MB-MEMBER --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name TWOCAPTCHA-API-KEY --value "<value>"
+# TEETIME-SKIP-DATES is the 7th secret. ACA validates its keyVaultUrl ref at job-create like
+# every other, so it MUST exist or the deploy fails — even though it's fail-open at runtime.
+# Seed " " = no skips; edit later in the Portal with no redeploy. See §7.5.
+az keyvault secret set --vault-name kv-teetime-dev --name TEETIME-SKIP-DATES --value " "
 # Guests 2-4 need NO secrets — ForeUP books by player count only. See §7.1.
 # No SMTP-* secrets needed — notifications use console (stdout) only. See §7.1.
 # No storage secrets needed — the bot makes no Azure SDK calls at runtime. See §6.
@@ -818,6 +822,12 @@ az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-EMAI
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-PHONE     --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-MB-MEMBER --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TWOCAPTCHA-API-KEY --value "<value>"
+# TEETIME-SKIP-DATES is the 7th secret (added with the LEADTIME_SKIP feature, PR #111). ACA
+# validates its keyVaultUrl ref at job-create like every other, so it MUST exist or the deploy
+# fails. Seed " " = no skips; edit later in the Portal with no redeploy. See §7.5.
+# ⚠️ The prod vault was bootstrapped (2026-05-31) BEFORE this secret existed — confirm it is
+# present (`az keyvault secret show ... --name TEETIME-SKIP-DATES`) before the next infra/v* tag.
+az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TEETIME-SKIP-DATES --value " "
 
 # 7. RE-RUN the deploy (workflow_dispatch environment=prod, approve the gate). Now the
 #    secrets resolve, so job creation succeeds and the 3 jobs land. (Done 2026-05-31.)
@@ -943,9 +953,10 @@ booking day (Sat or Sun)** (the cron-driven race).
    ACR/KV/identity/env but **FAILS at the jobs step** because the vault is empty (ACA validates
    `keyVaultUrl` secrets at job creation — see §10.1.1). Expected; the vault is created. (DONE
    2026-05-31 — failed-then-recovered exactly as described.)
-6. **Grant yourself KV access + set the 6 secrets** (§10.1.1 steps 5b–6), then **re-run the
-   deploy** (`workflow_dispatch` env=prod, approve) — now job creation succeeds and the 3 jobs
-   land. (Done 2026-05-31.)
+6. **Grant yourself KV access + set the 7 secrets** (§10.1.1 steps 5b–6) — the 6 credential
+   secrets PLUS `TEETIME-SKIP-DATES` (seed `" "`; ACA validates its KV ref at job-create too) —
+   then **re-run the deploy** (`workflow_dispatch` env=prod, approve) — now job creation succeeds
+   and the 3 jobs land. (Done 2026-05-31.)
 7. **Monitor** the first prod booking day (Sat or Sun): confirm the `race: busy-wait complete` line, a real
    `BOOKED` outcome (NOT dry_run), and the course's confirmation email. Watch for
    `CAPTCHA_BLOCKED` / `AUTH_FAILED` (operator-action outcomes).
