@@ -117,9 +117,12 @@ jobs:
       DRY_RUN: "true"
       PURGE_PROT: "false"
       # Cost-killswitch arming (PR-KS1). CI passes params INLINE, so these MUST be
-      # set here — the main.bicepparam.dev values are NOT read by CI (manual-deploy
-      # only). The killswitch module is gated on envName=='dev', so it only deploys
+      # set here. The killswitch module is gated on envName=='dev', so it only deploys
       # in this dev job. ROLE GUID is non-secret config (a custom-role definition id).
+      # EXCEPTION: the safety-latch params (killswitchFired / enableSchedules) are NOT
+      # hardcoded here — they are parsed from main.bicepparam.${ENVNAME} at deploy time
+      # (see "Read killswitch latch" step) so the checked-in latch is authoritative on
+      # the auto-deploy path. Full-repo-scan finding H1.
       ENABLE_KILLSWITCH: "true"
       KILLSWITCH_RBAC_ROLE_ID: "3e2d5a14-96bd-4469-9f96-b9c3270aa9e6"
     steps:
@@ -134,6 +137,21 @@ jobs:
         run: az group create -n "${RESOURCE_GROUP}" -l "${AZURE_LOCATION}"
       - name: Bicep build (lint)
         run: az bicep build --file infra/bicep/main.bicep
+      # Read the checked-in cost-killswitch safety latch from the .bicepparam file and
+      # pass it inline below. CI does NOT deploy from the .bicepparam file (it can't be
+      # combined with --template-file), so without this step killswitchFired/enableSchedules
+      # would fall back to their bicep defaults and the latch would be inert on the path
+      # that actually runs. Full-repo-scan finding H1 / COST_KILLSWITCH_PLAN.md §2/Item2.
+      - name: Read killswitch latch from param file (authoritative)
+        run: |
+          PARAM_FILE="infra/bicep/main.bicepparam.${ENVNAME}"
+          KSF=$(grep -E '^param killswitchFired *=' "${PARAM_FILE}" | grep -oE '(true|false)' | head -1)
+          ENS=$(grep -E '^param enableSchedules *=' "${PARAM_FILE}" | grep -oE '(true|false)' | head -1)
+          test -n "${KSF}" || { echo "::error::could not parse killswitchFired from ${PARAM_FILE}"; exit 1; }
+          test -n "${ENS}" || { echo "::error::could not parse enableSchedules from ${PARAM_FILE}"; exit 1; }
+          echo "KILLSWITCH_FIRED=${KSF}" >> "$GITHUB_ENV"
+          echo "ENABLE_SCHEDULES=${ENS}" >> "$GITHUB_ENV"
+          echo "Latch from ${PARAM_FILE}: killswitchFired=${KSF} enableSchedules=${ENS}"
       # Two-pass deploy: pass 1 with a public bootstrap image creates the ACR
       # (its name uses uniqueString, unknown until it exists); then we build our
       # real image into it and redeploy. Idempotent on subsequent runs.
@@ -148,6 +166,8 @@ jobs:
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
                          enableKillswitch="${ENABLE_KILLSWITCH}" \
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
+                         killswitchFired="${KILLSWITCH_FIRED}" \
+                         enableSchedules="${ENABLE_SCHEDULES}" \
                          usePublicBootstrapImage=true \
                          containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
       - name: Resolve ACR login server (direct query, timing-independent)
@@ -169,6 +189,8 @@ jobs:
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
                          enableKillswitch="${ENABLE_KILLSWITCH}" \
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
+                         killswitchFired="${KILLSWITCH_FIRED}" \
+                         enableSchedules="${ENABLE_SCHEDULES}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
       - name: Budget reminder (operator deploys manually — see AZURE_PLAN.md §9.2)
@@ -213,6 +235,21 @@ jobs:
         run: az group create -n "${RESOURCE_GROUP}" -l "${AZURE_LOCATION}"
       - name: Bicep build (lint)
         run: az bicep build --file infra/bicep/main.bicep
+      # Read the checked-in cost-killswitch safety latch from the .bicepparam file and
+      # pass it inline below. CI does NOT deploy from the .bicepparam file (it can't be
+      # combined with --template-file), so without this step killswitchFired/enableSchedules
+      # would fall back to their bicep defaults and the latch would be inert on the path
+      # that actually runs. Full-repo-scan finding H1 / COST_KILLSWITCH_PLAN.md §2/Item2.
+      - name: Read killswitch latch from param file (authoritative)
+        run: |
+          PARAM_FILE="infra/bicep/main.bicepparam.${ENVNAME}"
+          KSF=$(grep -E '^param killswitchFired *=' "${PARAM_FILE}" | grep -oE '(true|false)' | head -1)
+          ENS=$(grep -E '^param enableSchedules *=' "${PARAM_FILE}" | grep -oE '(true|false)' | head -1)
+          test -n "${KSF}" || { echo "::error::could not parse killswitchFired from ${PARAM_FILE}"; exit 1; }
+          test -n "${ENS}" || { echo "::error::could not parse enableSchedules from ${PARAM_FILE}"; exit 1; }
+          echo "KILLSWITCH_FIRED=${KSF}" >> "$GITHUB_ENV"
+          echo "ENABLE_SCHEDULES=${ENS}" >> "$GITHUB_ENV"
+          echo "Latch from ${PARAM_FILE}: killswitchFired=${KSF} enableSchedules=${ENS}"
       - name: Deploy pass 1 (bootstrap image — creates ACR + all resources)
         run: |
           az deployment group create \
@@ -224,6 +261,8 @@ jobs:
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
                          enableKillswitch="${ENABLE_KILLSWITCH}" \
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
+                         killswitchFired="${KILLSWITCH_FIRED}" \
+                         enableSchedules="${ENABLE_SCHEDULES}" \
                          usePublicBootstrapImage=true \
                          containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
       - name: Resolve ACR login server (direct query, timing-independent)
@@ -245,6 +284,8 @@ jobs:
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
                          enableKillswitch="${ENABLE_KILLSWITCH}" \
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
+                         killswitchFired="${KILLSWITCH_FIRED}" \
+                         enableSchedules="${ENABLE_SCHEDULES}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
       - name: Budget reminder (operator deploys manually — see AZURE_PLAN.md §9.2)
