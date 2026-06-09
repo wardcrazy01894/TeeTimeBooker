@@ -21,6 +21,7 @@ Coverage areas:
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -32,7 +33,12 @@ import pytest
 
 from teetime.core.adapter import AuthError, CaptchaError, NoInventoryError, RateLimitError
 from teetime.core.clock import FakeClock
-from teetime.core.config import OneBookingPolicyConfig, PrioritySlotConfig, SchedulerConfig
+from teetime.core.config import (
+    BookingCutoffConfig,
+    OneBookingPolicyConfig,
+    PrioritySlotConfig,
+    SchedulerConfig,
+)
 from teetime.core.models import (
     BookingOutcome,
     BookingRequest,
@@ -70,6 +76,11 @@ ELEVEN_PM_ET_UTC = datetime(2026, 5, 10, 3, 0, 0, tzinfo=UTC)  # 23:00 ET (prev 
 
 # Past deadline: now is the day AFTER target_date.
 PAST_DEADLINE_UTC = datetime(2026, 5, 17, 14, 0, 0, tzinfo=UTC)  # day after TARGET_DATE
+# Default cutoff for TARGET_DATE (2026-05-16) = 2026-05-15 16:00 ET (= 20:00 UTC, EDT). These
+# two clocks straddle it while BOTH are still BEFORE the watch deadline (local_date < target),
+# so the cutoff is the only gate that bites — it bites strictly earlier than the deadline.
+PAST_CUTOFF_UTC = datetime(2026, 5, 15, 21, 0, 0, tzinfo=UTC)  # 17:00 ET day before → past cutoff
+BEFORE_CUTOFF_UTC = datetime(2026, 5, 15, 19, 0, 0, tzinfo=UTC)  # 15:00 ET day before → pre-cutoff
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +147,7 @@ def _build(
     now_utc: datetime = TEN_AM_ET_UTC,
     store: InMemoryStore | None = None,
     policy: OneBookingPolicyConfig | None = None,
+    cutoff: BookingCutoffConfig | None = None,
 ) -> tuple[WatchOrchestrator, InMemoryStore, FakeClock]:
     store = store or InMemoryStore()
     clock = FakeClock(start=now_utc)
@@ -149,6 +161,7 @@ def _build(
         watch_config=_watch_config(),
         creds=creds,
         policy=policy,
+        booking_cutoff=cutoff,
     )
     return watch, store, clock
 
@@ -278,6 +291,132 @@ async def test_watch_stops_when_past_target_date() -> None:
 
     assert result is None
     assert adapter.search_call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Hard booking cutoff (LEADTIME_SKIP_PLAN F1, PR2): once past 16:00 ET the day
+# before the target date, the watcher FREEZES — no new booking AND no upgrade.
+# ---------------------------------------------------------------------------
+
+
+async def test_check_once_returns_none_when_past_cutoff_no_book() -> None:
+    """Past the cutoff with a slot available + empty store → check_once does NOT book
+    (and never even searches — the freeze gate is above the search loop)."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot(hour=9, minute=15)])
+    watch, _, _ = _build(adapter, now_utc=PAST_CUTOFF_UTC, cutoff=BookingCutoffConfig())
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None
+    assert adapter.search_call_count == 0
+    assert adapter.book_call_count == 0
+
+
+async def test_check_once_books_when_before_cutoff() -> None:
+    """One second's-worth before the cutoff the watcher still books normally — the freeze
+    gate is not over-broad (regression guard for the cutoff boundary)."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot(hour=9, minute=15)])
+    watch, _, _ = _build(adapter, now_utc=BEFORE_CUTOFF_UTC, cutoff=BookingCutoffConfig())
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is not None
+    assert result.outcome == BookingOutcome.BOOKED
+
+
+async def test_check_once_no_upgrade_when_past_cutoff_gate3() -> None:
+    """Past cutoff with a BOOKED terminal already in the store + upgrade policy enabled:
+    the date is frozen BEFORE the Gate-3 upgrade path, so maybe_upgrade / cancel / book are
+    never reached. The held booking is left untouched (we never auto-cancel)."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    req = _request()
+    store = InMemoryStore()
+    prior = BookingResult(
+        request_id=req.request_id,
+        outcome=BookingOutcome.BOOKED,
+        course_id=COURSE_ID,
+        slot=_slot(hour=9, minute=45),
+        confirmation_code="TTB:prior-123",
+        booked_at=TEN_AM_ET_UTC,
+        attempts=1,
+    )
+    await store.record_terminal(prior, TARGET_DATE)
+
+    watch, _, _ = _build(
+        adapter,
+        now_utc=PAST_CUTOFF_UTC,
+        store=store,
+        policy=OneBookingPolicyConfig(enabled=True),
+        cutoff=BookingCutoffConfig(),
+    )
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is None  # frozen at the top, before the Gate-3 prior/upgrade block
+    assert adapter.search_call_count == 0
+    assert adapter.book_call_count == 0
+    assert adapter.cancel_call_count == 0
+    # The held booking is untouched.
+    still = await store.get_terminal(req.request_id, TARGET_DATE)
+    assert still is not None
+    assert still.outcome == BookingOutcome.BOOKED
+
+
+async def test_check_once_no_upgrade_when_past_cutoff_live_reservation() -> None:
+    """Past cutoff with a live reservation (store empty) + policy enabled: the freeze gate
+    runs before _check_course, so the live-reservation upgrade path is never reached."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            ExistingReservation(
+                course_id=COURSE_ID,
+                confirmation_code="manual-abc",
+                tee_time=datetime(
+                    TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, 9, 45, tzinfo=ET
+                ),
+                party_size=1,
+            )
+        ]
+    )
+    watch, _, _ = _build(
+        adapter,
+        now_utc=PAST_CUTOFF_UTC,
+        policy=OneBookingPolicyConfig(enabled=True),
+        cutoff=BookingCutoffConfig(),
+    )
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None
+    assert adapter.search_call_count == 0
+    assert adapter.book_call_count == 0
+    assert adapter.cancel_call_count == 0
+    assert adapter.list_reservations_call_count == 0
+
+
+def test_stop_acting_composes_cutoff_or_deadline() -> None:
+    """Unit: _should_stop_acting_on_date returns a distinct reason for cutoff vs deadline,
+    and None before both. The cutoff (earlier) bites before the day-after deadline."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    watch, _, _ = _build(adapter, cutoff=BookingCutoffConfig())
+    before = BEFORE_CUTOFF_UTC
+    past_cutoff = PAST_CUTOFF_UTC
+    past_deadline = PAST_DEADLINE_UTC
+    assert watch._should_stop_acting_on_date(before, TARGET_DATE) is None
+    assert watch._should_stop_acting_on_date(past_cutoff, TARGET_DATE) == "cutoff"
+    assert watch._should_stop_acting_on_date(past_deadline, TARGET_DATE) == "deadline"
+
+
+async def test_cutoff_freeze_logs_distinct_line(caplog: pytest.LogCaptureFixture) -> None:
+    """The cutoff freeze emits its OWN distinct log line (not the deadline 'has passed'
+    message), so an operator can tell WHY a date was frozen."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot(hour=9, minute=15)])
+    watch, _, _ = _build(adapter, now_utc=PAST_CUTOFF_UTC, cutoff=BookingCutoffConfig())
+    with caplog.at_level(logging.INFO):
+        await watch.check_once(_request(), TARGET_DATE)
+    assert "cutoff" in caplog.text.lower()
+    assert "has passed" not in caplog.text  # not the deadline message
 
 
 # ---------------------------------------------------------------------------

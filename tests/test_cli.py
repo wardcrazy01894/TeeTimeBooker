@@ -681,7 +681,12 @@ def booking_gate_spy(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     holder = SimpleNamespace(calls=[], book=True)
 
     def fake_gate(
-        clock: object, *, timezone: str, target_offset: int, wanted_weekdays: object
+        clock: object,
+        *,
+        timezone: str,
+        target_offset: int,
+        wanted_weekdays: object,
+        cutoff: object = None,
     ) -> bool:
         holder.calls.append((timezone, target_offset, wanted_weekdays))
         return holder.book

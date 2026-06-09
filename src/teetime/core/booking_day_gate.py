@@ -31,9 +31,14 @@ horizon from ``max(target_offsets)`` so the 7-day window is defined in exactly o
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from .booking_cutoff import is_past_booking_cutoff
 from .clock import Clock
+
+if TYPE_CHECKING:
+    from .config import BookingCutoffConfig
 
 
 def should_book_today(
@@ -42,6 +47,7 @@ def should_book_today(
     timezone: str,
     target_offset: int,
     wanted_weekdays: frozenset[int],
+    cutoff: BookingCutoffConfig | None = None,
 ) -> bool:
     """Return True iff ``today + target_offset`` (course-local) falls on a wanted weekday.
 
@@ -65,4 +71,13 @@ def should_book_today(
     """
     today = clock.now_utc().astimezone(ZoneInfo(timezone)).date()
     target = today + timedelta(days=target_offset)
-    return target.weekday() in wanted_weekdays
+    if target.weekday() not in wanted_weekdays:
+        return False
+    # Defense-in-depth (LEADTIME_SKIP_PLAN F1): also refuse if the target is already past its
+    # hard 4PM-day-before cutoff. The watcher is the primary enforcer; this is belt-and-
+    # suspenders for the booking cron. With the default 16:00-day-before cutoff and a 7-day
+    # offset the cutoff is ~6 days in the FUTURE at the 05:50 cron, so it can NEVER bite a legit
+    # booking (Edge E10) — it only matters for pathological small offsets / late manual runs.
+    return cutoff is None or not is_past_booking_cutoff(
+        clock, target, timezone=timezone, cutoff=cutoff
+    )
