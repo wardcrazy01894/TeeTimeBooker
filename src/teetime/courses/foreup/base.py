@@ -66,6 +66,7 @@ from ...core.models import (
     SlotId,
     TeeTimeSlot,
 )
+from ...core.redaction import redact_text
 
 _log = logging.getLogger(__name__)
 
@@ -442,10 +443,10 @@ class ForeUpAdapter(CourseAdapter):
                 "ForeUP: book POST for slot %s → HTTP %d. Response: %s",
                 slot.slot_id,
                 r.status_code,
-                r.text[:500],
+                redact_text(r.text[:500]),
             )
         if r.status_code == _HTTP_SLOT_GONE:
-            raise SlotGoneError(f"Slot gone (409): {r.text[:300]}")
+            raise SlotGoneError(f"Slot gone (409): {redact_text(r.text[:300])}")
         # A captcha/browser challenge can come back as a 400; classify it as such
         # (CaptchaError) BEFORE the generic 400 → SlotGone mapping below.
         self._guard_captcha(r)
@@ -455,7 +456,7 @@ class ForeUpAdapter(CourseAdapter):
             # SlotGoneError so the orchestrator's candidate loop tries the next-ranked
             # slot instead of crashing. NOT the §9 UNCERTAIN case (a 4xx is unambiguous
             # that nothing was booked). See PLAN §9.
-            raise SlotGoneError(f"Slot unbookable (HTTP 400): {r.text[:300]}")
+            raise SlotGoneError(f"Slot unbookable (HTTP 400): {redact_text(r.text[:300])}")
         r.raise_for_status()
         data: Any = r.json() if r.text else {}
         # Do NOT log the full response body — ForeUP echoes the account holder's
@@ -584,7 +585,9 @@ class ForeUpAdapter(CourseAdapter):
         try:
             r.raise_for_status()
         except Exception as exc:
-            raise CancelError(f"Cancel failed ({r.status_code}): {r.text[:300]}") from exc
+            raise CancelError(
+                f"Cancel failed ({r.status_code}): {redact_text(r.text[:300])}"
+            ) from exc
         _log.info("ForeUP: reservation %s cancelled successfully", raw_id)
 
     async def aclose(self) -> None:

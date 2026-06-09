@@ -13,6 +13,7 @@ layer can import it without depending on each other.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 
 # Card + player-PII keys whose VALUES must never reach the attempt_log (PLAN.md §10.1).
@@ -133,3 +134,23 @@ def redact_payload(payload: Mapping[str, object]) -> dict[str, object]:
         k = str(raw_k)
         out[k] = "***" if _is_sensitive_key(k) else _redact_value(v)
     return out
+
+
+# Free-text PII scrubbing for log / exception strings — e.g. a raw ForeUP error-response
+# body, which can echo the account holder's email / phone, and which ACA forwards to Log
+# Analytics. Deliberately conservative: emails, and phone numbers that carry separators.
+# A BARE digit run is NOT masked, so numeric confirmation ids / HTTP status codes survive
+# for debugging (the whole reason the error body is logged).
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_PHONE_RE = re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b")
+
+
+def redact_text(text: str) -> str:
+    """Scrub email addresses and separator-formatted phone numbers from free text.
+
+    For logging arbitrary upstream response bodies that may echo account-holder PII (the
+    ForeUP error path logs the body to diagnose a rejected booking). NOT a substitute for
+    ``redact_payload`` on structured attempt_log writes — this is a log-hygiene helper for
+    free-text strings only.
+    """
+    return _PHONE_RE.sub("<redacted-phone>", _EMAIL_RE.sub("<redacted-email>", text))

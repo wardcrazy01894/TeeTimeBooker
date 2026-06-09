@@ -41,6 +41,7 @@ class FakeAdapter:
         self._search_exc: AdapterError | None = None
         self._book_outcome: BookingOutcome = BookingOutcome.BOOKED
         self._book_exc: AdapterError | None = None
+        self._book_side_effects: list[BookingOutcome | AdapterError] = []
         self._existing: list[ExistingReservation] = []
         self._cancel_exc: CancelError | None = None
         self._cancel_should_succeed: bool = True
@@ -62,16 +63,12 @@ class FakeAdapter:
     def set_search_to_raise(self, exc: AdapterError) -> None:
         self._search_exc = exc
 
-    def set_book_outcome(self, outcome: BookingOutcome) -> None:
-        self._book_outcome = outcome
-        self._book_exc = None
-
     def set_book_to_raise(self, exc: AdapterError) -> None:
         self._book_exc = exc
 
     def set_book_side_effects(self, effects: list[BookingOutcome | AdapterError]) -> None:
         """Configure successive book() calls to yield outcomes or raise exceptions in order."""
-        self._book_side_effects: list[BookingOutcome | AdapterError] = list(effects)
+        self._book_side_effects = list(effects)
 
     def set_existing_reservations(self, reservations: list[ExistingReservation]) -> None:
         self._existing = list(reservations)
@@ -80,11 +77,6 @@ class FakeAdapter:
         """Script cancel_reservation() to raise `exc` (simulates server refusal)."""
         self._cancel_exc = exc
         self._cancel_should_succeed = False
-
-    def set_cancel_to_succeed(self) -> None:
-        """Script cancel_reservation() to succeed (removes matching reservation from _existing)."""
-        self._cancel_exc = None
-        self._cancel_should_succeed = True
 
     def set_prepare_book_to_raise(self, exc: Exception) -> None:
         """Script prepare_book() to raise `exc` (simulates CAPTCHA service failure)."""
@@ -114,7 +106,7 @@ class FakeAdapter:
         request: BookingRequest,
     ) -> BookingResult:
         self.book_call_count += 1
-        side_effects: list[BookingOutcome | AdapterError] = getattr(self, "_book_side_effects", [])
+        side_effects = self._book_side_effects
         if side_effects:
             effect = side_effects.pop(0)
             if isinstance(effect, AdapterError):
