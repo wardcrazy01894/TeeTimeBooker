@@ -159,6 +159,20 @@ the deadline still covers the after-the-round case. The predicate sits ABOVE bot
 points and the search loop, so one check freezes new bookings AND upgrades. Each freeze reason
 (deadline / cutoff; skip in F2) logs its OWN distinct line so an operator can tell WHY a date froze.
 
+### 4.2 Skip dates (LEADTIME_SKIP_PLAN F2)
+
+`request.skip_dates_env` names an env var (e.g. `"TEETIME_SKIP_DATES"`) whose VALUE is a
+comma/space-separated ISO date list (`"2026-06-14, 2026-06-21"`). It is resolved at
+`load()` time by `core/skip_dates.parse_skip_dates` into `request.skip_dates`
+(`frozenset[date]`). Unlike credential `*_env` fields, resolution is **fail-open**: an
+unset/empty/partially-malformed value yields the dates it can parse (or none) and never
+raises — a fat-fingered edit must not crash the booker/watcher (PLAN cut: no durable store,
+so the env/secret is the only runtime source). In prod the env var is injected into the ACA
+Jobs from a Key Vault secret editable in the Portal with **no redeploy** (LEADTIME_SKIP_PLAN
+§7). The booking-day gate and watcher honor it (wired in a later PR); like `booking_cutoff`,
+it does NOT feed the RequestId fingerprint.
+
+
 ---
 
 ## 5. Persistence layer
