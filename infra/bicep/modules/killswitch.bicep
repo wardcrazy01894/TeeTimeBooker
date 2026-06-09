@@ -491,11 +491,6 @@ resource rbacDev 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 // assignment in that RG. The CI SP has User Access Administrator on rg-teetime-prod
 // (AZURE_PLAN.md §10.1.1 step 2, DONE 2026-05-31 — §8.2 only covers the dev RG)
 // so this is deployable without operator intervention.
-//
-// Nested module: cross-RG role assignment for rg-teetime-prod.
-// scope: resourceGroup(subscriptionId, prodRgName) causes Bicep to emit a nested
-// ARM deployment that the ARM engine places in rg-teetime-prod. The CI SP has
-// User Access Administrator on rg-teetime-prod (AZURE_PLAN §10.1.1, DONE 2026-05-31).
 module rbacProd 'killswitch-rbac-prod.bicep' = {
   name: 'rbac-killswitch-prod'
   scope: resourceGroup(subscriptionId, prodRgName)
