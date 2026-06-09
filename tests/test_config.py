@@ -14,6 +14,7 @@ import pytest
 
 from teetime.core.config import (
     AppConfig,
+    BookingCutoffConfig,
     MissingEnvVarError,
     PlayerConfig,
     RequestConfig,
@@ -69,6 +70,20 @@ def test_loads_example_toml(env_set: None) -> None:
     assert cfg.request.holes == 18
     assert cfg.request.max_price_per_player == Decimal("55.00")
     assert len(cfg.request.players) == 4
+
+
+def test_config_default_cutoff(env_set: None) -> None:
+    """LEADTIME_SKIP_PLAN PR1: a config with no `booking_cutoff` block loads the shipped
+    default — 16:00 ET the day before (days_before=1)."""
+    cfg = load(EXAMPLE_TOML)
+    assert cfg.request.booking_cutoff.days_before == 1
+    assert cfg.request.booking_cutoff.time_of_day == time(16, 0)
+
+
+def test_cutoff_config_rejects_negative_days_before() -> None:
+    """days_before must be >= 0 (a negative value would target a date AFTER the reservation)."""
+    with pytest.raises(ValueError, match="days_before must be >= 0"):
+        BookingCutoffConfig(days_before=-1)
 
 
 def test_container_config_enables_watcher(env_set: None) -> None:
