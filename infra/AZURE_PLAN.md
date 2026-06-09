@@ -467,8 +467,9 @@ site (with the date now skipped, the watcher won't re-book it).
 ```
 az keyvault secret show --vault-name <kv> --name TEETIME-SKIP-DATES --query value -o tsv   # source value
 ```
-To confirm a JOB sees it, trigger/await a watch run and read its log: the `Watch check: targets=[…]`
-line will OMIT a skipped date. (`az containerapp job start` is operator-only — guard-blocked.)
+To confirm a JOB sees it, trigger/await a watch run and read its log: the watch run's
+`targets=[…]` line (message wording is illustrative — match on the targets list, not the exact
+string) will OMIT a skipped date. (`az containerapp job start` is operator-only — guard-blocked.)
 
 ---
 
@@ -998,3 +999,4 @@ The following items cannot be resolved without operator input. The stubs in
 | 9 | **Key Vault name** must be globally unique, 3–24 chars. Proposed: `kv-teetime-{envName}-{shortId}`. Confirm or override. | `keyvault.bicep` |
 | 10 | ~~**SMTP credentials**~~ — **CUT.** Email notifications removed from scope. Console (stdout) is the only notifier. The golf course sends booking confirmations directly to the player. | N/A |
 | ~~11~~ | ~~**ForeUP IP allowlist / bot-detection risk**~~ — **RESOLVED / OBSERVED (2026-05-31): ForeUP does NOT block the Azure (East US 2) egress IPs.** Both the dev and prod watch jobs log into ForeUP from ACA every 10 min and succeed (`POST .../login "HTTP/1.1 200 OK"`, `ForeUP: login successful`, tee-time fetch returns slots). No 403 / block / challenge observed. Residual: sustained-polling rate-limit over many days is still worth a passive eye (Spike S5), but the IP-block concern is empirically cleared. Fallback if it ever changes: NAT Gateway with a static egress IP. | Resolved (observed in dev + prod) |
+| 12 | **Spike S1 — ACA *Job* KV-secret refresh latency** (LEADTIME_SKIP_PLAN F2). §7.5 ships the conservative "edit the night before" guidance and cites §7.4 (KV refs are not version-pinned → next job execution re-resolves). The exact propagation latency for a Portal edit of `TEETIME-SKIP-DATES` into a *Job* execution is documented for Container *Apps* (~30 min) but not freshly verified for *Jobs*. Confirm on live Azure (edit the secret, then time how soon a triggered watch run's `targets=[…]` reflects it) before committing a latency NUMBER in §7.5. The feature ships either way; only the documented number depends on this. | `AZURE_PLAN.md §7.5` runbook latency claim |
