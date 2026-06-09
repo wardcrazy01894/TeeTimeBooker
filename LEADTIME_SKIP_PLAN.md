@@ -1,8 +1,12 @@
 # LEADTIME_SKIP_PLAN.md — Hard booking cutoff + no-redeploy "skip this day"
 
-Status: PLAN (not yet ratified). Stubs only — no production `.py` edits in this doc.
-Architect output for the plan-with-review loop. A skeptical reviewer will read every
-cited line; line numbers are against the files as they exist at the tag `infra/v2.0.0`.
+Status: **IMPLEMENTED + DEPLOYED** (ratified via plan-with-review; shipped as PRs
+#107–111). The 4PM-day-before hard booking cutoff (`core/booking_cutoff.py`) and the
+no-redeploy `TEETIME_SKIP_DATES` skip-days lever (`core/skip_dates.py`, fail-open,
+resolved at `load()`) are both live, wired into the watcher + booking-day gate + the
+`watch --date` guard, with the `TEETIME-SKIP-DATES` Key Vault secret in place. This
+doc is retained as the architect output for the plan-with-review loop; line numbers
+are against the files as they existed at the tag `infra/v2.0.0`.
 
 ---
 
