@@ -129,6 +129,14 @@ in `core/` — never directly. This is the cut line for parallel work.
   is otherwise untestable.
 - **No secrets in TOML.** Config files reference env vars by name. Loader
   resolves them; missing env raises a clear error.
+- **Skip-days are FAIL-OPEN, resolved at load (LEADTIME_SKIP_PLAN F2).**
+  `request.skip_dates_env` names an env var holding a comma/space-separated ISO date
+  list; `core/skip_dates.parse_skip_dates` resolves it into `request.skip_dates`
+  (`frozenset[date]`) in `load()`. Asymmetry vs credential `*_env`: an unset/empty/
+  malformed skip value is NOT an error — it yields an empty set (absence = no skips), so a
+  fat-fingered Portal edit can never crash the 06:00 booker or the watcher. In prod the env
+  var is injected from a Key Vault secret editable in the Portal with no redeploy. The
+  booking-day gate + watcher honor it; it does NOT feed the RequestId fingerprint.
 - **Credit-card data is platform-specific.** ForeUP keeps card-on-file; the
   ForeUP path never POSTs PAN/CVV. TeeItUp has no wallet, so the TeeItUp adapter
   DOES POST PAN + CVV + expiry + billing to `tr.gnsvc.com` on every booking
