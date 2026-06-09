@@ -64,10 +64,17 @@ def _referenced_env_vars(cfg: dict) -> set[str]:
             if key.endswith("_env") and isinstance(val, str):
                 names.add(val)
 
-    for player in cfg.get("request", {}).get("players", []):
+    request = cfg.get("request", {})
+    for player in request.get("players", []):
         for key, val in player.items():
             if key.endswith("_env") and isinstance(val, str):
                 names.add(val)
+
+    # Top-level request *_env refs (e.g. skip_dates_env, LEADTIME_SKIP_PLAN F2). Generalised so
+    # any future top-level *_env is auto-discovered by the deploy-parity guard, not just players.
+    for key, val in request.items():
+        if key.endswith("_env") and isinstance(val, str):
+            names.add(val)
 
     return names
 
@@ -101,6 +108,25 @@ def test_every_container_env_ref_is_wired_in_compute_bicep() -> None:
         f"{sorted(missing)}. Add matching jobSecrets + commonEnv entries in "
         "infra/bicep/modules/compute.bicep AND create the Key Vault secret(s)."
     )
+
+
+def test_referenced_env_vars_scans_request_top_level() -> None:
+    """The parser discovers a top-level ``request.*_env`` ref (not just course/player ones), so
+    a new top-level secret ref can't slip past the deploy-parity guard (LEADTIME_SKIP_PLAN F2)."""
+    cfg = {"request": {"skip_dates_env": "TEETIME_SKIP_DATES", "players": []}}
+    assert "TEETIME_SKIP_DATES" in _referenced_env_vars(cfg)
+
+
+def test_skip_dates_env_wired_in_bicep() -> None:
+    """LEADTIME_SKIP_PLAN F2: container.toml declares skip_dates_env and compute.bicep wires the
+    matching secret + env var. The KV secret TEETIME-SKIP-DATES must be pre-created or the deploy
+    fails (ACA validates secret refs at job-CREATE time)."""
+    cfg = _load(_CONTAINER_TOML)
+    assert cfg["request"]["skip_dates_env"] == "TEETIME_SKIP_DATES"
+    bicep = _COMPUTE_BICEP.read_text()
+    assert "TEETIME_SKIP_DATES" in _bicep_env_var_names(bicep)  # commonEnv entry
+    assert "teetime-skip-dates" in bicep  # jobSecrets secretRef target
+    assert "secrets/TEETIME-SKIP-DATES" in bicep  # keyVaultUrl
 
 
 def test_booking_is_a_full_foursome() -> None:

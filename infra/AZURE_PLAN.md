@@ -324,6 +324,7 @@ involved.
 | `PLAYER1-PHONE` | Player 1 (account holder) phone (PII) | Bot env var `PLAYER1_PHONE` |
 | `PLAYER1-MB-MEMBER` | Player 1 Mangrove Bay member number | Bot env var `PLAYER1_MB_MEMBER` |
 | `TWOCAPTCHA-API-KEY` | 2captcha.com API key for CAPTCHA solving | Bot env var `TWOCAPTCHA_API_KEY` |
+| `TEETIME-SKIP-DATES` | Comma/space ISO date list of days to NOT book (LEADTIME_SKIP_PLAN F2); `""` = no skips | Bot env var `TEETIME_SKIP_DATES` |
 
 **Only Player 1 needs secrets — guests do not.** The bot books a full foursome
 (4 player slots), but ForeUP's booking POST transmits only the player *count*,
@@ -431,6 +432,47 @@ This triggers a manual execution that will pick up the new secret.
   during the soft-delete period. This is a one-way operation; once enabled on
   a vault it cannot be disabled for that vault's lifetime. The prod param file
   sets this explicitly.
+
+### 7.5 Skip dates — no-redeploy "don't book this day" (LEADTIME_SKIP_PLAN F2)
+
+`TEETIME-SKIP-DATES` is a Key Vault secret whose value is a comma/space-separated ISO date
+list (e.g. `2026-06-14, 2026-06-21`). The booking job and the watcher skip those dates (and
+won't upgrade a held booking on them). Empty/unset/malformed = no skips (fail-open — a typo can
+never crash the 06:00 booker). It does NOT feed the RequestId, so editing it never disturbs
+idempotency.
+
+**⚠️ ONE-TIME PRE-DEPLOY STEP (required before PR5 / the bicep change lands).** `compute.bicep`
+references this secret via `keyVaultUrl`, and **ACA validates KV secret refs at job-CREATE time**
+— so the secret MUST already exist or the deploy fails (`InvalidParameterValueInContainerTemplate`).
+Dev **auto-deploys on merge**, so create it in BOTH vaults **before merging**:
+```
+az keyvault secret set --vault-name <kv-dev>  --name TEETIME-SKIP-DATES --value " "
+az keyvault secret set --vault-name <kv-prod> --name TEETIME-SKIP-DATES --value " "
+```
+Seed it with a single SPACE (`--value " "`) — Azure rejects a truly empty value (`--value ""`
+errors `[Required] --value`). A whitespace-only value parses to **no skips** (`parse_skip_dates`
+treats whitespace as empty; covered by `test_parse_empty_and_none_is_empty`) with no log noise.
+These are operator-run; the agent is hard-blocked from `az keyvault secret set`. The current vault
+names are `kv-teetime-dev-s66g` and `kv-teetime-prod-4jte`.
+
+**Editing later (no redeploy):** Portal → the Key Vault → Secrets → `TEETIME-SKIP-DATES` →
+**+ New Version** → set the value (e.g. `2026-06-14`) → Create. No new job revision, no redeploy.
+
+**When it takes effect:** the ACA KV reference is NOT version-pinned, so the next job execution
+re-resolves it at container start (same mechanism as secret rotation, §7.4). The watch cron fires
+every 10 min and the booking cron at 05:50 ET, so a Portal edit is normally in effect by the next
+run. **Conservative guidance: make the edit the night before** the day you want skipped — correct
+regardless of any platform-side refresh latency. NOTE the cutoff (§F1) does NOT un-book: if a skip
+edit lands too late and the bot already booked that day, you must cancel manually on the course
+site (with the date now skipped, the watcher won't re-book it).
+
+**Verify (read-only, agent-safe):**
+```
+az keyvault secret show --vault-name <kv> --name TEETIME-SKIP-DATES --query value -o tsv   # source value
+```
+To confirm a JOB sees it, trigger/await a watch run and read its log: the watch run's
+`targets=[…]` line (message wording is illustrative — match on the targets list, not the exact
+string) will OMIT a skipped date. (`az containerapp job start` is operator-only — guard-blocked.)
 
 ---
 
@@ -960,3 +1002,4 @@ The following items cannot be resolved without operator input. The stubs in
 | 9 | **Key Vault name** must be globally unique, 3–24 chars. Proposed: `kv-teetime-{envName}-{shortId}`. Confirm or override. | `keyvault.bicep` |
 | 10 | ~~**SMTP credentials**~~ — **CUT.** Email notifications removed from scope. Console (stdout) is the only notifier. The golf course sends booking confirmations directly to the player. | N/A |
 | ~~11~~ | ~~**ForeUP IP allowlist / bot-detection risk**~~ — **RESOLVED / OBSERVED (2026-05-31): ForeUP does NOT block the Azure (East US 2) egress IPs.** Both the dev and prod watch jobs log into ForeUP from ACA every 10 min and succeed (`POST .../login "HTTP/1.1 200 OK"`, `ForeUP: login successful`, tee-time fetch returns slots). No 403 / block / challenge observed. Residual: sustained-polling rate-limit over many days is still worth a passive eye (Spike S5), but the IP-block concern is empirically cleared. Fallback if it ever changes: NAT Gateway with a static egress IP. | Resolved (observed in dev + prod) |
+| 12 | **Spike S1 — ACA *Job* KV-secret refresh latency** (LEADTIME_SKIP_PLAN F2). §7.5 ships the conservative "edit the night before" guidance and cites §7.4 (KV refs are not version-pinned → next job execution re-resolves). The exact propagation latency for a Portal edit of `TEETIME-SKIP-DATES` into a *Job* execution is documented for Container *Apps* (~30 min) but not freshly verified for *Jobs*. Confirm on live Azure (edit the secret, then time how soon a triggered watch run's `targets=[…]` reflects it) before committing a latency NUMBER in §7.5. The feature ships either way; only the documented number depends on this. | `AZURE_PLAN.md §7.5` runbook latency claim |

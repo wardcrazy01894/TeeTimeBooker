@@ -19,6 +19,15 @@ holes                = 18
 max_price_per_player = "60.00"
 cart                 = "either"
 course_preferences   = ["foreup:mangrove_bay"]
+# Hard booking cutoff (LEADTIME_SKIP_PLAN F1): freeze a target date (no new booking AND no
+# upgrade) once wall-clock passes 16:00 ET the day before it. The shipped default is identical;
+# stated explicitly here because it is a safety-critical knob for the deployed job.
+booking_cutoff       = { days_before = 1, time_of_day = 16:00:00 }
+# No-redeploy "skip this day" (LEADTIME_SKIP_PLAN F2): env-var NAME only (never a literal date
+# list). The VALUE is a comma/space-separated ISO date list. In prod TEETIME_SKIP_DATES is a
+# Key Vault secret (TEETIME-SKIP-DATES) injected by ACA — edit it in the Azure Portal with NO
+# redeploy. Unset/empty/malformed = no skips (fail-open). See infra/AZURE_PLAN.md §7.
+skip_dates_env       = "TEETIME_SKIP_DATES"
 
 # Always book a full foursome (4 slots) — matches how it ran locally.
 # NOTE: ForeUP's booking POST only sends the player COUNT, not per-guest contact
