@@ -124,6 +124,15 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Distinct log line per stop-acting reason (LEADTIME_SKIP_PLAN): an operator reading a run can
+# tell WHY a date was frozen — deadline vs hard cutoff vs an explicit skip — rather than seeing
+# one generic "stopping" message. Keyed by the reason `_should_stop_acting_on_date` returns.
+_STOP_ACTING_MESSAGES: dict[str, str] = {
+    "deadline": "watch: target_date %s has passed, stopping",
+    "cutoff": "watch: target_date %s frozen by 4PM-day-before cutoff, stopping",
+    "skip": "watch: target_date %s skipped (TEETIME_SKIP_DATES), stopping",
+}
+
 
 class WatchOrchestrator:
     """Single-invocation watch check. Called once per ACA Job invocation (or a direct
@@ -166,6 +175,7 @@ class WatchOrchestrator:
         creds: Mapping[CourseId, CourseCredentials] | None = None,
         policy: OneBookingPolicyConfig | None = None,
         booking_cutoff: BookingCutoffConfig | None = None,
+        skip_dates: frozenset[date] = frozenset(),
     ) -> None:
         self._adapters = adapters
         self._store = store
@@ -179,6 +189,10 @@ class WatchOrchestrator:
         # existing callers/tests). When set, a date past its cutoff is frozen for BOTH new
         # bookings and upgrades via _should_stop_acting_on_date at the top of check_once.
         self._cutoff = booking_cutoff
+        # Skip dates (LEADTIME_SKIP_PLAN F2). A target date in this set is frozen for BOTH new
+        # bookings and upgrades — the same stop-acting gate. Defense-in-depth: even if the CLI
+        # forgot to filter a skipped date, the orchestrator refuses it (Edge E5).
+        self._skip_dates = skip_dates
 
     async def check_once(
         self,
@@ -206,16 +220,13 @@ class WatchOrchestrator:
         # gate was removed because it blinded us during the 06:00 drop and early-morning
         # cancellations. The deadline gate below is retained (don't poll a past target date).
         # Anti-bot rate limiting is the 10-min cron cadence + the poll_interval_s>=300 floor.
-        # Gate: stop-acting — freeze this date (NO new booking AND NO upgrade) if it is past
-        # the watch deadline OR past the hard 4PM-day-before booking cutoff (LEADTIME_SKIP_PLAN
-        # F1; PR4 adds the skip set). Evaluated ABOVE the Gate-3 upgrade and the search loop, so
-        # a frozen date is never booked or upgraded. Each reason logs its OWN distinct line.
+        # Gate: stop-acting — freeze this date (NO new booking AND NO upgrade) if it is past the
+        # watch deadline OR past the hard 4PM-day-before booking cutoff (LEADTIME_SKIP_PLAN F1) OR
+        # in the operator's skip set (F2). Evaluated ABOVE the Gate-3 upgrade and the search loop,
+        # so a frozen date is never booked or upgraded. Each reason logs its OWN distinct line.
         stop_reason = self._should_stop_acting_on_date(now, target_date)
-        if stop_reason == "deadline":
-            log.info("watch: target_date %s has passed, stopping", target_date)
-            return None
-        if stop_reason == "cutoff":
-            log.info("watch: target_date %s frozen by 4PM-day-before cutoff, stopping", target_date)
+        if stop_reason is not None:
+            log.info(_STOP_ACTING_MESSAGES[stop_reason], target_date)
             return None
 
         # Gate 3: idempotency — already BOOKED in the store (main job or prior watch run).
@@ -508,7 +519,8 @@ class WatchOrchestrator:
         - ``"cutoff"``: past the hard 4PM-day-before booking cutoff (F1). Strictly EARLIER than
           the deadline, so it bites first. Compared against the passed `now` (consistent with the
           deadline check) via `cutoff_instant`, not by re-reading the clock.
-        (PR4 adds ``"skip"`` for a date in the skip set.)
+        - ``"skip"``: the date is in the operator's skip set (F2, TEETIME_SKIP_DATES). This is
+          the defense-in-depth backstop — the CLI also drops skipped dates before polling.
         """
         if self._is_past_watch_deadline(now, target_date):
             return "deadline"
@@ -516,4 +528,6 @@ class WatchOrchestrator:
             target_date, timezone=self._scheduler.timezone, cutoff=self._cutoff
         ):
             return "cutoff"
+        if target_date in self._skip_dates:
+            return "skip"
         return None

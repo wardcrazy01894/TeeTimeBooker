@@ -686,6 +686,7 @@ def booking_gate_spy(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         timezone: str,
         target_offset: int,
         wanted_weekdays: object,
+        skip_dates: object = frozenset(),
         cutoff: object = None,
     ) -> bool:
         holder.calls.append((timezone, target_offset, wanted_weekdays))

@@ -241,6 +241,7 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
         timezone=cfg.scheduler.timezone,
         target_offset=offset,
         wanted_weekdays=cfg.request.wanted_weekday_indices,
+        skip_dates=cfg.request.skip_dates,
         cutoff=cfg.request.booking_cutoff,
     ):
         target = clock.now_utc().astimezone(tz).date() + timedelta(days=offset)
@@ -399,15 +400,29 @@ async def _watch(
     # horizon (upcoming Sat AND Sun). horizon = max(target_offsets) — single source of truth.
     if target_date_str:
         try:
-            target_dates: tuple[date, ...] = (date.fromisoformat(target_date_str),)
+            parsed = date.fromisoformat(target_date_str)
         except ValueError as e:
             raise click.ClickException(f"--date must be YYYY-MM-DD, got {target_date_str!r}") from e
+        # An explicit --date that names a skipped day is an operator-intent conflict — refuse
+        # loudly rather than silently book it (LEADTIME_SKIP_PLAN F2 / Edge E12).
+        if parsed in cfg.request.skip_dates:
+            raise click.ClickException(
+                f"--date {parsed} is in TEETIME_SKIP_DATES; remove it from the skip list "
+                "or pick another date."
+            )
+        target_dates: tuple[date, ...] = (parsed,)
     else:
         today = datetime.now(tz=ZoneInfo(cfg.scheduler.timezone)).date()
-        target_dates = next_occurrences_within_horizon(
-            today,
-            cfg.request.wanted_weekday_indices,
-            max(cfg.request.target_offsets),
+        # Drop skipped dates BEFORE polling so the watcher never even looks at a day the
+        # operator marked to skip (the orchestrator gate is the defense-in-depth backstop).
+        target_dates = tuple(
+            d
+            for d in next_occurrences_within_horizon(
+                today,
+                cfg.request.wanted_weekday_indices,
+                max(cfg.request.target_offsets),
+            )
+            if d not in cfg.request.skip_dates
         )
 
     log.info("Watch check: targets=%s dry_run=%s", [str(d) for d in target_dates], dry_run)
@@ -440,6 +455,7 @@ async def _watch(
         creds=creds,
         policy=cfg.one_booking_policy,
         booking_cutoff=cfg.request.booking_cutoff,
+        skip_dates=cfg.request.skip_dates,
     )
     # Check EVERY wanted target date this run, whatever weekday we execute on (do NOT break —
     # the upcoming Sat AND Sun are both checked, and either can be booked). Each check_once gets

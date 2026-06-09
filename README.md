@@ -59,6 +59,8 @@ Secrets are never stored in TOML — the config file references env var names, a
 
 **Booking cutoff.** `request.booking_cutoff = { days_before = 1, time_of_day = 16:00:00 }` (the default) freezes a target date once wall-clock passes that time on the day before it — after the cutoff the bot makes no new booking and no upgrade for that date, so you're never surprised by a last-minute booking. Tune `days_before`/`time_of_day` to move the cutoff.
 
+**Skip a day.** To tell the bot *not* to book a specific date (e.g. you're out of town), set the env var named by `request.skip_dates_env` (default `TEETIME_SKIP_DATES`) to a comma/space-separated ISO date list, e.g. `export TEETIME_SKIP_DATES="2026-06-14, 2026-06-21"`. Both the booking job and the watcher skip those dates (and won't upgrade a held booking on them — cancel it yourself on the course site and it'll stay cancelled). Unset/empty/malformed = no skips (it never crashes the bot). In the hosted deployment this is a Key Vault secret you edit in the Azure Portal with no redeploy — see `infra/AZURE_PLAN.md`.
+
 Copy `.env.example` to `.env` and fill in your values. Wrap any value that contains special characters (`&`, `!`, `$`, etc.) in **single quotes**:
 
 ```bash

@@ -9,16 +9,18 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
+from zoneinfo import ZoneInfo
 
 import pytest
 from click.testing import CliRunner
 
 import teetime.__main__ as main_mod
 from teetime.__main__ import cli
+from teetime.core.target_date import next_occurrences_within_horizon
 
 _ENV = {
     "MB_USERNAME": "u",
@@ -35,7 +37,8 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(k, v)
 
 
-def _config(tmp_path: Path, *, enabled: bool) -> Path:
+def _config(tmp_path: Path, *, enabled: bool, skip_dates_env: bool = False) -> Path:
+    skip_line = 'skip_dates_env = "TEETIME_SKIP_DATES"\n' if skip_dates_env else ""
     toml = tmp_path / "w.toml"
     toml.write_text(
         f"""
@@ -50,7 +53,7 @@ extra = {{ booking_class_id = "2149" }}
 target_offsets = [7]
 holes = 18
 course_preferences = ["foreup:mangrove_bay"]
-
+{skip_line}
 [[request.players]]
 first_name = "A"
 last_name = "B"
@@ -176,3 +179,71 @@ def test_watch_loop_continues_after_result(tmp_path: Path, watch_spy: type[_SpyW
     )
     assert result.exit_code == 0, result.output
     assert len(watch_spy.seen) == 2  # both dates checked despite a result on the first
+
+
+# --- LEADTIME_SKIP_PLAN PR4: skip dates honored by the watch CLI -------------
+
+
+def test_watch_cli_drops_skipped_dates_before_poll(
+    tmp_path: Path, watch_spy: type[_SpyWatch], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A skipped upcoming wanted date is dropped BEFORE polling — check_once runs only for the
+    unskipped one."""
+    today = datetime.now(tz=ZoneInfo("America/New_York")).date()
+    upcoming = sorted(next_occurrences_within_horizon(today, frozenset({5, 6}), 7))
+    assert len(upcoming) == 2, f"expected 2 upcoming wanted days, got {upcoming}"  # fail loud
+    skip_one, keep = upcoming[0], upcoming[1]
+    monkeypatch.setenv("TEETIME_SKIP_DATES", str(skip_one))
+    cfg = _config(tmp_path, enabled=True, skip_dates_env=True)
+    result = CliRunner().invoke(
+        cli, ["watch", "--config", str(cfg), "--dry-run", "true", "--use-fake-adapter"]
+    )
+    assert result.exit_code == 0, result.output
+    assert watch_spy.seen == [keep]  # the skipped date was never polled
+
+
+def test_watch_cli_date_override_skipped_refuses(
+    tmp_path: Path, watch_spy: type[_SpyWatch], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`watch --date <skipped>` is refused with a clear error (Edge E12) — never silently booked."""
+    monkeypatch.setenv("TEETIME_SKIP_DATES", "2026-06-14")
+    cfg = _config(tmp_path, enabled=True, skip_dates_env=True)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "watch",
+            "--config",
+            str(cfg),
+            "--dry-run",
+            "true",
+            "--use-fake-adapter",
+            "--date",
+            "2026-06-14",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "TEETIME_SKIP_DATES" in result.output
+    assert watch_spy.seen == []  # never polled
+
+
+def test_watch_cli_date_override_unskipped_ok(
+    tmp_path: Path, watch_spy: type[_SpyWatch], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`watch --date <unskipped wanted>` proceeds even when OTHER dates are skipped."""
+    monkeypatch.setenv("TEETIME_SKIP_DATES", "2026-06-14")  # a different (Sunday) date
+    cfg = _config(tmp_path, enabled=True, skip_dates_env=True)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "watch",
+            "--config",
+            str(cfg),
+            "--dry-run",
+            "true",
+            "--use-fake-adapter",
+            "--date",
+            "2026-06-13",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert watch_spy.seen == [date(2026, 6, 13)]
