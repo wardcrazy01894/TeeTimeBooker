@@ -9,7 +9,33 @@ boundary (`InMemoryStore.append_attempt`) applies it — see test_in_memory_stor
 
 from __future__ import annotations
 
-from teetime.core.redaction import redact_payload
+from teetime.core.redaction import redact_payload, redact_text
+
+
+def test_redact_text_masks_email_and_phone() -> None:
+    """redact_text scrubs account-holder PII (email, separator-formatted phone) from a
+    free-text upstream error body before it is logged. Full-repo-scan security finding."""
+    body = 'ForeUP error: {"holder":"jane@example.com","phone":"727-555-0142"}'
+    out = redact_text(body)
+    assert "jane@example.com" not in out
+    assert "727-555-0142" not in out
+    assert "<redacted-email>" in out
+    assert "<redacted-phone>" in out
+
+
+def test_redact_text_keeps_bare_digit_runs() -> None:
+    """A bare numeric run (e.g. a ForeUP confirmation id or HTTP status) is NOT masked —
+    the error body is logged precisely to keep these debuggable."""
+    body = "Slot gone (409): reservation 1234567890 already held"
+    out = redact_text(body)
+    assert "1234567890" in out
+    assert "409" in out
+
+
+def test_redact_text_passthrough_when_no_pii() -> None:
+    assert redact_text("Slot unbookable (HTTP 400): teesheet full") == (
+        "Slot unbookable (HTTP 400): teesheet full"
+    )
 
 
 def test_redacts_cred_style_card_keys() -> None:

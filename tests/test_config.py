@@ -86,6 +86,24 @@ def test_hydrate_skip_resolves_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _hydrate_skip(rc) == frozenset({date(2026, 6, 14)})
 
 
+def test_hydrate_skip_malformed_env_is_empty_no_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FAIL-OPEN at the load boundary: a garbage TEETIME_SKIP_DATES value must NOT raise
+    out of `_hydrate_skip` — it yields an empty set (no skips). This pins the "a fat-fingered
+    Portal edit can never crash the 06:00 booker or the watcher" invariant at the seam, not
+    just inside parse_skip_dates. See LEADTIME_SKIP_PLAN §F2 / Edge E6."""
+    monkeypatch.setenv("TEETIME_SKIP_DATES", "not-a-date, 2026-13-99, 06/14/2026")
+    rc = _rc(skip_dates_env="TEETIME_SKIP_DATES")
+    assert _hydrate_skip(rc) == frozenset()
+
+
+def test_hydrate_skip_mixed_env_keeps_valid_dates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mix of valid + malformed tokens keeps the valid dates and drops the rest (partial
+    parse), still without raising."""
+    monkeypatch.setenv("TEETIME_SKIP_DATES", "2026-06-14, garbage, 2026-06-21")
+    rc = _rc(skip_dates_env="TEETIME_SKIP_DATES")
+    assert _hydrate_skip(rc) == frozenset({date(2026, 6, 14), date(2026, 6, 21)})
+
+
 def test_hydrate_skip_env_unset_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """Skip dates are OPTIONAL: `skip_dates_env` set but the env var ABSENT yields an empty
     set, NOT a MissingEnvVarError — the asymmetry vs credential `*_env` fields is deliberate."""
