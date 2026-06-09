@@ -88,7 +88,23 @@ class Orchestrator:
                 # post-T0 book() POST fires immediately. The 2026-06-07 prod failure was
                 # the ~78s solve running AFTER T0, pushing the POST ~100s past the drop.
                 lead = timedelta(seconds=self._scheduler.captcha_prefetch_lead_s)
-                await busy_wait_until(t0_target - lead, self._clock)
+                prefetch_at = t0_target - lead
+                now = self._clock.now_utc()
+                if now >= prefetch_at:
+                    # We started past the prefetch point (e.g. the DST gate admits all of
+                    # hour 5 but the ACA cron landed late). The ~75s solve will run into /
+                    # past T0, so the book() POST may fire after the drop — the 2026-06-07
+                    # failure mode. Surface it loudly; do NOT silently look on-time. We
+                    # still prefetch immediately below: overlapping the solve with whatever
+                    # time remains beats solving inline in book().
+                    log.warning(
+                        "race: started %.1fs past the CAPTCHA-prefetch point (T0-%ds) — "
+                        "prefetch lead not fully honored; book() POST may fire after T0",
+                        (now - prefetch_at).total_seconds(),
+                        self._scheduler.captcha_prefetch_lead_s,
+                    )
+                else:
+                    await busy_wait_until(prefetch_at, self._clock)
                 await self._prefetch_captcha(request)
             await busy_wait_until(t0_target, self._clock)
             fired = self._clock.now_utc()

@@ -335,7 +335,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   `prefetch_book=wait`). The watcher and local-demo runs leave it False: a token is
   solved only when actually about to book (the watcher's upgrade path still pre-fetches
   inside `maybe_upgrade`, just-in-time). Lead is tuned so the ~75 s solve finishes just
-  before T0 while the ~120 s reCAPTCHA token stays fresh for the POST.
+  before T0 while the ~120 s reCAPTCHA token stays fresh for the POST. If the run STARTS
+  past `T0 − lead` (the DST gate admits all of hour 5, so a late-landing cron can begin
+  with too little runway), the lead can't be honored and the POST may fire after T0 — the
+  orchestrator logs a `prefetch lead not fully honored` WARNING and still pre-fetches
+  immediately (overlapping the solve with the time left beats solving inline in `book()`).
 - **Each run is independent** — there is no shared state cache between the watch
   job and the main booking job. The live `list_reservations()` call is the source
   of truth across runs. Concurrent-run serialization is handled by ACA Job /

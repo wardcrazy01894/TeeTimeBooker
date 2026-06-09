@@ -585,3 +585,58 @@ async def test_run_prefetch_failure_does_not_abort_race() -> None:
     assert result.outcome == BookingOutcome.BOOKED
     assert fa.prepare_book_call_count == 1
     assert fa.book_call_count == 1
+
+
+async def test_run_warns_when_prefetch_lead_cannot_be_honored(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """If the run starts AFTER the (T0 - lead) prefetch point — e.g. the DST gate admits
+    all of hour 5 but the ACA cron landed late — the full CAPTCHA-prefetch lead can't be
+    honored and the book() POST may fire after T0 (the 2026-06-07 late-POST failure mode).
+    The orchestrator must SURFACE this with a WARNING rather than silently appearing
+    on-time, and must still prefetch immediately (overlapping the solve with whatever time
+    remains beats solving inline in book())."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    lead = 90
+    # Start only half a lead before T0 — i.e. already PAST (T0 - lead), so the full lead
+    # cannot be honored.
+    clock = FakeClock(start=t0 - timedelta(seconds=lead // 2))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(lead), prefetch_book=True
+    )
+
+    with caplog.at_level(logging.WARNING, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.prepare_book_call_count == 1, "must still prefetch when landing late"
+    assert any("prefetch lead not fully honored" in r.getMessage() for r in caplog.records), (
+        "expected a WARNING that the CAPTCHA-prefetch lead could not be honored"
+    )
+
+
+async def test_run_does_not_warn_when_prefetch_lead_is_honored(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The late-landing warning must NOT fire on the normal on-time race path (started
+    comfortably before T0 - lead)."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    lead = 30
+    clock = FakeClock(start=t0 - timedelta(seconds=lead + 5))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(lead), prefetch_book=True
+    )
+
+    with caplog.at_level(logging.WARNING, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert not any("prefetch lead not fully honored" in r.getMessage() for r in caplog.records)
