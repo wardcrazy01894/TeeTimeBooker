@@ -31,6 +31,13 @@ def cutoff_instant(
     correct UTC offset for the D-1 calendar day (handles spring-forward / fall-back). We
     localize a wall-clock time in that zone via ``.replace(tzinfo=ZoneInfo(...))`` — NOT
     ``astimezone`` of a UTC value (which would shift the wall-clock reading).
+
+    CONSTRAINT: ``cutoff.time_of_day`` must NOT fall inside a DST transition window
+    (roughly 01:00-03:00 local on the two transition Sundays). ``.replace(tzinfo=...)``
+    leaves ``fold=0``, so a time in the fall-back ambiguous hour resolves to the first
+    occurrence and one in the spring-forward gap is non-existent -- either would mis-place
+    the instant by an hour. The shipped default (16:00) is safely clear of this; only a
+    custom early-morning cutoff could hit it.
     """
     d = target_date - timedelta(days=cutoff.days_before)
     return datetime.combine(d, cutoff.time_of_day).replace(tzinfo=ZoneInfo(timezone))

@@ -441,6 +441,16 @@ won't upgrade a held booking on them). Empty/unset/malformed = no skips (fail-op
 never crash the 06:00 booker). It does NOT feed the RequestId, so editing it never disturbs
 idempotency.
 
+**⚠️ Accepted format is strict `YYYY-MM-DD` (`date.fromisoformat`).** Fail-open cuts both ways:
+a token that is NOT a bare ISO date — e.g. `2026-06-14T06:00` (time suffix), `2026/06/14`
+(slashes), or `06/14/2026` (US order) — is **silently dropped**, so the date you meant to block
+is NOT skipped and the bot will book it. The warning lands in Log Analytics, not in the Portal,
+so it's invisible at edit time. **Always verify after a Portal edit** that the value parses to
+the dates you intend — the fastest agent-safe check is to run the value through the loader
+locally: `TEETIME_SKIP_DATES="<the value>" uv run teetime show-config --config config/local.toml`
+prints the resolved `skip_dates` (unmasked — calendar dates aren't secrets). A date you expect
+that's missing from that list means the token was rejected.
+
 **⚠️ ONE-TIME PRE-DEPLOY STEP (required before PR5 / the bicep change lands).** `compute.bicep`
 references this secret via `keyVaultUrl`, and **ACA validates KV secret refs at job-CREATE time**
 — so the secret MUST already exist or the deploy fails (`InvalidParameterValueInContainerTemplate`).

@@ -30,6 +30,14 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   Succeeded-vs-Failed" alerting is ever added, repeated 429-backoff (and the booker's
   `NO_INVENTORY` terminals) should surface somewhere. No action while there's no alert sink.
 
+- **A late-landing booking race (CAPTCHA-prefetch lead not honored) is log-only.** When the
+  ACA booking cron lands late in hour 5, the orchestrator now logs a `prefetch lead not fully
+  honored` WARNING and the `book()` POST may fire after the 06:00 drop (it still prefetches, so
+  it's *less* late — but the slot can still be lost). That WARNING is only grep-able, not
+  actively surfaced. If/when an alert sink exists, route this WARNING (and the late-POST drift)
+  into the `Notifier` so a missed drop is visible, not buried. Same "no alert channel" caveat
+  as above. (Full-repo-scan follow-up, deferred from PR #114.)
+
 ---
 
 ## Frontend (single-user web UI)
