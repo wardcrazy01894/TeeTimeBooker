@@ -446,11 +446,14 @@ references this secret via `keyVaultUrl`, and **ACA validates KV secret refs at 
 — so the secret MUST already exist or the deploy fails (`InvalidParameterValueInContainerTemplate`).
 Dev **auto-deploys on merge**, so create it in BOTH vaults **before merging**:
 ```
-az keyvault secret set --vault-name <kv-dev>  --name TEETIME-SKIP-DATES --value ""
-az keyvault secret set --vault-name <kv-prod> --name TEETIME-SKIP-DATES --value ""
+az keyvault secret set --vault-name <kv-dev>  --name TEETIME-SKIP-DATES --value " "
+az keyvault secret set --vault-name <kv-prod> --name TEETIME-SKIP-DATES --value " "
 ```
-(`--value ""` seeds it empty = no skips. These are operator-run; the agent is hard-blocked from
-`az keyvault secret set`.)
+Seed it with a single SPACE (`--value " "`) — Azure rejects a truly empty value (`--value ""`
+errors `[Required] --value`). A whitespace-only value parses to **no skips** (`parse_skip_dates`
+treats whitespace as empty; covered by `test_parse_empty_and_none_is_empty`) with no log noise.
+These are operator-run; the agent is hard-blocked from `az keyvault secret set`. The current vault
+names are `kv-teetime-dev-s66g` and `kv-teetime-prod-4jte`.
 
 **Editing later (no redeploy):** Portal → the Key Vault → Secrets → `TEETIME-SKIP-DATES` →
 **+ New Version** → set the value (e.g. `2026-06-14`) → Create. No new job revision, no redeploy.

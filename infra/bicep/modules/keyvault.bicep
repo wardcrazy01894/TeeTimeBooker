@@ -8,9 +8,10 @@
 //   MB-USERNAME, MB-PASSWORD, PLAYER1-EMAIL, PLAYER1-PHONE, PLAYER1-MB-MEMBER,
 //   TWOCAPTCHA-API-KEY, TEETIME-SKIP-DATES
 //   (plus any additional PLAYER* secrets)
-//   The last (TEETIME-SKIP-DATES, LEADTIME_SKIP_PLAN F2) MUST be pre-created (value "" = no
-//   skips) BEFORE compute.bicep references it — ACA validates KV secret refs at job-CREATE
-//   time, so a missing secret FAILS the deploy. Edit its value later in the Portal, no redeploy.
+//   The last (TEETIME-SKIP-DATES, LEADTIME_SKIP_PLAN F2) MUST be pre-created (value " " = no
+//   skips; Azure rejects an empty value) BEFORE compute.bicep references it — ACA validates KV
+//   secret refs at job-CREATE time, so a missing secret FAILS the deploy. Edit later in the
+//   Portal, no redeploy.
 //
 // NOTE: the bot makes no authenticated Azure SDK calls at runtime (state is
 // in-process; no Blob Storage), so no storage connection string or account name
