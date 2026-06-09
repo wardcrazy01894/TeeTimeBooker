@@ -44,9 +44,18 @@ def test_parse_ignores_malformed_token_keeps_valid(caplog: pytest.LogCaptureFixt
     assert "garbage" in caplog.text
 
 
-def test_parse_all_malformed_is_empty_not_raise() -> None:
-    # A fully fat-fingered value must NOT crash — returns empty, logs, never raises.
-    assert parse_skip_dates("x, y, 2026-13-99") == frozenset()
+def test_parse_all_malformed_is_empty_not_raise(caplog: pytest.LogCaptureFixture) -> None:
+    # A fully fat-fingered value must NOT crash — returns empty, logs EACH bad token, never raises.
+    with caplog.at_level(logging.WARNING):
+        result = parse_skip_dates("x, y, 2026-13-99")
+    assert result == frozenset()
+    assert caplog.text.count("ignoring unparseable") == 3
+
+
+def test_parse_rejects_datetime_iso_string() -> None:
+    # A datetime ISO string (not date-only) is unparseable by date.fromisoformat → ValueError →
+    # caught by fail-open. Pins that the contract is date-only, no silent acceptance.
+    assert parse_skip_dates("2026-06-14T00:00:00") == frozenset()
 
 
 def test_parse_dedupes() -> None:

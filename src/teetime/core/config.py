@@ -298,6 +298,9 @@ def redact(cfg: AppConfig) -> AppConfig:
     intact (they are env-var names, not values).
     """
     masked = cfg.model_copy(deep=True)
+    # `request.skip_dates` (and its `skip_dates_env` NAME) are intentionally left UNMASKED:
+    # they are calendar dates, not secrets/PII, and surfacing the active skip set in
+    # show-config is a deliberate operator affordance (LEADTIME_SKIP_PLAN Q2).
     for p in masked.request.players:
         if p.email is not None:
             p.email = "***"
