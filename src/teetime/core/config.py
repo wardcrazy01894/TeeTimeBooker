@@ -74,6 +74,28 @@ class PlayerConfig(BaseModel):
     member_number: str | None = None
 
 
+class BookingCutoffConfig(BaseModel):
+    """Hard cutoff after which a target date is FROZEN — no new book, no upgrade.
+
+    Absolute wall-clock relative to the RESERVATION date (tee-time-independent):
+    ``cutoff = datetime(target_date - days_before, time_of_day, tz=scheduler.timezone)``.
+    Once wall-clock ``now`` reaches that instant, the target date is frozen: the watcher
+    makes no new booking AND no upgrade, so the operator can never be surprised by a
+    last-minute booking they don't learn about in time. Whatever is held at the cutoff is
+    final (held bookings are never auto-cancelled). Default (shipped): 16:00 ET the day
+    before. See LEADTIME_SKIP_PLAN.md §F1.
+    """
+
+    days_before: int = 1
+    time_of_day: time = time(16, 0, 0)
+
+    @model_validator(mode="after")
+    def _validate(self) -> BookingCutoffConfig:
+        if self.days_before < 0:
+            raise ValueError(f"booking_cutoff.days_before must be >= 0, got {self.days_before}")
+        return self
+
+
 class RequestConfig(BaseModel):
     """One BookingRequest's static config."""
 
@@ -88,6 +110,10 @@ class RequestConfig(BaseModel):
     max_price_per_player: Decimal | None = None
     cart: CartPreference = CartPreference.EITHER
     course_preferences: list[str]
+    # Hard booking cutoff (LEADTIME_SKIP_PLAN F1). Defaulted so existing configs load
+    # unchanged. Does NOT feed the RequestId fingerprint (see models.build_request_fingerprint)
+    # — it is booking POLICY, not request identity, so in-process idempotency keys are stable.
+    booking_cutoff: BookingCutoffConfig = BookingCutoffConfig()
     # No-redeploy "skip this day" control (LEADTIME_SKIP_PLAN F2). `skip_dates_env` is an
     # env-var NAME (never a literal date list in TOML), following the `*_env` convention; in
     # prod it is injected from a Key Vault secret editable in the Portal. It is resolved at

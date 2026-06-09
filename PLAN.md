@@ -139,7 +139,20 @@ All Protocols are `runtime_checkable`. Type-checks under `mypy --strict`.
 
 See `config/example.toml`. Schema enforced by `core/config.py` via pydantic v2. Key rule: **no secrets in the file** — every credential is referenced by env-var name (e.g. `password_env = "MB_PASSWORD"`) and resolved at config-load time.
 
-### Skip dates (LEADTIME_SKIP_PLAN F2)
+### 4.1 Booking cutoff (LEADTIME_SKIP_PLAN F1)
+
+`request.booking_cutoff = { days_before = 1, time_of_day = 16:00:00 }` (the shipped default)
+is a **hard freeze** on a target date: once wall-clock time has passed `time_of_day` in the
+course-local timezone on the day `days_before` days before the reservation date, the bot makes
+**no new booking and no upgrade** for that date — whatever is held at the cutoff is final. It is
+an absolute wall-clock cutoff relative to the reservation date (tee-time-independent), so the
+operator can never be surprised by a last-minute booking they don't learn about in time (the only
+notifier is `ConsoleNotifier`/logs). The pure predicate lives in `core/booking_cutoff.py`
+(`is_past_booking_cutoff`, clock-injected, zoneinfo-correct on the DST day-before); it is wired
+into the watcher's stop-acting gate and (defense-in-depth) the booking-day gate. `booking_cutoff`
+is booking POLICY, not request identity — it does NOT feed the RequestId fingerprint.
+
+### 4.2 Skip dates (LEADTIME_SKIP_PLAN F2)
 
 `request.skip_dates_env` names an env var (e.g. `"TEETIME_SKIP_DATES"`) whose VALUE is a
 comma/space-separated ISO date list (`"2026-06-14, 2026-06-21"`). It is resolved at
