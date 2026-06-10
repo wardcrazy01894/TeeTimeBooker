@@ -32,7 +32,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v1.1.1`).
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.1.0`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -54,13 +54,15 @@ reservation PER day:
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
-**Not yet activated in PROD:** the multi-day code is on `main` (dev auto-deploys, `dryRun=true`).
-Prod still runs the previously-deployed image until a new `infra/v*` tag. That prod deploy runs
-in ARM **incremental** mode, so it **creates** the renamed jobs (`-edt`/`-est`) but does NOT
-delete the old `-edt-sun`/`-est-sun` jobs — they orphan and keep firing the old Sunday-only cron
-(un-killswitched) until manually removed. See AZURE_PLAN.md §10.2 for the required
-`az containerapp job delete` orphan-cleanup + verification runbook. Remaining
-v0 task: **M2.T3** (post-mortem reconciliation) — still unimplemented, independent of all the above.
+**LIVE in PROD** (`infra/v2.1.0` = `main`@`975122c`, deployed 2026-06-10, `dryRun=false`):
+multi-day Sat+Sun booking, the 4PM-day-before booking cutoff, and the Portal-editable
+skip-days (`TEETIME-SKIP-DATES` KV secret, present in both vaults) are all active. The
+renamed `-edt`/`-est` jobs are deployed in both envs and the old `-edt-sun`/`-est-sun`
+orphans were deleted per the AZURE_PLAN.md §10.2 runbook (the ARM-incremental orphan risk
+is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lose one
+10-min cycle (placeholder-image / transient ACR 401) — it self-heals on the next fire.
+Remaining v0 task: **M2.T3** (post-mortem reconciliation) — still unimplemented,
+independent of all the above.
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
