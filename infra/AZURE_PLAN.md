@@ -451,7 +451,7 @@ locally: `TEETIME_SKIP_DATES="<the value>" uv run teetime show-config --config c
 prints the resolved `skip_dates` (unmasked — calendar dates aren't secrets). A date you expect
 that's missing from that list means the token was rejected.
 
-**⚠️ ONE-TIME PRE-DEPLOY STEP (required before PR5 / the bicep change lands).** `compute.bicep`
+**ONE-TIME PRE-DEPLOY STEP (DONE 2026-06-10 — both vaults confirmed; see §10.1.1).** `compute.bicep`
 references this secret via `keyVaultUrl`, and **ACA validates KV secret refs at job-CREATE time**
 — so the secret MUST already exist or the deploy fails (`InvalidParameterValueInContainerTemplate`).
 Dev **auto-deploys on merge**, so create it in BOTH vaults **before merging**:
@@ -825,8 +825,8 @@ az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TWOCAPTCHA-A
 # TEETIME-SKIP-DATES is the 7th secret (added with the LEADTIME_SKIP feature, PR #111). ACA
 # validates its keyVaultUrl ref at job-create like every other, so it MUST exist or the deploy
 # fails. Seed " " = no skips; edit later in the Portal with no redeploy. See §7.5.
-# ⚠️ The prod vault was bootstrapped (2026-05-31) BEFORE this secret existed — confirm it is
-# present (`az keyvault secret show ... --name TEETIME-SKIP-DATES`) before the next infra/v* tag.
+# (Done 2026-06-10: confirmed present in BOTH vaults before the infra/v2.1.0 prod deploy,
+# which deployed successfully.)
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name TEETIME-SKIP-DATES --value " "
 
 # 7. RE-RUN the deploy (workflow_dispatch environment=prod, approve the gate). Now the
@@ -866,8 +866,10 @@ For IaC changes (Bicep edits):
    Dev always runs in dry-run (`dryRun = true` in parameter file).
 3. Tag `infra/v*` → `azure-iac.yml` deploys to prod (requires manual approval).
 
-> **⚠️ Multi-day cutover — manual orphan cleanup required.** The next prod `infra/v*` tag
-> renames the booking jobs `teetime-job-prod-edt-sun`/`-est-sun` → `-edt`/`-est`. Deploys run
+> **Multi-day cutover — manual orphan cleanup (DONE — orphans deleted; verified again at the
+> `infra/v2.1.0` deploy 2026-06-10: only `-edt`, `-est`, and the watch job exist in prod).**
+> Kept for reference: the prod `infra/v*` tag that first shipped the multi-day re-arch
+> renamed the booking jobs `teetime-job-prod-edt-sun`/`-est-sun` → `-edt`/`-est`. Deploys run
 > in ARM **incremental** mode (`az deployment group create`, no `--mode Complete`), which
 > CREATES the new jobs but does **not** delete the old ones. The orphaned `-edt-sun`/`-est-sun`
 > jobs would keep firing their old Sunday-only cron AND are NOT covered by the killswitch (it
@@ -962,7 +964,8 @@ booking day (Sat or Sun)** (the cron-driven race).
    `CAPTCHA_BLOCKED` / `AUTH_FAILED` (operator-action outcomes).
 8. **Rollback:** if the first run misbehaves, redeploy prod with `enableSchedules=false` (or
    re-enable dev) to stop further attempts while you investigate.
-9. **Multi-day activation deploy (next `infra/v*` tag) — DELETE the orphaned `-sun` jobs.** The
+9. **Multi-day activation deploy — DELETE the orphaned `-sun` jobs (DONE — deleted; re-verified
+   at the `infra/v2.1.0` deploy 2026-06-10).** The
    prod deploy that first ships the multi-day re-arch creates the renamed `-edt`/`-est` jobs but,
    under ARM **incremental** mode, leaves the old `teetime-job-prod-edt-sun`/`-est-sun` jobs in
    place — they keep firing the old Sunday-only cron and are NOT covered by the killswitch. Run
