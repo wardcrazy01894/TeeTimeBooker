@@ -451,7 +451,7 @@ locally: `TEETIME_SKIP_DATES="<the value>" uv run teetime show-config --config c
 prints the resolved `skip_dates` (unmasked — calendar dates aren't secrets). A date you expect
 that's missing from that list means the token was rejected.
 
-**⚠️ ONE-TIME PRE-DEPLOY STEP (required before PR5 / the bicep change lands).** `compute.bicep`
+**ONE-TIME PRE-DEPLOY STEP (DONE 2026-06-10 — both vaults confirmed; see §10.1.1).** `compute.bicep`
 references this secret via `keyVaultUrl`, and **ACA validates KV secret refs at job-CREATE time**
 — so the secret MUST already exist or the deploy fails (`InvalidParameterValueInContainerTemplate`).
 Dev **auto-deploys on merge**, so create it in BOTH vaults **before merging**:
