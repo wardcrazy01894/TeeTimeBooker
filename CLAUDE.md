@@ -220,8 +220,9 @@ in `core/` — never directly. This is the cut line for parallel work.
   it does ALL the looking/ranking/logging and suppresses ONLY the final POST
   (`WatchOrchestrator` returns `DRY_RUN` before the lock+POST). `one_booking_policy`
   (cancel+rebook upgrade) is **ENABLED** (`config/*.toml`): when a higher-ranked slot
-  (closer to that day's window midpoint) opens for a booked day, the watcher cancels
-  and rebooks it. Safe because the watch request is scoped per target date, so it
+  opens for a booked day — a higher-priority tier, or the SAME tier strictly closer
+  to that day's window midpoint (within-window upgrade; midpoint ties never upgrade)
+  — the watcher cancels and rebooks it. Safe because the watch request is scoped per target date, so it
   only ever upgrades within the intended date+window; real effect is prod-only (dry-run suppresses the
   POSTs). The watch cron runs every 10 min year-round.
 - **The watcher POLLS ON EVERY RUN — no time-of-day gate** (multi-day PR4; the old

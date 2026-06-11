@@ -879,8 +879,12 @@ new booking and records ALREADY_BOOKED — no phantom booking.
 
 **Priority ranking:** `OneBookingPolicyConfig.priority_slots` is an ordered list where
 `priority=0` is most preferred. Within a single priority index, slots are ranked by
-midpoint-distance, tie-broken by tee_time (Feature 3). The upgrade only fires when a slot at a LOWER priority index
-(higher preference) is available. Equal-priority slots do not trigger an upgrade.
+midpoint-distance, tie-broken by tee_time (Feature 3). The upgrade fires when a slot at a
+LOWER priority index (higher preference) is available, OR — within the CURRENT tier — when
+a slot opens STRICTLY closer to the window midpoint than the held one (within-window
+upgrade). Equidistant same-tier slots do not trigger an upgrade: a tie is not worth the
+cancel-before-book no-booking window, and strict improvement guarantees the 10-minute watch
+cadence cannot thrash between equally-good slots.
 
 **Priority default (when priority_slots is empty):** Derived from `course_preferences` order
 in `[request]`, with the same time_window as `time_windows[0]`. This means existing users

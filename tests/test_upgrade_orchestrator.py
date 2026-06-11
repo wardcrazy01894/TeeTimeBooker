@@ -297,14 +297,16 @@ async def test_upgrade_dry_run_suppresses_cancel_and_book() -> None:
 
 async def test_upgrade_returns_none_when_no_higher_priority_slot_available() -> None:
     """If no higher-priority slots are available (search returns empty for all
-    higher-priority windows), maybe_upgrade() returns None."""
+    higher-priority windows) and the same-tier window has no strictly better
+    slot either, maybe_upgrade() returns None."""
     orc, fa, fb, st, _nt = _make_orchestrator()
     request = _make_request()
     current = _managed_booking(request=request)
     await st.record_terminal(current, TARGET_DATE)
 
-    # No slots available in the better window
+    # No slots available in the better window, none in the current tier either.
     fb.set_search_response([])
+    fa.set_search_response([])
 
     result = await orc.maybe_upgrade(request, TARGET_DATE, current)
 
@@ -354,8 +356,10 @@ async def test_upgrade_books_and_cancels_when_higher_priority_available() -> Non
 
 
 async def test_upgrade_does_not_upgrade_to_equal_priority() -> None:
-    """A slot at the SAME priority as the current booking does not trigger
-    a cancel+rebook — only strictly higher priority (lower index) does."""
+    """A same-tier slot FARTHER from the window midpoint than the current
+    booking does not trigger a cancel+rebook — the within-window pass only
+    moves to a strictly closer slot. (Current 09:45 = midpoint, distance 0;
+    alt 09:05 = distance 40.)"""
     # Policy with only one priority level: both courses share priority 0
     same_priority_policy = OneBookingPolicyConfig(
         enabled=True,
@@ -385,6 +389,117 @@ async def test_upgrade_does_not_upgrade_to_equal_priority() -> None:
 
     assert result is None
     assert fa.cancel_call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Within-window upgrade (same priority tier, strictly closer to midpoint)
+# ---------------------------------------------------------------------------
+
+# Single tier: one course, one window 09:00-10:30 (midpoint 09:45). This is the
+# production shape (priority_slots omitted → one fallback tier per course).
+_SINGLE_TIER_POLICY = OneBookingPolicyConfig(
+    enabled=True,
+    priority_slots=[
+        PrioritySlotConfig(
+            priority=0,
+            course_id=str(COURSE_A),
+            time_window_earliest=time(9, 0),
+            time_window_latest=time(10, 30),
+        ),
+    ],
+)
+
+
+async def test_upgrade_within_window_when_strictly_closer_to_midpoint() -> None:
+    """A slot in the SAME priority tier that is strictly closer to the window
+    midpoint than the current booking triggers a cancel+rebook.
+
+    Window 09:00-10:30, midpoint 09:45. Current booking 10:15 (30 min away);
+    available slot 09:50 (5 min away) → upgrade.
+    """
+    orc, fa, _fb, st, _nt = _make_orchestrator(policy=_SINGLE_TIER_POLICY)
+    request = _make_request(course_prefs=(COURSE_A,))
+    current = _managed_booking(
+        request=request,
+        tee_time=datetime(2026, 6, 7, 10, 15, tzinfo=ET),
+    )
+    await st.record_terminal(current, TARGET_DATE)
+
+    closer_slot = _make_slot(
+        course_id=COURSE_A,
+        tee_time=datetime(2026, 6, 7, 9, 50, tzinfo=ET),
+        slot_id="closer-slot",
+    )
+    fa.set_search_response([closer_slot])
+
+    result = await orc.maybe_upgrade(request, TARGET_DATE, current)
+
+    assert result is not None
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.slot is not None
+    assert result.slot.slot_id == SlotId("closer-slot")
+    assert fa.cancel_call_count == 1
+
+    stored = await st.get_terminal(request.request_id, TARGET_DATE)
+    assert stored is not None
+    assert stored.slot is not None
+    assert stored.slot.slot_id == SlotId("closer-slot")
+
+
+async def test_upgrade_within_window_skips_on_midpoint_tie() -> None:
+    """A same-tier slot EQUIDISTANT from the midpoint does NOT trigger an
+    upgrade — only strictly closer does. A tie is not worth the no-booking
+    window of the cancel-before-book protocol.
+
+    Window 09:00-10:30, midpoint 09:45. Current 09:30 (15 min away);
+    available slot 10:00 (also 15 min away) → no upgrade.
+    """
+    orc, fa, _fb, st, _nt = _make_orchestrator(policy=_SINGLE_TIER_POLICY)
+    request = _make_request(course_prefs=(COURSE_A,))
+    current = _managed_booking(
+        request=request,
+        tee_time=datetime(2026, 6, 7, 9, 30, tzinfo=ET),
+    )
+    await st.record_terminal(current, TARGET_DATE)
+
+    tie_slot = _make_slot(
+        course_id=COURSE_A,
+        tee_time=datetime(2026, 6, 7, 10, 0, tzinfo=ET),
+        slot_id="tie-slot",
+    )
+    fa.set_search_response([tie_slot])
+
+    result = await orc.maybe_upgrade(request, TARGET_DATE, current)
+
+    assert result is None
+    assert fa.cancel_call_count == 0
+    assert fa.book_call_count == 0
+
+
+async def test_upgrade_within_window_dry_run_suppresses_posts() -> None:
+    """In dry_run mode a within-window upgrade candidate is surfaced as a
+    DRY_RUN result with NO cancel/book POSTs (mirrors the higher-tier path)."""
+    orc, fa, _fb, st, _nt = _make_orchestrator(policy=_SINGLE_TIER_POLICY)
+    request = _make_request(course_prefs=(COURSE_A,), dry_run=True)
+    current = _managed_booking(
+        request=request,
+        tee_time=datetime(2026, 6, 7, 10, 15, tzinfo=ET),
+    )
+    await st.record_terminal(current, TARGET_DATE)
+
+    closer_slot = _make_slot(
+        course_id=COURSE_A,
+        tee_time=datetime(2026, 6, 7, 9, 50, tzinfo=ET),
+        slot_id="closer-slot",
+    )
+    fa.set_search_response([closer_slot])
+
+    result = await orc.maybe_upgrade(request, TARGET_DATE, current)
+
+    assert result is not None
+    assert result.outcome == BookingOutcome.DRY_RUN
+    assert fa.cancel_call_count == 0
+    assert fa.book_call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +553,7 @@ async def test_upgrade_aborts_if_prepare_book_raises() -> None:
     )
     fb.set_search_response([better])
     fb.set_prepare_book_to_raise(RuntimeError("captcha service unavailable"))
+    fa.set_search_response([])  # no same-tier inventory — isolate the higher-tier abort
 
     result = await orc.maybe_upgrade(request, TARGET_DATE, current)
 
@@ -502,6 +618,7 @@ async def test_upgrade_returns_none_if_book_fails_after_cancel() -> None:
     )
     fb.set_search_response([better_slot])
     fb.set_book_to_raise(SlotGoneError("slot gone"))  # book() fails after cancel
+    fa.set_search_response([])  # no same-tier inventory — isolate the higher-tier failure
 
     result = await orc.maybe_upgrade(request, TARGET_DATE, current)
 
@@ -588,7 +705,7 @@ async def test_upgrade_does_not_delete_terminal_if_book_fails() -> None:
     the old BOOKED terminal must still be in the store (even though the live
     reservation was cancelled; the store record is stale but preserved)."""
 
-    orc, _fa, fb, st, _nt = _make_orchestrator()
+    orc, fa, fb, st, _nt = _make_orchestrator()
     request = _make_request()
     current = _managed_booking(request=request)
     await st.record_terminal(current, TARGET_DATE)
@@ -600,6 +717,7 @@ async def test_upgrade_does_not_delete_terminal_if_book_fails() -> None:
     )
     fb.set_search_response([better_slot])
     fb.set_book_to_raise(SlotGoneError("slot gone"))
+    fa.set_search_response([])  # no same-tier inventory — isolate the higher-tier failure
 
     await orc.maybe_upgrade(request, TARGET_DATE, current)
 

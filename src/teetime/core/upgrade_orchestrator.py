@@ -1,8 +1,10 @@
 """One-booking policy enforcer (M-feature-2).
 
 This module implements the "one booking" invariant: at any time the user holds
-at most one managed TeeTimeBooker reservation. If a HIGHER-priority slot becomes
-available (as defined by OneBookingPolicyConfig.priority_slots), the orchestrator
+at most one managed TeeTimeBooker reservation. If a BETTER slot becomes
+available — one in a higher-priority tier (as defined by
+OneBookingPolicyConfig.priority_slots), or one in the CURRENT tier strictly
+closer to the time window's midpoint (within-window upgrade) — the orchestrator
 will:
 
     1. Verify the current managed booking still exists (list_reservations).
@@ -90,6 +92,16 @@ Priority tie-breaking:
     Ties are not possible across different course_ids at the same priority —
     the priority list is ordered by the operator and ambiguity is not possible
     within a single priority index on the same course (the midpoint sort handles it).
+
+Within-window upgrade (same tier):
+    After exhausting strictly-higher tiers, maybe_upgrade searches the tier the
+    current booking sits in and cancel+rebooks only if a candidate is STRICTLY
+    closer to that window's midpoint than the held slot (midpoint_distance_minutes,
+    same metric as the ranking sort). Equidistant candidates never trigger an
+    upgrade — a tie is not worth the cancel-before-book no-booking window. Strict
+    improvement also guarantees convergence: each upgrade strictly decreases the
+    held slot's midpoint distance, so the 10-minute watch cadence cannot thrash
+    (cancel/rebook between two equally-good slots forever).
 """
 
 from __future__ import annotations
@@ -111,7 +123,7 @@ from .models import (
     TeeTimeSlot,
     TimeWindow,
 )
-from .slot_utils import rank_slots_for_request
+from .slot_utils import midpoint_distance_minutes, rank_slots_for_request
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -174,11 +186,14 @@ class UpgradeOrchestrator:
         Algorithm:
             1. Managed-booking guard: if current_booking.confirmation_code lacks
                the TTB: prefix, return None immediately — never touch manual bookings.
-            2. Build priority list; determine current booking's priority index.
+            2. Build priority list; locate the tier (PrioritySlot) containing the
+               current booking.
             3. Find priority slots with a strictly lower index (higher priority).
-               If none, return None.
+               These are tried first; afterwards the CURRENT tier is searched for a
+               within-window upgrade (a candidate strictly closer to the window
+               midpoint than the held slot — ties never upgrade).
             4. Acquire request_lock.
-            5. For each higher-priority slot (ascending by priority index):
+            5. For each candidate tier (higher tiers ascending, then current tier):
                a. Search adapter for available slots in that window.
                b. If slots found: call adapter.prepare_book() to pre-fetch any
                   expensive prerequisites (e.g. CAPTCHA token). If prepare_book()
@@ -207,23 +222,22 @@ class UpgradeOrchestrator:
             )
             return None
 
-        # Step 2: Build priority list + determine current booking's priority.
+        # Step 2: Build priority list + locate the current booking's tier.
         priority_slots = self._build_priority_list(request, target_date)
         if not priority_slots:
             return None
 
-        current_priority = self._current_booking_priority(current_booking, priority_slots)
+        current_tier = self._current_booking_tier(current_booking, priority_slots)
+        current_priority = current_tier.priority if current_tier is not None else sys.maxsize
 
         # Step 3: Collect all slots with strictly lower index (= higher priority).
         higher = [ps for ps in priority_slots if ps.priority < current_priority]
-        if not higher:
-            log.debug(
-                "upgrade: current booking is already at highest priority (%d), skipping",
-                current_priority,
-            )
-            return None
 
-        # Steps 4-6: Lock, search, book, cancel, update.
+        # Steps 4-6: Lock, search, book, cancel, update. Higher tiers first (any
+        # bookable candidate there beats the current booking), then a within-window
+        # pass on the CURRENT tier: upgrade only to a slot STRICTLY closer to the
+        # window midpoint than the held one (a tie is not worth the no-booking
+        # window of the cancel-before-book protocol).
         async with self._store.request_lock(request.request_id):
             for priority_slot in sorted(higher, key=lambda ps: ps.priority):
                 result = await self._try_upgrade_slot(
@@ -231,6 +245,15 @@ class UpgradeOrchestrator:
                 )
                 if result is not None:
                     return result
+
+            if current_tier is not None and current_booking.slot is not None:
+                return await self._try_upgrade_slot(
+                    request,
+                    target_date,
+                    current_booking,
+                    current_tier,
+                    must_beat=current_booking.slot,
+                )
 
         return None
 
@@ -240,8 +263,16 @@ class UpgradeOrchestrator:
         target_date: date,
         current_booking: BookingResult,
         priority_slot: PrioritySlot,
+        must_beat: TeeTimeSlot | None = None,
     ) -> BookingResult | None:
         """Attempt one upgrade to `priority_slot`. Called while holding request_lock.
+
+        `must_beat` (within-window upgrade): when set, only candidates STRICTLY
+        closer to `priority_slot.time_window`'s midpoint than `must_beat` are
+        considered. Used for the current-tier pass — a same-tier slot must be a
+        real improvement to justify the cancel-before-book no-booking window;
+        equidistant slots never trigger an upgrade. Higher-tier passes leave it
+        None (any bookable candidate in a higher tier is an upgrade).
 
         Uses cancel-before-book protocol: ForeUP enforces a one-active-booking-per-
         user-per-day limit and rejects a second book POST (HTTP 400). Therefore we
@@ -279,6 +310,13 @@ class UpgradeOrchestrator:
             return None
 
         candidates = rank_slots_for_request(slots, search_request)
+        if must_beat is not None:
+            held_distance = midpoint_distance_minutes(must_beat, priority_slot.time_window)
+            candidates = [
+                c
+                for c in candidates
+                if midpoint_distance_minutes(c, priority_slot.time_window) < held_distance
+            ]
         if not candidates:
             return None
 
@@ -442,33 +480,34 @@ class UpgradeOrchestrator:
         )
         return result_to_store
 
-    def _current_booking_priority(
+    def _current_booking_tier(
         self,
         current: BookingResult,
         priority_slots: Sequence[PrioritySlot],
-    ) -> int:
-        """Return the priority index of `current`, or `sys.maxsize` if not found.
+    ) -> PrioritySlot | None:
+        """Return the PrioritySlot whose window contains `current`, or None.
 
         `current` is a BookingResult (store record) whose slot carries the course_id
         and tee_time used to locate it in the priority list.
 
-        'Not found' means the booking was made outside the configured priority system
+        None means the booking was made outside the configured priority system
         (e.g. a migration from before this feature was enabled, or a booking made
-        before [one_booking_policy] was configured). Returning sys.maxsize ensures
-        that any configured priority slot is treated as an upgrade over an untracked
-        booking — the correct safe default. The caller never needs to handle None.
+        before [one_booking_policy] was configured). The caller maps None to
+        sys.maxsize so that any configured priority slot is treated as an upgrade
+        over an untracked booking — the correct safe default. The returned tier is
+        also the search window for the within-window (same-tier) upgrade pass.
         """
         if current.slot is None:
-            return sys.maxsize
+            return None
 
         slot_time = current.slot.tee_time.time()
         for ps in priority_slots:
             if ps.course_id != current.course_id:
                 continue
             if ps.time_window.earliest <= slot_time <= ps.time_window.latest:
-                return ps.priority
+                return ps
 
-        return sys.maxsize
+        return None
 
     def _build_priority_list(
         self,

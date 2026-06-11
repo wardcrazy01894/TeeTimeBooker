@@ -60,7 +60,7 @@ def rank_slots_for_request(
         candidates.append((s, idx, window))
     # Sort by window index (priority), then distance from that window's midpoint, then tee_time.
     candidates.sort(
-        key=lambda swi: (swi[1], _midpoint_distance_minutes(swi[0], swi[2]), swi[0].tee_time)
+        key=lambda swi: (swi[1], midpoint_distance_minutes(swi[0], swi[2]), swi[0].tee_time)
     )
     return [s for s, _, _ in candidates]
 
@@ -76,8 +76,11 @@ def _matching_window(slot: TeeTimeSlot, request: BookingRequest) -> tuple[int, T
     return None
 
 
-def _midpoint_distance_minutes(slot: TeeTimeSlot, window: TimeWindow) -> float:
+def midpoint_distance_minutes(slot: TeeTimeSlot, window: TimeWindow) -> float:
     """Distance in minutes between the slot's tee_time and the window midpoint.
+
+    Public: UpgradeOrchestrator uses this to compare a held booking against a
+    same-tier candidate (within-window upgrade — strictly closer wins).
 
     Arithmetic is done in total minutes-since-midnight to avoid datetime
     subtraction complexity. The slot's `.time()` component is used directly —
