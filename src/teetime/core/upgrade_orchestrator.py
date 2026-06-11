@@ -112,6 +112,7 @@ from dataclasses import replace as dc_replace
 from datetime import date
 from typing import TYPE_CHECKING
 
+from .adapter import RateLimitError
 from .models import (
     MANAGED_BOOKING_TAG,
     BookingOutcome,
@@ -305,6 +306,13 @@ class UpgradeOrchestrator:
         )
         try:
             slots = await adapter.search(search_request)
+        except RateLimitError:
+            # A 429 is an explicit "back off" — propagate so the watch run aborts
+            # (WatchOrchestrator's 429 contract; the 10-min cron is the backoff
+            # floor). Treating it as a generic search failure would keep polling
+            # the throttled platform. This path now runs on EVERY watch cycle
+            # (within-window pass), so the distinction matters.
+            raise
         except Exception as exc:
             log.warning("upgrade: search failed for %s: %s", priority_slot.course_id, exc)
             return None

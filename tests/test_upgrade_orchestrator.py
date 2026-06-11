@@ -19,7 +19,9 @@ from decimal import Decimal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from teetime.core.adapter import CancelError, SlotGoneError
+import pytest
+
+from teetime.core.adapter import CancelError, RateLimitError, SlotGoneError
 from teetime.core.clock import FakeClock
 from teetime.core.config import OneBookingPolicyConfig, PrioritySlotConfig, SchedulerConfig
 from teetime.core.models import (
@@ -472,6 +474,28 @@ async def test_upgrade_within_window_skips_on_midpoint_tie() -> None:
     result = await orc.maybe_upgrade(request, TARGET_DATE, current)
 
     assert result is None
+    assert fa.cancel_call_count == 0
+    assert fa.book_call_count == 0
+
+
+async def test_upgrade_propagates_rate_limit_from_within_window_search() -> None:
+    """A RateLimitError (HTTP 429) raised by the same-tier search must NOT be
+    swallowed as a generic search failure — it propagates out of maybe_upgrade
+    so the watcher's 429 contract (abort the whole run, no further polling)
+    holds on the within-window path, which now runs on every watch cycle."""
+    orc, fa, _fb, st, _nt = _make_orchestrator(policy=_SINGLE_TIER_POLICY)
+    request = _make_request(course_prefs=(COURSE_A,))
+    current = _managed_booking(
+        request=request,
+        tee_time=datetime(2026, 6, 7, 10, 15, tzinfo=ET),
+    )
+    await st.record_terminal(current, TARGET_DATE)
+
+    fa.set_search_to_raise(RateLimitError("throttled", retry_after_s=60))
+
+    with pytest.raises(RateLimitError):
+        await orc.maybe_upgrade(request, TARGET_DATE, current)
+
     assert fa.cancel_call_count == 0
     assert fa.book_call_count == 0
 

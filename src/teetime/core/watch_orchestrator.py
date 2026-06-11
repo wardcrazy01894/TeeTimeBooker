@@ -470,8 +470,9 @@ class WatchOrchestrator:
         ForeUpAdapter.cancel_reservation() strips the TTB: prefix before calling
         the live API, so the cancel works correctly with the raw server id.
 
-        The synthesized slot's tee_time is used by _current_booking_priority() to
-        determine which priority window the existing booking falls into.
+        The synthesized slot's tee_time is used by _current_booking_tier() to
+        determine which priority window the existing booking falls into (and, for
+        the within-window pass, how far from that window's midpoint it sits).
         """
         return BookingResult(
             request_id=request.request_id,
