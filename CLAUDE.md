@@ -338,9 +338,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   `prefetch_book=wait`). The watcher and local-demo runs leave it False: a token is
   solved only when actually about to book (the watcher's upgrade path still pre-fetches
   inside `maybe_upgrade`, just-in-time). Lead = 120 s = 24 polls × 5 s (the provider
-  timeout), so the pre-fetch always completes before T0; and token age at T0 ≤ lead ≤ the
+  timeout), so the pre-fetch typically completes before T0; and token age at T0 ≤ lead ≤ the
   ~120 s reCAPTCHA freshness window. Both `book()` and `prepare_book()` catch `TimeoutError`
-  from the inline/prefetch solve and re-raise as `CaptchaError` for a clean non-zero exit.
+  from the inline/prefetch solve and re-raise as `CaptchaError` — on the prefetch (race) path
+  `_prefetch_captcha` swallows `CaptchaError` and the job continues with an inline solve; on
+  the inline `book()` path or the upgrade path it surfaces as a clean non-zero exit.
   If the run STARTS past `T0 − lead` (the DST gate admits all of hour 5, so a late-landing
   cron can begin with too little runway), the lead can't be honored and the POST may fire
   after T0 — the orchestrator logs a `prefetch lead not fully honored` WARNING and still
