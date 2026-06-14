@@ -221,7 +221,7 @@ Bot:
        1ms-cadence fine loop with explicit OS yield (see core/clock.py).
        Sub-second accuracy without CPU starvation.
        RACE PATH ONLY (Orchestrator prefetch_book=True, set by `--wait`): this is a
-       TWO-PHASE wait — first to (T0 - captcha_prefetch_lead_s, default 90 s), where the
+       TWO-PHASE wait — first to (T0 - captcha_prefetch_lead_s, default 120 s), where the
        CAPTCHA token is pre-solved (`_prefetch_captcha` → adapter.prepare_book(None,…)),
        then the remainder to T0. This moves the ~75 s CAPTCHA solve OFF the post-T0
        critical path (the 2026-06-07 prod failure: solve ran after T0 → book POST ~100 s

@@ -330,19 +330,23 @@ in `core/` — never directly. This is the cut line for parallel work.
   The 2026-06-07 prod Sunday booker fired at T0 perfectly but then solved the CAPTCHA
   (~78 s) AFTER the drop, posting the booking ~100 s late → the prime slot was gone →
   HTTP 400 → no tee time. Fix: on the `--wait` race path the orchestrator does a
-  TWO-PHASE busy-wait — wait to `T0 − scheduler.captcha_prefetch_lead_s` (default 90 s),
-  `_prefetch_captcha()` (first-preference adapter, best-effort: failures are logged and
-  swallowed, book() then solves inline), then wait the remainder to exactly T0 — so the
+  TWO-PHASE busy-wait — wait to `T0 − scheduler.captcha_prefetch_lead_s` (default 120 s =
+  2 min), `_prefetch_captcha()` (first-preference adapter, best-effort: failures are logged
+  and swallowed, book() then solves inline), then wait the remainder to exactly T0 — so the
   post-T0 `book()` POST fires within seconds of the drop with a token already in hand.
   `prefetch_book` is set **only** by the `--wait` ACA booking job (`__main__._run` passes
   `prefetch_book=wait`). The watcher and local-demo runs leave it False: a token is
   solved only when actually about to book (the watcher's upgrade path still pre-fetches
-  inside `maybe_upgrade`, just-in-time). Lead is tuned so the ~75 s solve finishes just
-  before T0 while the ~120 s reCAPTCHA token stays fresh for the POST. If the run STARTS
-  past `T0 − lead` (the DST gate admits all of hour 5, so a late-landing cron can begin
-  with too little runway), the lead can't be honored and the POST may fire after T0 — the
-  orchestrator logs a `prefetch lead not fully honored` WARNING and still pre-fetches
-  immediately (overlapping the solve with the time left beats solving inline in `book()`).
+  inside `maybe_upgrade`, just-in-time). Lead = 120 s = 24 polls × 5 s (the provider
+  timeout), so the pre-fetch typically completes before T0; and token age at T0 ≤ lead ≤ the
+  ~120 s reCAPTCHA freshness window. Both `book()` and `prepare_book()` catch `TimeoutError`
+  from the inline/prefetch solve and re-raise as `CaptchaError` — on the prefetch (race) path
+  `_prefetch_captcha` swallows `CaptchaError` and the job continues with an inline solve; on
+  the inline `book()` path or the upgrade path it surfaces as a clean non-zero exit.
+  If the run STARTS past `T0 − lead` (the DST gate admits all of hour 5, so a late-landing
+  cron can begin with too little runway), the lead can't be honored and the POST may fire
+  after T0 — the orchestrator logs a `prefetch lead not fully honored` WARNING and still
+  pre-fetches immediately.
 - **Each run is independent** — there is no shared state cache between the watch
   job and the main booking job. The live `list_reservations()` call is the source
   of truth across runs. Concurrent-run serialization is handled by ACA Job /

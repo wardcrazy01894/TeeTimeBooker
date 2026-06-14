@@ -584,6 +584,69 @@ async def test_book_omits_captchaid_without_provider() -> None:
     assert "captchaid" not in body
 
 
+@respx.mock
+async def test_book_captcha_timeout_raises_captcha_error() -> None:
+    """A TimeoutError from the inline CAPTCHA solve must surface as CaptchaError.
+
+    Prod impact 2026-06-14: 2captcha was degraded; the inline solve in book() raised
+    TimeoutError which propagated uncaught through _run_course → run() → job crash with
+    a Python traceback. Fix: book() catches TimeoutError from _captcha_provider() and
+    re-raises as CaptchaError so the job exits cleanly with a non-zero code.
+    No HTTP booking POST should be made when the CAPTCHA solve fails.
+    """
+
+    async def _timing_out() -> str:
+        raise TimeoutError("2captcha did not solve CAPTCHA within 180s")
+
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = ForeUpAdapter(
+            course_id=CID,
+            course_pk=19671,
+            booking_class_id=2149,
+            schedule_id=2149,
+            timezone="America/New_York",
+            http_client=client,
+            captcha_provider=_timing_out,
+        )
+        adapter._logged_in = True
+        with pytest.raises(CaptchaError):
+            await adapter.book(slot, _request())
+
+
+async def test_prepare_book_captcha_timeout_raises_captcha_error() -> None:
+    """A TimeoutError from the CAPTCHA provider in prepare_book() must surface as CaptchaError.
+
+    Symmetry with book(): both paths translate TimeoutError so callers always see
+    CaptchaError, never a raw TimeoutError, regardless of which path triggered the solve.
+    """
+
+    async def _timing_out() -> str:
+        raise TimeoutError("2captcha did not solve CAPTCHA within 120s")
+
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = ForeUpAdapter(
+            course_id=CID,
+            course_pk=19671,
+            booking_class_id=2149,
+            schedule_id=2149,
+            timezone="America/New_York",
+            http_client=client,
+            captcha_provider=_timing_out,
+        )
+        with pytest.raises(CaptchaError):
+            await adapter.prepare_book(slot=None, request=_request())
+
+
 # --- list_reservations ---------------------------------------------------
 
 

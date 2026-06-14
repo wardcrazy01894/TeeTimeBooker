@@ -375,12 +375,15 @@ class ForeUpAdapter(CourseAdapter):
 
         After this returns, book() will use the cached token instead of calling the
         CAPTCHA provider. If no CAPTCHA provider is configured (dry-run or test), this
-        is a no-op. Raises any exception from the CAPTCHA provider as-is.
+        is a no-op. Raises CaptchaError on timeout; other provider exceptions propagate.
         """
         if self._captcha_provider is None:
             return
         _log.info("ForeUP: pre-fetching CAPTCHA token (this can take 15-30s)...")
-        self._captcha_token = await self._captcha_provider()
+        try:
+            self._captcha_token = await self._captcha_provider()
+        except TimeoutError as exc:
+            raise CaptchaError(f"CAPTCHA pre-fetch timed out: {exc}") from exc
         _log.info("ForeUP: CAPTCHA token pre-fetched — booking can now proceed.")
 
     async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
@@ -424,7 +427,10 @@ class ForeUpAdapter(CourseAdapter):
                 self._captcha_token = None
             else:
                 _log.info("ForeUP: requesting CAPTCHA token (this can take 15-30s)...")
-                body["captchaid"] = await self._captcha_provider()
+                try:
+                    body["captchaid"] = await self._captcha_provider()
+                except TimeoutError as exc:
+                    raise CaptchaError(f"CAPTCHA solve timed out: {exc}") from exc
                 _log.info("ForeUP: CAPTCHA token obtained, posting booking...")
         else:
             _log.info("ForeUP: posting booking (no CAPTCHA)...")

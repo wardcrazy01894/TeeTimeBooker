@@ -171,11 +171,11 @@ class SchedulerConfig(BaseModel):
     poll_interval_ms: int = 250
     max_poll_seconds: int = 30
     # Seconds before T0 to start pre-fetching the CAPTCHA token on the race path
-    # (Orchestrator with prefetch_book=True). The 2captcha solve takes ~75s and the
-    # reCAPTCHA token lives ~120s, so the default starts the solve early enough to
-    # finish just before T0 while keeping the token fresh for the post-T0 book POST.
-    # See PLAN.md §9 / the 2026-06-07 prod post-mortem.
-    captcha_prefetch_lead_s: int = 90
+    # (Orchestrator with prefetch_book=True). Must be >= the provider timeout so the
+    # pre-fetch typically finishes before T0: 24 polls x 5s/poll = 120s. The invariant
+    # also keeps the token fresh at T0 — age = lead - solve_time <= 120s <= reCAPTCHA
+    # validity (~120s). See 2026-06-07/2026-06-14 prod post-mortems in PLAN.md §9.
+    captcha_prefetch_lead_s: int = 120
 
 
 class NotifierConfig(BaseModel):

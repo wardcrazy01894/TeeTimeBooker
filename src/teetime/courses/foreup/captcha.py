@@ -49,7 +49,7 @@ _USER_AGENT = (
 _TWOCAPTCHA_SUBMIT_URL = "https://2captcha.com/in.php"
 _TWOCAPTCHA_RESULT_URL = "https://2captcha.com/res.php"
 _TWOCAPTCHA_DEFAULT_POLL_INTERVAL_S = 5.0
-_TWOCAPTCHA_DEFAULT_MAX_POLLS = 24  # 24 x 5 s = 2 min max wait
+_TWOCAPTCHA_DEFAULT_MAX_POLLS = 24  # 24 x 5 s = 2 min per attempt
 
 
 async def resolve_invisible_site_key(
