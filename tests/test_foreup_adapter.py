@@ -623,6 +623,30 @@ async def test_book_captcha_timeout_raises_captcha_error() -> None:
             await adapter.book(slot, _request())
 
 
+async def test_prepare_book_captcha_timeout_raises_captcha_error() -> None:
+    """A TimeoutError from the CAPTCHA provider in prepare_book() must surface as CaptchaError.
+
+    Symmetry with book(): both paths translate TimeoutError so callers always see
+    CaptchaError, never a raw TimeoutError, regardless of which path triggered the solve.
+    """
+
+    async def _timing_out() -> str:
+        raise TimeoutError("2captcha did not solve CAPTCHA within 120s")
+
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = ForeUpAdapter(
+            course_id=CID,
+            course_pk=19671,
+            booking_class_id=2149,
+            schedule_id=2149,
+            timezone="America/New_York",
+            http_client=client,
+            captcha_provider=_timing_out,
+        )
+        with pytest.raises(CaptchaError):
+            await adapter.prepare_book(slot=None, request=_request())
+
+
 # --- list_reservations ---------------------------------------------------
 
 

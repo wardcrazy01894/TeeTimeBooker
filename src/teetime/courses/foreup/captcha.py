@@ -165,34 +165,12 @@ def make_2captcha_provider(
     api_key: str,
     page_url: str,
     site_key: str = FOREUP_RECAPTCHA_SITE_KEY,
-    *,
-    max_retries: int = 1,
 ) -> Callable[[], Awaitable[str]]:
-    """Return a zero-argument async callable that solves reCAPTCHA via 2captcha.com.
-
-    Retries on TimeoutError by submitting a fresh task to 2captcha (a new task may be
-    assigned to a different worker). Total max wait = (max_retries + 1) attempts x
-    _TWOCAPTCHA_DEFAULT_MAX_POLLS x poll_interval_s. The captcha_prefetch_lead_s in
-    SchedulerConfig must be >= this total so the pre-fetch always completes before T0.
-    Default: 2 attempts x 24 polls x 5s = 240s, so lead must be >= 240s (4 min).
-    """
-    total_attempts = max_retries + 1
+    """Return a zero-argument async callable that solves reCAPTCHA via 2captcha.com."""
 
     async def _provider() -> str:
-        last_exc: BaseException | None = None
-        for attempt in range(total_attempts):
-            try:
-                return await get_foreup_captcha_token_2captcha(
-                    api_key=api_key, page_url=page_url, site_key=site_key
-                )
-            except TimeoutError as exc:
-                last_exc = exc
-                if attempt < max_retries:
-                    _log.warning(
-                        "2captcha attempt %d/%d timed out; submitting fresh task...",
-                        attempt + 1,
-                        total_attempts,
-                    )
-        raise TimeoutError(f"2captcha timed out on all {total_attempts} attempts") from last_exc
+        return await get_foreup_captcha_token_2captcha(
+            api_key=api_key, page_url=page_url, site_key=site_key
+        )
 
     return _provider
