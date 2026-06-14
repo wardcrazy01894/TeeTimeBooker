@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+_DAYS_PER_WEEK = 7
+
 # Python's date.weekday(): Monday=0 .. Sunday=6.
 _WEEKDAYS = {
     "monday": 0,
@@ -57,6 +59,8 @@ def next_occurrences_within_horizon(
         # Without this, a watcher run on Sunday computes delta=0 → returns today, and after
         # _is_past_watch_deadline drops today the next Sunday (today+7) is never monitored.
         # See 2026-06-14 prod post-mortem: Sunday booking failed, watcher never recovered it.
-        if delta + 7 <= horizon_days:
-            out.add(today + timedelta(days=delta + 7))
+        # Guard is `delta == 0` (not `delta + 7 <= horizon_days`) so this never fires for
+        # non-zero deltas even if horizon_days > 7 (e.g. target_offsets = [14]).
+        if delta == 0 and horizon_days >= _DAYS_PER_WEEK:
+            out.add(today + timedelta(days=_DAYS_PER_WEEK))
     return tuple(sorted(out))
