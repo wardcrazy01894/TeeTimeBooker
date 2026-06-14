@@ -140,14 +140,16 @@ def watch_spy(monkeypatch: pytest.MonkeyPatch) -> type[_SpyWatch]:
 
 
 def test_watch_checks_each_wanted_day(tmp_path: Path, watch_spy: type[_SpyWatch]) -> None:
-    # Default config has windows on Sat + Sun → wanted days derived from them →
-    # check_once runs for the next Sat AND Sun.
+    # Default config has windows on Sat + Sun → both weekdays must be covered.
+    # When today is itself Sat or Sun, next_occurrences_within_horizon also returns today+7
+    # (the same weekday next week), so the spy may see 2 or 3 dates depending on the day
+    # the test runs. What matters: both weekdays are represented.
     cfg = _config(tmp_path, enabled=True)
     result = CliRunner().invoke(
         cli, ["watch", "--config", str(cfg), "--dry-run", "true", "--use-fake-adapter"]
     )
     assert result.exit_code == 0, result.output
-    assert len(watch_spy.seen) == 2
+    assert len(watch_spy.seen) >= 2
     assert {d.weekday() for d in watch_spy.seen} == {5, 6}  # Sat + Sun
 
 
@@ -171,14 +173,16 @@ def test_watch_date_override_single(tmp_path: Path, watch_spy: type[_SpyWatch]) 
 
 
 def test_watch_loop_continues_after_result(tmp_path: Path, watch_spy: type[_SpyWatch]) -> None:
-    # Even when the first date returns a result, the second date is STILL checked (no break).
+    # Even when the first date returns a result, ALL remaining dates are STILL checked (no break).
+    # Count is >= 2: Mon-Fri gives exactly 2 (next Sat + next Sun); Sat/Sun gives 3 because
+    # next_occurrences_within_horizon also returns today+7.
     watch_spy.result = SimpleNamespace(outcome="dry_run", confirmation_code=None)
     cfg = _config(tmp_path, enabled=True)
     result = CliRunner().invoke(
         cli, ["watch", "--config", str(cfg), "--dry-run", "true", "--use-fake-adapter"]
     )
     assert result.exit_code == 0, result.output
-    assert len(watch_spy.seen) == 2  # both dates checked despite a result on the first
+    assert len(watch_spy.seen) >= 2  # every target date checked despite a result on the first
 
 
 # --- LEADTIME_SKIP_PLAN PR4: skip dates honored by the watch CLI -------------
@@ -187,19 +191,25 @@ def test_watch_loop_continues_after_result(tmp_path: Path, watch_spy: type[_SpyW
 def test_watch_cli_drops_skipped_dates_before_poll(
     tmp_path: Path, watch_spy: type[_SpyWatch], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A skipped upcoming wanted date is dropped BEFORE polling — check_once runs only for the
-    unskipped one."""
+    """A skipped upcoming wanted date is dropped BEFORE polling — check_once runs only for
+    the unskipped ones.
+
+    When today is itself Sat or Sun, the horizon function returns 3 dates (today, next
+    other-weekday, today+7). We skip all but the last one and assert only that one is polled.
+    """
     today = datetime.now(tz=ZoneInfo("America/New_York")).date()
     upcoming = sorted(next_occurrences_within_horizon(today, frozenset({5, 6}), 7))
-    assert len(upcoming) == 2, f"expected 2 upcoming wanted days, got {upcoming}"  # fail loud
-    skip_one, keep = upcoming[0], upcoming[1]
-    monkeypatch.setenv("TEETIME_SKIP_DATES", str(skip_one))
+    assert len(upcoming) >= 2, f"expected at least 2 upcoming wanted days, got {upcoming}"
+    # Skip everything except the last date; that one alone should be polled.
+    skip_dates = upcoming[:-1]
+    keep = upcoming[-1]
+    monkeypatch.setenv("TEETIME_SKIP_DATES", ",".join(str(d) for d in skip_dates))
     cfg = _config(tmp_path, enabled=True, skip_dates_env=True)
     result = CliRunner().invoke(
         cli, ["watch", "--config", str(cfg), "--dry-run", "true", "--use-fake-adapter"]
     )
     assert result.exit_code == 0, result.output
-    assert watch_spy.seen == [keep]  # the skipped date was never polled
+    assert watch_spy.seen == [keep]  # only the unskipped date was polled
 
 
 def test_watch_cli_date_override_skipped_refuses(
@@ -247,3 +257,40 @@ def test_watch_cli_date_override_unskipped_ok(
     )
     assert result.exit_code == 0, result.output
     assert watch_spy.seen == [date(2026, 6, 13)]
+
+
+# --- Regression: watcher must check the same weekday 7 days out (2026-06-14 incident) ---
+
+
+def test_watch_targets_include_7day_out_on_same_weekday(
+    tmp_path: Path, watch_spy: type[_SpyWatch], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for 2026-06-14 prod incident.
+
+    Booking job failed for Sunday June 21. The watcher ran all day on Sunday June 14 but
+    its targets were ['2026-06-20'] only — June 21 was never checked. Root cause:
+    next_occurrences_within_horizon returned delta=0 for Sunday → today (June 14), and after
+    _is_past_watch_deadline dropped June 14, next Sunday was silently unmonitored.
+
+    The fix: when delta+7 <= horizon, also include today+7. This test pins "today" to June 14
+    (Sunday) by patching next_occurrences_within_horizon in __main__ to use a fixed date,
+    then asserts both June 20 (Sat) and June 21 (Sun, today+7) appear in check_once calls.
+    """
+    fixed_sunday = date(2026, 6, 14)
+    real_fn = main_mod.next_occurrences_within_horizon
+
+    def _pinned(today: date, wanted_weekdays: frozenset, horizon_days: int) -> tuple:
+        return real_fn(fixed_sunday, wanted_weekdays, horizon_days)
+
+    monkeypatch.setattr(main_mod, "next_occurrences_within_horizon", _pinned)
+    cfg = _config(tmp_path, enabled=True)
+    result = CliRunner().invoke(
+        cli, ["watch", "--config", str(cfg), "--dry-run", "true", "--use-fake-adapter"]
+    )
+    assert result.exit_code == 0, result.output
+    seen = set(watch_spy.seen)
+    assert date(2026, 6, 20) in seen, "next Saturday must be in watch targets"
+    assert date(2026, 6, 21) in seen, (
+        "next Sunday (today+7) must be in watch targets — regression for 2026-06-14 "
+        "prod incident where Sunday booking was never recovered by watcher"
+    )

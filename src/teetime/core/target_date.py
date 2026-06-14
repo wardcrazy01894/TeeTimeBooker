@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+_DAYS_PER_WEEK = 7
+
 # Python's date.weekday(): Monday=0 .. Sunday=6.
 _WEEKDAYS = {
     "monday": 0,
@@ -34,13 +36,16 @@ def weekday_from_name(name: str) -> int:
 def next_occurrences_within_horizon(
     today: date, wanted_weekdays: frozenset[int], horizon_days: int
 ) -> tuple[date, ...]:
-    """The next upcoming occurrence of EACH wanted weekday within `horizon_days` of today.
+    """The next upcoming occurrence(s) of EACH wanted weekday within `horizon_days` of today.
 
     For each weekday w in `wanted_weekdays`, includes the smallest date d with
     d.weekday() == w and 0 <= (d - today).days <= horizon_days. "Today counts": if today
-    is a wanted weekday, today itself is the occurrence (delta 0) — never a past date,
-    never next week's same weekday. Returned dates are sorted ascending and de-duplicated;
-    a weekday whose next occurrence is strictly beyond the horizon is omitted.
+    is a wanted weekday, today itself is the occurrence (delta 0) — never a past date.
+    When delta == 0 (today IS the wanted weekday) AND today+7 is still within the horizon,
+    BOTH today AND today+7 are returned. This ensures a watcher run on Sunday still
+    monitors the upcoming Sunday 7 days out even after _is_past_watch_deadline drops today.
+    Returned dates are sorted ascending and de-duplicated; a weekday whose next occurrence
+    is strictly beyond the horizon is omitted.
 
     The watcher passes `horizon_days = max(target_offsets)` so the bookable window is
     defined in ONE place (config), never hardcoded here. See MULTIDAY_PLAN.md PR3.
@@ -50,4 +55,12 @@ def next_occurrences_within_horizon(
         delta = (w - today.weekday()) % 7  # 0 when today is that weekday (today counts)
         if delta <= horizon_days:
             out.add(today + timedelta(days=delta))
+        # When today IS the wanted weekday (delta=0), also include today+7 if within horizon.
+        # Without this, a watcher run on Sunday computes delta=0 → returns today, and after
+        # _is_past_watch_deadline drops today the next Sunday (today+7) is never monitored.
+        # See 2026-06-14 prod post-mortem: Sunday booking failed, watcher never recovered it.
+        # Guard is `delta == 0` (not `delta + 7 <= horizon_days`) so this never fires for
+        # non-zero deltas even if horizon_days > 7 (e.g. target_offsets = [14]).
+        if delta == 0 and horizon_days >= _DAYS_PER_WEEK:
+            out.add(today + timedelta(days=_DAYS_PER_WEEK))
     return tuple(sorted(out))
