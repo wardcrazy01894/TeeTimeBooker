@@ -424,7 +424,10 @@ class ForeUpAdapter(CourseAdapter):
                 self._captcha_token = None
             else:
                 _log.info("ForeUP: requesting CAPTCHA token (this can take 15-30s)...")
-                body["captchaid"] = await self._captcha_provider()
+                try:
+                    body["captchaid"] = await self._captcha_provider()
+                except TimeoutError as exc:
+                    raise CaptchaError(f"CAPTCHA solve timed out: {exc}") from exc
                 _log.info("ForeUP: CAPTCHA token obtained, posting booking...")
         else:
             _log.info("ForeUP: posting booking (no CAPTCHA)...")
