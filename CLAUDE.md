@@ -57,7 +57,7 @@ reservation PER day:
 **LIVE in PROD** (`infra/v2.3.0` = `main`@`f2b7032`, deployed 2026-06-15, `dryRun=false`):
 multi-day Sat+Sun booking, the 4PM-day-before booking cutoff, the Portal-editable
 skip-days (`TEETIME-SKIP-DATES` KV secret, present in both vaults), within-window
-upgrade (cancel-before-book to strictly-closer-to-midpoint slot; `infra/v2.2.0`),
+upgrade (strictly-closer-to-midpoint slot in same tier triggers cancel-before-book; `infra/v2.2.0`),
 watcher today+7 horizon (same-weekday target included when today is a wanted weekday;
 `#119`), and captcha TimeoutError recovery (`book()`/`prepare_book()` → `CaptchaError`,
 lead = 120 s; `#120`) are all active. The
