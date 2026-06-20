@@ -161,6 +161,27 @@ def test_critical_runtime_env_vars_are_wired_in_compute_bicep() -> None:
     )
 
 
+def test_container_and_example_captcha_prefetch_match() -> None:
+    """The race-path CAPTCHA prefetch knobs must agree across the committed configs.
+
+    ``captcha_prefetch_count`` (RACE_PREWARM_PLAN §4.4) and ``captcha_prefetch_lead_s``
+    are race-critical timing/depth params; a silent drift between the container image's
+    config and the committed reference would mean prod pre-solves a different number of
+    tokens (or with a different lead) than reviewed. ``config/local.toml`` is gitignored
+    (absent in CI), so — like the party-size guard — we anchor to ``example.toml``.
+    """
+    example = _load(_EXAMPLE_TOML).get("scheduler", {})
+    container = _load(_CONTAINER_TOML).get("scheduler", {})
+    assert example.get("captcha_prefetch_count") == container.get("captcha_prefetch_count"), (
+        "captcha_prefetch_count drift between example.toml and container.toml — keep the "
+        "race-path token-pool depth in sync."
+    )
+    assert example.get("captcha_prefetch_lead_s") == container.get("captcha_prefetch_lead_s"), (
+        "captcha_prefetch_lead_s drift between example.toml and container.toml — keep the "
+        "race-path prefetch lead in sync."
+    )
+
+
 def test_container_and_example_party_size_match() -> None:
     """The committed reference config and the Azure container must agree on size.
 

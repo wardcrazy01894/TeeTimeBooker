@@ -225,9 +225,13 @@ Bot:
        `_prewarm_primary` runs CONCURRENTLY (one asyncio.gather, return_exceptions=True):
        (a) `_prewarm_login` — authenticate (warm GET + login POST) + the layer-2
        list_reservations guard for the first-preference adapter, and (b) `_prefetch_captcha_for`
-       — pre-solve the CAPTCHA (adapter.prepare_book(None,…)); then the remainder to T0. This
-       moves BOTH the ~2 s login AND the ~75 s CAPTCHA solve OFF the post-T0 critical path (so
-       step 4 below is just GET /times + POST /reservations — the original step-2 intent above).
+       — pre-solve `captcha_prefetch_count` CAPTCHA tokens CONCURRENTLY into a FIFO pool
+       (adapter.prepare_book(None,…,count=N), default N=3) so the first N ranked candidates each
+       fire near-instantly at T0 instead of re-solving a fresh single-use token inline; then the
+       remainder to T0. This moves BOTH the ~2 s login AND the ~75 s CAPTCHA solve OFF the post-T0
+       critical path (so step 4 below is just GET /times + POST /reservations — the step-2 intent).
+       book() pops the oldest pooled token; a stale pooled token (captcha challenge) gets ONE
+       inline re-solve + re-POST (MF1).
        The 2026-06-07 prod failure: CAPTCHA solve ran after T0 → book POST ~100 s late → prime
        slot gone → HTTP 400. Pre-warm is best-effort (both legs catch+swallow); on login failure
        _run_course authenticates inline at T0, on CAPTCHA failure book() solves inline. The

@@ -100,26 +100,30 @@ class CourseAdapter(Protocol):
         self,
         slot: TeeTimeSlot | None,
         request: BookingRequest,
+        *,
+        count: int = 1,
     ) -> None:
-        """Pre-fetch expensive prerequisites for book() (e.g., CAPTCHA token).
+        """Pre-fetch expensive prerequisites for book() (e.g., CAPTCHA tokens).
 
         Two callers:
         - UpgradeOrchestrator calls it BEFORE cancel_reservation() (with the chosen
-          slot) so the cancel-to-book window is ~1-2 seconds rather than ~60 seconds.
+          slot, count=1) so the cancel-to-book window is ~1-2 seconds rather than ~60s.
         - Orchestrator calls it on the race path DURING the pre-T0 busy-wait, BEFORE
-          any slot exists, so `slot` is None there. The CAPTCHA solve does not depend
-          on the slot (it is a page-level reCAPTCHA), so `slot` may be None.
+          any slot exists, so `slot` is None there, with count=N to pre-solve N tokens
+          CONCURRENTLY (one per ranked fallback candidate). The CAPTCHA solve does not
+          depend on the slot (it is a page-level reCAPTCHA), so `slot` may be None.
 
         After this returns, book(slot, request) should be able to complete without any
-        slow blocking steps.
+        slow blocking steps for up to `count` calls.
 
         Adapters that need no pre-fetching (e.g., FakeAdapter, Chronogolf) should
-        implement this as a no-op. ForeUpAdapter overrides it to solve the CAPTCHA
-        and cache the resulting token for use in book().
+        implement this as a no-op. ForeUpAdapter overrides it to solve `count` CAPTCHA
+        tokens and cache them in a FIFO pool for use in book().
 
-        Raises any exception to signal that the prerequisite fetch failed; the
-        UpgradeOrchestrator will abort the upgrade and leave the original booking
-        untouched.
+        Raise contract (NI10): with count == 1, a total solve failure RE-RAISES so the
+        UpgradeOrchestrator aborts the upgrade and leaves the original booking untouched.
+        With count > 1 (race prefetch) it is best-effort and NEVER raises — book() falls
+        back to an inline solve when the pool runs dry.
         """
         ...
 

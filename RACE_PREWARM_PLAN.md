@@ -4,9 +4,12 @@ Status: APPROVED (plan-with-review, 2 rounds, BLOCK→APPROVE). Implementation i
 strict red-green TDD. **PR1 (login pre-warm + pre-T0 reservation guard + short-circuit) is
 IMPLEMENTED** (`_prewarm_primary`/`_prewarm_login`/`_prefetch_captcha_for`,
 `_prewarmed_course_ids`, the SF6 short-circuit, ForeUP `_logged_in` guard, FakeAdapter
-`set_authenticate_side_effects`). PR2 (multi-token pool, **default count=3** per user) + PR3
-(race-only search-sleep trim) pending. Refines the race path in PLAN.md §9 and the root
-CLAUDE.md "booking race" invariants.
+`set_authenticate_side_effects`). **PR2 (multi-token concurrent CAPTCHA pool, default count=3
+per user) is IMPLEMENTED** (`ForeUpAdapter._captcha_tokens` FIFO deque, `prepare_book(count=N)`
+concurrent gather with the NI10 raise contract, `book()` FIFO popleft + MF1 stale-token inline
+re-solve via `_is_captcha_challenge`, `SchedulerConfig.captcha_prefetch_count`, all three TOMLs
+at 3 + parity test, orchestrator forwards `count`). PR3 (race-only search-sleep trim) pending.
+Refines the race path in PLAN.md §9 and the root CLAUDE.md "booking race" invariants.
 
 ## Round-2 reviewer disposition
 
@@ -363,20 +366,19 @@ The contract is **N-dependent**, and both halves are mandatory:
 Add to `SchedulerConfig`:
 
 ```python
-captcha_prefetch_count: int = Field(default=5, ge=1)
+captcha_prefetch_count: int = Field(default=3, ge=1)
 ```
 
-- **OQ1 resolution: default N=5** (recommended, up from the round-1 proposal of 3). The 2026
-  failure spread 5 fallback attempts over ~82s; N=5 pre-solves a token for the first candidate
-  AND all 4 fallbacks, so the WHOLE spread fires near-instantly from the pool instead of
-  re-solving. Cost is negligible (§4.6) and 5 concurrent solves fit the SAME 120s lead as 1
-  (§4.5). The configs already on disk say `3`; **PR2 bumps all three TOMLs to 5** to match the
-  new default.
+- **OQ1 resolution: default N=3** (user directive, overriding the plan's earlier N=5 proposal).
+  N=3 pre-solves a token for the first candidate plus the next two fallbacks — covering the
+  realistic competitive-drop fallback depth — at a lower solve-cost/rate-limit footprint than 5.
+  3 concurrent solves fit the SAME 120s lead as 1 (§4.5). **As-built: all three TOMLs carry
+  `captcha_prefetch_count = 3`** to match the default.
 - **Parity (NIT7):** the scheduler block is baked into the TOMLs, NOT wired as env vars in
   compute.bicep (confirmed: `compute.bicep` exposes no scheduler env vars). `captcha_prefetch_lead_s`
   lives only in `example.toml` today — **container.toml and local.toml do NOT carry
   `captcha_prefetch_lead_s` and rely on the code default of 120** (verified on disk). So:
-  - Parity means: `captcha_prefetch_count` present (and equal, = 5) in all three TOMLs.
+  - Parity means: `captcha_prefetch_count` present (and equal, = 3) in all three TOMLs.
   - The new parity test asserts BOTH fields agree where present: it asserts
     `captcha_prefetch_count` is equal across example/container/local, AND asserts the lead is
     consistent (either present-and-equal or absent-and-relying-on-the-120 default). To keep this

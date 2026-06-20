@@ -36,6 +36,7 @@ Anti-bot etiquette:
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
@@ -141,11 +142,13 @@ class ForeUpAdapter(CourseAdapter):
         # "reservations": false (a lazy-load flag, not actual data). authenticate()
         # populates this; list_reservations() reads from it.
         self._reservations_from_login: list[Any] = []
-        # CAPTCHA token pre-fetched by prepare_book() for use in book().
-        # None means no token has been pre-fetched; book() will solve it inline
-        # (normal booking path). When set, book() consumes and clears it
-        # (single-use) so the token is never silently reused.
-        self._captcha_token: str | None = None
+        # CAPTCHA tokens pre-fetched by prepare_book() for use in book(), held as a
+        # FIFO pool (RACE_PREWARM_PLAN Change C). prepare_book(count=N) solves N tokens
+        # CONCURRENTLY and appends them here; book() pops the OLDEST (popleft) so a
+        # late-firing fallback candidate keeps the freshest token. Empty pool means
+        # book() solves inline (single-token / normal path). Single-use: a popped token
+        # is never returned to the pool.
+        self._captcha_tokens: collections.deque[str] = collections.deque()
         # Transient-failure retry budget for IDEMPOTENT calls only (warm-up GET,
         # login POST, search GET, cancel DELETE). Reproduces+fixes the prod failure
         # where a single httpx.ReadTimeout against ForeUP (server up, adjacent polls
@@ -214,19 +217,34 @@ class ForeUpAdapter(CourseAdapter):
         # attempt. Present only to satisfy the type checker's return analysis.
         raise AssertionError("unreachable")  # pragma: no cover
 
+    def _is_captcha_challenge(self, r: httpx.Response) -> bool:
+        """True iff the response is a ForeUP captcha/browser-challenge signal.
+
+        Non-raising sibling of _guard_captcha — used by book()'s MF1 path to decide
+        whether a POOLED token was rejected as stale (warranting one inline re-solve)
+        without raising on the first attempt.
+        """
+        if "application/json" not in r.headers.get("content-type", ""):
+            return False
+        try:
+            data: object = r.json()
+        except ValueError:
+            return False
+        if not isinstance(data, dict):
+            return False
+        msg = str(data.get("msg", ""))
+        return "captcha" in msg.lower() or bool(data.get("openNewWindow"))
+
     def _guard_captcha(self, r: httpx.Response) -> None:
         """Raise CaptchaError on any ForeUP captcha/browser-challenge signal."""
-        if "application/json" not in r.headers.get("content-type", ""):
+        if not self._is_captcha_challenge(r):
             return
         try:
             data: object = r.json()
         except ValueError:
-            return
-        if not isinstance(data, dict):
-            return
-        msg = str(data.get("msg", ""))
-        if "captcha" in msg.lower() or data.get("openNewWindow"):
-            raise CaptchaError(msg or "browser challenge (openNewWindow) required")
+            data = {}
+        msg = str(data.get("msg", "")) if isinstance(data, dict) else ""
+        raise CaptchaError(msg or "browser challenge (openNewWindow) required")
 
     async def authenticate(self, creds: CourseCredentials) -> None:
         """Warm up PHPSESSID, then attempt username/password login.
@@ -372,27 +390,72 @@ class ForeUpAdapter(CourseAdapter):
 
         return results
 
-    async def prepare_book(self, slot: TeeTimeSlot | None, request: BookingRequest) -> None:
-        """Pre-solve CAPTCHA and cache the token for use in book().
+    async def _solve_captcha_inline(self) -> str:
+        """Solve one CAPTCHA token inline, mapping a provider timeout to CaptchaError.
+
+        Callers must guard `self._captcha_provider is not None` first.
+        """
+        assert self._captcha_provider is not None
+        try:
+            return await self._captcha_provider()
+        except TimeoutError as exc:
+            raise CaptchaError(f"CAPTCHA solve timed out: {exc}") from exc
+
+    async def prepare_book(
+        self,
+        slot: TeeTimeSlot | None,
+        request: BookingRequest,
+        *,
+        count: int = 1,
+    ) -> None:
+        """Pre-solve `count` CAPTCHA tokens CONCURRENTLY and stash them in the pool.
 
         Two callers (see CourseAdapter.prepare_book):
-        - UpgradeOrchestrator (slot set) — shrinks the cancel-to-book window.
-        - Orchestrator on the race path (slot=None) — moves the ~75s CAPTCHA solve
-          off the post-T0 critical path so book() at the 06:00 drop fires immediately.
-        The CAPTCHA is a page-level reCAPTCHA, so `slot` is unused either way.
+        - UpgradeOrchestrator (slot set, count=1) — shrinks the cancel-to-book window.
+        - Orchestrator on the race path (slot=None, count=N) — moves the ~75s CAPTCHA
+          solve off the post-T0 critical path AND pre-solves N tokens so the first N
+          ranked candidates each fire near-instantly instead of re-solving a fresh
+          single-use token inline. The CAPTCHA is a page-level reCAPTCHA, so `slot`
+          is unused either way (RACE_PREWARM_PLAN §4).
 
-        After this returns, book() will use the cached token instead of calling the
-        CAPTCHA provider. If no CAPTCHA provider is configured (dry-run or test), this
-        is a no-op. Raises CaptchaError on timeout; other provider exceptions propagate.
+        The N solves run under a single asyncio.gather(return_exceptions=True): every
+        successful token is appended to the FIFO pool, individual failures are dropped.
+
+        NI10 raise contract:
+        - count == 1 and the lone solve fails → RE-RAISE (a TimeoutError becomes
+          CaptchaError). This keeps the upgrade-path caller's abort-on-failure behaviour.
+        - count > 1 → NEVER raise, even if every solve fails (best-effort race prefetch;
+          book() falls back to an inline solve). The pool simply ends up with however
+          many succeeded (possibly zero).
+
+        No CAPTCHA provider configured (dry-run or test) → no-op regardless of count.
         """
         if self._captcha_provider is None:
             return
-        _log.info("ForeUP: pre-fetching CAPTCHA token (this can take 15-30s)...")
-        try:
-            self._captcha_token = await self._captcha_provider()
-        except TimeoutError as exc:
-            raise CaptchaError(f"CAPTCHA pre-fetch timed out: {exc}") from exc
-        _log.info("ForeUP: CAPTCHA token pre-fetched — booking can now proceed.")
+        _log.info("ForeUP: pre-fetching %d CAPTCHA token(s) concurrently...", count)
+        provider = self._captcha_provider
+        results = await asyncio.gather(
+            *(provider() for _ in range(count)),
+            return_exceptions=True,
+        )
+        tokens = [r for r in results if isinstance(r, str)]
+        self._captcha_tokens.extend(tokens)
+        failures = [r for r in results if isinstance(r, BaseException)]
+        if tokens:
+            _log.info(
+                "ForeUP: pre-fetched %d/%d CAPTCHA token(s) — pool size %d.",
+                len(tokens),
+                count,
+                len(self._captcha_tokens),
+            )
+            return
+        # Nothing solved.
+        if count == 1 and failures:
+            exc = failures[0]
+            if isinstance(exc, TimeoutError):
+                raise CaptchaError(f"CAPTCHA pre-fetch timed out: {exc}") from exc
+            raise exc
+        _log.warning("ForeUP: all %d CAPTCHA pre-fetches failed — book() will solve inline.", count)
 
     async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
         """POST /reservations echoing slot raw fields with overridden player/fee totals."""
@@ -426,19 +489,22 @@ class ForeUpAdapter(CourseAdapter):
             "discount_percent": 0,
             "player_list": False,
         }
+        # from_pool tracks whether the token came from the pre-fetched FIFO pool. Only
+        # pooled tokens (solved pre-T0, possibly stale by book time) get the MF1 inline
+        # re-solve below; a freshly inline-solved token does not.
+        from_pool = False
         if self._captcha_provider is not None:
-            if self._captcha_token is not None:
-                # Token was pre-fetched by prepare_book() — consume it immediately.
-                # Single-use: clear so it's never silently reused on a retry.
-                _log.info("ForeUP: using pre-fetched CAPTCHA token, posting booking...")
-                body["captchaid"] = self._captcha_token
-                self._captcha_token = None
+            if self._captcha_tokens:
+                # Pop the OLDEST pooled token (FIFO) — single-use, never returned.
+                body["captchaid"] = self._captcha_tokens.popleft()
+                from_pool = True
+                _log.info(
+                    "ForeUP: using pooled CAPTCHA token (%d left in pool), posting booking...",
+                    len(self._captcha_tokens),
+                )
             else:
                 _log.info("ForeUP: requesting CAPTCHA token (this can take 15-30s)...")
-                try:
-                    body["captchaid"] = await self._captcha_provider()
-                except TimeoutError as exc:
-                    raise CaptchaError(f"CAPTCHA solve timed out: {exc}") from exc
+                body["captchaid"] = await self._solve_captcha_inline()
                 _log.info("ForeUP: CAPTCHA token obtained, posting booking...")
         else:
             _log.info("ForeUP: posting booking (no CAPTCHA)...")
@@ -448,6 +514,17 @@ class ForeUpAdapter(CourseAdapter):
             slot.tee_time.strftime("%Y-%m-%d %H:%M %Z"),
         )
         r = await client.post(RESERVATION_PATH, json=body)
+        # MF1: a POOLED token rejected as a captcha challenge is likely STALE (solved
+        # pre-T0, expired by the time we book). Re-solve ONCE inline and re-POST the SAME
+        # slot. Exactly one retry — the re-POST is classified normally below, so a second
+        # challenge surfaces as CaptchaError (no infinite loop). INLINE tokens get NO such
+        # retry: they were just solved, a challenge on them is a real wall. (See §4.3 MF1.)
+        if from_pool and self._is_captcha_challenge(r):
+            _log.warning(
+                "ForeUP: pooled CAPTCHA token rejected as stale — re-solving inline once..."
+            )
+            body["captchaid"] = await self._solve_captcha_inline()
+            r = await client.post(RESERVATION_PATH, json=body)
         if r.is_error:
             # Log status + body BEFORE raising. raise_for_status() discards the body,
             # which left us blind to WHY ForeUP rejected the 2026-06-07 booking. r.text

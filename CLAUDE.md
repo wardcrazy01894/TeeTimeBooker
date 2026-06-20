@@ -320,24 +320,37 @@ in `core/` — never directly. This is the cut line for parallel work.
   therefore cancels first, then books. This leaves a ~1-2 second no-booking window
   (two HTTP round-trips). If book() fails after cancel, the next watch invocation
   recovers by booking any available slot.
-- **`prepare_book()` on `CourseAdapter` Protocol**: pre-fetches expensive prerequisites
-  (CAPTCHA token, ~15-60 s). `ForeUpAdapter.prepare_book()` calls the CAPTCHA provider
-  and caches the resulting token in `self._captcha_token`; `book()` consumes it
-  (single-use, cleared after use). Adapters with no pre-fetch cost (FakeAdapter,
-  TeeItUpAdapter, future Chronogolf) implement it as a no-op. Its `slot` arg is
-  `TeeTimeSlot | None` (the CAPTCHA is page-level, slot-independent). **Two callers:**
-  (1) `UpgradeOrchestrator` calls it with the chosen slot BEFORE `cancel_reservation()`,
-  shrinking the cancel-to-book no-booking window from ~60 s to ~1-2 s; (2) the main
-  booking `Orchestrator`, on the race path only, calls it with `slot=None` DURING the
-  pre-T0 busy-wait (see next bullet).
+- **`prepare_book(slot, request, *, count=1)` on `CourseAdapter` Protocol**: pre-fetches
+  expensive prerequisites (CAPTCHA tokens, ~15-60 s each). `ForeUpAdapter.prepare_book()`
+  solves `count` tokens **CONCURRENTLY** (one `asyncio.gather(return_exceptions=True)`) and
+  appends each success to a FIFO pool `self._captcha_tokens` (a `collections.deque`); `book()`
+  pops the OLDEST (`popleft`, single-use, never returned) so a late-firing fallback keeps the
+  freshest token, falling back to an inline solve when the pool is dry (RACE_PREWARM_PLAN
+  Change C). **NI10 raise contract:** `count == 1` + total solve failure RE-RAISES (a
+  `TimeoutError` → `CaptchaError`) so the upgrade caller aborts; `count > 1` (race prefetch)
+  NEVER raises (best-effort; pool ends up with however many succeeded, possibly zero).
+  **MF1 stale-token recovery:** a POOLED token rejected as a captcha challenge (likely solved
+  pre-T0 and now expired) triggers exactly ONE inline re-solve + re-POST of the same slot
+  (`_is_captcha_challenge` is the non-raising sibling of `_guard_captcha`); the re-POST is
+  classified normally (a 2nd challenge → `CaptchaError`, no loop). An INLINE-solved token gets
+  no such retry. Adapters with no pre-fetch cost (FakeAdapter, TeeItUpAdapter, future
+  Chronogolf) implement it as a no-op (they accept `count` for parity and ignore it). Its
+  `slot` arg is `TeeTimeSlot | None` (the CAPTCHA is page-level, slot-independent). **Two
+  callers:** (1) `UpgradeOrchestrator` calls it with the chosen slot + `count=1` BEFORE
+  `cancel_reservation()`, shrinking the cancel-to-book no-booking window from ~60 s to ~1-2 s;
+  (2) the main booking `Orchestrator`, on the race path only, calls it with `slot=None` +
+  `count=scheduler.captcha_prefetch_count` (default **3**) DURING the pre-T0 busy-wait (next bullet).
 - **The booking race pre-fetches the CAPTCHA before T0 (`Orchestrator(prefetch_book=True)`).**
   The 2026-06-07 prod Sunday booker fired at T0 perfectly but then solved the CAPTCHA
   (~78 s) AFTER the drop, posting the booking ~100 s late → the prime slot was gone →
   HTTP 400 → no tee time. Fix: on the `--wait` race path the orchestrator does a
   TWO-PHASE busy-wait — wait to `T0 − scheduler.captcha_prefetch_lead_s` (default 120 s =
   2 min), `_prefetch_captcha()` (first-preference adapter, best-effort: failures are logged
-  and swallowed, book() then solves inline), then wait the remainder to exactly T0 — so the
-  post-T0 `book()` POST fires within seconds of the drop with a token already in hand.
+  and swallowed, book() then solves inline) which now pre-solves
+  `scheduler.captcha_prefetch_count` tokens (default **3**) CONCURRENTLY into the FIFO pool so
+  the first 3 ranked candidates each fire near-instantly instead of re-solving inline, then
+  wait the remainder to exactly T0 — so the post-T0 `book()` POST fires within seconds of the
+  drop with a token already in hand.
   `prefetch_book` is set **only** by the `--wait` ACA booking job (`__main__._run` passes
   `prefetch_book=wait`). The watcher and local-demo runs leave it False: a token is
   solved only when actually about to book (the watcher's upgrade path still pre-fetches
