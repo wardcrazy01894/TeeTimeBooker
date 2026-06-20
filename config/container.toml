@@ -73,6 +73,12 @@ fire_time        = 06:00:00
 early_arrival_ms = 500
 poll_interval_ms = 250
 max_poll_seconds = 30
+# Race path (--wait): start the CAPTCHA solve this many seconds before T0 (explicit
+# rather than relying on the code default of 120 — race-critical timing, NIT7).
+captcha_prefetch_lead_s = 120
+# Race path: pre-solve this many CAPTCHA tokens concurrently during the busy-wait so the
+# first ranked candidate + the next N-1 fallbacks each fire instantly at T0 (RACE_PREWARM_PLAN §4.4).
+captcha_prefetch_count = 3
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from

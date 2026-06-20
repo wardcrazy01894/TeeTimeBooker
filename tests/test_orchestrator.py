@@ -498,7 +498,9 @@ async def test_run_logs_race_complete_at_t0(caplog: pytest.LogCaptureFixture) ->
 # --- Race-path CAPTCHA pre-fetch (the 2026-06-07 fix) -------------------
 
 
-def _scheduler_with_lead(lead_s: int, *, early_ms: int = 100) -> SchedulerConfig:
+def _scheduler_with_lead(
+    lead_s: int, *, early_ms: int = 100, prefetch_count: int = 3
+) -> SchedulerConfig:
     return SchedulerConfig(
         timezone="America/New_York",
         fire_time=time(6, 0, 0),
@@ -506,6 +508,7 @@ def _scheduler_with_lead(lead_s: int, *, early_ms: int = 100) -> SchedulerConfig
         poll_interval_ms=10,
         max_poll_seconds=1,
         captcha_prefetch_lead_s=lead_s,
+        captcha_prefetch_count=prefetch_count,
     )
 
 
@@ -522,16 +525,19 @@ async def test_run_prefetches_captcha_before_t0_when_enabled() -> None:
     lead = 30
     clock = FakeClock(start=t0 - timedelta(seconds=lead + 2))
     orch, _, _ = _build(
-        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(lead), prefetch_book=True
+        {cid: fa},
+        clock=clock,
+        scheduler=_scheduler_with_lead(lead, prefetch_count=4),
+        prefetch_book=True,
     )
 
     # Record the clock instant at which the (collaborator) prepare_book is invoked.
     prefetch_at: list[datetime] = []
     orig_prepare = fa.prepare_book
 
-    async def _recording_prepare(slot: object, request: object) -> None:
+    async def _recording_prepare(slot: object, request: object, *, count: int = 1) -> None:
         prefetch_at.append(clock.now_utc())
-        await orig_prepare(slot, request)  # type: ignore[arg-type]
+        await orig_prepare(slot, request, count=count)  # type: ignore[arg-type]
 
     fa.prepare_book = _recording_prepare  # type: ignore[assignment]
 
@@ -539,6 +545,8 @@ async def test_run_prefetches_captcha_before_t0_when_enabled() -> None:
 
     assert result.outcome == BookingOutcome.BOOKED
     assert fa.prepare_book_call_count == 1, "captcha was not pre-fetched"
+    # The race path must pre-solve scheduler.captcha_prefetch_count tokens (not 1).
+    assert fa.last_prepare_count == 4, "orchestrator must forward scheduler.captcha_prefetch_count"
     assert fa.book_call_count == 1
     # The pre-fetch happened before T0 and roughly `lead` seconds early (within tolerance).
     assert len(prefetch_at) == 1

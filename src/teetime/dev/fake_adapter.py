@@ -51,6 +51,9 @@ class FakeAdapter:
         self.search_call_count: int = 0
         self.last_search_skip_initial_spacing: bool | None = None
         self.prepare_book_call_count: int = 0
+        # Records the `count` passed to the most recent prepare_book() call, so
+        # orchestrator tests can assert the race path requests N pooled tokens.
+        self.last_prepare_count: int | None = None
         self.book_call_count: int = 0
         self.list_reservations_call_count: int = 0
         self.cancel_call_count: int = 0
@@ -102,8 +105,15 @@ class FakeAdapter:
             if effect is not None:
                 raise effect
 
-    async def prepare_book(self, slot: TeeTimeSlot | None, request: BookingRequest) -> None:
+    async def prepare_book(
+        self,
+        slot: TeeTimeSlot | None,
+        request: BookingRequest,
+        *,
+        count: int = 1,
+    ) -> None:
         self.prepare_book_call_count += 1
+        self.last_prepare_count = count
         if self._prepare_book_exc is not None:
             raise self._prepare_book_exc
 

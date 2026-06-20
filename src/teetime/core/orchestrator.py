@@ -321,12 +321,13 @@ class Orchestrator:
         course_id: CourseId,
         request: BookingRequest,
     ) -> None:
-        """Pre-solve the CAPTCHA for the primary adapter so book() at T0 consumes a cached
-        token instead of blocking ~75s on the solve. Best-effort: any failure is logged and
+        """Pre-solve N CAPTCHA tokens for the primary adapter so the first N ranked
+        candidates at T0 each consume a pooled token instead of blocking ~75s on a fresh
+        solve. N = scheduler.captcha_prefetch_count. Best-effort: any failure is logged and
         swallowed (book() solves inline). No-op for adapters without a CAPTCHA (TeeItUp, Fake).
         """
         try:
-            await adapter.prepare_book(None, request)
+            await adapter.prepare_book(None, request, count=self._scheduler.captcha_prefetch_count)
         except Exception as exc:
             log.warning(
                 "race: CAPTCHA pre-fetch failed for %s (%s) — will solve inline in book()",

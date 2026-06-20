@@ -176,6 +176,12 @@ class SchedulerConfig(BaseModel):
     # also keeps the token fresh at T0 — age = lead - solve_time <= 120s <= reCAPTCHA
     # validity (~120s). See 2026-06-07/2026-06-14 prod post-mortems in PLAN.md §9.
     captcha_prefetch_lead_s: int = 120
+    # Number of CAPTCHA tokens to pre-solve CONCURRENTLY on the race path
+    # (Orchestrator with prefetch_book=True), so the first N ranked candidates each
+    # fire near-instantly instead of re-solving a fresh single-use token inline. Default
+    # 3 balances solve-cost/rate-limit against fallback depth at a competitive drop
+    # (RACE_PREWARM_PLAN §4.4). Ignored off the race path (upgrade/inline solve count=1).
+    captcha_prefetch_count: int = Field(default=3, ge=1)
 
 
 class NotifierConfig(BaseModel):

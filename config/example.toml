@@ -111,6 +111,9 @@ max_poll_seconds       = 30                    # give up polling after this
 captcha_prefetch_lead_s = 120                  # race path (--wait): start the CAPTCHA solve
                                                # this many seconds before T0 so book() at the
                                                # drop fires with a token already in hand
+captcha_prefetch_count  = 3                    # race path: pre-solve this many tokens concurrently
+                                               # so the first N ranked candidates each fire instantly
+                                               # (RACE_PREWARM_PLAN §4.4)
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from
