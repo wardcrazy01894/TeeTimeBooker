@@ -365,8 +365,17 @@ class TeeItUpAdapter:
         _log.info("TeeItUp search: found %d matching slots", len(slots))
         return slots
 
-    async def prepare_book(self, slot: TeeTimeSlot | None, request: BookingRequest) -> None:
-        """No-op — TeeItUp uses session auth, no CAPTCHA pre-fetch required."""
+    async def prepare_book(
+        self,
+        slot: TeeTimeSlot | None,
+        request: BookingRequest,
+        *,
+        count: int = 1,
+    ) -> None:
+        """No-op — TeeItUp uses session auth, no CAPTCHA pre-fetch required.
+
+        `count` is accepted for Protocol parity (ForeUP's multi-token pool) and ignored.
+        """
         return
 
     async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
