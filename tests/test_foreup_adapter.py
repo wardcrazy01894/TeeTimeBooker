@@ -162,6 +162,54 @@ async def test_authenticate_bad_password_soft_fails() -> None:
 
 
 @respx.mock
+async def test_authenticate_is_idempotent_skips_relogin_when_already_logged_in() -> None:
+    """Defensive `_logged_in` guard (RACE_PREWARM_PLAN §3.1): a second authenticate()
+    after a successful login is a no-op — it does NOT re-issue the warm-up GET or login
+    POST. (Hygiene: a real ForeUP re-login is wasteful; the orchestrator already skips
+    via prewarmed_course_ids, but the adapter honors the Protocol's documented idempotency.)"""
+    warm = respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    login = respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        return_value=httpx.Response(200, json={"success": True, "msg": "ok"})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        await adapter.authenticate(CREDS)  # second call must short-circuit
+        assert adapter._logged_in is True
+        assert warm.call_count == 1, "second authenticate() must not re-warm"
+        assert login.call_count == 1, "second authenticate() must not re-login"
+
+
+@respx.mock
+async def test_authenticate_retries_after_soft_login_failure() -> None:
+    """A soft login failure (401) leaves `_logged_in` False, so a later authenticate()
+    DOES re-issue the warm-up GET + login POST (the guard only skips on a real success)."""
+    warm = respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    login = respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        side_effect=[
+            httpx.Response(
+                401,
+                json={"success": False, "msg": "invalid"},
+                headers={"content-type": "application/json"},
+            ),
+            httpx.Response(200, json={"success": True, "msg": "ok"}),
+        ]
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        assert adapter._logged_in is False
+        await adapter.authenticate(CREDS)  # retries because the first was a soft-fail
+        assert adapter._logged_in is True
+        assert warm.call_count == 2
+        assert login.call_count == 2
+
+
+@respx.mock
 async def test_authenticate_captcha_raises_captcha_error() -> None:
     respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
         return_value=httpx.Response(200, text="<html/>")

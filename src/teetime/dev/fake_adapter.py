@@ -46,6 +46,7 @@ class FakeAdapter:
         self._cancel_exc: CancelError | None = None
         self._cancel_should_succeed: bool = True
         self._prepare_book_exc: Exception | None = None
+        self._authenticate_side_effects: list[Exception | None] = []
         self.authenticate_call_count: int = 0
         self.search_call_count: int = 0
         self.prepare_book_call_count: int = 0
@@ -82,10 +83,23 @@ class FakeAdapter:
         """Script prepare_book() to raise `exc` (simulates CAPTCHA service failure)."""
         self._prepare_book_exc = exc
 
+    def set_authenticate_side_effects(self, effects: list[Exception | None]) -> None:
+        """Configure successive authenticate() calls to raise or return in order.
+
+        `None` = succeed; an Exception = raise it. Used by the race pre-warm tests:
+        e.g. [RuntimeError(...), None] makes the pre-T0 prewarm login fail and the
+        post-T0 inline retry succeed.
+        """
+        self._authenticate_side_effects = list(effects)
+
     # --- CourseAdapter Protocol -----------------------------------------
 
     async def authenticate(self, creds: CourseCredentials) -> None:
         self.authenticate_call_count += 1
+        if self._authenticate_side_effects:
+            effect = self._authenticate_side_effects.pop(0)
+            if effect is not None:
+                raise effect
 
     async def prepare_book(self, slot: TeeTimeSlot | None, request: BookingRequest) -> None:
         self.prepare_book_call_count += 1

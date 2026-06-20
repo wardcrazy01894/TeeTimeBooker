@@ -640,3 +640,197 @@ async def test_run_does_not_warn_when_prefetch_lead_is_honored(
 
     assert result.outcome == BookingOutcome.BOOKED
     assert not any("prefetch lead not fully honored" in r.getMessage() for r in caplog.records)
+
+
+# --- PR1: race-path login pre-warm + pre-T0 reservation guard (RACE_PREWARM_PLAN §3) ---
+
+
+def _existing(cid: CourseId, *, party_size: int = 1, hour: int = 8) -> ExistingReservation:
+    """An existing reservation that matches _request()'s date (2026-05-13) and,
+    by default, its single-player party size — so _first_matching_reservation hits."""
+    return ExistingReservation(
+        course_id=cid,
+        confirmation_code=f"SERVER-{hour}",
+        tee_time=datetime(2026, 5, 13, hour, 0, tzinfo=UTC),
+        party_size=party_size,
+    )
+
+
+async def test_run_prewarms_login_before_t0_when_prefetch_enabled() -> None:
+    """On the race path the orchestrator authenticates DURING the busy-wait (before T0)
+    and does NOT re-authenticate at T0. MF3: the count==1 proves the ORCHESTRATOR skipped
+    the post-T0 authenticate via prewarmed_course_ids — FakeAdapter has no idempotency guard
+    (it increments on every call), so a second call would make this 2."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    lead = 30
+    clock = FakeClock(start=t0 - timedelta(seconds=lead + 2))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(lead), prefetch_book=True
+    )
+
+    auth_at: list[datetime] = []
+    orig_auth = fa.authenticate
+
+    async def _recording_auth(creds: object) -> None:
+        auth_at.append(clock.now_utc())
+        await orig_auth(creds)  # type: ignore[arg-type]
+
+    fa.authenticate = _recording_auth  # type: ignore[assignment]
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.authenticate_call_count == 1, "orchestrator must not re-authenticate at T0"
+    assert len(auth_at) == 1
+    # Pre-warm fires at the prefetch point (~lead before T0), NOT merely at the
+    # early-arrival busy-wait exit (~100ms before T0).
+    before_t0 = (t0 - auth_at[0]).total_seconds()
+    assert before_t0 >= lead - 1, (
+        f"authenticate must pre-warm ~{lead}s before T0 (got {before_t0:.1f}s)"
+    )
+    assert fa.book_call_count == 1
+
+
+async def test_run_does_not_prewarm_login_when_prefetch_disabled() -> None:
+    """Off the race path, authenticate happens at/after T0 (no pre-warm)."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    clock = FakeClock(start=t0 - timedelta(seconds=2))
+    orch, _, _ = _build({cid: fa}, clock=clock)  # prefetch_book defaults False
+
+    auth_at: list[datetime] = []
+    orig_auth = fa.authenticate
+
+    async def _recording_auth(creds: object) -> None:
+        auth_at.append(clock.now_utc())
+        await orig_auth(creds)  # type: ignore[arg-type]
+
+    fa.authenticate = _recording_auth  # type: ignore[assignment]
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.authenticate_call_count == 1
+    assert len(auth_at) == 1
+    # Without pre-warm, auth fires at the busy-wait exit (~early_arrival before T0),
+    # NOT lead-seconds early. Pin it to "near T0", which a pre-warm would violate.
+    assert abs((auth_at[0] - t0).total_seconds()) < 2, "no pre-warm: auth must land near T0"
+
+
+async def test_run_prewarm_login_failure_falls_back_to_inline_auth() -> None:
+    """A pre-warm login failure must NOT cost the booking: course_id is not added to
+    prewarmed_course_ids, so _run_course authenticates inline at T0 and the run books.
+    authenticate is called twice (prewarm attempt + inline retry)."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+    fa.set_authenticate_side_effects([RuntimeError("prewarm login blip"), None])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    clock = FakeClock(start=t0 - timedelta(seconds=12))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(10), prefetch_book=True
+    )
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.authenticate_call_count == 2
+    assert fa.book_call_count == 1
+
+
+async def test_run_short_circuits_already_booked_found_pre_t0(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """If pre-warm finds a matching existing reservation, the orchestrator records
+    ALREADY_BOOKED, emits the SF6 verification line, and returns WITHOUT busy-waiting
+    to T0 or searching."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_existing_reservations([_existing(cid)])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    lead = 30
+    clock = FakeClock(start=t0 - timedelta(seconds=lead + 2))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(lead), prefetch_book=True
+    )
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.ALREADY_BOOKED
+    assert fa.search_call_count == 0
+    assert fa.book_call_count == 0
+    # Did NOT wait all the way to T0.
+    assert (t0 - clock.now_utc()).total_seconds() > 0
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("race: short-circuited pre-T0" in m for m in msgs), "SF6 verification line missing"
+    assert not any("race: busy-wait complete" in m for m in msgs), "must not have waited to T0"
+
+
+async def test_run_prewarm_does_not_short_circuit_on_nonmatching_reservation() -> None:
+    """An existing reservation for a DIFFERENT party size does not match — race proceeds."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+    fa.set_existing_reservations([_existing(cid, party_size=2)])  # _request has 1 player
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    lead = 30
+    clock = FakeClock(start=t0 - timedelta(seconds=lead + 2))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(lead), prefetch_book=True
+    )
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.book_call_count == 1
+
+
+async def test_prewarm_outer_gather_isolates_login_failure() -> None:
+    """MF2: the login leg raising must NOT cancel the concurrent prefetch leg
+    (return_exceptions=True on the outer gather). prepare_book still ran; run books."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+    fa.set_authenticate_side_effects([RuntimeError("prewarm login blip"), None])
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    clock = FakeClock(start=t0 - timedelta(seconds=12))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(10), prefetch_book=True
+    )
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.prepare_book_call_count == 1, "prefetch leg must not be cancelled by login failure"
+
+
+async def test_prewarm_outer_gather_isolates_prefetch_failure() -> None:
+    """MF2 mirror: the prefetch leg raising must NOT cancel the login prewarm — the
+    match-driven short-circuit still fires."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_existing_reservations([_existing(cid)])
+    fa.set_prepare_book_to_raise(RuntimeError("2captcha timeout"))
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    clock = FakeClock(start=t0 - timedelta(seconds=12))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(10), prefetch_book=True
+    )
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.ALREADY_BOOKED
+    assert fa.book_call_count == 0

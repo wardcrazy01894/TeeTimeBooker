@@ -15,6 +15,7 @@ add the reconciliation branch in one place.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -72,6 +73,11 @@ class Orchestrator:
         # ACA booking job; left False everywhere else (watcher, local demo) so a token
         # is only ever solved when we are actually about to book. See PLAN.md §9.
         self._prefetch_book = prefetch_book
+        # Courses whose login was successfully pre-warmed before T0 (MF3). run() passes
+        # this into _run_course so the post-T0 authenticate() is SKIPPED for them — the
+        # skip is orchestrator-owned and does NOT rely on any adapter implementing an
+        # idempotency guard (FakeAdapter/TeeItUp don't). See RACE_PREWARM_PLAN §3.1.
+        self._prewarmed_course_ids: set[CourseId] = set()
 
     async def run(self, request: BookingRequest) -> BookingResult:
         resolved_date = request.target_dates[0]
@@ -105,7 +111,23 @@ class Orchestrator:
                     )
                 else:
                     await busy_wait_until(prefetch_at, self._clock)
-                await self._prefetch_captcha(request)
+                # Pre-warm the primary adapter during the pre-T0 window: login + the
+                # layer-2 reservation guard AND the CAPTCHA solve, concurrently (§3). If the
+                # guard finds we are ALREADY booked, short-circuit before T0 — there is
+                # nothing to race for. Emit the SF6 verification line so an operator can tell
+                # a correct short-circuit from a dead replica (the normal "busy-wait complete"
+                # line is skipped on this path).
+                match = await self._prewarm_primary(request)
+                if match is not None:
+                    log.info(
+                        "race: short-circuited pre-T0 — matching reservation already booked "
+                        "(conf=%s); skipping busy-wait and search",
+                        match.confirmation_code,
+                    )
+                    terminal = self._terminal_already_booked(request, match)
+                    await self._store.record_terminal(terminal, resolved_date)
+                    await self._notifier.notify(terminal)
+                    return terminal
             await busy_wait_until(t0_target, self._clock)
             fired = self._clock.now_utc()
             # Verification surface (M6 PR6): proves the bot busy-waited and fired at T0.
@@ -124,7 +146,12 @@ class Orchestrator:
                 if adapter is None:
                     continue
                 try:
-                    result = await self._run_course(adapter, course_id, request)
+                    result = await self._run_course(
+                        adapter,
+                        course_id,
+                        request,
+                        prewarmed_course_ids=frozenset(self._prewarmed_course_ids),
+                    )
                 except _CourseSkippedError:
                     continue
                 if result is not None:
@@ -144,9 +171,15 @@ class Orchestrator:
         adapter: CourseAdapter,
         course_id: CourseId,
         request: BookingRequest,
+        *,
+        prewarmed_course_ids: frozenset[CourseId] = frozenset(),
     ) -> BookingResult | None:
         creds = self._creds.get(course_id)
-        if creds is not None:
+        # MF3: skip the post-T0 authenticate ONLY for a course whose login was successfully
+        # pre-warmed before T0 (orchestrator-owned skip — not adapter-guard-dependent). A
+        # course that was never pre-warmed, or whose pre-warm login failed, authenticates
+        # inline here exactly as before.
+        if creds is not None and course_id not in prewarmed_course_ids:
             await adapter.authenticate(creds)
 
         # Layer 2: pre-book remote check.
@@ -202,31 +235,104 @@ class Orchestrator:
         )
         raise _CourseSkippedError()
 
-    # --- race-path pre-fetch -------------------------------------------
+    # --- race-path pre-warm (login + reservation guard + CAPTCHA) ------
 
-    async def _prefetch_captcha(self, request: BookingRequest) -> None:
-        """Pre-solve the CAPTCHA for the primary (first-preference) adapter so book()
-        at T0 consumes a cached token instead of blocking ~75s on the solve.
-
-        Best-effort: any failure is logged and swallowed — the race still proceeds and
-        book() solves the token inline if needed (a pre-fetch hiccup must never cost the
-        booking). Only the first preference with a registered adapter is pre-solved (the
-        slot we will almost certainly book); a fallback course solves its own token in
-        book(). No-op for adapters without a CAPTCHA (TeeItUp, Fake).
-        """
+    def _primary_adapter(self, request: BookingRequest) -> tuple[CourseId, CourseAdapter] | None:
+        """The first course preference with a registered adapter — the slot we will almost
+        certainly book, and the only course pre-warmed before T0. Fallback courses
+        authenticate + solve their own token inline at T0."""
         for course_id in request.course_preferences:
             adapter = self._adapters.get(course_id)
-            if adapter is None:
-                continue
-            try:
-                await adapter.prepare_book(None, request)
-            except Exception as exc:
-                log.warning(
-                    "race: CAPTCHA pre-fetch failed for %s (%s) — will solve inline in book()",
-                    course_id,
-                    exc,
-                )
-            return
+            if adapter is not None:
+                return course_id, adapter
+        return None
+
+    async def _prewarm_primary(self, request: BookingRequest) -> ExistingReservation | None:
+        """Pre-warm the primary adapter DURING the pre-T0 busy-wait: concurrently
+        (1) authenticate + run the layer-2 reservation guard (`_prewarm_login`) and
+        (2) pre-solve the CAPTCHA (`_prefetch_captcha_for`).
+
+        Returns the matching ExistingReservation if the pre-T0 guard finds we are already
+        booked (caller short-circuits ALREADY_BOOKED), else None.
+
+        MF2 — outer-gather error isolation, BOTH conditions required (not either/or):
+          (1) `_prewarm_login` and `_prefetch_captcha_for` each catch their own exceptions
+              and never raise; AND
+          (2) the gather uses `return_exceptions=True` as defense-in-depth, so even a future
+              refactor that lets one leg raise cannot cancel the other in-flight leg (a
+              default gather cancels siblings on the first exception — which would silently
+              destroy the token solve or the login session the race depends on).
+        Awaits BOTH legs to completion before the caller busy-waits to T0.
+        """
+        primary = self._primary_adapter(request)
+        if primary is None:
+            return None
+        course_id, adapter = primary
+        results = await asyncio.gather(
+            self._prewarm_login(adapter, course_id, request),
+            self._prefetch_captcha_for(adapter, course_id, request),
+            return_exceptions=True,
+        )
+        login_result = results[0]
+        # Defense-in-depth (MF2 condition 2): _prewarm_login is contracted not to raise, but
+        # if it ever does, return_exceptions=True surfaces it here as an Exception instead of
+        # cancelling the prefetch leg. Swallow it (best-effort) and proceed to T0.
+        if isinstance(login_result, ExistingReservation):
+            return login_result
+        return None
+
+    async def _prewarm_login(
+        self,
+        adapter: CourseAdapter,
+        course_id: CourseId,
+        request: BookingRequest,
+    ) -> ExistingReservation | None:
+        """Best-effort pre-T0 login + layer-2 reservation guard for the primary adapter.
+
+        MUST NOT raise (MF2 condition 1): any exception is logged at WARNING and swallowed,
+        returning None — so the post-T0 `_run_course` authenticates inline (today's degraded
+        path). On authenticate SUCCESS it records `course_id` in `self._prewarmed_course_ids`
+        so `run()` skips the post-T0 re-auth (MF3). A pre-warm login FAILURE leaves the set
+        unchanged for that course, so the inline retry at T0 still happens.
+
+        Returns the matching existing reservation (caller short-circuits) or None.
+        """
+        creds = self._creds.get(course_id)
+        if creds is None:
+            return None
+        try:
+            await adapter.authenticate(creds)
+            # Auth succeeded: the session is established, so skip the post-T0 re-auth even if
+            # the reservation read below fails (it has its own try and _run_course re-reads).
+            self._prewarmed_course_ids.add(course_id)
+            existing = await adapter.list_reservations()
+            return self._first_matching_reservation(existing, request)
+        except Exception as exc:
+            log.warning(
+                "race: login pre-warm failed for %s (%s) — will authenticate inline at T0",
+                course_id,
+                exc,
+            )
+            return None
+
+    async def _prefetch_captcha_for(
+        self,
+        adapter: CourseAdapter,
+        course_id: CourseId,
+        request: BookingRequest,
+    ) -> None:
+        """Pre-solve the CAPTCHA for the primary adapter so book() at T0 consumes a cached
+        token instead of blocking ~75s on the solve. Best-effort: any failure is logged and
+        swallowed (book() solves inline). No-op for adapters without a CAPTCHA (TeeItUp, Fake).
+        """
+        try:
+            await adapter.prepare_book(None, request)
+        except Exception as exc:
+            log.warning(
+                "race: CAPTCHA pre-fetch failed for %s (%s) — will solve inline in book()",
+                course_id,
+                exc,
+            )
 
     # --- timing ---------------------------------------------------------
 
@@ -303,6 +409,21 @@ class Orchestrator:
         return None
 
     # --- terminals ----------------------------------------------------
+
+    def _terminal_already_booked(
+        self, request: BookingRequest, match: ExistingReservation
+    ) -> BookingResult:
+        """ALREADY_BOOKED terminal for the pre-T0 short-circuit (§3.2). Mirrors the post-T0
+        guard's terminal in `_run_course` so both already-booked paths are identical."""
+        return BookingResult(
+            request_id=request.request_id,
+            outcome=BookingOutcome.ALREADY_BOOKED,
+            course_id=match.course_id,
+            slot=None,
+            confirmation_code=match.confirmation_code,
+            booked_at=self._clock.now_utc(),
+            attempts=0,
+        )
 
     def _terminal_no_inventory(self, request: BookingRequest) -> BookingResult:
         return BookingResult(

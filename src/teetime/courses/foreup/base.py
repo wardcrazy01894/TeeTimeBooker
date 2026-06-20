@@ -237,6 +237,14 @@ class ForeUpAdapter(CourseAdapter):
         """
         if self._client is None:
             self._client = self._make_client()
+        # Idempotency guard (RACE_PREWARM_PLAN §3.1): once a real login has succeeded, a
+        # second authenticate() is a no-op — skip the warm-up GET + login POST. Keys ONLY on
+        # _logged_in, which a soft login failure (400/401 or rejected body) leaves False, so a
+        # later inline authenticate() correctly retries the full login. This is hygiene (a real
+        # ForeUP re-login is wasteful); the orchestrator's pre-warm skip is the load-bearing path.
+        if self._logged_in:
+            _log.info("ForeUP: already logged in — skipping re-authentication")
+            return
         _log.info("ForeUP: warming up session cookie...")
         warmup_path = f"/index.php/booking/{self._course_pk}/{self._booking_class_id}"
         await self._send_with_retry(lambda: self._c().get(warmup_path), op="warm-up")
