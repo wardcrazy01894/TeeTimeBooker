@@ -324,8 +324,14 @@ class TeeItUpAdapter:
         default_name = f"{name.get('given', '')} {name.get('family', '')}".strip()
         self._name_on_card = creds.extra.get("name_on_card", default_name)
 
-    async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
-        """Return slots matching request criteria."""
+    async def search(
+        self, request: BookingRequest, *, skip_initial_spacing: bool = False
+    ) -> list[TeeTimeSlot]:
+        """Return slots matching request criteria.
+
+        ``skip_initial_spacing`` is accepted for CourseAdapter Protocol parity (Change D /
+        PR3) and ignored — TeeItUp is not on the ForeUP race path and has no leading sleep.
+        """
         _ = self._authed_headers()
         tz = ZoneInfo(self._timezone)
         slots: list[TeeTimeSlot] = []

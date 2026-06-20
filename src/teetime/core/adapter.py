@@ -85,7 +85,9 @@ class CourseAdapter(Protocol):
         """Establish an authenticated session. Idempotent. Raises AuthError on bad creds."""
         ...
 
-    async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
+    async def search(
+        self, request: BookingRequest, *, skip_initial_spacing: bool = False
+    ) -> list[TeeTimeSlot]:
         """Return slots matching request criteria for this adapter's course.
 
         Raises:
@@ -93,6 +95,12 @@ class CourseAdapter(Protocol):
             RateLimitError, AuthError, CaptchaError: as named.
 
         An empty list (no exception) means inventory IS published but nothing matches.
+
+        ``skip_initial_spacing`` (Change D / PR3): drop the leading anti-bot courtesy
+        sleep before the FIRST per-date GET. Set True ONLY by the booking Orchestrator
+        on the race path (``prefetch_book=True``), where this GET leads the post-T0 burst
+        and there is nothing to space from. The watcher leaves it False so its
+        inter-date-check spacing (its only spacing) is preserved.
         """
         ...
 

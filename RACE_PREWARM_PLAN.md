@@ -4,9 +4,12 @@ Status: APPROVED (plan-with-review, 2 rounds, BLOCK→APPROVE). Implementation i
 strict red-green TDD. **PR1 (login pre-warm + pre-T0 reservation guard + short-circuit) is
 IMPLEMENTED** (`_prewarm_primary`/`_prewarm_login`/`_prefetch_captcha_for`,
 `_prewarmed_course_ids`, the SF6 short-circuit, ForeUP `_logged_in` guard, FakeAdapter
-`set_authenticate_side_effects`). PR2 (multi-token pool, **default count=3** per user) + PR3
-(race-only search-sleep trim) pending. Refines the race path in PLAN.md §9 and the root
-CLAUDE.md "booking race" invariants.
+`set_authenticate_side_effects`). PR2 (multi-token pool, **default count=3** per user) is in
+flight (#123). **PR3 (race-only search-sleep trim) is IMPLEMENTED** (`CourseAdapter.search`
+gains `*, skip_initial_spacing`; ForeUP drops the leading courtesy sleep only on the first date
+when True; the booking Orchestrator threads `skip_initial_spacing=self._prefetch_book`, watcher
+path unchanged). Refines the race path in PLAN.md §9 and the root CLAUDE.md "booking race"
+invariants.
 
 ## Round-2 reviewer disposition
 

@@ -364,7 +364,10 @@ class Orchestrator:
         poll = self._scheduler.poll_interval_ms / 1000.0
         while True:
             try:
-                slots = await adapter.search(request)
+                # Change D / PR3: on the race path drop the leading courtesy sleep before
+                # the first post-T0 search GET (nothing to space from). Off the race path
+                # (watcher/local-demo) the flag is False, preserving anti-bot spacing.
+                slots = await adapter.search(request, skip_initial_spacing=self._prefetch_book)
             except InventoryNotPublishedError:
                 if self._clock.now_utc() >= deadline:
                     return []

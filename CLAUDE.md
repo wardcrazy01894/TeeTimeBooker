@@ -369,6 +369,15 @@ in `core/` — never directly. This is the cut line for parallel work.
   `race: busy-wait complete` line is skipped), records `ALREADY_BOOKED`, notifies, and returns
   WITHOUT busy-waiting to T0 or searching. `prefetch_book=True` (the `--wait` job) is the only
   thing that enables any of this; the watcher/local-demo never pre-warm.
+- **The race drops the leading search courtesy sleep — RACE PATH ONLY (RACE_PREWARM_PLAN PR3).**
+  `CourseAdapter.search()` takes a keyword-only `skip_initial_spacing: bool = False`. The booking
+  `Orchestrator` threads `skip_initial_spacing=self._prefetch_book` into `_poll_for_slots`'s
+  `search()` call, so only the `--wait` race path skips the 250 ms `_MIN_BETWEEN_S` courtesy sleep
+  before the FIRST per-date GET (where that GET leads the post-T0 burst and there is nothing to
+  space from). 2nd+ per-date GETs are ALWAYS spaced, so a multi-date search still paces. The
+  **watcher never passes the flag** (it issues one date per `search()` call, and that leading
+  sleep is its ONLY inter-date-check spacing — see RACE_PREWARM_PLAN §5.1) — its etiquette is
+  untouched. `cancel_reservation`'s courtesy sleep is also untouched (cancel is off the race path).
 - **Each run is independent** — there is no shared state cache between the watch
   job and the main booking job. The live `list_reservations()` call is the source
   of truth across runs. Concurrent-run serialization is handled by ACA Job /

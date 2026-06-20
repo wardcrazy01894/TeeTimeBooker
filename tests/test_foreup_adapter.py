@@ -352,6 +352,84 @@ async def test_search_empty_list_returns_no_slots() -> None:
     assert slots == []
 
 
+# --- leading courtesy-sleep trim, RACE PATH ONLY (Change D / PR3) ---------
+
+
+def _multi_date_request() -> BookingRequest:
+    """A two-date search request (mirrors a multi-date search call)."""
+    return BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(TARGET_DATE, date(2026, 5, 14)),
+        time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
+        players=(Player(first_name="A", last_name="L", email="a@x.test"),),
+        course_preferences=(CID,),
+    )
+
+
+@respx.mock
+async def test_search_skips_leading_sleep_when_skip_initial_spacing_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single date + skip_initial_spacing=True → the GET fires with NO leading sleep."""
+    sleeps: list[float] = []
+
+    async def _spy(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("teetime.courses.foreup.base.asyncio.sleep", _spy)
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[_RAW_SLOT])
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.search(_request(), skip_initial_spacing=True)
+    assert sleeps == []  # no courtesy delay before the leading GET
+
+
+@respx.mock
+async def test_search_keeps_leading_sleep_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default (watcher path): one date per call DOES sleep before the GET.
+
+    This is the watcher's real call pattern; the leading sleep is its only
+    inter-date-check spacing, so it must be preserved when the flag is unset.
+    """
+    sleeps: list[float] = []
+
+    async def _spy(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("teetime.courses.foreup.base.asyncio.sleep", _spy)
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[_RAW_SLOT])
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.search(_request())
+    assert sleeps == [0.25]
+
+
+@respx.mock
+async def test_search_spaces_subsequent_requests_even_when_skipping_initial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two dates + skip_initial_spacing=True: 1st GET no sleep, 2nd GET IS spaced."""
+    sleeps: list[float] = []
+
+    async def _spy(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("teetime.courses.foreup.base.asyncio.sleep", _spy)
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[_RAW_SLOT])
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.search(_multi_date_request(), skip_initial_spacing=True)
+    assert sleeps == [0.25]  # only the 2nd iteration spaces
+
+
 # --- transient-error retry (idempotent calls only) -----------------------
 
 
