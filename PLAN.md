@@ -221,12 +221,20 @@ Bot:
        1ms-cadence fine loop with explicit OS yield (see core/clock.py).
        Sub-second accuracy without CPU starvation.
        RACE PATH ONLY (Orchestrator prefetch_book=True, set by `--wait`): this is a
-       TWO-PHASE wait — first to (T0 - captcha_prefetch_lead_s, default 120 s), where the
-       CAPTCHA token is pre-solved (`_prefetch_captcha` → adapter.prepare_book(None,…)),
-       then the remainder to T0. This moves the ~75 s CAPTCHA solve OFF the post-T0
-       critical path (the 2026-06-07 prod failure: solve ran after T0 → book POST ~100 s
-       late → prime slot gone → HTTP 400). Pre-fetch is best-effort; on failure book()
-       solves the token inline. The watcher never pre-fetches (prefetch_book=False).
+       TWO-PHASE wait — first to (T0 - captcha_prefetch_lead_s, default 120 s), where
+       `_prewarm_primary` runs CONCURRENTLY (one asyncio.gather, return_exceptions=True):
+       (a) `_prewarm_login` — authenticate (warm GET + login POST) + the layer-2
+       list_reservations guard for the first-preference adapter, and (b) `_prefetch_captcha_for`
+       — pre-solve the CAPTCHA (adapter.prepare_book(None,…)); then the remainder to T0. This
+       moves BOTH the ~2 s login AND the ~75 s CAPTCHA solve OFF the post-T0 critical path (so
+       step 4 below is just GET /times + POST /reservations — the original step-2 intent above).
+       The 2026-06-07 prod failure: CAPTCHA solve ran after T0 → book POST ~100 s late → prime
+       slot gone → HTTP 400. Pre-warm is best-effort (both legs catch+swallow); on login failure
+       _run_course authenticates inline at T0, on CAPTCHA failure book() solves inline. The
+       post-T0 re-auth skip is orchestrator-owned (`_prewarmed_course_ids`, NOT an adapter
+       guard). If the pre-T0 guard finds an already-booked match, the run short-circuits
+       ALREADY_BOOKED before T0 (logs `race: short-circuited pre-T0 …`). The watcher never
+       pre-warms (prefetch_book=False).
     4. Fire first GET /times. Response disambiguation (per Spike S1, item 7):
        - 200 + empty + pre-T0  -> InventoryNotPublishedError; poll
        - 200 + empty + post-T0 -> NoInventoryError; do NOT poll

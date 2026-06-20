@@ -351,6 +351,24 @@ in `core/` — never directly. This is the cut line for parallel work.
   cron can begin with too little runway), the lead can't be honored and the POST may fire
   after T0 — the orchestrator logs a `prefetch lead not fully honored` WARNING and still
   pre-fetches immediately.
+- **The race ALSO pre-warms the ForeUP login before T0 (RACE_PREWARM_PLAN PR1).** On the
+  `--wait` race path the orchestrator's `_prewarm_primary()` runs, CONCURRENTLY with the
+  CAPTCHA solve (one `asyncio.gather(return_exceptions=True)`), `_prewarm_login()` for the
+  first-preference adapter: `authenticate()` (warm-up GET + login POST, ~2 s) + the layer-2
+  `list_reservations` "already-booked" guard. So at T0 only `search` + `book` remain on the
+  critical path (login no longer costs ~2 s post-T0). Both legs are best-effort (catch +
+  swallow + log); a pre-warm hiccup never costs the booking. **The post-T0 re-auth skip is
+  ORCHESTRATOR-owned** (`self._prewarmed_course_ids`, threaded into `_run_course` as
+  `prewarmed_course_ids`): a course in the set is NOT re-authenticated at T0. This is
+  deliberately independent of any adapter idempotency guard (FakeAdapter/TeeItUp have none);
+  `ForeUpAdapter.authenticate()` ALSO has a defensive `if self._logged_in: return` guard, but
+  it is hygiene, not load-bearing. Only the PRIMARY (first-preference) adapter is pre-warmed —
+  a fallback course authenticates + solves inline at T0 (no shared session/token pool). If the
+  pre-T0 guard finds we are **already booked**, the run **short-circuits before T0**: it logs
+  `race: short-circuited pre-T0 …` (the SF6 verification surface, since the normal
+  `race: busy-wait complete` line is skipped), records `ALREADY_BOOKED`, notifies, and returns
+  WITHOUT busy-waiting to T0 or searching. `prefetch_book=True` (the `--wait` job) is the only
+  thing that enables any of this; the watcher/local-demo never pre-warm.
 - **Each run is independent** — there is no shared state cache between the watch
   job and the main booking job. The live `list_reservations()` call is the source
   of truth across runs. Concurrent-run serialization is handled by ACA Job /
