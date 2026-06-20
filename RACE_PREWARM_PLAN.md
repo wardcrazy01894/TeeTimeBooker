@@ -8,8 +8,11 @@ IMPLEMENTED** (`_prewarm_primary`/`_prewarm_login`/`_prefetch_captcha_for`,
 per user) is IMPLEMENTED** (`ForeUpAdapter._captcha_tokens` FIFO deque, `prepare_book(count=N)`
 concurrent gather with the NI10 raise contract, `book()` FIFO popleft + MF1 stale-token inline
 re-solve via `_is_captcha_challenge`, `SchedulerConfig.captcha_prefetch_count`, all three TOMLs
-at 3 + parity test, orchestrator forwards `count`). PR3 (race-only search-sleep trim) pending.
-Refines the race path in PLAN.md §9 and the root CLAUDE.md "booking race" invariants.
+at 3 + parity test, orchestrator forwards `count`). **PR3 (race-only search-sleep trim) is
+IMPLEMENTED** (`CourseAdapter.search` gains `*, skip_initial_spacing`; ForeUP drops the leading
+courtesy sleep only on the first date when True; the booking Orchestrator threads
+`skip_initial_spacing=self._prefetch_book`, watcher path unchanged). Refines the race path in
+PLAN.md §9 and the root CLAUDE.md "booking race" invariants.
 
 ## Round-2 reviewer disposition
 
@@ -375,9 +378,10 @@ captcha_prefetch_count: int = Field(default=3, ge=1)
   3 concurrent solves fit the SAME 120s lead as 1 (§4.5). **As-built: all three TOMLs carry
   `captcha_prefetch_count = 3`** to match the default.
 - **Parity (NIT7):** the scheduler block is baked into the TOMLs, NOT wired as env vars in
-  compute.bicep (confirmed: `compute.bicep` exposes no scheduler env vars). `captcha_prefetch_lead_s`
-  lives only in `example.toml` today — **container.toml and local.toml do NOT carry
-  `captcha_prefetch_lead_s` and rely on the code default of 120** (verified on disk). So:
+  compute.bicep (confirmed: `compute.bicep` exposes no scheduler env vars). **As-built, PR2 added
+  `captcha_prefetch_lead_s = 120` explicitly to container.toml** (alongside example.toml and the
+  gitignored local.toml) so the prod-facing config does not silently depend on the code default
+  for a race-critical timing value. So:
   - Parity means: `captcha_prefetch_count` present (and equal, = 3) in all three TOMLs.
   - The new parity test asserts BOTH fields agree where present: it asserts
     `captcha_prefetch_count` is equal across example/container/local, AND asserts the lead is

@@ -190,6 +190,21 @@ async def test_watch_check_once_books_when_slot_available() -> None:
     assert stored.outcome == BookingOutcome.BOOKED
 
 
+async def test_watch_search_preserves_leading_spacing() -> None:
+    """SF5 invariant (Change D / PR3): the watcher must NEVER pass skip_initial_spacing —
+    it issues one date per search() call, so the leading courtesy sleep is its ONLY
+    inter-date-check spacing. Asserting the flag defaults to False at the adapter proves the
+    race-path trim does not leak into the watch path and strip its anti-bot etiquette."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot(hour=9, minute=15)])
+    watch, _, _ = _build(adapter)
+
+    await watch.check_once(_request(), TARGET_DATE)
+
+    assert adapter.search_call_count >= 1
+    assert adapter.last_search_skip_initial_spacing is False
+
+
 async def test_watch_check_once_returns_none_when_no_slots() -> None:
     """When search() returns no slots (empty list), check_once() returns None."""
     adapter = FakeAdapter(course_id=COURSE_ID)

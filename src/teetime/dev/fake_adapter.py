@@ -49,6 +49,7 @@ class FakeAdapter:
         self._authenticate_side_effects: list[Exception | None] = []
         self.authenticate_call_count: int = 0
         self.search_call_count: int = 0
+        self.last_search_skip_initial_spacing: bool | None = None
         self.prepare_book_call_count: int = 0
         # Records the `count` passed to the most recent prepare_book() call, so
         # orchestrator tests can assert the race path requests N pooled tokens.
@@ -116,8 +117,11 @@ class FakeAdapter:
         if self._prepare_book_exc is not None:
             raise self._prepare_book_exc
 
-    async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
+    async def search(
+        self, request: BookingRequest, *, skip_initial_spacing: bool = False
+    ) -> list[TeeTimeSlot]:
         self.search_call_count += 1
+        self.last_search_skip_initial_spacing = skip_initial_spacing
         if self._search_exc is not None:
             raise self._search_exc
         if self._search_response is not None:

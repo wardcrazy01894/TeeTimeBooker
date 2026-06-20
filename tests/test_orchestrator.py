@@ -573,6 +573,48 @@ async def test_run_does_not_prefetch_when_disabled() -> None:
     assert fa.prepare_book_call_count == 0, "must not pre-fetch when prefetch_book is False"
 
 
+async def test_run_threads_skip_initial_spacing_on_race_path() -> None:
+    """Change D / PR3: the booking Orchestrator passes skip_initial_spacing into search(),
+    True on the race path (prefetch_book=True) and False otherwise. This drops the leading
+    250ms courtesy sleep ONLY for the first post-T0 search GET, where the burst leads with
+    that GET and there is nothing to space from. The watcher (its own search call) never
+    passes it, so its inter-date-check spacing is preserved."""
+
+    async def _seen_skip_flag(*, prefetch_book: bool) -> list[bool]:
+        cid = CourseId("fake:course")
+        fa = FakeAdapter(course_id=cid)
+        fa.set_search_response([_slot(cid)])
+
+        t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+        lead = 30
+        clock = FakeClock(start=t0 - timedelta(seconds=lead + 2))
+        orch, _, _ = _build(
+            {cid: fa},
+            clock=clock,
+            scheduler=_scheduler_with_lead(lead),
+            prefetch_book=prefetch_book,
+        )
+
+        seen: list[bool] = []
+        orig_search = fa.search
+
+        async def _recording_search(
+            request: object, *, skip_initial_spacing: bool = False
+        ) -> object:
+            seen.append(skip_initial_spacing)
+            return await orig_search(request, skip_initial_spacing=skip_initial_spacing)  # type: ignore[arg-type]
+
+        fa.search = _recording_search  # type: ignore[assignment]
+        await orch.run(_request(course_ids=(cid,)))
+        return seen
+
+    race = await _seen_skip_flag(prefetch_book=True)
+    assert race and all(race), "race path must pass skip_initial_spacing=True"
+
+    off = await _seen_skip_flag(prefetch_book=False)
+    assert off and not any(off), "non-race path must pass skip_initial_spacing=False"
+
+
 async def test_run_prefetch_failure_does_not_abort_race() -> None:
     """If the pre-fetch (CAPTCHA solve) fails, the race must still proceed to book —
     degrading to solving the token inside book(). A pre-fetch hiccup must never cost the

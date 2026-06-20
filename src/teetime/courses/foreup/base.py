@@ -326,14 +326,22 @@ class ForeUpAdapter(CourseAdapter):
                 self._reservations_from_login = raw_res
         _log.info("ForeUP: login successful")
 
-    async def search(self, request: BookingRequest) -> list[TeeTimeSlot]:
-        """GET /times for each target_date, filter by time_windows/holes/price/spots."""
+    async def search(
+        self, request: BookingRequest, *, skip_initial_spacing: bool = False
+    ) -> list[TeeTimeSlot]:
+        """GET /times for each target_date, filter by time_windows/holes/price/spots.
+
+        ``skip_initial_spacing`` (Change D / PR3) drops the leading courtesy sleep before
+        the FIRST date's GET — race-path only. The 2nd+ date GETs are always spaced, so the
+        watcher's inter-date-check etiquette is untouched even if the flag is ever set.
+        """
         client = self._c()
         tz = ZoneInfo(self._timezone)
         results: list[TeeTimeSlot] = []
 
-        for target_date in request.target_dates:
-            await asyncio.sleep(_MIN_BETWEEN_S)
+        for i, target_date in enumerate(request.target_dates):
+            if not (i == 0 and skip_initial_spacing):
+                await asyncio.sleep(_MIN_BETWEEN_S)
             _log.info(
                 "ForeUP: fetching tee times for %s (%d player(s))...",
                 target_date,
