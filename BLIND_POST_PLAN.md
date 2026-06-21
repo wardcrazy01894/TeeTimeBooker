@@ -162,11 +162,26 @@ PRIMARY source for these reasons:
   card-free (ForeUP is card-on-file; the POST never carries PAN/CVV — root CLAUDE.md
   invariant). `time`/`start_front` are placeholders overwritten per slot.
 - `BLIND_POST_MORNING_GRID: list[str] | None` — the EXPLICIT enumerated morning start
-  times (HH:MM ET). The afternoon grid was captured 2026-06-24; the **MORNING window
-  (08:45-10:00) grid is the one remaining PR2 capture** (mornings sell out — capture from
-  a fresh drop or an open future morning). Sentinel is `None` (NOT `[]`/`0`) so any
-  pre-PR2 wiring fails LOUD instead of silently enumerating nothing (nit 3);
+  times (HH:MM ET). **POPULATED in PR2** with the operator-approved DERIVED grid
+  `["08:45","08:52","09:00","09:07","09:15","09:22","09:30","09:37","09:45","09:52","10:00"]`.
+  OQ1 was closed by DERIVATION, not a direct morning capture: mornings sell out inside the
+  7-day window so could not be searched, but a live read-only afternoon search proved the
+  Mangrove Bay teesheet cadence is a clean gap-free 8/hour at minutes
+  :00,:07,:15,:22,:30,:37,:45,:52, which this grid extrapolates over 08:45-10:00. It is a
+  best-effort starting point validated retroactively (next bullet), NOT a guess we trust
+  blindly — the real T0 search is still the correctness fallback. Sentinel stays `None`
+  (NOT `[]`/`0`) so a future re-blanking fails LOUD instead of enumerating nothing (nit 3);
   `synthesize_blind_slots` asserts it is not None.
+
+**Retroactive grid validation (operator request, PR2 logging):** because the morning grid
+is derived rather than captured, PR2 adds logging on BOTH sides of the eventual comparison
+so a real 06:00 drop confirms or corrects it: `synthesize_blind_slots` logs the configured
+grid + the in-window times it will blind-POST (`MB blind-POST: synthesized …`), and
+`ForeUpAdapter.search()` logs each date's matched (in-window) tee times — not just a count
+(`ForeUP: matched tee times for …`). Both are times-only (PII-free). After the first live
+drop, diff the two log lines: any real matched morning time absent from the grid (or vice
+versa) is drift to fold back into `BLIND_POST_MORNING_GRID`. (The §4 canary, PR5, automates
+the template side of this.)
 
 `synthesize_blind_slots(request, target_date, max_count)`:
 1. Assert `BLIND_POST_MORNING_GRID is not None` (fail loud pre-capture).

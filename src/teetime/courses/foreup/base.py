@@ -402,7 +402,16 @@ class ForeUpAdapter(CourseAdapter):
                 ):
                     continue
                 results.append(slot)
-            _log.info("ForeUP: %d slot(s) match filters for %s", len(results) - before, target_date)
+            matched = results[before:]
+            _log.info("ForeUP: %d slot(s) match filters for %s", len(matched), target_date)
+            # Log the matched (in-window) tee times — not just the count — so a real 06:00
+            # drop can be diffed against the blind-POST derived grid to detect grid drift
+            # (BLIND_POST_PLAN.md PR2 retroactive validation). Times only → PII-free.
+            _log.info(
+                "ForeUP: matched tee times for %s: %s",
+                target_date,
+                [s.tee_time.astimezone(tz).strftime("%H:%M") for s in matched],
+            )
 
         return results
 
