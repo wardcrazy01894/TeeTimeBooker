@@ -291,6 +291,29 @@ in `core/` — never directly. This is the cut line for parallel work.
   course (Mangrove Bay) flips the boolean True and overrides `synthesize_blind_slots`.
   TeeItUp ships none of the members → `isinstance` excludes it outright. So a non-capable
   course can never reach the blind path even with a mis-edited config.
+- **The orchestrator blind path fires at T0, RACE PATH ONLY (BLIND_POST_PLAN PR3).**
+  `_run_course` consults `_should_blind_post(adapter, course_id, request)` after the layer-2
+  pre-book guard and BEFORE the sequential search — a five-part gate, ALL required:
+  `not request.dry_run` AND `self._prefetch_book` (the `--wait` race path) AND
+  `scheduler.blind_post_max_count > 0` AND `_is_blind_capable(adapter)` (the two-part
+  `isinstance(a, BlindPostCapable) and a.supports_blind_post`) AND the course is the PRIMARY
+  (first-preference) adapter. Any miss → the normal search-book loop. When it passes,
+  `_blind_post_course` runs the **hybrid net**: it fires the top-`N` ranked in-window
+  `synthesize_blind_slots` POSTs CONCURRENTLY (`asyncio.create_task` + `gather(return_exceptions=True)`)
+  alongside the real `search` GET, where `N = min(len(blind_slots), captcha_pool_size())` (token-bounded).
+  Outcomes: (a) **≥1 BOOKED** → `_keep_best` re-ranks the booked slots with the SAME
+  `rank_slots_for_request` the search path uses, returns the winner, `_cancel_extras` cancels every
+  other booked reservation by its `book()` `confirmation_code` (a `None` conf or a `CancelError` →
+  `log.critical`, never crashes — load-bearing reason the TTID/teetime_id id-extraction fix matters),
+  and `_cancel_task` cancels the hedge search. (b) **0 BOOKED** → `_reguard_before_fallback`
+  re-authenticates THEN `list_reservations` (a landed-but-uncertain POST may have booked silently):
+  a match short-circuits to `ALREADY_BOOKED` (no fallback book); else it awaits the hedge search and
+  falls through to the sequential `_book_from_candidates` loop, raising `_CourseSkippedError` if that
+  too finds nothing. `SlotGoneError` from a blind POST is dropped (try the others); a non-SlotGone
+  exception is logged + dropped (the §9 UNCERTAIN ambiguity is what the reguard covers). The CAPTCHA
+  prefetch SCALES on the race path: `_captcha_prefetch_count_for` returns
+  `min(blind_post_max_count, len(synthesize_blind_slots(...)))` for a blind-capable primary (so each
+  blind POST has a pooled token), else the fixed `scheduler.captcha_prefetch_count` (default 3).
 - **`delete_terminal` is on the `BookingStore` Protocol** (all stores must
   implement it; `InMemoryStore` does). Used only by `UpgradeOrchestrator` after
   a successful cancel+rebook to clear the old in-process idempotency record

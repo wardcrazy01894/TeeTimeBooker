@@ -1,7 +1,10 @@
 # BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
 
-**Status:** PROPOSED (architect draft, REVISED after review round 1 — all must/should/
-nit items addressed; open questions closed). Authoritative design for the blind-POST
+**Status:** PARTIALLY WIRED. PR0–PR3 MERGED — the orchestrator blind path is live in code
+(gate + hybrid net + keep-best/cancel-extras + reguard + prefetch scaling; `core/orchestrator.py`,
+default `blind_post_max_count=12`). Remaining: PR4 (watcher >1-reservation crash-net backstop) and
+PR5 (PLAN §12 etiquette paragraph + README + opt-in drift canary). Real effect is prod-only (the
+gate requires the `--wait` race path + `not dry_run`). Authoritative design for the blind-POST
 feature. Read `PLAN.md` §6/§9/§12/§13 and `RACE_PREWARM_PLAN.md` first — this builds
 directly on the race path they define and does not re-litigate it.
 
@@ -496,7 +499,7 @@ to `SlotGoneError` (existing `book()` behavior) and is dropped from `booked`.
 Ordered so each PR is independently mergeable and reviewable. TDD: every PR writes
 failing tests FIRST. Docs each PR updates are listed.
 
-### PR0 — `book()` confirmation_code extraction fix (load-bearing prerequisite)
+### PR0 — `book()` confirmation_code extraction fix (load-bearing prerequisite)  ✅ MERGED
 - **Code:** add `teetime_id`, `TTID` to `ForeUpAdapter.book()`'s extraction chain.
 - **Tests (red first):**
   - `test_book_extracts_teetime_id` — flat response `{"teetime_id": 123}` → conf
@@ -510,7 +513,7 @@ failing tests FIRST. Docs each PR updates are listed.
   only" to "fixed in PR0; now load-bearing for blind-POST cancel-extras");
   `src/teetime/courses/CLAUDE.md` (Mangrove Bay response shape).
 
-### PR1 — capability Protocol + FakeAdapter knob (no orchestrator wiring yet)
+### PR1 — capability Protocol + FakeAdapter knob (no orchestrator wiring yet)  ✅ MERGED
 - **Code:** `core/adapter.py` add `BlindPostCapable` Protocol. `ForeUpAdapter`
   base: `supports_blind_post = False`. `FakeAdapter`: `supports_blind_post` ctor
   knob (default False) + scriptable `set_blind_slots(...)` + `synthesize_blind_slots`.
@@ -522,7 +525,7 @@ failing tests FIRST. Docs each PR updates are listed.
   default Fake / TeeItUp non-capable.
 - **Docs:** `CLAUDE.md` (new capability-gate invariant); `BLIND_POST_PLAN.md` (this).
 
-### PR2 — Mangrove Bay grid capture + `synthesize_blind_slots`
+### PR2 — Mangrove Bay grid capture + `synthesize_blind_slots`  ✅ MERGED
 - **Code:** `mangrove_bay.py` — `BLIND_POST_TEMPLATE` is ALREADY committed (OQ2 closed;
   card-free capture). PR2 captures the MORNING `BLIND_POST_MORNING_GRID` (the `None`
   sentinel → the real HH:MM list), sets `supports_blind_post = True` (already set), and
@@ -542,7 +545,7 @@ failing tests FIRST. Docs each PR updates are listed.
   - `test_synthesize_dst_month_boundary` — March/Nov target.
 - **Docs:** `src/teetime/courses/CLAUDE.md` (Mangrove Bay blind-POST specifics).
 
-### PR3 — orchestrator blind path + hybrid fallback + keep-best/cancel-extras
+### PR3 — orchestrator blind path + hybrid fallback + keep-best/cancel-extras  ✅ WIRED
 - **Code:** `Orchestrator._run_course` gate (§3); `_blind_post_course`, `_keep_best`,
   `_cancel_extras`, `_reguard_before_fallback` (§6/§7). `captcha_pool_size()` is on the
   `BlindPostCapable` Protocol + `ForeUpAdapter` + `FakeAdapter` so the orchestrator sizes
