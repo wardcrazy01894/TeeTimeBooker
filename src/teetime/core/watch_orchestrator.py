@@ -91,6 +91,7 @@ from zoneinfo import ZoneInfo
 from ..persistence.store import ConcurrentRunError
 from .adapter import (
     AuthError,
+    CancelError,
     CaptchaError,
     InventoryNotPublishedError,
     NoInventoryError,
@@ -330,6 +331,16 @@ class WatchOrchestrator:
         ]
         if matching:
             if self._policy is not None and self._policy.enabled:
+                # CRASH-NET backstop (BLIND_POST_PLAN PR4): >1 live reservation for this
+                # (target_date, party_size) means a crash (or a failed in-run cancel) left
+                # duplicates — the blind-POST happy path cancels surplus reservations in-run
+                # (_cancel_extras). Reconcile down to one: keep the best-ranked, cancel the
+                # rest, under the advisory lock. Gated on the same policy.enabled as the
+                # upgrade cancel (we never cancel a held booking unless the operator opted in).
+                if len(matching) > 1:
+                    matching = await self._reconcile_duplicate_reservations(
+                        adapter, course_id, request, target_date, matching
+                    )
                 # No store record at this point (Gate 3 would have caught a BOOKED
                 # terminal before we reach _check_course). Synthesize a managed
                 # BookingResult so UpgradeOrchestrator can cancel+rebook if a better
@@ -360,6 +371,92 @@ class WatchOrchestrator:
             return None
 
         return await self._book_candidates(adapter, scoped, target_date, candidates)
+
+    # --- multi-reservation reconcile (CRASH-NET backstop, BLIND_POST_PLAN PR4) ----
+
+    async def _reconcile_duplicate_reservations(
+        self,
+        adapter: CourseAdapter,
+        course_id: CourseId,
+        request: BookingRequest,
+        target_date: date,
+        matching: list[ExistingReservation],
+    ) -> list[ExistingReservation]:
+        """Collapse >1 live reservation for (target_date, party_size) down to one.
+
+        Keep the best-ranked reservation (same midpoint-distance ranking the booking
+        path uses) and cancel the rest, under the advisory lock. This is the BACKSTOP —
+        the blind-POST happy path cancels surplus reservations in-run (Orchestrator.
+        _cancel_extras); this recovers a crash (or a prior failed cancel) that left
+        duplicates.
+
+        Returns the surviving reservation(s):
+        - ``[kept]`` on success (the kept one is returned even if an extra's cancel
+          failed — that extra is logged CRITICAL and retried on the next watch run);
+        - ``matching`` unchanged if the request_lock was contended (another run is
+          already acting — let it reconcile rather than racing it).
+
+        Best-effort: a CancelError never crashes the run.
+        """
+        ranked = self._rank_reservations(matching, course_id, request, target_date)
+        keep, extras = ranked[0], ranked[1:]
+        try:
+            async with self._store.request_lock(request.request_id):
+                for res in extras:
+                    try:
+                        await adapter.cancel_reservation(res.confirmation_code)
+                    except CancelError:
+                        log.critical(
+                            "watch: failed to cancel duplicate reservation %s on %s — "
+                            "manual cleanup may be required",
+                            res.confirmation_code,
+                            target_date,
+                        )
+        except ConcurrentRunError:
+            log.debug(
+                "watch: request_lock held by another run during reconcile for %s — deferring",
+                request.request_id,
+            )
+            return matching
+
+        log.info(
+            "watch: reconciled %d duplicate reservations on %s — kept %s, cancelled %d",
+            len(matching),
+            target_date,
+            keep.confirmation_code,
+            len(extras),
+        )
+        return [keep]
+
+    def _rank_reservations(
+        self,
+        reservations: list[ExistingReservation],
+        course_id: CourseId,
+        request: BookingRequest,
+        target_date: date,
+    ) -> list[ExistingReservation]:
+        """Order reservations best-first using the SAME midpoint-distance ranking the
+        booking path uses (rank_slots_for_request). In-window reservations rank first;
+        any out-of-window ones (dropped by the window filter) are appended by ascending
+        tee_time so the reconcile order is TOTAL and deterministic (never silently drops
+        a duplicate from the cancel set)."""
+        scoped = dc_replace(request, target_dates=(target_date,))
+        by_slot_id: dict[SlotId, ExistingReservation] = {}
+        slots: list[TeeTimeSlot] = []
+        for res in reservations:
+            slot = self._synthesize_managed_booking(res, course_id, request).slot
+            assert slot is not None  # _synthesize_managed_booking always sets a slot
+            by_slot_id[slot.slot_id] = res
+            slots.append(slot)
+
+        ranked_slots = rank_slots_for_request(slots, scoped)
+        ranked = [by_slot_id[s.slot_id] for s in ranked_slots]
+        ranked_ids = {s.slot_id for s in ranked_slots}
+        leftover = sorted(
+            (res for sid, res in by_slot_id.items() if sid not in ranked_ids),
+            key=lambda r: r.tee_time,
+        )
+        return ranked + leftover
 
     async def _book_candidates(
         self,

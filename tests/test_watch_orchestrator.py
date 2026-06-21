@@ -1199,3 +1199,113 @@ async def test_watch_recovery_books_just_dropped_window() -> None:
     second = await watch.check_once(req, TARGET_DATE)
     assert second is not None and second.outcome == BookingOutcome.BOOKED
     assert adapter.book_call_count == 1  # NOT re-booked
+
+
+# ---------------------------------------------------------------------------
+# Multi-reservation reconcile (BLIND_POST_PLAN PR4 — CRASH-NET backstop only).
+#
+# The blind-POST happy path cancels surplus reservations in-run (_cancel_extras,
+# PR3). This is the SAFETY NET: if a crash (or a prior failed cancel) leaves >1
+# live reservation for the same target date + party_size, the next FRESH watch
+# run reconciles down to one — keep the best-ranked slot, cancel the rest, under
+# the advisory lock. Gated on one_booking_policy.enabled (the same gate that owns
+# the upgrade cancel). Documented residual (single-user): a deliberate manual
+# second booking on the same date+party_size would also be cancelled.
+# ---------------------------------------------------------------------------
+
+
+def _reservation(*, hour: int, minute: int, code: str, party_size: int = 1) -> ExistingReservation:
+    """A live (server-sourced, raw-id, unmanaged) reservation on TARGET_DATE."""
+    return ExistingReservation(
+        course_id=COURSE_ID,
+        confirmation_code=code,
+        tee_time=datetime(
+            TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, hour, minute, tzinfo=ET
+        ),
+        party_size=party_size,
+    )
+
+
+async def test_watch_reconciles_multiple_reservations_same_date() -> None:
+    """3 reservations on the target date (matching party_size) + policy enabled →
+    keep the best-ranked one and cancel the other 2. The search returns nothing
+    better, so the 2 cancels are the reconcile's, not an upgrade's."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    # Window is 09:00-10:30 (midpoint 09:45). 09:45 is dead-center = best rank.
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=0, code="res-0900"),
+            _reservation(hour=9, minute=45, code="res-0945"),
+            _reservation(hour=10, minute=15, code="res-1015"),
+        ]
+    )
+    adapter.set_search_response([])  # nothing better → no upgrade-driven cancel
+    watch, _, _ = _build(adapter, policy=OneBookingPolicyConfig(enabled=True))
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None  # an existing reservation is held; check_once returns None
+    assert adapter.cancel_call_count == 2
+    remaining = await adapter.list_reservations()
+    assert [r.confirmation_code for r in remaining] == ["res-0945"]
+
+
+async def test_watch_reconcile_keeps_best_by_rank() -> None:
+    """The reservation that SURVIVES reconcile is the highest-ranked one
+    (closest to the window midpoint), not merely the first returned by
+    list_reservations(). Order the input so the best is NOT first."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=10, minute=15, code="res-1015"),  # farthest from 09:45
+            _reservation(hour=9, minute=30, code="res-0930"),  # 15 min away
+            _reservation(hour=9, minute=45, code="res-0945"),  # dead-center: best
+        ]
+    )
+    adapter.set_search_response([])
+    watch, _, _ = _build(adapter, policy=OneBookingPolicyConfig(enabled=True))
+
+    await watch.check_once(_request(), TARGET_DATE)
+
+    remaining = await adapter.list_reservations()
+    assert [r.confirmation_code for r in remaining] == ["res-0945"]
+    assert adapter.cancel_call_count == 2
+
+
+async def test_watch_single_reservation_unchanged() -> None:
+    """N=1 reservation → no reconcile cancel (today's behavior). The single
+    held reservation is left untouched; only the upgrade path may act on it."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations([_reservation(hour=9, minute=45, code="res-0945")])
+    adapter.set_search_response([])  # nothing better → no upgrade
+    watch, _, _ = _build(adapter, policy=OneBookingPolicyConfig(enabled=True))
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None
+    assert adapter.cancel_call_count == 0
+    remaining = await adapter.list_reservations()
+    assert [r.confirmation_code for r in remaining] == ["res-0945"]
+
+
+async def test_watch_no_reconcile_when_policy_disabled() -> None:
+    """The reconcile is gated on one_booking_policy.enabled (the same gate as the
+    upgrade cancel). With policy disabled, >1 reservation is left untouched —
+    we never cancel a held booking when the operator hasn't opted into the
+    cancel+rebook policy."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=0, code="res-0900"),
+            _reservation(hour=9, minute=45, code="res-0945"),
+        ]
+    )
+    adapter.set_search_response([])
+    watch, _, _ = _build(adapter, policy=OneBookingPolicyConfig(enabled=False))
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None
+    assert adapter.cancel_call_count == 0
+    remaining = await adapter.list_reservations()
+    assert {r.confirmation_code for r in remaining} == {"res-0900", "res-0945"}
