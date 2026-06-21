@@ -579,8 +579,9 @@ class ForeUpAdapter(CourseAdapter):
             or data.get("confirmation_code")
             # Real Mangrove Bay book responses are a FLAT dict whose id is in
             # TTID/teetime_id (the SAME two fields _parse_reservation reads — keep
-            # the relative order in sync). Without these the chain returned None on
-            # every live MB booking, so blind-POST cancel-extras had no id to cancel.
+            # the relative order in sync). MB's response carries none of the six
+            # fields above, so without these the chain returned None on every live MB
+            # booking, leaving blind-POST cancel-extras with no id to cancel.
             or data.get("TTID")
             or data.get("teetime_id")
         )

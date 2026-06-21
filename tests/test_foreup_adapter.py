@@ -631,6 +631,33 @@ async def test_book_prefers_pending_reservation_id_over_teetime_id() -> None:
 
 
 @respx.mock
+async def test_book_ttid_wins_over_teetime_id_when_both_present() -> None:
+    """Ordering invariant (reviewer should-fix): when ONLY the two new flat fields
+    are present and they DIFFER, `TTID` wins over `teetime_id` — matching
+    `_parse_reservation`'s relative order. If the two book() lines were ever
+    reordered, cancel-extras would target a different reservation than the parser
+    resolves; this test fails loudly on that drift."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(200, json={"TTID": "X", "teetime_id": "Y"})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        result = await adapter.book(slot, _request())
+    assert result.confirmation_code == "TTB:X"
+
+
+@respx.mock
 async def test_cancel_strips_ttb_from_teetime_id_conf() -> None:
     """End-to-end: a teetime_id-sourced confirmation_code (TTB:<teetime_id>) is
     accepted by cancel_reservation, which strips TTB: and DELETEs the raw id — the
