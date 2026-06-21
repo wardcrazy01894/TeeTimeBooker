@@ -222,17 +222,26 @@ class MangroveBayAdapter(ForeUpAdapter):
             )
             raw = {**BLIND_POST_TEMPLATE, "time": time_field, "start_front": start_front}
             candidates.append(_parse_slot(raw, target_date, self.course_id, tz))
+        in_window_count = sum(
+            any(w.earliest <= s.tee_time.time() <= w.latest for w in request.time_windows)
+            for s in candidates
+        )
         ranked = rank_slots_for_request(candidates, request)
         result = ranked[:max_count]
-        # Retroactive grid-validation logging (operator request): emit the full configured
-        # grid AND the in-window ranked times we will blind-POST, so that after a real 06:00
-        # drop these can be diffed against the concurrent real search (search() logs its
-        # matched morning tee times) to confirm or correct the derived grid. PII-free.
+        # Retroactive grid-validation logging (operator request): emit the grid size, how
+        # many fell in the request window, how many SURVIVED the spots/holes/price filter,
+        # and the in-window times we will blind-POST. The separate in-window vs survived
+        # counts let an empty result be diagnosed from logs — "0 in window" (grid drift /
+        # wrong window) vs "in window but 0 survived" (mis-set holes/max_price/party size) —
+        # instead of looking identical. Diff against the concurrent real search (search()
+        # logs its matched morning tee times) to confirm or correct the derived grid. PII-free.
         _log.info(
-            "MB blind-POST: synthesized %d/%d in-window candidate(s) for %s "
-            "(grid=%s, firing=%s, max_count=%d)",
-            len(result),
+            "MB blind-POST: %d grid time(s), %d in window, %d survived spots/holes/price; "
+            "firing %d for %s (grid=%s, times=%s, max_count=%d)",
             len(BLIND_POST_MORNING_GRID),
+            in_window_count,
+            len(ranked),
+            len(result),
             target_date,
             BLIND_POST_MORNING_GRID,
             [s.tee_time.strftime("%H:%M") for s in result],

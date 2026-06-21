@@ -11,6 +11,7 @@ drift). Pure date arithmetic — no network.
 from __future__ import annotations
 
 from datetime import date, time
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -34,7 +35,12 @@ SAT = date(2026, 5, 16)
 WINDOW = TimeWindow(earliest=time(8, 45), latest=time(10, 0))  # midpoint 09:22:30
 
 
-def _request(window: TimeWindow = WINDOW, *, players: int = 4) -> BookingRequest:
+def _request(
+    window: TimeWindow = WINDOW,
+    *,
+    players: int = 4,
+    max_price: Decimal | None = None,
+) -> BookingRequest:
     return BookingRequest(
         request_id=RequestId(uuid4()),
         target_dates=(SAT,),
@@ -43,6 +49,7 @@ def _request(window: TimeWindow = WINDOW, *, players: int = 4) -> BookingRequest
             Player(first_name=f"P{i}", last_name="L", email=f"p{i}@x.test") for i in range(players)
         ),
         course_preferences=(CourseId("foreup:mangrove_bay"),),
+        max_price_per_player=max_price,
         dry_run=False,
     )
 
@@ -89,6 +96,33 @@ def test_synthesize_start_front_and_time_fields() -> None:
     assert s.raw["time"] == "2026-05-16 09:07"
 
 
+@pytest.mark.parametrize(
+    ("target", "expected_start_front", "expected_time"),
+    [
+        # January is the 0-indexed-month danger case: month-1=0 -> "00".
+        (date(2026, 1, 17), 202600170907, "2026-01-17 09:07"),
+        (date(2026, 5, 16), 202604160907, "2026-05-16 09:07"),
+        # December -> month-1=11; the high end of the range.
+        (date(2026, 12, 19), 202611190907, "2026-12-19 09:07"),
+    ],
+)
+def test_synthesize_start_front_month_index_edge_cases(
+    target: date, expected_start_front: int, expected_time: str
+) -> None:
+    """The start_front formula is 0-indexed month (JS Date style). A wrong month index
+    means EVERY blind POST 400s, so lock in Jan (month-1=0 -> '00') and Dec (-> '11'),
+    not just the May date the other tests use. The `time` field stays 1-indexed."""
+    adapter = MangroveBayAdapter()
+    # synthesize uses the target_date ARG for date math; request.target_dates is irrelevant.
+    s = {
+        x.tee_time.strftime("%H:%M"): x
+        for x in adapter.synthesize_blind_slots(_request(), target, max_count=99)
+    }["09:07"]
+    assert s.raw["start_front"] == expected_start_front
+    assert s.slot_id == str(expected_start_front)
+    assert s.raw["time"] == expected_time
+
+
 def test_synthesize_raw_is_template_overlaid() -> None:
     adapter = MangroveBayAdapter()
     s = adapter.synthesize_blind_slots(_request(), SAT, max_count=99)[0]
@@ -129,3 +163,19 @@ def test_synthesize_logs_firing_grid_for_retroactive_validation(
         adapter.synthesize_blind_slots(_request(), SAT, max_count=3)
     assert "blind-POST" in caplog.text
     assert "09:22" in caplog.text  # a firing time appears in the log
+
+
+def test_synthesize_log_distinguishes_filtered_from_empty_window(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """should-fix 2: a grid time IN the window but filtered out (here by a max_price below
+    the $46 green fee) must read differently in logs than 'no grid time in window', so a
+    mis-set max_price/holes/party-size config is diagnosable rather than looking like drift."""
+    adapter = MangroveBayAdapter()
+    cheap = _request(max_price=Decimal("10.00"))  # below the 46 green fee → all filtered
+    with caplog.at_level("INFO"):
+        out = adapter.synthesize_blind_slots(cheap, SAT, max_count=99)
+    assert out == []  # nothing survives the price filter
+    # All 11 grid times are in the window, but 0 survive spots/holes/price.
+    assert "11 in window" in caplog.text
+    assert "0 survived" in caplog.text
