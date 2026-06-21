@@ -84,6 +84,9 @@ def test_fake_adapter_default_is_not_capable() -> None:
     """Default FakeAdapter mirrors a bare ForeUP course: structurally a member (it has
     the methods for parity) but supports_blind_post defaults False → gate excludes it."""
     adapter = FakeAdapter(course_id=CID)
+    # Structurally a Protocol member even when not capable — this is precisely why the
+    # gate is two-part (isinstance AND the boolean), not a bare isinstance check.
+    assert isinstance(adapter, BlindPostCapable)
     assert adapter.supports_blind_post is False
     assert _gate_capable(adapter) is False
 
@@ -115,9 +118,10 @@ def test_fake_synthesize_returns_scripted_slots_truncated() -> None:
     req = _request()
     # Unscripted → falls back to a single default slot.
     assert len(adapter.synthesize_blind_slots(req, date(2026, 5, 13), max_count=3)) == 1
-    # Scripted → returns the list, truncated to max_count.
-    slots = adapter.synthesize_blind_slots(req, date(2026, 5, 13), max_count=3)
-    scripted = slots * 5  # 5 copies to exceed max_count
+    # Scripted → returns the list, truncated to max_count. We recycle the unscripted
+    # default slot purely as a convenient TeeTimeSlot value to fill the scripted list.
+    default_slots = adapter.synthesize_blind_slots(req, date(2026, 5, 13), max_count=3)
+    scripted = default_slots * 5  # 5 copies to exceed max_count
     adapter.set_blind_slots(scripted)
     out = adapter.synthesize_blind_slots(req, date(2026, 5, 13), max_count=2)
     assert len(out) == 2
