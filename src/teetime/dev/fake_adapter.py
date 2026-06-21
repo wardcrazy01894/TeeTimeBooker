@@ -13,7 +13,7 @@ Default behavior is a happy-path booking (one slot, BOOKED) so the CLI demo
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
 from ..core.adapter import AdapterError, CancelError
@@ -35,8 +35,14 @@ class FakeAdapter:
 
     course_id: CourseId
 
-    def __init__(self, *, course_id: CourseId) -> None:
+    def __init__(self, *, course_id: CourseId, supports_blind_post: bool = False) -> None:
         self.course_id = course_id
+        # BlindPostCapable knob (BLIND_POST_PLAN.md PR1). Defaults False to mirror a
+        # bare ForeUP course; orchestrator tests flip it True to exercise the blind path.
+        self.supports_blind_post = supports_blind_post
+        self._blind_slots: list[TeeTimeSlot] | None = None
+        self._captcha_pool_size: int = 99
+        self.synthesize_blind_slots_call_count: int = 0
         self._search_response: list[TeeTimeSlot] | None = None
         self._search_exc: AdapterError | None = None
         self._book_outcome: BookingOutcome = BookingOutcome.BOOKED
@@ -87,6 +93,14 @@ class FakeAdapter:
         """Script prepare_book() to raise `exc` (simulates CAPTCHA service failure)."""
         self._prepare_book_exc = exc
 
+    def set_blind_slots(self, slots: list[TeeTimeSlot]) -> None:
+        """Script synthesize_blind_slots() to return `slots` (truncated to max_count)."""
+        self._blind_slots = list(slots)
+
+    def set_captcha_pool_size(self, size: int) -> None:
+        """Script captcha_pool_size() so orchestrator tests can bound the blind burst."""
+        self._captcha_pool_size = size
+
     def set_authenticate_side_effects(self, effects: list[Exception | None]) -> None:
         """Configure successive authenticate() calls to raise or return in order.
 
@@ -116,6 +130,26 @@ class FakeAdapter:
         self.last_prepare_count = count
         if self._prepare_book_exc is not None:
             raise self._prepare_book_exc
+
+    # --- BlindPostCapable Protocol --------------------------------------
+
+    def captcha_pool_size(self) -> int:
+        return self._captcha_pool_size
+
+    def synthesize_blind_slots(
+        self,
+        request: BookingRequest,
+        target_date: date,
+        *,
+        max_count: int,
+    ) -> list[TeeTimeSlot]:
+        self.synthesize_blind_slots_call_count += 1
+        slots = (
+            list(self._blind_slots)
+            if self._blind_slots is not None
+            else [self._default_slot(request)]
+        )
+        return slots[:max_count]
 
     async def search(
         self, request: BookingRequest, *, skip_initial_spacing: bool = False
