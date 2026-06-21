@@ -11,6 +11,7 @@ course-specific errors into our typed exceptions. They do NOT own:
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Protocol, runtime_checkable
 
 from .models import (
@@ -67,6 +68,71 @@ class CancelError(AdapterError):
 
     See PLAN.md M-feature-2 for the cancel+rebook safety protocol.
     """
+
+
+@runtime_checkable
+class BlindPostCapable(Protocol):
+    """Opt-in capability: a course adapter that can fire BLIND book POSTs at T0.
+
+    See BLIND_POST_PLAN.md §3. Blind-POST builds a book payload from a frozen
+    static template plus a *computed* slot id (no live search dependency) and fires
+    the top-N ranked in-window candidates CONCURRENTLY at the 06:00 drop, keeping
+    the best reservation that books and cancelling the rest.
+
+    The capability gate is intentionally an ADAPTER ATTRIBUTE, never a config flag:
+    a non-capable course cannot blind-POST even with a fat-fingered config, because
+    the orchestrator branches on `isinstance(adapter, BlindPostCapable) and
+    adapter.supports_blind_post` against the concrete adapter object. A bare ForeUP
+    course (or TeeItUp, or the default FakeAdapter) is NOT capable until it ships and
+    validates its own template + tee-time grid. Mangrove Bay is the only capable
+    course in this feature's v0.
+
+    Note (nit 1): the Protocol declares `supports_blind_post: bool` as a plain
+    attribute while concrete impls (MangroveBayAdapter, ForeUpAdapter base) declare it
+    `ClassVar[bool]`. This is intentional and sound — `runtime_checkable` only checks
+    member PRESENCE, and a ClassVar is readable as an instance attribute, so
+    `isinstance(adapter, BlindPostCapable) and adapter.supports_blind_post` works for
+    both class-level and instance-level declarations. Consequence: every ForeUP adapter
+    satisfies isinstance once the base ships the members; the BOOLEAN is the real guard.
+    """
+
+    supports_blind_post: bool
+
+    def captcha_pool_size(self) -> int:
+        """Number of pre-solved CAPTCHA tokens currently in the FIFO pool.
+
+        The orchestrator sizes the blind burst at ``min(len(blind_slots),
+        captcha_pool_size())`` so each concurrent ``book()`` pops a pooled token and
+        none inline-solves at T0 (the latency failure the feature removes). See
+        BLIND_POST_PLAN.md §5/§6. ``ForeUpAdapter`` returns ``len(self._captcha_tokens)``;
+        adapters with no CAPTCHA may return a large/scriptable value.
+        """
+        ...
+
+    def synthesize_blind_slots(
+        self,
+        request: BookingRequest,
+        target_date: date,
+        *,
+        max_count: int,
+    ) -> list[TeeTimeSlot]:
+        """Build up to `max_count` blind-POST candidate slots WITHOUT searching.
+
+        Pure / synchronous: enumerate the course's valid morning tee-time grid that
+        falls inside `request.time_windows` for `target_date`, compute each slot's
+        deterministic id (ForeUP `start_front` = ``f"{YYYY}{month-1:02d}{DD}{HH}{MM}"``,
+        month 0-indexed — see BLIND_POST_PLAN.md §2 fact 1), and return them RANKED by
+        the SAME `slot_utils.rank_slots_for_request` ordering the search path uses (so
+        "keep best" across blind + search agree), truncated to `max_count`.
+
+        Each returned TeeTimeSlot's `raw` is the frozen static template with `time`
+        (1-indexed calendar month) and `start_front` (0-indexed) overwritten, so the
+        adapter's existing `book()` can POST it directly with no search.
+
+        Returns [] if no grid time falls inside the window (caller falls back to the
+        real search). MUST NOT perform any I/O.
+        """
+        ...
 
 
 @runtime_checkable

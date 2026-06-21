@@ -277,6 +277,20 @@ in `core/` — never directly. This is the cut line for parallel work.
 - **`cancel_reservation` is on the `CourseAdapter` Protocol** (breaking — all
   adapters must implement it). Raises `CancelError` on failure. Returns normally
   on 404 (already-cancelled is the desired post-condition). See `core/adapter.py`.
+- **Blind-POST is an ADAPTER CAPABILITY, never a config flag (`BlindPostCapable`,
+  BLIND_POST_PLAN.md).** A separate `runtime_checkable` Protocol in `core/adapter.py`
+  with three members: `supports_blind_post: bool`, `captcha_pool_size() -> int`, and
+  `synthesize_blind_slots(request, target_date, *, max_count) -> list[TeeTimeSlot]`.
+  CRITICAL SUBTLETY: `runtime_checkable` checks only member PRESENCE, so EVERY ForeUP
+  adapter (the base ships all three members) satisfies `isinstance(a, BlindPostCapable)`
+  — the `supports_blind_post` **boolean** is the real guard. The orchestrator gate (the
+  race path only, PR3) is therefore the two-part predicate
+  `isinstance(a, BlindPostCapable) and a.supports_blind_post`. The `ForeUpAdapter` base
+  defaults `supports_blind_post=False` and its `synthesize_blind_slots` raises
+  `NotImplementedError` (a bare ForeUP course has no committed template/grid); a capable
+  course (Mangrove Bay) flips the boolean True and overrides `synthesize_blind_slots`.
+  TeeItUp ships none of the members → `isinstance` excludes it outright. So a non-capable
+  course can never reach the blind path even with a mis-edited config.
 - **`delete_terminal` is on the `BookingStore` Protocol** (all stores must
   implement it; `InMemoryStore` does). Used only by `UpgradeOrchestrator` after
   a successful cancel+rebook to clear the old in-process idempotency record

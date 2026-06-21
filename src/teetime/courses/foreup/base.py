@@ -101,6 +101,14 @@ class ForeUpAdapter(CourseAdapter):
 
     course_id: CourseId
 
+    # Blind-POST capability (BLIND_POST_PLAN.md §3). A bare ForeUP course is NOT
+    # capable — a subclass must ship + validate its own static payload template and
+    # tee-time grid, then override this to True and implement synthesize_blind_slots
+    # (Mangrove Bay does so in PR2). The orchestrator gates the blind path on
+    # `isinstance(adapter, BlindPostCapable) and adapter.supports_blind_post`, so
+    # leaving this False keeps a course on the existing search→book path.
+    supports_blind_post: ClassVar[bool] = False
+
     # Each subclass MUST override this with the ForeUP booking page URL for that course.
     # Used by _build_adapters() to configure the CAPTCHA provider with the correct page.
     # Format: "https://foreupsoftware.com/index.php/booking/<course_pk>/<booking_class_id>"
@@ -408,6 +416,35 @@ class ForeUpAdapter(CourseAdapter):
             return await self._captcha_provider()
         except TimeoutError as exc:
             raise CaptchaError(f"CAPTCHA solve timed out: {exc}") from exc
+
+    def captcha_pool_size(self) -> int:
+        """Number of pre-solved CAPTCHA tokens currently in the FIFO pool.
+
+        BlindPostCapable member (BLIND_POST_PLAN.md §3). The orchestrator sizes the
+        blind burst at ``min(len(blind_slots), captcha_pool_size())`` so every
+        concurrent ``book()`` pops a pooled token rather than inline-solving at T0.
+        """
+        return len(self._captcha_tokens)
+
+    def synthesize_blind_slots(
+        self,
+        request: BookingRequest,
+        target_date: date,
+        *,
+        max_count: int,
+    ) -> list[TeeTimeSlot]:
+        """Build blind-POST candidate slots WITHOUT searching (BlindPostCapable).
+
+        The base ForeUP class is NOT blind-capable: it ships no committed payload
+        template or tee-time grid, so this raises. A capable subclass (Mangrove Bay,
+        PR2) overrides it to enumerate its morning grid, compute each ForeUP
+        ``start_front`` id, and return ranked candidate slots.
+        """
+        raise NotImplementedError(
+            "This ForeUP course has no committed blind-POST template/grid. "
+            "Override synthesize_blind_slots in the course subclass. "
+            "See BLIND_POST_PLAN.md PR2."
+        )
 
     async def prepare_book(
         self,

@@ -84,10 +84,18 @@ distinct from `CourseAdapter`:
 @runtime_checkable
 class BlindPostCapable(Protocol):
     supports_blind_post: bool       # MUST be True to be eligible
+    def captcha_pool_size(self) -> int: ...   # FIFO pool length; bounds the burst
     def synthesize_blind_slots(
         self, request: BookingRequest, target_date: date, *, max_count: int
     ) -> list[TeeTimeSlot]: ...
 ```
+
+> **Note (landed in PR1, ahead of §12's PR3 line):** `captcha_pool_size()` ships
+> on the Protocol + `ForeUpAdapter` + `FakeAdapter` in **PR1**, not PR3 — it is part
+> of the capability contract and the orchestrator (PR3) reads it to size the blind
+> burst at `min(len(blind_slots), captcha_pool_size())`. `runtime_checkable` only
+> checks member PRESENCE, so every ForeUP adapter satisfies `isinstance` once the base
+> ships these members; the `supports_blind_post` BOOLEAN is the real gate.
 
 - `MangroveBayAdapter` sets `supports_blind_post = True` and implements
   `synthesize_blind_slots`.
