@@ -292,6 +292,15 @@ in `core/` — never directly. This is the cut line for parallel work.
   prefix — so `is_managed` returns False for server-sourced reservations, as
   expected. `FakeAdapter.book()` stamps `TTB:FAKE-<slot_id>` in `BookingResult`
   and stores the raw `FAKE-<slot_id>` in `_existing` to mirror this behaviour.
+  **The `book()` id-extraction chain reads `TTID`/`teetime_id` last** (the SAME two
+  flat-response fields `_parse_reservation` reads — keep the relative order in sync).
+  Real Mangrove Bay book responses are a FLAT dict whose id lives only in those
+  fields; before BLIND_POST_PLAN PR0 the chain missed them, so `confirmation_code`
+  was `None` on every live MB booking. That was cosmetic for the upgrade/cancel path
+  (which sources the id from `list_reservations`, not `book()` — see
+  `WatchOrchestrator._synthesize_managed_booking`), but it is **load-bearing for
+  blind-POST cancel-extras**, which cancels each surplus reservation by the id its
+  own `book()` returned. PR0 fixed the extraction.
 - **`ForeUpAdapter.list_reservations()` reads a login-response cache, NOT a live
   GET.** ForeUP's `GET /reservations` endpoint returns a ~6 MB user-profile
   with `"reservations": false` (a lazy-load flag). Actual reservations come from

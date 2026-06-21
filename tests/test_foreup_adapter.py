@@ -550,6 +550,101 @@ async def test_book_success_returns_booked_result() -> None:
 
 
 @respx.mock
+async def test_book_extracts_teetime_id() -> None:
+    """A flat ForeUP book response carrying only `teetime_id` (the real Mangrove Bay
+    shape) is extracted into the confirmation_code. PR0 (BLIND_POST_PLAN): blind-POST
+    cancel-extras needs the per-reservation id, which used to be dropped (the chain
+    missed teetime_id/TTID, so conf was None on every real MB booking)."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(200, json={"teetime_id": 123})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        result = await adapter.book(slot, _request())
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.confirmation_code == "TTB:123"
+
+
+@respx.mock
+async def test_book_extracts_ttid() -> None:
+    """A flat book response carrying only `TTID` is extracted into confirmation_code."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(200, json={"TTID": "abc"})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        result = await adapter.book(slot, _request())
+    assert result.confirmation_code == "TTB:abc"
+
+
+@respx.mock
+async def test_book_prefers_pending_reservation_id_over_teetime_id() -> None:
+    """No regression: when the established id fields AND the new teetime_id/TTID are
+    all present, the established field (pending_reservation_id) still wins."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "reservation": {"pending_reservation_id": "PRI-1"},
+                "teetime_id": "TT-2",
+                "TTID": "TTID-3",
+            },
+        )
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        result = await adapter.book(slot, _request())
+    assert result.confirmation_code == "TTB:PRI-1"
+
+
+@respx.mock
+async def test_cancel_strips_ttb_from_teetime_id_conf() -> None:
+    """End-to-end: a teetime_id-sourced confirmation_code (TTB:<teetime_id>) is
+    accepted by cancel_reservation, which strips TTB: and DELETEs the raw id — the
+    blind-POST cancel-extras round-trip (book → returned conf → cancel)."""
+    respx.delete(f"{FOREUP_BASE_URL}{RESERVATION_PATH}/123").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.cancel_reservation("TTB:123")  # must not raise
+    assert respx.calls.last.request.url.path == f"{RESERVATION_PATH}/123"
+
+
+@respx.mock
 async def test_book_slot_gone_raises() -> None:
     respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(return_value=httpx.Response(409))
     slot = TeeTimeSlot(
