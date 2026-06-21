@@ -577,6 +577,13 @@ class ForeUpAdapter(CourseAdapter):
             or data.get("id")
             or data.get("booking_id")
             or data.get("confirmation_code")
+            # Real Mangrove Bay book responses are a FLAT dict whose id is in
+            # TTID/teetime_id (the SAME two fields _parse_reservation reads — keep
+            # the relative order in sync). MB's response carries none of the six
+            # fields above, so without these the chain returned None on every live MB
+            # booking, leaving blind-POST cancel-extras with no id to cancel.
+            or data.get("TTID")
+            or data.get("teetime_id")
         )
         conf_raw_str = str(conf_raw) if conf_raw is not None else None
         # Option A (MF-1): stamp the TTB: prefix so ExistingReservation.is_managed
