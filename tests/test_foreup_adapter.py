@@ -300,6 +300,24 @@ async def test_search_returns_matching_slots() -> None:
 
 
 @respx.mock
+async def test_search_logs_matched_tee_times_for_retroactive_validation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The search logs each date's matched (in-window) tee times, not just a count, so
+    that after a real 06:00 drop the blind-POST derived grid (see test_mangrove_bay_blind_post)
+    can be diffed against the actual morning inventory to detect grid drift. PII-free."""
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[_RAW_SLOT])  # 09:30, in 09:00-10:30
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level("INFO"):
+            await adapter.search(_request())
+    assert "matched tee times" in caplog.text
+    assert "09:30" in caplog.text
+
+
+@respx.mock
 async def test_search_filters_out_of_window_slots() -> None:
     out_of_window = {**_RAW_SLOT, "time": "12:00:00"}  # noon, outside 09:00-10:30
     respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
