@@ -210,6 +210,19 @@ uv run ruff check .                  # lint
 uv run ruff format .                 # format
 ```
 
+**Live ForeUP API-drift canary (manual, pre-weekend).** `tests/test_foreup_canary.py` is the
+ONLY guard that ForeUP changing its login/reservation/slot shape (or `BLIND_POST_TEMPLATE` drift)
+is caught **before** a 06:00 drop — respx unit tests only assert what the bot *sends*. It is
+`integration`-marked (excluded from CI's `-m "not integration"`) and skips unless `MB_USERNAME`/
+`MB_PASSWORD` are set, so it never runs automatically. **Run it manually before a weekend cron**
+(it does NOT book):
+
+```bash
+MB_USERNAME=… MB_PASSWORD=… uv run pytest -m integration tests/test_foreup_canary.py -v
+```
+
+This step is also in the operator runbook (`infra/AZURE_PLAN.md` §10.4).
+
 ---
 
 ## Architecture

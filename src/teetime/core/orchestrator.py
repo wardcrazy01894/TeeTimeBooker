@@ -181,6 +181,19 @@ class Orchestrator:
             if result is None:
                 result = self._terminal_no_inventory(request)
 
+            # Log the run's resolved terminal to the structured app log (stderr → Log
+            # Analytics). The ConsoleNotifier writes to a SEPARATE stdout stream and the
+            # `run` CLI only logs on FAILURE, so without this the orchestrator's decision
+            # (which course won; BOOKED vs ALREADY_BOOKED vs NO_INVENTORY) was absent from
+            # the app log — mirrors the watcher's booked-line. confirmation_code is a
+            # TTB:-prefixed id, never PII.
+            log.info(
+                "booking: run terminal outcome=%s course=%s confirmation=%s date=%s",
+                result.outcome.value,
+                result.course_id,
+                result.confirmation_code,
+                resolved_date,
+            )
             await self._store.record_terminal(result, resolved_date)
             await self._notifier.notify(result)
             return result

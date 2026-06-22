@@ -128,6 +128,26 @@ async def test_run_happy_path_returns_booked() -> None:
     assert (await store.get_terminal(req.request_id, req.target_dates[0])) == result
 
 
+async def test_run_logs_resolved_terminal(caplog: pytest.LogCaptureFixture) -> None:
+    """L3 (full-repo-scan): run() must log its resolved terminal (outcome + course +
+    confirmation + date) to the structured app log. The ConsoleNotifier writes a SEPARATE
+    stdout stream and the `run` CLI only logs on failure, so without this the orchestrator's
+    decision was absent from the (stderr→Log Analytics) app log."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+    orch, _, _ = _build({cid: fa})
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    line = next((r.getMessage() for r in caplog.records if "run terminal" in r.getMessage()), None)
+    assert line is not None, "expected a 'booking: run terminal' log line"
+    assert "outcome=booked" in line
+    assert str(cid) in line
+
+
 async def test_run_persists_authenticate_call() -> None:
     cid = CourseId("fake:course")
     fa = FakeAdapter(course_id=cid)
