@@ -1,7 +1,8 @@
 # RACE_PREWARM_PLAN.md — Post-T0 latency reduction for the 06:00 ForeUP booking race
 
-Status: APPROVED (plan-with-review, 2 rounds, BLOCK→APPROVE). Implementation in progress,
-strict red-green TDD. **PR1 (login pre-warm + pre-T0 reservation guard + short-circuit) is
+Status: SHIPPED — LIVE in prod (`infra/v2.4.0`, the RACE_PREWARM bundle; the `#131`
+soft-login-skip fix rode `infra/v2.5.0`). APPROVED (plan-with-review, 2 rounds, BLOCK→APPROVE),
+all PRs landed via strict red-green TDD. **PR1 (login pre-warm + pre-T0 reservation guard + short-circuit) is
 IMPLEMENTED** (`_prewarm_primary`/`_prewarm_login`/`_prefetch_captcha_for`,
 `_prewarmed_course_ids`, the SF6 short-circuit, ForeUP `_logged_in` guard, FakeAdapter
 `set_authenticate_side_effects`). **PR2 (multi-token concurrent CAPTCHA pool, default count=3
