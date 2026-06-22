@@ -628,7 +628,7 @@ failing tests FIRST. Docs each PR updates are listed.
   residual: PR4's keep-best-cancel-rest would also cancel a deliberate manual second
   booking on the same date+party_size — accepted for this single-user bot); `README.md`
   (feature + the new `blind_post_max_count` config field, default 12); `BLIND_POST_PLAN.md`
-  → status LIVE-pending-prod once merged.
+  status banner (now realized: `LIVE in prod`, `infra/v2.5.0`, 2026-06-22).
 
 > **Ordering note:** PR0→PR1→PR2 are prerequisites for PR3. PR4 is independent of
 > PR3 (it is the safety net and can land before or after) but should land BEFORE
