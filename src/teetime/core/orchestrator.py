@@ -489,20 +489,22 @@ class Orchestrator:
         """Abandon a hedge task: cancel it and discard its result/exception.
 
         We only call this once a blind POST has WON (or the re-guard found a landed
-        reservation), so the hedge search's outcome is irrelevant. Two cases must both be
-        swallowed so abandoning the hedge can never fail the run:
+        reservation), so the hedge search's outcome is irrelevant. Two cases are both
+        handled by the ``try/except`` below so abandoning the hedge can never fail the run:
 
         - The hedge is still IN FLIGHT: ``task.cancel()`` schedules a cancellation and
-          ``await task`` raises ``asyncio.CancelledError`` — which is a ``BaseException``,
-          NOT an ``Exception``, so ``suppress(Exception)`` alone would let it propagate.
+          ``await task`` raises ``asyncio.CancelledError`` — caught by the explicit
+          ``except asyncio.CancelledError`` and dropped silently (the expected case).
         - The hedge is already DONE: ``task.cancel()`` is a no-op and ``await`` re-raises
           whatever it stored — for the hedge search that can be a non-cancelled error
           (e.g. a 429 ``RateLimitError`` or a ``CaptchaError`` at the drop, since
-          ``_poll_for_slots`` only swallows inventory-not-published).
+          ``_poll_for_slots`` only swallows inventory-not-published). Caught by
+          ``except Exception`` and logged at debug (not fully invisible) before dropping.
 
         Letting either escape ``_blind_post_course`` would discard a real, successful
-        booking, so suppress both explicitly. (``KeyboardInterrupt``/``SystemExit`` — the
-        other ``BaseException``s — are deliberately NOT suppressed.)"""
+        booking, so both are handled explicitly. ``KeyboardInterrupt``/``SystemExit`` (the
+        other ``BaseException``s) are NOT ``Exception`` subclasses, so they are NOT caught
+        and propagate normally."""
         task.cancel()
         try:
             await task
