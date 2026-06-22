@@ -160,6 +160,26 @@ async def test_authenticate_bad_password_soft_fails() -> None:
         adapter = _adapter(client)
         await adapter.authenticate(CREDS)  # must not raise
         assert adapter._logged_in is False
+        # AuthStateReportable contract (RACE_PREWARM_PLAN §3.1 SF#1): is_authenticated
+        # must report the soft failure so the race pre-warm skips recording this course.
+        assert adapter.is_authenticated is False
+
+
+@respx.mock
+async def test_is_authenticated_reflects_logged_in() -> None:
+    """`is_authenticated` is the AuthStateReportable signal the race pre-warm reads to
+    distinguish a real login from ForeUP's soft-fail. It must track `_logged_in`."""
+    respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        return_value=httpx.Response(200, json={"success": True, "msg": "ok"})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        assert adapter.is_authenticated is False  # before login
+        await adapter.authenticate(CREDS)
+        assert adapter.is_authenticated is True  # after a successful login
 
 
 @respx.mock

@@ -334,6 +334,14 @@ class ForeUpAdapter(CourseAdapter):
                 self._reservations_from_login = raw_res
         _log.info("ForeUP: login successful")
 
+    @property
+    def is_authenticated(self) -> bool:
+        """``AuthStateReportable`` capability (RACE_PREWARM_PLAN §3.1 SF#1). True iff a
+        username/password login has actually established a session. A soft login failure
+        (400/401/rejected body) is swallowed by ``authenticate()`` and leaves this False,
+        so the race pre-warm skips recording this course and re-authenticates at T0."""
+        return self._logged_in
+
     async def refresh_reservations(self, creds: CourseCredentials) -> None:
         """Force a fresh login so ``list_reservations()`` returns a CURRENT snapshot.
 

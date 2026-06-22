@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from .adapter import (
+    AuthStateReportable,
     BlindPostCapable,
     CancelError,
     InventoryNotPublishedError,
@@ -538,6 +539,19 @@ class Orchestrator:
             return None
         try:
             await adapter.authenticate(creds)
+            # SF#1 (RACE_PREWARM_PLAN §3.1): record the post-T0 re-auth SKIP only if the login
+            # ACTUALLY established a session. ForeUP soft-fails on a 400/401/rejected body —
+            # authenticate() RETURNS without raising and leaves _logged_in False. Recording the
+            # skip then would suppress the T0 re-auth and book() would raise AuthError on a
+            # never-logged-in session, turning a transient 401 into a lost booking. Adapters with
+            # no soft-fail path (not AuthStateReportable) treat a clean return as success.
+            if not self._login_established(adapter):
+                log.warning(
+                    "race: login pre-warm for %s returned but established no session (soft "
+                    "login failure) — will authenticate inline at T0",
+                    course_id,
+                )
+                return None
             # Auth succeeded: the session is established, so skip the post-T0 re-auth even if
             # the reservation read below fails (it has its own try and _run_course re-reads).
             self._prewarmed_course_ids.add(course_id)
@@ -550,6 +564,18 @@ class Orchestrator:
                 exc,
             )
             return None
+
+    @staticmethod
+    def _login_established(adapter: CourseAdapter) -> bool:
+        """True if the adapter's last authenticate() established a real session.
+
+        An adapter that reports auth state (``AuthStateReportable``) must say so via
+        ``is_authenticated`` — this distinguishes ForeUP's soft login failure (returns
+        without raising, no session) from a real login. An adapter that does NOT report
+        state has no soft-fail path, so a clean ``authenticate()`` return IS success."""
+        if isinstance(adapter, AuthStateReportable):
+            return adapter.is_authenticated
+        return True
 
     async def _prefetch_captcha_for(
         self,

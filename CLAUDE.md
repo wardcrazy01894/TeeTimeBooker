@@ -450,7 +450,16 @@ in `core/` — never directly. This is the cut line for parallel work.
   `prewarmed_course_ids`): a course in the set is NOT re-authenticated at T0. This is
   deliberately independent of any adapter idempotency guard (FakeAdapter/TeeItUp have none);
   `ForeUpAdapter.authenticate()` ALSO has a defensive `if self._logged_in: return` guard, but
-  it is hygiene, not load-bearing. Only the PRIMARY (first-preference) adapter is pre-warmed —
+  it is hygiene, not load-bearing. **The skip is recorded ONLY on a session-established login
+  (RACE_PREWARM_PLAN §3.1 SF#1).** ForeUP SOFT-FAILS a 400/401/rejected-body login —
+  `authenticate()` returns WITHOUT raising and leaves `_logged_in` False (search still works;
+  only `book()` needs the login). So `_prewarm_login` gates `_prewarmed_course_ids.add` on
+  `_login_established(adapter)`, which reads `is_authenticated` for an `AuthStateReportable`
+  adapter (ForeUP exposes `_logged_in`; adapters with no soft-fail path treat a clean return as
+  success). Without this gate a transient pre-T0 401 would mark the course prewarmed, `run()`
+  would skip the T0 re-auth, and `book()` would raise `AuthError` on a never-logged-in session —
+  a transient blip silently losing the booking. A soft-fail now leaves the set unchanged so the
+  T0 inline re-auth retries the login. Only the PRIMARY (first-preference) adapter is pre-warmed —
   a fallback course authenticates + solves inline at T0 (no shared session/token pool). If the
   pre-T0 guard finds we are **already booked**, the run **short-circuits before T0**: it logs
   `race: short-circuited pre-T0 …` (the SF6 verification surface, since the normal

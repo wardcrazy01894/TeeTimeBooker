@@ -166,6 +166,31 @@ class ReservationCacheRefreshable(Protocol):
 
 
 @runtime_checkable
+class AuthStateReportable(Protocol):
+    """Opt-in capability: an adapter whose ``authenticate()`` can return WITHOUT raising
+    yet WITHOUT establishing a logged-in session — a "soft" login failure.
+
+    ForeUP is the motivating case: a 400/401 or a server-rejected login body is logged and
+    SWALLOWED — ``authenticate()`` returns normally with ``_logged_in`` still False (the
+    PHPSESSID warm-up alone lets ``search()`` work; only ``book()`` needs the login). The
+    race pre-warm (``Orchestrator._prewarm_login``) must NOT record such a course in
+    ``_prewarmed_course_ids``: if it did, ``run()`` would skip the T0 re-auth and ``book()``
+    would raise ``AuthError`` on a session that never logged in — turning a TRANSIENT 401
+    pre-T0 into a silently lost booking. ``is_authenticated`` lets the orchestrator tell a
+    real login from a soft failure without coupling to any adapter's internals.
+
+    Adapters with no soft-fail path (``authenticate()`` either succeeds or raises — e.g.
+    TeeItUp, FakeAdapter's default) need not implement this; the pre-warm treats a clean
+    ``authenticate()`` return as success for them.
+    """
+
+    @property
+    def is_authenticated(self) -> bool:
+        """True iff a username/password login has actually established a session."""
+        ...
+
+
+@runtime_checkable
 class CourseAdapter(Protocol):
     """Structural contract every course implementation satisfies.
 

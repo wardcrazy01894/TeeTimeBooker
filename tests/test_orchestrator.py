@@ -796,6 +796,30 @@ async def test_run_prewarm_login_failure_falls_back_to_inline_auth() -> None:
     assert fa.book_call_count == 1
 
 
+async def test_run_prewarm_soft_login_failure_reauths_at_t0() -> None:
+    """RACE_PREWARM_PLAN §3.1 SF#1: a SOFT login failure (authenticate() RETURNS but no
+    session — ForeUP's 400/401/rejected-body swallow) must NOT mark the course prewarmed.
+    Otherwise run() skips the T0 re-auth and book() raises AuthError on a never-logged-in
+    session — a transient 401 silently loses the booking. The course must re-authenticate
+    inline at T0 (authenticate called twice: soft-fail prewarm + inline retry)."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+    fa.set_auth_soft_fail()  # authenticate() returns, but is_authenticated stays False
+
+    t0 = datetime(2026, 5, 6, 10, 0, 0, tzinfo=UTC)
+    clock = FakeClock(start=t0 - timedelta(seconds=12))
+    orch, _, _ = _build(
+        {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(10), prefetch_book=True
+    )
+
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.authenticate_call_count == 2, "soft-fail prewarm must NOT suppress the T0 re-auth"
+    assert fa.book_call_count == 1
+
+
 async def test_run_short_circuits_already_booked_found_pre_t0(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
