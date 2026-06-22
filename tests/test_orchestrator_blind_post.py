@@ -29,6 +29,7 @@ from teetime.core.config import SchedulerConfig
 from teetime.core.models import (
     BookingOutcome,
     BookingRequest,
+    BookingResult,
     CourseCredentials,
     CourseId,
     ExistingReservation,
@@ -329,6 +330,37 @@ async def test_cancel_extra_failure_still_returns_best(
     assert result.slot is not None
     assert result.slot.slot_id == "s-0815"  # best still returned
     assert any(r.levelname == "CRITICAL" for r in caplog.records)
+
+
+async def test_cancel_extras_with_no_confirmation_code_logs_critical(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A surplus blind reservation whose book() returned no confirmation_code CANNOT be
+    cancelled — log CRITICAL (the user may hold an extra) but never crash, and never call
+    cancel for it. Pins the no-conf branch of _cancel_extras (only the CancelError branch
+    was previously covered)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    orch, _, _ = _build({cid: fa})
+
+    extra = BookingResult(
+        request_id=RequestId(uuid4()),
+        outcome=BookingOutcome.BOOKED,
+        course_id=cid,
+        slot=_bslot(cid, 8, 0),
+        confirmation_code=None,  # extraction failed → no id to cancel by
+        booked_at=datetime(2026, 5, 13, 10, 0, tzinfo=UTC),
+        attempts=1,
+    )
+
+    with caplog.at_level("CRITICAL"):
+        await orch._cancel_extras(fa, [extra])
+
+    assert fa.cancel_call_count == 0  # can't cancel without an id
+    assert any(
+        r.levelname == "CRITICAL" and "no confirmation_code" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 async def test_uncertain_blind_post_does_not_crash_run() -> None:
