@@ -16,13 +16,14 @@ Collaborators are FakeAdapter / FakeClock / InMemoryStore (BLIND_POST_PLAN.md §
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 
-from teetime.core.adapter import AdapterError, CancelError, SlotGoneError
+from teetime.core.adapter import AdapterError, CancelError, RateLimitError, SlotGoneError
 from teetime.core.clock import FakeClock
 from teetime.core.config import SchedulerConfig
 from teetime.core.models import (
@@ -191,6 +192,55 @@ async def test_blind_post_token_exhaustion_fires_fewer() -> None:
     assert result.outcome == BookingOutcome.BOOKED
     assert fa.book_call_count == 1  # only the single pooled token was spent
     assert fa.cancel_call_count == 0  # nothing to cancel — one booking
+
+
+async def test_blind_post_wins_even_if_hedge_search_errors() -> None:
+    """RED-GREEN GUARD for this fix: a blind POST books, but the concurrent hedge search GET
+    fails with a non-cancelled error (429 RateLimitError) and the hedge task is already DONE
+    (storing that error) when abandoned. Against the prior ``suppress(asyncio.CancelledError)``
+    the ``await task`` re-raises the stored RateLimitError out of ``_blind_post_course`` and
+    discards the real booking; the fix (``suppress(asyncio.CancelledError, Exception)``) keeps
+    it — the run returns BOOKED. This is the test that goes red on the old code. (The
+    still-PENDING CancelledError arm is guarded separately, as defense-in-depth, by
+    test_cancel_task_swallows_cancellederror_on_pending_hedge.)"""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    # The hedge search is throttled at the drop — the worst-case real-world race.
+    fa.set_search_to_raise(RateLimitError("throttled", retry_after_s=30))
+
+    orch, _, _ = _build({cid: fa})
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED  # the blind booking is kept, not lost
+    assert result.slot is not None
+    assert result.slot.slot_id == "s-0815"  # midpoint slot kept
+    assert fa.cancel_call_count == 1  # the one extra blind reservation cancelled
+
+
+async def test_cancel_task_swallows_cancellederror_on_pending_hedge() -> None:
+    """DEFENSE-IN-DEPTH guard (does NOT go red on the current fix — the prior code already
+    suppressed CancelledError; the real red-green guard for this PR is
+    test_blind_post_wins_even_if_hedge_search_errors). This pins the OTHER arm so a future edit
+    can't quietly drop ``asyncio.CancelledError`` from the suppress tuple: a hedge task still IN
+    FLIGHT when abandoned raises CancelledError on ``await``, and CancelledError is a
+    BaseException, NOT an Exception — a bare ``suppress(Exception)`` would let it escape
+    ``_cancel_task`` and bubble out of ``_blind_post_course``, discarding a won booking. The
+    full-run tests can't reach this arm (FakeAdapter.search is synchronous, so the hedge task is
+    always already-DONE), so it is exercised directly here."""
+    started = asyncio.Event()
+
+    async def _never_finishes() -> object:
+        started.set()
+        await asyncio.sleep(3600)  # only cancellation ends it
+        return object()  # pragma: no cover - never reached
+
+    task: asyncio.Task[object] = asyncio.create_task(_never_finishes())
+    await started.wait()  # ensure it is actually running, not scheduled-and-immediately-done
+
+    await Orchestrator._cancel_task(task)  # must NOT raise CancelledError
+
+    assert task.cancelled()
 
 
 # --- gate exclusions ----------------------------------------------------
