@@ -194,10 +194,13 @@ async def test_blind_post_token_exhaustion_fires_fewer() -> None:
 
 
 async def test_blind_post_wins_even_if_hedge_search_errors() -> None:
-    """Regression: a blind POST books, but the concurrent hedge search GET fails with a
-    non-cancelled error (429 RateLimitError). Abandoning the hedge must NOT re-raise that
-    error and discard the real booking — the run returns BOOKED. (This is the already-DONE
-    hedge case; the still-PENDING CancelledError case is covered by
+    """RED-GREEN GUARD for this fix: a blind POST books, but the concurrent hedge search GET
+    fails with a non-cancelled error (429 RateLimitError) and the hedge task is already DONE
+    (storing that error) when abandoned. Against the prior ``suppress(asyncio.CancelledError)``
+    the ``await task`` re-raises the stored RateLimitError out of ``_blind_post_course`` and
+    discards the real booking; the fix (``suppress(asyncio.CancelledError, Exception)``) keeps
+    it — the run returns BOOKED. This is the test that goes red on the old code. (The
+    still-PENDING CancelledError arm is guarded separately, as defense-in-depth, by
     test_cancel_task_swallows_cancellederror_on_pending_hedge.)"""
     cid = CourseId("fake:mb")
     fa = FakeAdapter(course_id=cid, supports_blind_post=True)
@@ -215,12 +218,15 @@ async def test_blind_post_wins_even_if_hedge_search_errors() -> None:
 
 
 async def test_cancel_task_swallows_cancellederror_on_pending_hedge() -> None:
-    """Regression: a hedge task still IN FLIGHT when abandoned raises asyncio.CancelledError
-    on ``await``. CancelledError is a BaseException, NOT an Exception, so a bare
-    ``suppress(Exception)`` would let it escape ``_cancel_task`` and bubble out of
-    ``_blind_post_course`` — discarding a won booking. ``_cancel_task`` must swallow it and
-    return cleanly. (FakeAdapter.search is synchronous, so the full-run tests above can only
-    exercise the already-DONE hedge; this hits the genuinely-pending path directly.)"""
+    """DEFENSE-IN-DEPTH guard (does NOT go red on the current fix — the prior code already
+    suppressed CancelledError; the real red-green guard for this PR is
+    test_blind_post_wins_even_if_hedge_search_errors). This pins the OTHER arm so a future edit
+    can't quietly drop ``asyncio.CancelledError`` from the suppress tuple: a hedge task still IN
+    FLIGHT when abandoned raises CancelledError on ``await``, and CancelledError is a
+    BaseException, NOT an Exception — a bare ``suppress(Exception)`` would let it escape
+    ``_cancel_task`` and bubble out of ``_blind_post_course``, discarding a won booking. The
+    full-run tests can't reach this arm (FakeAdapter.search is synchronous, so the hedge task is
+    always already-DONE), so it is exercised directly here."""
     started = asyncio.Event()
 
     async def _never_finishes() -> object:
