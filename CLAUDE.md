@@ -374,6 +374,22 @@ in `core/` — never directly. This is the cut line for parallel work.
   path, `_synthesize_managed_booking()` constructs a TTB:-prefixed `BookingResult`
   from the live `ExistingReservation` so the managed-booking guard in
   `maybe_upgrade()` passes.
+- **The watcher reconciles >1 live reservation per date — a CRASH-NET BACKSTOP
+  (BLIND_POST_PLAN PR4).** When `_check_course` finds MORE THAN ONE live reservation
+  matching `(target_date, party_size)` AND `one_booking_policy.enabled`, it calls
+  `_reconcile_duplicate_reservations` BEFORE the upgrade: keep the best-ranked (the same
+  `rank_slots_for_request` midpoint-distance order the booking path uses — `_rank_reservations`
+  builds a slot per reservation, ranks, and appends any out-of-window ones by `tee_time` so the
+  order is TOTAL), cancel the rest, UNDER the `request_lock`. This is the BACKSTOP — the
+  blind-POST happy path's in-run `_cancel_extras` (Orchestrator, PR3) is the PRIMARY mechanism;
+  this recovers a crash (or a failed in-run cancel) that left duplicates on a FRESH watch run
+  (which re-authenticates, rebuilding ForeUP's login-response reservation snapshot, before
+  `list_reservations`). Best-effort: a `ConcurrentRunError` defers (returns `matching` unchanged —
+  another run is acting), and a `CancelError` on an extra is logged `CRITICAL` and retried next
+  run; neither crashes. **Documented residual (single-user accepted):** a deliberate MANUAL
+  second booking on the same date+party_size would also be cancelled — server-sourced reservations
+  are all `is_managed=False` (raw id, no `TTB:` prefix), so the N matches are indistinguishable.
+  N=1 and `policy.enabled=false` leave reservations untouched.
 - **Cancel-before-book protocol** in `UpgradeOrchestrator`: ForeUP rejects a second
   book POST with HTTP 400 while an existing reservation is live. The orchestrator
   therefore cancels first, then books. This leaves a ~1-2 second no-booking window
