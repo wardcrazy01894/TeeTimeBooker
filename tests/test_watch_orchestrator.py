@@ -234,6 +234,25 @@ async def test_watch_check_once_raises_no_inventory_gracefully() -> None:
     assert result is None
 
 
+async def test_watch_no_inventory_logs_give_up_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_check_course logs an INFO line naming the course + date when a course has no
+    published inventory, instead of silently returning None — so a watch run that should
+    have caught a just-dropped cancellation is diagnosable. full-repo-scan finding."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_to_raise(NoInventoryError("none"))
+    watch, _, _ = _build(adapter)
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.watch_orchestrator"):
+        result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None
+    assert any("no published inventory" in r.getMessage().lower() for r in caplog.records), (
+        "expected a give-up INFO line from _check_course"
+    )
+
+
 async def test_watch_notifies_on_successful_booking() -> None:
     """check_once() calls notifier.notify() after a successful booking."""
     notified: list[BookingResult] = []

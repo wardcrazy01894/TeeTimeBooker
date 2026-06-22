@@ -17,6 +17,7 @@ Collaborators are FakeAdapter / FakeClock / InMemoryStore (BLIND_POST_PLAN.md §
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -329,7 +330,10 @@ async def test_cancel_extra_failure_still_returns_best(
     assert result.outcome == BookingOutcome.BOOKED
     assert result.slot is not None
     assert result.slot.slot_id == "s-0815"  # best still returned
-    assert any(r.levelname == "CRITICAL" for r in caplog.records)
+    # The CRITICAL log must NAME the leaked reservation (its confirmation_code) so an
+    # operator can cancel it manually — asserting level alone would let a regression that
+    # drops the id stay green. full-repo-scan observability finding.
+    assert any(r.levelname == "CRITICAL" and "s-0800" in r.getMessage() for r in caplog.records)
 
 
 async def test_cancel_extras_with_no_confirmation_code_logs_critical(
@@ -360,6 +364,28 @@ async def test_cancel_extras_with_no_confirmation_code_logs_critical(
     assert any(
         r.levelname == "CRITICAL" and "no confirmation_code" in r.getMessage()
         for r in caplog.records
+    )
+
+
+async def test_blind_post_logs_slot_gone_count(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When blind POSTs come back SlotGone (4xx — slot claimed between synthesize and
+    book), log an aggregate count so an operator can see WHY each candidate died at the
+    drop instead of a silent fall-through. full-repo-scan observability finding."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_book_side_effects([SlotGoneError("gone1"), SlotGoneError("gone2")])
+    fa.set_search_response([])  # hedge search finds nothing → NO_INVENTORY
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.NO_INVENTORY
+    assert any("slot-gone" in r.getMessage() and "2" in r.getMessage() for r in caplog.records), (
+        "expected an aggregate slot-gone count line from _blind_post_course"
     )
 
 

@@ -18,6 +18,7 @@ import pytest
 from teetime.core.adapter import (
     AuthError,
     CaptchaError,
+    InventoryNotPublishedError,
     NoInventoryError,
     RateLimitError,
     SlotGoneError,
@@ -196,6 +197,65 @@ async def test_run_returns_no_inventory_when_all_courses_empty() -> None:
     result = await orch.run(_request(course_ids=(cid,)))
     assert result.outcome == BookingOutcome.NO_INVENTORY
     assert fa.book_call_count == 0
+
+
+async def test_run_logs_give_up_reason_when_course_empty(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A course that yields no bookable inventory logs an INFO give-up line (with the
+    target date) from _poll_for_slots before falling through — so a 06:00 'found nothing'
+    is diagnosable from logs alone. full-repo-scan observability finding."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([])
+    orch, _, _ = _build({cid: fa})
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        await orch.run(_request(course_ids=(cid,)))
+
+    assert any("no slots found" in r.getMessage() for r in caplog.records), (
+        "expected a give-up INFO line from _poll_for_slots"
+    )
+
+
+async def test_run_logs_give_up_reason_on_no_inventory_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A course whose search() raises NoInventoryError logs its own give-up INFO line
+    (distinct from the empty-list-at-deadline branch) before falling through."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_to_raise(NoInventoryError("nada"))
+    orch, _, _ = _build({cid: fa})
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        await orch.run(_request(course_ids=(cid,)))
+
+    assert any(
+        "no slots found" in r.getMessage() and "no inventory" in r.getMessage()
+        for r in caplog.records
+    ), "expected a NoInventoryError give-up INFO line from _poll_for_slots"
+
+
+async def test_run_logs_give_up_reason_when_inventory_never_published(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A course whose search() raises InventoryNotPublishedError on every poll through the
+    max_poll_seconds deadline logs the unpublished-at-deadline give-up line before falling
+    through — the 06:00 'window never opened' case must be diagnosable from logs alone."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_to_raise(InventoryNotPublishedError("not yet"))
+    orch, _, _ = _build({cid: fa})
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.NO_INVENTORY
+    assert any(
+        "no slots found" in r.getMessage() and "unpublished" in r.getMessage()
+        for r in caplog.records
+    ), "expected an inventory-unpublished give-up INFO line from _poll_for_slots"
 
 
 async def test_run_falls_back_to_next_course_when_first_empty() -> None:
