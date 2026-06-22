@@ -53,6 +53,12 @@ class FakeAdapter:
         self._cancel_should_succeed: bool = True
         self._prepare_book_exc: Exception | None = None
         self._authenticate_side_effects: list[Exception | None] = []
+        # AuthStateReportable knobs (RACE_PREWARM_PLAN §3.1 SF#1). `_authenticated`
+        # mirrors ForeUP's `_logged_in`: a non-raising authenticate() establishes a
+        # session UNLESS `_auth_soft_fail` is set, which makes authenticate() RETURN
+        # without establishing one (a 400/401/rejected-body soft failure).
+        self._authenticated: bool = False
+        self._auth_soft_fail: bool = False
         self.authenticate_call_count: int = 0
         self.search_call_count: int = 0
         self.last_search_skip_initial_spacing: bool | None = None
@@ -110,6 +116,13 @@ class FakeAdapter:
         """
         self._authenticate_side_effects = list(effects)
 
+    def set_auth_soft_fail(self, value: bool = True) -> None:
+        """Script authenticate() to RETURN without establishing a session (mirrors
+        ForeUP's 400/401/rejected-body soft failure, which is logged + swallowed).
+        `is_authenticated` then stays False even though authenticate() did not raise.
+        """
+        self._auth_soft_fail = value
+
     # --- CourseAdapter Protocol -----------------------------------------
 
     async def authenticate(self, creds: CourseCredentials) -> None:
@@ -118,6 +131,15 @@ class FakeAdapter:
             effect = self._authenticate_side_effects.pop(0)
             if effect is not None:
                 raise effect
+        # Reached only on a non-raising return: a real session is established unless a
+        # soft login failure was scripted (mirrors ForeUP's 400/401 swallow).
+        self._authenticated = not self._auth_soft_fail
+
+    # --- AuthStateReportable Protocol -----------------------------------
+
+    @property
+    def is_authenticated(self) -> bool:
+        return self._authenticated
 
     async def prepare_book(
         self,

@@ -142,10 +142,21 @@ ORCHESTRATOR skip, not the adapter guard).
   call, so a test asserting `count == 1` via an *adapter-side* guard would have failed and
   misled. The orchestrator-skip mechanism makes `count == 1` true by construction for ANY
   adapter, including FakeAdapter, with no adapter change required.
-- **Why only on prewarm SUCCESS:** `_prewarm_login` only adds the course_id to the set if
-  `authenticate()` returned without raising. A prewarm login failure (bad creds / network /
+- **Why only on prewarm SUCCESS:** `_prewarm_login` adds the course_id to the set only if
+  `authenticate()` ACTUALLY established a session. A prewarm login failure (bad creds / network /
   captcha) leaves the set empty for that course, so `_run_course` authenticates inline at T0 —
   today's degraded behavior, a second real attempt before book().
+  - **SF#1 — soft-fail must not poison the skip (FIXED).** "Returned without raising" is NOT the
+    same as "logged in": ForeUP soft-fails a 400/401/rejected-body login by logging + swallowing,
+    so `authenticate()` returns with `_logged_in=False`. Adding the course on a bare return would
+    let a TRANSIENT 401 mark it prewarmed, `run()` would skip the T0 re-auth, and `book()` would
+    raise `AuthError` on a never-logged-in session — the transient blip silently loses the booking.
+    Fix: `_prewarm_login` gates `_prewarmed_course_ids.add` on `_login_established(adapter)`, which
+    reads `is_authenticated` via the `AuthStateReportable` capability Protocol (ForeUP exposes
+    `_logged_in`; adapters with no soft-fail path treat a clean return as success). A soft-fail now
+    leaves the set unchanged → the T0 inline re-auth retries the login. Tests:
+    `test_run_prewarm_soft_login_failure_reauths_at_t0` (orchestrator) +
+    `test_is_authenticated_reflects_logged_in` (ForeUP).
 - **Defensive adapter guard (kept, but NOT load-bearing for the test).** `ForeUpAdapter.
   authenticate()` STILL gets the `if self._logged_in: return` guard — it is correct hygiene
   (a real ForeUP re-login is wasteful) and matches the Protocol's documented idempotency. But
