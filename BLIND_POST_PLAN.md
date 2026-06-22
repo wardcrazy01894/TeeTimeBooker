@@ -355,9 +355,11 @@ only, not the happy path):**
     watch_orchestrator.py:329): a blind reservation is created for the request's party
     size, so it matches. (If party size is changed between runs, the orphan won't match —
     the same caveat the existing layer-2 guard already documents in courses/CLAUDE.md.)
-- **PR4 watch net (CONSERVATIVE crash-net, generalize 1→N):** when the watcher finds >1
-  reservation matching the request's party_size on the target date and policy is enabled,
-  keep the best-ranked and cancel the rest. This is the BACKSTOP, not the primary
+- **PR4 watch net (CONSERVATIVE crash-net, generalize 1→N) — ✅ IMPLEMENTED:** when the
+  watcher finds >1 reservation matching the request's party_size on the target date and
+  policy is enabled, `WatchOrchestrator._reconcile_duplicate_reservations` keeps the
+  best-ranked (`_rank_reservations`, the same `rank_slots_for_request` order) and cancels
+  the rest UNDER the `request_lock`. This is the BACKSTOP, not the primary
   mechanism. **Residual risk (documented honestly, must-fix 3 / should-fix 3 / PLAN §12):**
   `is_managed` CANNOT distinguish a blind extra from a deliberate manual second booking —
   server-sourced `ExistingReservation.confirmation_code` is a RAW id (no `TTB:` prefix), so
