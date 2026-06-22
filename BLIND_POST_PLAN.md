@@ -1,12 +1,13 @@
 # BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
 
-**Status:** FULLY WIRED — LIVE-pending-prod. PR0–PR5 MERGED — the orchestrator blind path is
+**Status:** LIVE in prod (`infra/v2.5.0`, deployed 2026-06-22 with `dryRun=false`). PR0–PR5
+MERGED — the orchestrator blind path is
 live in code (gate + hybrid net + keep-best/cancel-extras + reguard + prefetch scaling;
 `core/orchestrator.py`, default `blind_post_max_count=12`), the watcher >1-reservation crash-net
 reconcile backstop is in place (`core/watch_orchestrator.py`), and the docs (PLAN §12 etiquette
 paragraph + README + the opt-in `tests/test_foreup_canary.py` template-drift canary) are landed.
-Real effect is prod-only (the gate requires the `--wait` race path + `not dry_run`), so the
-feature goes live at the next prod deploy that ships this code with `dryRun=false`. Authoritative
+Real effect is prod-only (the gate requires the `--wait` race path + `not dry_run`); it went live
+with the `infra/v2.5.0` prod deploy that shipped this code at `dryRun=false`. Authoritative
 design for the blind-POST feature. Read `PLAN.md` §6/§9/§12/§13 and `RACE_PREWARM_PLAN.md` first —
 this builds directly on the race path they define and does not re-litigate it.
 
@@ -627,7 +628,7 @@ failing tests FIRST. Docs each PR updates are listed.
   residual: PR4's keep-best-cancel-rest would also cancel a deliberate manual second
   booking on the same date+party_size — accepted for this single-user bot); `README.md`
   (feature + the new `blind_post_max_count` config field, default 12); `BLIND_POST_PLAN.md`
-  → status LIVE-pending-prod once merged.
+  status banner (now realized: `LIVE in prod`, `infra/v2.5.0`, 2026-06-22).
 
 > **Ordering note:** PR0→PR1→PR2 are prerequisites for PR3. PR4 is independent of
 > PR3 (it is the safety net and can land before or after) but should land BEFORE

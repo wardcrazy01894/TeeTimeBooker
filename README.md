@@ -239,7 +239,7 @@ All subsystems are `Protocol`-typed — orchestrators wire them together; nothin
 | M-feature-3 | Prefer slot closest to the window midpoint (midpoint-distance sort) | Done |
 | M-feature-1 | Cancellation watch job — poll every 10 min, book on cancellation | Done |
 | M-feature-2 | One-booking policy: auto-upgrade to higher-priority slot (cancel-before-book + CAPTCHA pre-fetch) | Done |
-| M-feature (blind-POST) | Concurrent blind book POSTs at T0 for the Mangrove Bay morning grid (keep best, cancel rest) + watcher crash-net reconcile | Done in code; live-pending-prod |
+| M-feature (blind-POST) | Concurrent blind book POSTs at T0 for the Mangrove Bay morning grid (keep best, cancel rest) + watcher crash-net reconcile | Done — LIVE in prod (`infra/v2.5.0`, 2026-06-22, `dryRun=false`) |
 | M-azure (IaC) | Azure v1 Bicep IaC: all modules implemented; dev CI-deployed in dry-run | Done |
 | M-azure (runtime) | Container entrypoint wiring; in-process `InMemoryStore` + `ConsoleNotifier` | Done |
 
