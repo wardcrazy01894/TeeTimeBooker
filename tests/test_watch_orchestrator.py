@@ -31,7 +31,13 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
-from teetime.core.adapter import AuthError, CaptchaError, NoInventoryError, RateLimitError
+from teetime.core.adapter import (
+    AuthError,
+    CancelError,
+    CaptchaError,
+    NoInventoryError,
+    RateLimitError,
+)
 from teetime.core.clock import FakeClock
 from teetime.core.config import (
     BookingCutoffConfig,
@@ -1306,6 +1312,65 @@ async def test_watch_no_reconcile_when_policy_disabled() -> None:
     result = await watch.check_once(_request(), TARGET_DATE)
 
     assert result is None
+    assert adapter.cancel_call_count == 0
+    remaining = await adapter.list_reservations()
+    assert {r.confirmation_code for r in remaining} == {"res-0900", "res-0945"}
+
+
+async def test_watch_reconcile_cancel_error_does_not_crash() -> None:
+    """A CancelError while cancelling a duplicate is caught (logged CRITICAL) and the
+    loop CONTINUES to the next extra — check_once never raises, and the kept reservation
+    is never cancelled. The stranded extra stays live for the next run to retry.
+
+    Guards the partial-failure branch (watch_orchestrator._reconcile_duplicate_reservations
+    try/except CancelError INSIDE the per-extra loop). With every cancel raising, the
+    keeper survives and BOTH extras are still attempted (count == 2 proves the loop did
+    not abort on the first failure)."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=0, code="res-0900"),
+            _reservation(hour=9, minute=45, code="res-0945"),  # best (midpoint)
+            _reservation(hour=10, minute=15, code="res-1015"),
+        ]
+    )
+    adapter.set_search_response([])
+    adapter.set_cancel_to_raise(CancelError("backend refused cancel"))
+    watch, _, _ = _build(adapter, policy=OneBookingPolicyConfig(enabled=True))
+
+    # Must NOT propagate the CancelError.
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None
+    # Both extras attempted despite the first raising → the loop continued.
+    assert adapter.cancel_call_count == 2
+    # Every cancel failed, so all three remain — crucially the keeper was never lost.
+    remaining = await adapter.list_reservations()
+    assert {r.confirmation_code for r in remaining} == {"res-0900", "res-0945", "res-1015"}
+
+
+async def test_watch_reconcile_defers_when_lock_contended() -> None:
+    """If the request_lock is already held by another run, reconcile catches
+    ConcurrentRunError and returns the reservations UNCHANGED (no cancels) — it lets the
+    other run reconcile rather than racing it. Guards the ConcurrentRunError defer branch."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=0, code="res-0900"),
+            _reservation(hour=9, minute=45, code="res-0945"),
+        ]
+    )
+    adapter.set_search_response([])
+    store = InMemoryStore()
+    watch, _, _ = _build(adapter, store=store, policy=OneBookingPolicyConfig(enabled=True))
+    req = _request()
+
+    # Simulate a concurrent run already holding the advisory lock for this request.
+    async with store.request_lock(req.request_id):
+        result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is None
+    # Lock contended → reconcile deferred → nothing cancelled, both reservations live.
     assert adapter.cancel_call_count == 0
     remaining = await adapter.list_reservations()
     assert {r.confirmation_code for r in remaining} == {"res-0900", "res-0945"}
