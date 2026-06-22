@@ -239,16 +239,29 @@ class WatchOrchestrator:
         prior = await self._store.get_terminal(request.request_id, target_date)
         if prior is not None and prior.outcome == BookingOutcome.BOOKED:
             if self._policy is not None and self._policy.enabled:
-                # CRASH-NET (M1): the blind-POST in-run _cancel_extras can fail and strand a
-                # live duplicate while the booking job still recorded BOOKED for the kept slot.
-                # The Gate-3 short-circuit otherwise bypasses the _check_course reconcile, so
-                # the extra would persist on every watch run. Reconcile here BEFORE upgrading.
-                await self._reconcile_booked_course(request, target_date, prior)
-                # Policy is active — check whether a higher-priority slot opened up.
-                # NOTE: caller must NOT hold request_lock here; _try_upgrade acquires it.
-                upgraded = await self._try_upgrade(request, target_date, prior)
-                if upgraded is not None:
-                    return upgraded
+                try:
+                    # CRASH-NET (M1): the blind-POST in-run _cancel_extras can fail and strand a
+                    # live duplicate while the booking job still recorded BOOKED for the kept
+                    # slot. The Gate-3 short-circuit otherwise bypasses the _check_course
+                    # reconcile, so the extra would persist on every watch run. Reconcile here
+                    # BEFORE upgrading.
+                    await self._reconcile_booked_course(request, target_date, prior)
+                    # Policy is active — check whether a higher-priority slot opened up.
+                    # NOTE: caller must NOT hold request_lock here; _try_upgrade acquires it.
+                    upgraded = await self._try_upgrade(request, target_date, prior)
+                    if upgraded is not None:
+                        return upgraded
+                except ConcurrentRunError:
+                    # A concurrent run (e.g. the 6 AM booker) holds request_lock — _try_upgrade's
+                    # maybe_upgrade acquire raises it. Defer: the held BOOKED terminal stays valid
+                    # and the next 10-min run retries. (The _check_course path swallows this via
+                    # its search-loop handler; the Gate-3 short-circuit needs its own — without it
+                    # a lock race would crash an otherwise-healthy watch run.)
+                    log.debug(
+                        "watch: request_lock held by another run during Gate-3 act for %s — "
+                        "deferring",
+                        request.request_id,
+                    )
             log.debug(
                 "watch: store already has BOOKED terminal for (%s, %s), skipping",
                 request.request_id,
@@ -408,25 +421,47 @@ class WatchOrchestrator:
 
         Best-effort and cheap on the only live adapter: ForeUP authenticate() is idempotent and
         list_reservations() reads the login-response cache, so the redundant fetch the subsequent
-        _try_upgrade also makes costs ~nothing. Exceptions propagate exactly as they already do
-        from the adjacent _try_upgrade call (Captcha/Auth/RateLimit surface to the caller); a
-        CancelError on an extra never crashes (handled inside _reconcile_duplicate_reservations)."""
+        _try_upgrade also makes costs ~nothing.
+
+        Exception contract: Captcha/Auth/RateLimit surface to the caller (matching the adjacent
+        _try_upgrade and the search-loop handler). A TRANSIENT blip (network/timeout/unexpected
+        HTTP) during this pre-check must NOT crash an otherwise-healthy BOOKED run — check_once's
+        docstring promises "all other exceptions are caught ... None return" — so it is logged and
+        the reconcile is skipped for this cycle (the next 10-min run retries). A CancelError on an
+        extra never crashes either (handled inside _reconcile_duplicate_reservations)."""
         course_id = prior.course_id
         if course_id is None:
             return
         adapter = self._adapters.get(course_id)
         if adapter is None:
             return
-        creds = self._creds.get(course_id)
-        if creds is not None:
-            await adapter.authenticate(creds)
-        existing = await adapter.list_reservations()
+        try:
+            creds = self._creds.get(course_id)
+            if creds is not None:
+                await adapter.authenticate(creds)
+            existing = await adapter.list_reservations()
+        except (CaptchaError, AuthError, RateLimitError):
+            # Operator-action / explicit-backoff errors must surface exactly as they do from the
+            # search loop and the adjacent _try_upgrade — re-raise.
+            raise
+        except Exception as exc:
+            # Transient blip — skip the reconcile this cycle rather than crash a healthy run.
+            log.warning(
+                "watch: transient error during duplicate reconcile for %s on %s: %s — skipping",
+                course_id,
+                target_date,
+                exc,
+                exc_info=True,
+            )
+            return
         matching = [
             r
             for r in existing
             if r.tee_time.date() == target_date and r.party_size == len(request.players)
         ]
         if len(matching) > 1:
+            # Return value unused: the Gate-3 path returns the store BOOKED terminal, not a
+            # synthesized booking, so the reconciled list is not needed here.
             await self._reconcile_duplicate_reservations(
                 adapter, course_id, request, target_date, matching
             )

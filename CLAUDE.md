@@ -407,8 +407,12 @@ in `core/` — never directly. This is the cut line for parallel work.
   same reconcile on the booked course there — otherwise a duplicate stranded by a failed in-run
   `_cancel_extras` (which still records `BOOKED` for the kept slot) would persist on every watch
   run, undetected. (An `ALREADY_BOOKED` terminal deliberately does NOT short-circuit — it falls
-  through to `_check_course`, getting the live reconcile AND a recovery-book for free.) Either way
-  the reconcile keeps the best-ranked (the same
+  through to `_check_course`, getting the live reconcile AND a recovery-book for free.) The
+  Gate-3 reconcile pre-check (`authenticate`/`list_reservations`) swallows a TRANSIENT blip
+  (logs + skips this cycle — `check_once`'s "all other exceptions → None return" contract holds),
+  and the whole Gate-3 policy block (reconcile + upgrade) DEFERS on `ConcurrentRunError` (a
+  concurrent run holds `request_lock`) rather than crashing — the held `BOOKED` terminal stays
+  valid and the next run retries. Either way the reconcile keeps the best-ranked (the same
   `rank_slots_for_request` midpoint-distance order the booking path uses — `_rank_reservations`
   builds a slot per reservation, ranks, and appends any out-of-window ones by `tee_time` so the
   order is TOTAL), cancel the rest, UNDER the `request_lock`. This is the BACKSTOP — the
