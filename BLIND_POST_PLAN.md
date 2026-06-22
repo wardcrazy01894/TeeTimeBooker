@@ -1,12 +1,14 @@
 # BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
 
-**Status:** PARTIALLY WIRED. PR0–PR3 MERGED — the orchestrator blind path is live in code
-(gate + hybrid net + keep-best/cancel-extras + reguard + prefetch scaling; `core/orchestrator.py`,
-default `blind_post_max_count=12`). Remaining: PR4 (watcher >1-reservation crash-net backstop) and
-PR5 (PLAN §12 etiquette paragraph + README + opt-in drift canary). Real effect is prod-only (the
-gate requires the `--wait` race path + `not dry_run`). Authoritative design for the blind-POST
-feature. Read `PLAN.md` §6/§9/§12/§13 and `RACE_PREWARM_PLAN.md` first — this builds
-directly on the race path they define and does not re-litigate it.
+**Status:** FULLY WIRED — LIVE-pending-prod. PR0–PR5 MERGED — the orchestrator blind path is
+live in code (gate + hybrid net + keep-best/cancel-extras + reguard + prefetch scaling;
+`core/orchestrator.py`, default `blind_post_max_count=12`), the watcher >1-reservation crash-net
+reconcile backstop is in place (`core/watch_orchestrator.py`), and the docs (PLAN §12 etiquette
+paragraph + README + the opt-in `tests/test_foreup_canary.py` template-drift canary) are landed.
+Real effect is prod-only (the gate requires the `--wait` race path + `not dry_run`), so the
+feature goes live at the next prod deploy that ships this code with `dryRun=false`. Authoritative
+design for the blind-POST feature. Read `PLAN.md` §6/§9/§12/§13 and `RACE_PREWARM_PLAN.md` first —
+this builds directly on the race path they define and does not re-litigate it.
 
 **Scope cut line:** ONE new capability — at T0, for courses that DECLARE support
 (Mangrove Bay only initially), fire concurrent "blind" book POSTs for the top-N
