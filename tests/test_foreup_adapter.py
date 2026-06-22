@@ -464,6 +464,36 @@ async def test_search_unexpected_shape_redacts_pii_in_error() -> None:
     assert "<redacted-email>" in msg
 
 
+@respx.mock
+async def test_search_logs_dropped_unparseable_slots(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A /times list whose items fail to parse (a ForeUP schema drift) must NOT empty the
+    result silently. search() backs the 06:00 booking decision: if every slot is unparseable
+    it returns [] → the bot reports NO_INVENTORY, indistinguishable from a genuinely empty
+    teesheet. Mirror the list_reservations() parse-drop log: a PII-free aggregate at WARNING
+    (count + sample keys), not per-slot spam. One valid + one broken slot → 1 returned, 1 logged."""
+    broken = {k: v for k, v in _RAW_SLOT.items() if k != "time"}  # missing 'time' → KeyError
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[_RAW_SLOT, broken])
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level("WARNING"):
+            slots = await adapter.search(_request())
+
+    assert len(slots) == 1  # the valid slot still comes through
+    warnings = [
+        r for r in caplog.records if r.levelname == "WARNING" and "unparseable" in r.message
+    ]
+    assert warnings, "expected a WARNING about dropped unparseable slots"
+    text = caplog.text
+    assert "1" in text  # dropped count
+    # PII-free: the slot's KEYS may be logged for schema-drift diagnosis, never values.
+    assert "09:30" not in text  # no tee-time value leaks
+    assert "teesheet_id" in text  # sample keys present
+
+
 # --- leading courtesy-sleep trim, RACE PATH ONLY (Change D / PR3) ---------
 
 

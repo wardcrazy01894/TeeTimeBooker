@@ -432,7 +432,14 @@ in `core/` — never directly. This is the cut line for parallel work.
   pre-T0 and now expired) triggers exactly ONE inline re-solve + re-POST of the same slot
   (`_is_captcha_challenge` is the non-raising sibling of `_guard_captcha`); the re-POST is
   classified normally (a 2nd challenge → `CaptchaError`, no loop). An INLINE-solved token gets
-  no such retry. Adapters with no pre-fetch cost (FakeAdapter, TeeItUpAdapter, future
+  no such retry. **Concurrent inline solves are SEMAPHORE-BOUNDED** (`_captcha_solve_sem`,
+  ctor `max_concurrent_captcha_solves` default 2): in the blind-POST burst many `book()`s can
+  reach the inline solve (pool dry OR MF1 re-solve) at once — without the bound that is an
+  N-way herd of ~75 s 2captcha solves at T0, threatening the booking `replicaTimeout` and the
+  provider rate limit. Single-book paths (upgrade, sequential fallback) are single-threaded so
+  the bound never blocks them; the pre-T0 `prepare_book` prefetch is intentionally UNbounded by
+  it (it calls the provider directly, off the critical path). Adapters with no pre-fetch cost
+  (FakeAdapter, TeeItUpAdapter, future
   Chronogolf) implement it as a no-op (they accept `count` for parity and ignore it). Its
   `slot` arg is `TeeTimeSlot | None` (the CAPTCHA is page-level, slot-independent). **Two
   callers:** (1) `UpgradeOrchestrator` calls it with the chosen slot + `count=1` BEFORE

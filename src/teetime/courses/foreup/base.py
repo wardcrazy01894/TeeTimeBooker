@@ -127,6 +127,7 @@ class ForeUpAdapter(CourseAdapter):
         captcha_provider: Callable[[], Awaitable[str]] | None = None,
         max_retries: int = 2,
         retry_backoff_s: float = 0.5,
+        max_concurrent_captcha_solves: int = 2,
     ) -> None:
         self.course_id = course_id
         self._course_pk = course_pk
@@ -157,6 +158,15 @@ class ForeUpAdapter(CourseAdapter):
         # book() solves inline (single-token / normal path). Single-use: a popped token
         # is never returned to the pool.
         self._captcha_tokens: collections.deque[str] = collections.deque()
+        # Bounds CONCURRENT inline CAPTCHA solves. The blind-POST burst fires up to
+        # captcha_pool_size() book()s at once; if their pooled tokens went stale (solved
+        # pre-T0, expired by T0) they ALL hit the MF1 inline re-solve simultaneously — an
+        # N-way herd of ~75s 2captcha solves at T0, threatening the booking replicaTimeout
+        # and the provider's rate limit. This semaphore caps that herd (single-book paths —
+        # upgrade, sequential fallback — are single-threaded, so it never blocks them). The
+        # pre-T0 prepare_book prefetch is UNbounded by this (it calls the provider directly,
+        # not _solve_captcha_inline) — that concurrency is off the critical path and intended.
+        self._captcha_solve_sem = asyncio.Semaphore(max(1, max_concurrent_captcha_solves))
         # Transient-failure retry budget for IDEMPOTENT calls only (warm-up GET,
         # login POST, search GET, cancel DELETE). Reproduces+fixes the prod failure
         # where a single httpx.ReadTimeout against ForeUP (server up, adjacent polls
@@ -417,10 +427,21 @@ class ForeUpAdapter(CourseAdapter):
 
             _log.info("ForeUP: got %d raw slot(s) for %s, filtering...", len(raw_list), target_date)
             before = len(results)
+            dropped = 0
+            sample_keys: list[str] | None = None
             for raw in raw_list:
                 try:
                     slot = _parse_slot(raw, target_date, self.course_id, tz)
                 except (KeyError, ValueError, InvalidOperation):
+                    # Don't drop silently: search() backs the 06:00 booking decision. A ForeUP
+                    # /times schema change makes EVERY slot unparseable → search returns [] →
+                    # the bot reports NO_INVENTORY, indistinguishable from a genuinely empty
+                    # teesheet. We log a PII-free AGGREGATE below (count + the first dropped
+                    # item's keys, never values), mirroring the list_reservations parse-drop log
+                    # — an aggregate, not per-slot, so a wholesale break is loud without spam.
+                    dropped += 1
+                    if sample_keys is None and isinstance(raw, dict):
+                        sample_keys = sorted(raw)
                     continue
                 local_time = slot.tee_time.astimezone(tz).time()
                 if not any(w.earliest <= local_time <= w.latest for w in request.time_windows):
@@ -435,6 +456,14 @@ class ForeUpAdapter(CourseAdapter):
                 ):
                     continue
                 results.append(slot)
+            if dropped:
+                _log.warning(
+                    "ForeUP: dropped %d/%d unparseable slot(s) for %s (sample keys=%s)",
+                    dropped,
+                    len(raw_list),
+                    target_date,
+                    sample_keys,
+                )
             matched = results[before:]
             _log.info("ForeUP: %d slot(s) match filters for %s", len(matched), target_date)
             # Log the matched (in-window) tee times — not just the count — so a real 06:00
@@ -454,8 +483,12 @@ class ForeUpAdapter(CourseAdapter):
         Callers must guard `self._captcha_provider is not None` first.
         """
         assert self._captcha_provider is not None
+        # Bound concurrent solves (see _captcha_solve_sem): in the blind-POST burst many
+        # book()s can reach here at once; without this they would fire an N-way herd of
+        # ~75s 2captcha solves at T0.
         try:
-            return await self._captcha_provider()
+            async with self._captcha_solve_sem:
+                return await self._captcha_provider()
         except TimeoutError as exc:
             raise CaptchaError(f"CAPTCHA solve timed out: {exc}") from exc
 
