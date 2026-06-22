@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
+from uuid import uuid4
 
 import click
 import pytest
@@ -25,6 +26,7 @@ from teetime.core.adapter import RateLimitError
 from teetime.core.clock import FakeClock
 from teetime.core.config import TimeWindowConfig
 from teetime.core.config import load as _load
+from teetime.core.models import BookingOutcome, BookingResult, RequestId
 
 EXAMPLE_TOML = Path(__file__).resolve().parent.parent / "config" / "example.toml"
 
@@ -106,6 +108,38 @@ def test_run_no_dry_run_with_fake_adapter_books() -> None:
     )
     assert result.exit_code == 0, result.output
     assert "booked" in result.output.lower()
+
+
+def test_run_nonzero_exit_on_no_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L6 (full-repo-scan): when no course books, the `run` command must exit NON-ZERO via a
+    ClickException — the operator's signal a drop was missed. NO_INVENTORY is deliberately NOT
+    in the success set {booked, dry_run, already_booked}. The orchestrator side (recording the
+    NO_INVENTORY terminal) is well-tested; this pins the CLI's terminal→exit-code translation
+    (__main__ run_cmd), which had no coverage. Stub the Orchestrator collaborator (not the SUT,
+    which is the CLI command) to force a NO_INVENTORY result regardless of the fake adapter."""
+
+    class _NoInventoryOrchestrator:
+        def __init__(self, **_: object) -> None: ...
+
+        async def run(self, request: object) -> BookingResult:
+            return BookingResult(
+                request_id=RequestId(uuid4()),
+                outcome=BookingOutcome.NO_INVENTORY,
+                course_id=None,
+                slot=None,
+                confirmation_code=None,
+                booked_at=None,
+                attempts=0,
+            )
+
+    monkeypatch.setattr(main_mod, "Orchestrator", _NoInventoryOrchestrator)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "false", "--use-fake-adapter"],
+    )
+    assert result.exit_code != 0, result.output
+    assert "no_inventory" in result.output.lower()
 
 
 def test_run_without_fake_adapter_fails_on_missing_creds(

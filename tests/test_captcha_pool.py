@@ -241,6 +241,56 @@ async def test_book_inline_solves_when_pool_empty() -> None:
     assert stdlib_json.loads(route.calls[0].request.content)["captchaid"] == "t0"
 
 
+@respx.mock
+async def test_book_inline_solves_are_concurrency_bounded() -> None:
+    """L4 (full-repo-scan): in the blind-POST burst, up to N concurrent book() calls can each
+    hit the inline CAPTCHA solve (pool dry, or an MF1 stale-token re-solve) at the SAME instant
+    → an N-way thundering herd of ~75 s 2captcha solves at T0, risking the booking replicaTimeout
+    and provider rate limits exactly when the POST must land fast. A semaphore bounds concurrent
+    inline solves. With bound=2 and 5 concurrent book()s on an empty pool, never more than 2
+    solves run at once."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(200, json={"id": "C"})
+    )
+    active = 0
+    max_active = 0
+    release = asyncio.Event()
+
+    async def tracking_provider() -> str:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await release.wait()  # park here so concurrent solves overlap deterministically
+        active -= 1
+        return "tok"
+
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = ForeUpAdapter(
+            course_id=CID,
+            course_pk=19671,
+            booking_class_id=2149,
+            schedule_id=2149,
+            timezone="America/New_York",
+            http_client=client,
+            captcha_provider=tracking_provider,  # type: ignore[arg-type]
+            max_concurrent_captcha_solves=2,
+        )
+        adapter._logged_in = True  # empty pool → every book() inline-solves
+        tasks = [asyncio.create_task(adapter.book(_slot(), _request())) for _ in range(5)]
+        # Let solves enter up to the bound, then give any UNbounded extras a chance to
+        # (wrongly) enter before we assert.
+        for _ in range(200):
+            await asyncio.sleep(0)
+            if active >= 2:
+                break
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert max_active <= 2, f"inline solves not bounded: {max_active} ran concurrently"
+        release.set()
+        await asyncio.gather(*tasks)
+    assert max_active <= 2
+
+
 # --- MF1: stale pooled token recovery ------------------------------------
 
 _CAPTCHA_400 = {"success": False, "msg": "Captcha verification failed", "openNewWindow": True}
