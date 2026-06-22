@@ -32,7 +32,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.3.0`).
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.5.0`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -54,13 +54,19 @@ reservation PER day:
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
-**LIVE in PROD** (`infra/v2.3.0` = `main`@`f2b7032`, deployed 2026-06-15, `dryRun=false`):
+**LIVE in PROD** (`infra/v2.5.0` = `main`@`ddf0112`, deployed 2026-06-22, `dryRun=false`):
 multi-day Sat+Sun booking, the 4PM-day-before booking cutoff, the Portal-editable
 skip-days (`TEETIME-SKIP-DATES` KV secret, present in both vaults), within-window
 upgrade (strictly-closer-to-midpoint slot in same tier triggers cancel-before-book; `infra/v2.2.0`),
 watcher today+7 horizon (same-weekday target included when today is a wanted weekday;
-`#119`), and captcha TimeoutError recovery (`book()`/`prepare_book()` → `CaptchaError`,
-lead = 120 s; `#120`) are all active. The
+`#119`), captcha TimeoutError recovery (`book()`/`prepare_book()` → `CaptchaError`,
+lead = 120 s; `#120`), the **RACE_PREWARM bundle** (`infra/v2.4.0` — pre-T0 ForeUP login
+pre-warm + layer-2 guard, multi-token concurrent CAPTCHA pool, race-path leading-search-sleep
+trim) with the soft-login-skip fix (`#131` — record the post-T0 re-auth skip only on a
+session-established login), and the **BLIND-POST race feature** (`infra/v2.5.0`, BLIND_POST_PLAN
+PRs #125–#130 — MB-only concurrent blind book POSTs at T0 for the top-N synthesized in-window
+slots, keep-best + cancel-extras in-run, re-guard before search fallback, watcher
+>1-reservation reconcile crash-net) are all active. The
 renamed `-edt`/`-est` jobs are deployed in both envs and the old `-edt-sun`/`-est-sun`
 orphans were deleted per the AZURE_PLAN.md §10.2 runbook (the ARM-incremental orphan risk
 is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lose one
