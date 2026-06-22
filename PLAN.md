@@ -379,12 +379,12 @@ This is the subtlest correctness property. Scenario: bot calls `POST /reservatio
 
 1. **Pre-flight in-process idempotency.** Before any work: `store.get_terminal(request_id, date)`. If a terminal `BOOKED` exists in this run's in-memory store, return it. (Guards against re-entrant calls within the same process — unlikely but cheap.)
 2. **Pre-book remote check.** Right before POST, the adapter calls `list_reservations()` and aborts if a reservation already exists for the target date. **This is the load-bearing double-booking guard** — it works regardless of whether a prior run's history is available.
-3. **Single attempt per slot, by default.** `book()` is non-retryable EXCEPT on `SlotGoneError`. A book-POST **4xx** (both `409` and `400`) is mapped to `SlotGoneError`: a 4xx means ForeUP definitively created no reservation, so the orchestrator advances to the next-ranked slot (prod 2026-06-07: a `400` when the prime slot was claimed mid-race must NOT crash the job and abandon the other ranked slots). The full response body is logged before raising. Anything ambiguous (timeout/5xx) raises as-is and the orchestrator reaches the post-mortem path:
-4. **Post-mortem reconciliation.** Any failure during/after POST that didn't return a clean adapter error triggers: wait 5 s, list reservations again, match by tee_time + party_size. If found, treat as success and persist the confirmation. If not, treat as no-op and try next course.
+3. **Single attempt per slot, by default.** `book()` is non-retryable EXCEPT on `SlotGoneError`. A book-POST **4xx** (both `409` and `400`) is mapped to `SlotGoneError`: a 4xx means ForeUP definitively created no reservation, so the orchestrator advances to the next-ranked slot (prod 2026-06-07: a `400` when the prime slot was claimed mid-race must NOT crash the job and abandon the other ranked slots). The full response body is logged before raising. Anything ambiguous (timeout/5xx) is UNCERTAIN — `book()` raises as-is and the booker does NOT reconcile in-run (layer 4 is the watcher, async).
+4. **Post-mortem reconciliation — asynchronous, by the watcher (NOT in-run).** An UNCERTAIN book (the POST may have landed) raises out of the run loudly (non-zero exit); the booker never re-POSTs in-run. The watcher reconciles on its next ≤10-min poll: it re-authenticates (rebuilding ForeUP's reservation snapshot, so a booking that landed AFTER the booker's run is visible), calls `list_reservations()`, then records a landed booking, recovery-books a genuinely-failed one, or collapses a duplicate via `_reconcile_duplicate_reservations`. (A synchronous in-run reconcile — M2.T3 — was cut; see §9.1.)
 5. **In-process advisory lock.** `BookingStore.request_lock(request_id)` is held for the duration of `Orchestrator.run`. Attempting a second concurrent code path in the same process raises `ConcurrentRunError` immediately (no waiting).
 6. **ACA Job concurrency.** ACA Jobs run with `parallelism=1` — at most one replica per job runs at a time, so two cron-fired runs of the same job can't overlap. This is the cross-PROCESS serialization layer — it replaces any need for a cross-run durable lock. (The former `book.yml` GH Actions `concurrency:` group served this role before scheduling moved to ACA Jobs.)
 
-This is belt-and-suspenders by design. The single most important rule: **after any POST whose result is uncertain, ALWAYS reconcile via list-reservations before doing anything else.**
+This is belt-and-suspenders by design. The single most important rule: **the booker never re-POSTs after an uncertain result — it raises out, and the watcher reconciles via list-reservations on its next poll (§9.1).**
 
 ### 9.1 Booking state machine (M2 implementation contract)
 
@@ -466,6 +466,16 @@ in-flight state it would require. **Consequence:** the watcher's uptime is now
 load-bearing — it is the system of record for reconciliation. The booker stays
 deliberately simple (single-attempt `book()`, raise on UNCERTAIN).
 
+**Accepted residual — reconciliation stops at the booking cutoff.** The watcher's
+stop-acting gate (`_should_stop_acting_on_date`) freezes a date once it is past the
+16:00-day-before cutoff (or the watch deadline), BEFORE the reconcile/upgrade path runs.
+So an UNCERTAIN booking is only reconciled while the date is still actionable. For the
+06:00 booker (target 7 days out) this is a non-issue: ~6 days / hundreds of polls of
+reconcile runway before any freeze. The one true edge is the watcher's OWN recovery-book
+raising UNCERTAIN in the final minutes before the cutoff — after the freeze that date is
+no longer reconciled. Narrow and single-user-accepted (no human is acting on it), but
+noted here so the residual is honest, not hidden.
+
 The Protocol's `book()` docstring references this contract. `list_reservations`
 is part of the Protocol from M0 (review item 3) and is the foundation of both the
 pre-book guard and the watcher's reconciliation.
@@ -491,7 +501,7 @@ calls `list_reservations`, and sees any booking that landed — no phantom booki
 ## 10. Observability
 
 - **Logs** via the stdlib `logging` module -> plain text to stderr (NOT `structlog`/JSON; that dep was dropped). Captured by the ACA Job logs; tailed locally. Critical-path lines (T0 fire, DST/booking-day skip, booking outcome, NO_INVENTORY) are greppable.
-- **In-memory event log** (`attempt_log`). Every state transition (per §9.1 state machine) gets an entry: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `RECONCILING`, `BOOKED`, `LOST`, etc. Lives in process memory only; useful for within-run correlation and log emission.
+- **In-memory event log** (`attempt_log`). Illustrative within-run transitions: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `BOOKED`, `LOST`, etc. (No `RECONCILING` — the in-run reconcile was cut, §9.1.) Lives in process memory only; `append_attempt` has no production caller today (the store-boundary redaction guard is kept regardless — §10.1).
 - **Notify-on-failure** is the alert. Non-`BOOKED` outcomes print to console (ConsoleNotifier). The golf course sends booking confirmation emails directly to the user's account email.
 - **Metric surface (future, UNIMPLEMENTED):** count + duration of each event keyed by course; alert if `T_RACE_BEGIN -> BOOK_OK` latency exceeds 5s for two consecutive runs. v0/v1 ship no metrics emission or latency alerting — state is in-process and ConsoleNotifier is the only sink.
 

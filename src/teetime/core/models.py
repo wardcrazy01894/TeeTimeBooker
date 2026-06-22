@@ -174,8 +174,8 @@ class TeeTimeSlot:
 @dataclass(frozen=True, slots=True)
 class ExistingReservation:
     """A reservation already on the user's account, as discovered by
-    `CourseAdapter.list_reservations`. Used by §9 layers 2 (pre-book remote
-    check) and 4 (post-mortem reconciliation). Fingerprint fields MUST be
+    `CourseAdapter.list_reservations`. Used by §9 layer 2 (the pre-book remote
+    check) and by the watcher's asynchronous reconciliation. Fingerprint fields MUST be
     sufficient to match against a (target_date, time_window, party_size)
     triple deterministically — a server-side reservation either matches the
     intended request or it does not.
