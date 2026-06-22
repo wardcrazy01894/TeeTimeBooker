@@ -16,8 +16,11 @@ from uuid import uuid4
 import pytest
 
 from teetime.core.adapter import (
+    AuthError,
+    CaptchaError,
     InventoryNotPublishedError,
     NoInventoryError,
+    RateLimitError,
     SlotGoneError,
 )
 from teetime.core.clock import FakeClock
@@ -342,6 +345,70 @@ async def test_run_falls_back_on_no_inventory_error() -> None:
     result = await orch.run(_request(course_ids=(c1, c2)))
     assert result.outcome == BookingOutcome.BOOKED
     assert result.course_id == c2
+
+
+# --- Search/hedge errors exit clean, not crash (full-repo-scan PR C) ---
+
+
+async def test_run_rate_limit_records_no_inventory_not_crash() -> None:
+    """A 429 from search() at the drop must NOT escape run() as an uncaught crash with no
+    terminal. Like an empty course, it records a clean NO_INVENTORY terminal (+ notifies)
+    so the job exits cleanly instead of dying with a traceback and no record."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_to_raise(RateLimitError("429", retry_after_s=30))
+    orch, store, _ = _build({cid: fa})
+
+    req = _request(course_ids=(cid,))
+    result = await orch.run(req)  # must not raise
+
+    assert result.outcome == BookingOutcome.NO_INVENTORY
+    assert fa.book_call_count == 0
+    # Terminal was recorded (a re-run short-circuits to the same NO_INVENTORY result).
+    persisted = await store.get_terminal(req.request_id, req.target_dates[0])
+    assert persisted is not None and persisted.outcome == BookingOutcome.NO_INVENTORY
+
+
+async def test_run_rate_limit_on_first_course_falls_back_to_next() -> None:
+    """A 429 on the first course is a per-course skip, not a whole-run abort: the run
+    still tries the fallback course and books it."""
+    c1 = CourseId("fake:c1")
+    c2 = CourseId("fake:c2")
+    fa1 = FakeAdapter(course_id=c1)
+    fa1.set_search_to_raise(RateLimitError("429", retry_after_s=30))
+    fa2 = FakeAdapter(course_id=c2)
+    fa2.set_search_response([_slot(c2)])
+    orch, _, _ = _build({c1: fa1, c2: fa2})
+
+    result = await orch.run(_request(course_ids=(c1, c2)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.course_id == c2
+
+
+async def test_run_captcha_error_propagates_for_nonzero_exit() -> None:
+    """CaptchaError is an OPERATOR-ACTION error (the solver is failing): it must still
+    propagate out of run() so the booking job exits non-zero. It is NOT swallowed into a
+    NO_INVENTORY terminal — that would hide a broken CAPTCHA pipeline behind a clean exit."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_to_raise(CaptchaError("captcha challenge"))
+    orch, _, _ = _build({cid: fa})
+
+    with pytest.raises(CaptchaError):
+        await orch.run(_request(course_ids=(cid,)))
+
+
+async def test_run_auth_error_propagates_for_nonzero_exit() -> None:
+    """AuthError (credentials rejected) is operator-action too: it propagates out of run()
+    for a non-zero exit rather than being masked as NO_INVENTORY."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_authenticate_side_effects([AuthError("bad creds")])
+    orch, _, _ = _build({cid: fa})
+
+    with pytest.raises(AuthError):
+        await orch.run(_request(course_ids=(cid,)))
 
 
 # --- Pre-book remote check (PLAN §9 layer 2) ---------------------------

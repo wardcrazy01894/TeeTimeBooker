@@ -28,6 +28,7 @@ from .adapter import (
     CancelError,
     InventoryNotPublishedError,
     NoInventoryError,
+    RateLimitError,
     ReservationCacheRefreshable,
     SlotGoneError,
 )
@@ -157,6 +158,22 @@ class Orchestrator:
                         prewarmed_course_ids=frozenset(self._prewarmed_course_ids),
                     )
                 except _CourseSkippedError:
+                    continue
+                except RateLimitError as exc:
+                    # A 429 anywhere in this course's flow (search/hedge/book) means the
+                    # platform is throttling us. A 429 is REJECTED before processing, so no
+                    # reservation was created (unlike the §9 UNCERTAIN timeout/5xx) — it is
+                    # safe to treat like an empty course: log + try the next preference, and
+                    # if none book, record a clean NO_INVENTORY terminal (+ notify) instead of
+                    # crashing the job with an uncaught error and no record. CaptchaError /
+                    # AuthError are deliberately NOT caught here — they are operator-action
+                    # errors and propagate for a non-zero exit (a broken CAPTCHA/credential
+                    # pipeline must not hide behind a clean NO_INVENTORY).
+                    log.warning(
+                        "course %s: rate-limited (429, retry_after=%ss) — skipping this course",
+                        course_id,
+                        exc.retry_after_s,
+                    )
                     continue
                 if result is not None:
                     break
