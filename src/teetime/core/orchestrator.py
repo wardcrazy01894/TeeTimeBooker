@@ -16,7 +16,6 @@ add the reconciliation branch in one place.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -323,13 +322,15 @@ class Orchestrator:
 
         blind_results = await asyncio.gather(*blind_tasks, return_exceptions=True)
         booked: list[BookingResult] = []
+        gone = 0  # SlotGoneError count — logged in aggregate so a total wipeout is diagnosable
         # blind_results is in the same order as `fire` (gather preserves task order),
         # so each result pairs with the slot whose POST produced it.
         for slot, r in zip(fire, blind_results, strict=True):
             if isinstance(r, BookingResult) and r.outcome == BookingOutcome.BOOKED:
                 booked.append(r)
             elif isinstance(r, SlotGoneError):
-                continue  # slot claimed between synthesize and book — drop
+                gone += 1  # slot claimed between synthesize and book — drop
+                continue
             elif isinstance(r, Exception):
                 # UNCERTAIN (timeout/5xx): the POST MAY have landed. Drop this candidate;
                 # the guards below (a sibling booked, or the re-guard list_reservations)
@@ -345,6 +346,16 @@ class Orchestrator:
                 # Non-Exception (CancelledError/KeyboardInterrupt/SystemExit): never swallow a
                 # control-flow signal as a dropped booking — propagate it.
                 raise r
+
+        if gone:
+            # Aggregate, not per-slot: at a competitive drop many/all blind POSTs can lose the
+            # race. One line tells an operator how many of the N fired came back slot-gone.
+            log.info(
+                "course %s: blind-POST %d of %d slot(s) came back slot-gone (claimed pre-book)",
+                course_id,
+                gone,
+                len(fire),
+            )
 
         if booked:
             # FAST PATH WON. Keep the rank-0 booked slot, cancel the rest by their own id.
@@ -478,23 +489,32 @@ class Orchestrator:
         """Abandon a hedge task: cancel it and discard its result/exception.
 
         We only call this once a blind POST has WON (or the re-guard found a landed
-        reservation), so the hedge search's outcome is irrelevant. Two cases must both be
-        swallowed so abandoning the hedge can never fail the run:
+        reservation), so the hedge search's outcome is irrelevant. Two cases are both
+        handled by the ``try/except`` below so abandoning the hedge can never fail the run:
 
         - The hedge is still IN FLIGHT: ``task.cancel()`` schedules a cancellation and
-          ``await task`` raises ``asyncio.CancelledError`` — which is a ``BaseException``,
-          NOT an ``Exception``, so ``suppress(Exception)`` alone would let it propagate.
+          ``await task`` raises ``asyncio.CancelledError`` — caught by the explicit
+          ``except asyncio.CancelledError`` and dropped silently (the expected case).
         - The hedge is already DONE: ``task.cancel()`` is a no-op and ``await`` re-raises
           whatever it stored — for the hedge search that can be a non-cancelled error
           (e.g. a 429 ``RateLimitError`` or a ``CaptchaError`` at the drop, since
-          ``_poll_for_slots`` only swallows inventory-not-published).
+          ``_poll_for_slots`` only swallows inventory-not-published). Caught by
+          ``except Exception`` and logged at debug (not fully invisible) before dropping.
 
         Letting either escape ``_blind_post_course`` would discard a real, successful
-        booking, so suppress both explicitly. (``KeyboardInterrupt``/``SystemExit`` — the
-        other ``BaseException``s — are deliberately NOT suppressed.)"""
+        booking, so both are handled explicitly. ``KeyboardInterrupt``/``SystemExit`` (the
+        other ``BaseException``s) are NOT ``Exception`` subclasses, so they are NOT caught
+        and propagate normally."""
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
+        try:
             await task
+        except asyncio.CancelledError:
+            pass  # expected: the hedge was still in flight when we cancelled it
+        except Exception as exc:
+            # The hedge had already finished with a non-cancel error (e.g. a 429 or a
+            # CAPTCHA challenge at the drop). We won, so it's irrelevant — but log at debug
+            # so it isn't fully invisible if we later need to explain a hedge failure.
+            log.debug("course: abandoned hedge search finished with %r — discarding", exc)
 
     # --- race-path pre-warm (login + reservation guard + CAPTCHA) ------
 
@@ -682,14 +702,31 @@ class Orchestrator:
                 slots = await adapter.search(request, skip_initial_spacing=self._prefetch_book)
             except InventoryNotPublishedError:
                 if self._clock.now_utc() >= deadline:
+                    log.info(
+                        "search: no slots found for %s — inventory still unpublished at "
+                        "max_poll_seconds deadline (%ss); giving up on this course",
+                        request.target_dates[0],
+                        self._scheduler.max_poll_seconds,
+                    )
                     return []
                 await self._clock.sleep(poll)
                 continue
             except NoInventoryError:
+                log.info(
+                    "search: no slots found for %s — course reported no inventory; "
+                    "giving up on this course",
+                    request.target_dates[0],
+                )
                 return []
             if slots:
                 return slots
             if self._clock.now_utc() >= deadline:
+                log.info(
+                    "search: no slots found for %s — search returned empty through "
+                    "max_poll_seconds deadline (%ss); giving up on this course",
+                    request.target_dates[0],
+                    self._scheduler.max_poll_seconds,
+                )
                 return []
             await self._clock.sleep(poll)
 

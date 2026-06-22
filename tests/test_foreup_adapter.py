@@ -20,6 +20,7 @@ from teetime.core.adapter import (
     CancelError,
     CaptchaError,
     CourseAdapter,
+    InventoryNotPublishedError,
     RateLimitError,
     ReservationCacheRefreshable,
     SlotGoneError,
@@ -445,6 +446,22 @@ async def test_search_empty_list_returns_no_slots() -> None:
         adapter = _adapter(client)
         slots = await adapter.search(_request())
     assert slots == []
+
+
+@respx.mock
+async def test_search_unexpected_shape_redacts_pii_in_error() -> None:
+    """A non-list /times body is echoed into InventoryNotPublishedError for diagnosis,
+    but any account-holder email in it must be redacted before it reaches the log."""
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json={"error": "denied for player@example.com"})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with pytest.raises(InventoryNotPublishedError) as exc_info:
+            await adapter.search(_request())
+    msg = str(exc_info.value)
+    assert "player@example.com" not in msg
+    assert "<redacted-email>" in msg
 
 
 # --- leading courtesy-sleep trim, RACE PATH ONLY (Change D / PR3) ---------

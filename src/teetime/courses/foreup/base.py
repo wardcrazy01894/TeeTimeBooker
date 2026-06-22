@@ -411,7 +411,9 @@ class ForeUpAdapter(CourseAdapter):
 
             raw_list: Any = r.json() if r.text else []
             if not isinstance(raw_list, list):
-                raise InventoryNotPublishedError(f"Unexpected /times shape: {r.text[:200]}")
+                raise InventoryNotPublishedError(
+                    f"Unexpected /times shape: {redact_text(r.text[:200])}"
+                )
 
             _log.info("ForeUP: got %d raw slot(s) for %s, filtering...", len(raw_list), target_date)
             before = len(results)
