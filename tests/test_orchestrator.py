@@ -192,6 +192,25 @@ async def test_run_returns_no_inventory_when_all_courses_empty() -> None:
     assert fa.book_call_count == 0
 
 
+async def test_run_logs_give_up_reason_when_course_empty(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A course that yields no bookable inventory logs an INFO give-up line (with the
+    target date) from _poll_for_slots before falling through — so a 06:00 'found nothing'
+    is diagnosable from logs alone. full-repo-scan observability finding."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([])
+    orch, _, _ = _build({cid: fa})
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        await orch.run(_request(course_ids=(cid,)))
+
+    assert any("no slots found" in r.getMessage() for r in caplog.records), (
+        "expected a give-up INFO line from _poll_for_slots"
+    )
+
+
 async def test_run_falls_back_to_next_course_when_first_empty() -> None:
     c1 = CourseId("fake:c1")
     c2 = CourseId("fake:c2")

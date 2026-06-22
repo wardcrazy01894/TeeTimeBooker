@@ -16,7 +16,6 @@ add the reconciliation branch in one place.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -323,13 +322,15 @@ class Orchestrator:
 
         blind_results = await asyncio.gather(*blind_tasks, return_exceptions=True)
         booked: list[BookingResult] = []
+        gone = 0  # SlotGoneError count — logged in aggregate so a total wipeout is diagnosable
         # blind_results is in the same order as `fire` (gather preserves task order),
         # so each result pairs with the slot whose POST produced it.
         for slot, r in zip(fire, blind_results, strict=True):
             if isinstance(r, BookingResult) and r.outcome == BookingOutcome.BOOKED:
                 booked.append(r)
             elif isinstance(r, SlotGoneError):
-                continue  # slot claimed between synthesize and book — drop
+                gone += 1  # slot claimed between synthesize and book — drop
+                continue
             elif isinstance(r, Exception):
                 # UNCERTAIN (timeout/5xx): the POST MAY have landed. Drop this candidate;
                 # the guards below (a sibling booked, or the re-guard list_reservations)
@@ -345,6 +346,16 @@ class Orchestrator:
                 # Non-Exception (CancelledError/KeyboardInterrupt/SystemExit): never swallow a
                 # control-flow signal as a dropped booking — propagate it.
                 raise r
+
+        if gone:
+            # Aggregate, not per-slot: at a competitive drop many/all blind POSTs can lose the
+            # race. One line tells an operator how many of the N fired came back slot-gone.
+            log.info(
+                "course %s: blind-POST %d of %d slot(s) came back slot-gone (claimed pre-book)",
+                course_id,
+                gone,
+                len(fire),
+            )
 
         if booked:
             # FAST PATH WON. Keep the rank-0 booked slot, cancel the rest by their own id.
@@ -493,8 +504,15 @@ class Orchestrator:
         booking, so suppress both explicitly. (``KeyboardInterrupt``/``SystemExit`` — the
         other ``BaseException``s — are deliberately NOT suppressed.)"""
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
+        try:
             await task
+        except asyncio.CancelledError:
+            pass  # expected: the hedge was still in flight when we cancelled it
+        except Exception as exc:
+            # The hedge had already finished with a non-cancel error (e.g. a 429 or a
+            # CAPTCHA challenge at the drop). We won, so it's irrelevant — but log at debug
+            # so it isn't fully invisible if we later need to explain a hedge failure.
+            log.debug("course: abandoned hedge search finished with %r — discarding", exc)
 
     # --- race-path pre-warm (login + reservation guard + CAPTCHA) ------
 
@@ -682,14 +700,31 @@ class Orchestrator:
                 slots = await adapter.search(request, skip_initial_spacing=self._prefetch_book)
             except InventoryNotPublishedError:
                 if self._clock.now_utc() >= deadline:
+                    log.info(
+                        "search: no slots found for %s — inventory still unpublished at "
+                        "max_poll_seconds deadline (%ss); giving up on this course",
+                        request.target_dates[0],
+                        self._scheduler.max_poll_seconds,
+                    )
                     return []
                 await self._clock.sleep(poll)
                 continue
             except NoInventoryError:
+                log.info(
+                    "search: no slots found for %s — course reported no inventory; "
+                    "giving up on this course",
+                    request.target_dates[0],
+                )
                 return []
             if slots:
                 return slots
             if self._clock.now_utc() >= deadline:
+                log.info(
+                    "search: no slots found for %s — search returned empty through "
+                    "max_poll_seconds deadline (%ss); giving up on this course",
+                    request.target_dates[0],
+                    self._scheduler.max_poll_seconds,
+                )
                 return []
             await self._clock.sleep(poll)
 

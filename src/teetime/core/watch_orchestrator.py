@@ -361,7 +361,15 @@ class WatchOrchestrator:
         scoped = dc_replace(request, target_dates=(target_date,))
         try:
             slots = await adapter.search(scoped)
-        except (NoInventoryError, InventoryNotPublishedError):
+        except (NoInventoryError, InventoryNotPublishedError) as exc:
+            # Don't swallow silently: an unattended watch run that finds nothing must
+            # leave a breadcrumb so "why didn't it book?" is answerable from logs alone.
+            log.info(
+                "watch: no published inventory on course %s for %s (%s); trying next course",
+                course_id,
+                target_date,
+                type(exc).__name__,
+            )
             return None  # Nothing on this course; try next.
 
         candidates = [
