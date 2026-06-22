@@ -45,7 +45,6 @@ class FakeAdapter:
         self.synthesize_blind_slots_call_count: int = 0
         self._search_response: list[TeeTimeSlot] | None = None
         self._search_exc: AdapterError | None = None
-        self._book_outcome: BookingOutcome = BookingOutcome.BOOKED
         self._book_exc: AdapterError | None = None
         self._book_side_effects: list[BookingOutcome | AdapterError] = []
         self._existing: list[ExistingReservation] = []
@@ -196,7 +195,9 @@ class FakeAdapter:
         elif self._book_exc is not None:
             raise self._book_exc
         else:
-            outcome = self._book_outcome
+            # No side-effects queued and no book exception → a default success.
+            # (Failure modes are driven by set_book_side_effects / _book_exc.)
+            outcome = BookingOutcome.BOOKED
         conf_code = (
             f"{MANAGED_BOOKING_TAG}FAKE-{slot.slot_id}"
             if outcome == BookingOutcome.BOOKED
