@@ -930,6 +930,19 @@ observable ONLY on a live cron landing on a wanted booking day. So M6's go/no-go
 FakeClock tests + a clean `--fire-time` on-demand dev run + **one clean dev dry-run on a wanted
 booking day (Sat or Sun)** (the cron-driven race).
 
+**(c) Pre-weekend live API-drift canary (manual; do not skip before a real drop).** The respx
+unit tests only assert what the bot *sends* — they cannot catch ForeUP changing its login /
+reservation / slot response shape or `BLIND_POST_TEMPLATE` drift. The ONLY guard for that is
+`tests/test_foreup_canary.py`, which is `integration`-marked (excluded from CI) and skipped
+unless MB creds are present, so it **never runs automatically**. Before a booking weekend, run
+it locally with live MB creds (it does NOT book):
+```bash
+MB_USERNAME=… MB_PASSWORD=… uv run pytest -m integration tests/test_foreup_canary.py -v
+```
+A failure here means ForeUP drifted — fix the adapter/template BEFORE the 06:00 cron, not during
+it. (Tracked as full-repo-scan finding L5: the canary had no operator-runbook home, only a
+docstring.)
+
 ### 10.5 Prod cutover checklist (in order)
 
 1. **M6 verified in dev** (§10.4) — incl. one clean dev dry-run on a wanted booking day (Sat or Sun).

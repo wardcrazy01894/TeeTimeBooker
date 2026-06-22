@@ -128,6 +128,26 @@ async def test_run_happy_path_returns_booked() -> None:
     assert (await store.get_terminal(req.request_id, req.target_dates[0])) == result
 
 
+async def test_run_logs_resolved_terminal(caplog: pytest.LogCaptureFixture) -> None:
+    """L3 (full-repo-scan): run() must log its resolved terminal (outcome + course +
+    confirmation + date) to the structured app log. The ConsoleNotifier writes a SEPARATE
+    stdout stream and the `run` CLI only logs on failure, so without this the orchestrator's
+    decision was absent from the (stderr→Log Analytics) app log."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    fa.set_search_response([_slot(cid)])
+    orch, _, _ = _build({cid: fa})
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    line = next((r.getMessage() for r in caplog.records if "run terminal" in r.getMessage()), None)
+    assert line is not None, "expected a 'booking: run terminal' log line"
+    assert "outcome=booked" in line
+    assert str(cid) in line
+
+
 async def test_run_persists_authenticate_call() -> None:
     cid = CourseId("fake:course")
     fa = FakeAdapter(course_id=cid)
@@ -167,6 +187,36 @@ async def test_run_idempotent_short_circuits_to_prior_terminal() -> None:
     assert fa.search_call_count == 0
     assert fa.book_call_count == 0
     assert fa.authenticate_call_count == 0
+
+
+async def test_run_idempotent_replay_logs_terminal(caplog: pytest.LogCaptureFixture) -> None:
+    """L3 follow-up (PR #143 review): the idempotency short-circuit (prior terminal exists)
+    must ALSO log its resolved terminal — a re-run's decision should be in the app log, not
+    silently returned."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)
+    store = InMemoryStore()
+    rid = RequestId(uuid4())
+    d = date(2026, 5, 13)
+    prior = BookingResult(
+        request_id=rid,
+        outcome=BookingOutcome.BOOKED,
+        course_id=cid,
+        slot=None,
+        confirmation_code="TTB:PRIOR-1",
+        booked_at=datetime(2026, 5, 6, 10, 0, 1, tzinfo=UTC),
+        attempts=1,
+    )
+    await store.record_terminal(prior, d)
+    orch, _, _ = _build({cid: fa}, store=store)
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        await orch.run(_request(request_id=rid, course_ids=(cid,)))
+
+    assert any(
+        "run terminal (idempotent replay)" in r.getMessage() and "outcome=booked" in r.getMessage()
+        for r in caplog.records
+    ), "expected an idempotent-replay terminal log line"
 
 
 # --- Dry run -----------------------------------------------------------
