@@ -796,7 +796,9 @@ async def test_run_prewarm_login_failure_falls_back_to_inline_auth() -> None:
     assert fa.book_call_count == 1
 
 
-async def test_run_prewarm_soft_login_failure_reauths_at_t0() -> None:
+async def test_run_prewarm_soft_login_failure_reauths_at_t0(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """RACE_PREWARM_PLAN §3.1 SF#1: a SOFT login failure (authenticate() RETURNS but no
     session — ForeUP's 400/401/rejected-body swallow) must NOT mark the course prewarmed.
     Otherwise run() skips the T0 re-auth and book() raises AuthError on a never-logged-in
@@ -813,11 +815,15 @@ async def test_run_prewarm_soft_login_failure_reauths_at_t0() -> None:
         {cid: fa}, clock=clock, scheduler=_scheduler_with_lead(10), prefetch_book=True
     )
 
-    result = await orch.run(_request(course_ids=(cid,)))
+    with caplog.at_level(logging.WARNING, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
 
     assert result.outcome == BookingOutcome.BOOKED
     assert fa.authenticate_call_count == 2, "soft-fail prewarm must NOT suppress the T0 re-auth"
     assert fa.book_call_count == 1
+    # Pin the diagnostic line so a refactor can't silently drop the SF#1 signal that
+    # explains a soft-login-then-reauth in prod logs.
+    assert "established no session" in caplog.text
 
 
 async def test_run_short_circuits_already_booked_found_pre_t0(
