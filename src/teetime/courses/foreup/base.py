@@ -127,7 +127,7 @@ class ForeUpAdapter(CourseAdapter):
         captcha_provider: Callable[[], Awaitable[str]] | None = None,
         max_retries: int = 2,
         retry_backoff_s: float = 0.5,
-        max_concurrent_captcha_solves: int = 2,
+        max_concurrent_captcha_solves: int = 6,
     ) -> None:
         self.course_id = course_id
         self._course_pk = course_pk
@@ -166,6 +166,10 @@ class ForeUpAdapter(CourseAdapter):
         # upgrade, sequential fallback — are single-threaded, so it never blocks them). The
         # pre-T0 prepare_book prefetch is UNbounded by this (it calls the provider directly,
         # not _solve_captcha_inline) — that concurrency is off the critical path and intended.
+        # Default 6: a balance — high enough not to over-serialise a real all-stale burst
+        # (prepare_book already fires up to blind_post_max_count=12 concurrent solves pre-T0,
+        # so 2captcha tolerates that concurrency; an all-stale 12-burst at 6 is 2 waves, well
+        # within replicaTimeout=1200s) yet still a guardrail against a pathological runaway.
         self._captcha_solve_sem = asyncio.Semaphore(max(1, max_concurrent_captcha_solves))
         # Transient-failure retry budget for IDEMPOTENT calls only (warm-up GET,
         # login POST, search GET, cancel DELETE). Reproduces+fixes the prod failure

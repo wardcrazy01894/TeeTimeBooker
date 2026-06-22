@@ -433,7 +433,7 @@ in `core/` — never directly. This is the cut line for parallel work.
   (`_is_captcha_challenge` is the non-raising sibling of `_guard_captcha`); the re-POST is
   classified normally (a 2nd challenge → `CaptchaError`, no loop). An INLINE-solved token gets
   no such retry. **Concurrent inline solves are SEMAPHORE-BOUNDED** (`_captcha_solve_sem`,
-  ctor `max_concurrent_captcha_solves` default 2): in the blind-POST burst many `book()`s can
+  ctor `max_concurrent_captcha_solves` default 6): in the blind-POST burst many `book()`s can
   reach the inline solve (pool dry OR MF1 re-solve) at once — without the bound that is an
   N-way herd of ~75 s 2captcha solves at T0, threatening the booking `replicaTimeout` and the
   provider rate limit. Single-book paths (upgrade, sequential fallback) are single-threaded so
