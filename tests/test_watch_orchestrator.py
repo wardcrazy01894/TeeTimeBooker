@@ -1393,3 +1393,161 @@ async def test_watch_reconcile_defers_when_lock_contended() -> None:
     assert adapter.cancel_call_count == 0
     remaining = await adapter.list_reservations()
     assert {r.confirmation_code for r in remaining} == {"res-0900", "res-0945"}
+
+
+async def test_watch_reconciles_duplicates_when_store_has_booked_terminal() -> None:
+    """CRASH-NET GAP (M1): a BOOKED store terminal must NOT bypass the duplicate
+    reconcile. The blind-POST in-run _cancel_extras can fail (None conf / CancelError),
+    leaving a live EXTRA while the booking job still records BOOKED for the kept slot.
+    Gate 3 previously short-circuited on that BOOKED terminal WITHOUT reaching
+    _check_course (where the reconcile lives), so the duplicate persisted on every
+    subsequent watch run forever. The reconcile must run in the Gate-3 BOOKED path too.
+
+    Setup: store holds BOOKED at 09:45 (the kept slot), but TWO live reservations exist
+    on the date (the stranded extra at 10:15 was never cancelled). Search returns nothing
+    better, so any cancel is the reconcile's, not an upgrade's."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=45, code="res-0945"),  # best (midpoint) — kept
+            _reservation(hour=10, minute=15, code="res-1015"),  # stranded extra
+        ]
+    )
+    adapter.set_search_response([])  # nothing better → no upgrade-driven cancel
+    req = _request()
+    store = InMemoryStore()
+    prior = BookingResult(
+        request_id=req.request_id,
+        outcome=BookingOutcome.BOOKED,
+        course_id=COURSE_ID,
+        slot=_slot(hour=9, minute=45),
+        confirmation_code="TTB:res-0945",
+        booked_at=TEN_AM_ET_UTC,
+        attempts=1,
+    )
+    await store.record_terminal(prior, TARGET_DATE)
+
+    watch, store, _ = _build(adapter, store=store, policy=OneBookingPolicyConfig(enabled=True))
+    result = await watch.check_once(req, TARGET_DATE)
+
+    # The held booking is kept (BOOKED terminal returned), the extra is cancelled.
+    assert result is not None and result.outcome == BookingOutcome.BOOKED
+    assert adapter.cancel_call_count == 1
+    remaining = await adapter.list_reservations()
+    assert [r.confirmation_code for r in remaining] == ["res-0945"]
+
+
+async def test_watch_booked_terminal_no_reconcile_when_single_reservation() -> None:
+    """The Gate-3 BOOKED reconcile must not cancel anything when only ONE live
+    reservation exists (the common, healthy case) — it is gated on >1, exactly like
+    the _check_course crash-net. Guards against the M1 fix over-reaching."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations([_reservation(hour=9, minute=45, code="res-0945")])
+    adapter.set_search_response([])
+    req = _request()
+    store = InMemoryStore()
+    prior = BookingResult(
+        request_id=req.request_id,
+        outcome=BookingOutcome.BOOKED,
+        course_id=COURSE_ID,
+        slot=_slot(hour=9, minute=45),
+        confirmation_code="TTB:res-0945",
+        booked_at=TEN_AM_ET_UTC,
+        attempts=1,
+    )
+    await store.record_terminal(prior, TARGET_DATE)
+
+    watch, store, _ = _build(adapter, store=store, policy=OneBookingPolicyConfig(enabled=True))
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None and result.outcome == BookingOutcome.BOOKED
+    assert adapter.cancel_call_count == 0
+
+
+def _booked_terminal(req: BookingRequest) -> BookingResult:
+    """A BOOKED store terminal at 09:45 for the Gate-3 reconcile tests."""
+    return BookingResult(
+        request_id=req.request_id,
+        outcome=BookingOutcome.BOOKED,
+        course_id=COURSE_ID,
+        slot=_slot(hour=9, minute=45),
+        confirmation_code="TTB:res-0945",
+        booked_at=TEN_AM_ET_UTC,
+        attempts=1,
+    )
+
+
+async def test_watch_booked_terminal_reconcile_transient_error_does_not_crash() -> None:
+    """A transient blip (non-Captcha/Auth/RateLimit) during the Gate-3 reconcile pre-check
+    must NOT crash an otherwise-healthy BOOKED run — check_once's contract is "all other
+    exceptions are caught ... None return". The reconcile is skipped this cycle; the held
+    BOOKED terminal is still returned."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=45, code="res-0945"),
+            _reservation(hour=10, minute=15, code="res-1015"),  # a duplicate is present...
+        ]
+    )
+    adapter.set_search_response([])
+    # ...but authenticate blips: the reconcile must swallow it, not crash.
+    adapter.set_authenticate_side_effects([RuntimeError("transient ForeUP blip")])
+    req = _request()
+    store = InMemoryStore()
+    await store.record_terminal(_booked_terminal(req), TARGET_DATE)
+
+    watch, store, _ = _build(adapter, store=store, policy=OneBookingPolicyConfig(enabled=True))
+    result = await watch.check_once(req, TARGET_DATE)  # must NOT raise
+
+    assert result is not None and result.outcome == BookingOutcome.BOOKED
+    assert adapter.cancel_call_count == 0  # reconcile skipped this cycle
+
+
+async def test_watch_booked_terminal_reconcile_cancel_error_does_not_crash() -> None:
+    """Gate-3 path parity with _check_course: a CancelError on the stranded extra is caught
+    (logged CRITICAL) and does NOT crash; the kept booking is never lost."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=45, code="res-0945"),  # best — kept
+            _reservation(hour=10, minute=15, code="res-1015"),  # extra; its cancel will fail
+        ]
+    )
+    adapter.set_search_response([])
+    adapter.set_cancel_to_raise(CancelError("backend refused cancel"))
+    req = _request()
+    store = InMemoryStore()
+    await store.record_terminal(_booked_terminal(req), TARGET_DATE)
+
+    watch, store, _ = _build(adapter, store=store, policy=OneBookingPolicyConfig(enabled=True))
+    result = await watch.check_once(req, TARGET_DATE)  # must NOT raise
+
+    assert result is not None and result.outcome == BookingOutcome.BOOKED
+    assert adapter.cancel_call_count == 1  # the extra was attempted
+    remaining = await adapter.list_reservations()  # cancel failed → both still live
+    assert {r.confirmation_code for r in remaining} == {"res-0945", "res-1015"}
+
+
+async def test_watch_booked_terminal_reconcile_defers_when_lock_contended() -> None:
+    """Gate-3 path parity: if another run holds the request_lock, the reconcile defers
+    (ConcurrentRunError → no cancels) and the BOOKED terminal is still returned."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=45, code="res-0945"),
+            _reservation(hour=10, minute=15, code="res-1015"),
+        ]
+    )
+    adapter.set_search_response([])
+    req = _request()
+    store = InMemoryStore()
+    await store.record_terminal(_booked_terminal(req), TARGET_DATE)
+
+    watch, store, _ = _build(adapter, store=store, policy=OneBookingPolicyConfig(enabled=True))
+    async with store.request_lock(req.request_id):  # simulate a concurrent run holding the lock
+        result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None and result.outcome == BookingOutcome.BOOKED
+    assert adapter.cancel_call_count == 0  # deferred — nothing cancelled
+    remaining = await adapter.list_reservations()
+    assert {r.confirmation_code for r in remaining} == {"res-0945", "res-1015"}
