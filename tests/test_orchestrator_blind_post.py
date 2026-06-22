@@ -307,16 +307,31 @@ async def test_zero_booked_but_landed_uncertain_reguards_to_already_booked() -> 
     cid = CourseId("fake:mb")
 
     class _ReguardAdapter(FakeAdapter):
+        """Production-faithful ForeUP model: authenticate() is IDEMPOTENT (a 2nd call is
+        a no-op — the _logged_in short-circuit — and does NOT rebuild the reservation
+        cache), and ONLY refresh_reservations() forces a fresh snapshot. This is the
+        regression guard for must-fix #1: the old reguard (which called authenticate())
+        would never see the landed reservation here and would double-book."""
+
         def __init__(self) -> None:
             super().__init__(course_id=cid, supports_blind_post=True)
+            self._logged_in = False
             self._reveal = False
 
         async def authenticate(self, creds: CourseCredentials) -> None:
+            # Idempotent, like ForeUpAdapter.authenticate: once logged in, no-op. A
+            # plain re-auth therefore does NOT rebuild the cache / reveal the booking.
+            if self._logged_in:
+                return
+            self._logged_in = True
             await super().authenticate(creds)
-            # The reguard re-auth (2nd authenticate) rebuilds the login cache and reveals
-            # the reservation the crashed/uncertain blind POST actually created.
-            if self.authenticate_call_count >= 2:
-                self._reveal = True
+
+        async def refresh_reservations(self, creds: CourseCredentials) -> None:
+            # The forced re-login: clears the flag, re-authenticates, and the fresh
+            # snapshot now reveals the reservation the uncertain blind POST created.
+            self._logged_in = False
+            await self.authenticate(creds)
+            self._reveal = True
 
         async def list_reservations(self) -> list[ExistingReservation]:
             self.list_reservations_call_count += 1
@@ -345,9 +360,37 @@ async def test_zero_booked_but_landed_uncertain_reguards_to_already_booked() -> 
     assert fa.book_call_count == 2  # only the 2 blind POSTs; NO fallback book
 
 
-async def test_reguard_reauthenticates_before_listing() -> None:
-    """_reguard_before_fallback must call authenticate() BEFORE list_reservations() so a
-    THIS-RUN blind reservation (in ForeUP's login cache) is visible (must-fix 3)."""
+async def test_reguard_refreshes_before_listing() -> None:
+    """_reguard_before_fallback must force a fresh snapshot (refresh_reservations on a
+    ReservationCacheRefreshable adapter) BEFORE list_reservations() so a THIS-RUN blind
+    reservation (in ForeUP's login cache) is visible (must-fix 1/3)."""
+    cid = CourseId("fake:mb")
+
+    class _OrderAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(course_id=cid, supports_blind_post=True)
+            self.order: list[str] = []
+
+        async def refresh_reservations(self, creds: CourseCredentials) -> None:
+            self.order.append("refresh")
+
+        async def list_reservations(self) -> list[ExistingReservation]:
+            self.order.append("list")
+            return await super().list_reservations()
+
+    fa = _OrderAdapter()
+    orch, _, _ = _build({cid: fa})
+    req = _request(course_ids=(cid,))
+
+    await orch._reguard_before_fallback(fa, cid, req)
+
+    assert fa.order == ["refresh", "list"]
+
+
+async def test_reguard_falls_back_to_authenticate_for_non_refreshable() -> None:
+    """An adapter WITHOUT the ReservationCacheRefreshable capability (e.g. a live-GET
+    store) still gets authenticate() BEFORE list_reservations() — the refresh path is
+    ForeUP-specific, not universal."""
     cid = CourseId("fake:mb")
 
     class _OrderAdapter(FakeAdapter):

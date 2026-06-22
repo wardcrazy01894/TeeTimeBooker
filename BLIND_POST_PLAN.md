@@ -281,8 +281,10 @@ _blind_post_course(adapter, course_id, request):     # NO target_date arg — de
 
     # 0 BLIND BOOKED. A blind POST may have LANDED-but-UNCERTAIN (timeout/5xx). BEFORE the
     # search-book fallback, re-run layer-2 with a FRESH read so we don't double-book (must-fix 4).
-    # NOTE: ForeUP list_reservations reads the LOGIN CACHE — _reguard re-authenticates first
-    # so a THIS-RUN blind reservation is visible (must-fix 3).
+    # NOTE: ForeUP list_reservations reads the LOGIN CACHE, and authenticate() is idempotent —
+    # _reguard calls refresh_reservations() (the ReservationCacheRefreshable capability: force
+    # a fresh login) first so a THIS-RUN blind reservation is visible (must-fix 1/3). A plain
+    # re-authenticate() would no-op and return the stale pre-burst snapshot → double-book.
     match = await self._reguard_before_fallback(adapter, course_id, request)
     if match is not None:
         return ALREADY_BOOKED(match)        # short-circuit; do NOT book a second slot
@@ -466,7 +468,7 @@ Blind-POST is a NEW pre-state that FANS OUT the `POSTING` state:
        ├── ≥1 BOOKED ──→ KEEP_BEST ──→ cancel extras IN-RUN by own id (under lock) ──→ BOOKED (terminal)
        │                                  └ cancel-extra fails → log CRITICAL, still BOOKED;
        │                                    PR4 watch net reconciles via re-auth+list_reservations
-       └── 0 BOOKED  ──→ REGUARD (re-auth + list_reservations; landed-but-uncertain check, must-fix 4)
+       └── 0 BOOKED  ──→ REGUARD (force-refresh snapshot + list_reservations; landed-but-uncertain check, must-fix 1/4)
                             ├── match found ──→ ALREADY_BOOKED (terminal; do NOT search-book)
                             └── no match ──→ SEARCH_FALLBACK ──→ existing sequential candidate loop
                                               ├ books → BOOKED
@@ -486,8 +488,10 @@ to `SlotGoneError` (existing `book()` behavior) and is dropped from `booked`.
 > 1. **If ≥1 OTHER blind POST booked:** we keep-best + cancel-extras and NEVER search-book,
 >    so the uncertain landed one is simply an extra recovered by the PR4 watch net.
 > 2. **If ZERO blind POSTs returned BOOKED but one landed-uncertain:** `_reguard_before_
->    fallback` re-authenticates (rebuilding ForeUP's login cache — must-fix 3) and
->    `list_reservations()`; the landed reservation is now visible, we short-circuit
+>    fallback` FORCE-REFRESHES the snapshot via `refresh_reservations()` (the
+>    `ReservationCacheRefreshable` capability — reset `_logged_in` + re-login to rebuild
+>    ForeUP's login cache; a plain idempotent re-authenticate would NOT rebuild it — must-fix
+>    1/3) and `list_reservations()`; the landed reservation is now visible, we short-circuit
 >    ALREADY_BOOKED, and the fallback search-book NEVER runs. This is the fix for the
 >    production-biting single-run double-book the reviewer flagged. The PR4 watch net
 >    remains the backstop for the crash-after-land case (no re-guard ran).
@@ -549,7 +553,10 @@ failing tests FIRST. Docs each PR updates are listed.
 - **Code:** `Orchestrator._run_course` gate (§3); `_blind_post_course`, `_keep_best`,
   `_cancel_extras`, `_reguard_before_fallback` (§6/§7). `captcha_pool_size()` is on the
   `BlindPostCapable` Protocol + `ForeUpAdapter` + `FakeAdapter` so the orchestrator sizes
-  the burst without reaching into the deque. New config field
+  the burst without reaching into the deque. The `ReservationCacheRefreshable` capability
+  Protocol (`core/adapter.py`) + `ForeUpAdapter.refresh_reservations()` force a fresh login
+  snapshot in `_reguard_before_fallback` (must-fix 1: a plain idempotent re-auth would miss
+  a landed blind reservation and double-book). New config field
   `scheduler.blind_post_max_count` (default 12, OQ3) + scale `_prefetch_captcha_for` to
   `min(blind_post_max_count, len(synthesize_blind_slots(...)))` for the blind-capable
   primary.
@@ -570,13 +577,17 @@ failing tests FIRST. Docs each PR updates are listed.
     log, best still returned.
   - `test_uncertain_blind_post_does_not_crash_run` — one blind task raises a
     transport/5xx-style error; run still keeps a booked one or falls back.
-  - `test_zero_booked_but_landed_uncertain_reguards_to_already_booked` (must-fix 4) —
+  - `test_zero_booked_but_landed_uncertain_reguards_to_already_booked` (must-fix 1/4) —
     all blind tasks "fail" (e.g. raise/SlotGone) but the re-guard `list_reservations`
-    (post re-auth) now returns a matching reservation → ALREADY_BOOKED, and the fallback
-    `book()` is NEVER called (assert `search`/`book` call counts). The double-book guard.
-  - `test_reguard_reauthenticates_before_listing` — `_reguard_before_fallback` calls
-    `authenticate()` before `list_reservations()` (FakeAdapter call-order assertion;
-    mirrors the ForeUP login-cache must-fix-3 dependency).
+    (post FORCE-REFRESH) now returns a matching reservation → ALREADY_BOOKED, and the
+    fallback `book()` is NEVER called (assert `search`/`book` call counts). The double-book
+    guard. The collaborator faithfully models ForeUP's IDEMPOTENT `authenticate()` (a 2nd
+    call is a no-op and does NOT reveal the booking) so only `refresh_reservations()` reveals
+    it — the regression guard for must-fix 1.
+  - `test_reguard_refreshes_before_listing` — `_reguard_before_fallback` calls
+    `refresh_reservations()` before `list_reservations()` on a `ReservationCacheRefreshable`
+    adapter; `test_reguard_falls_back_to_authenticate_for_non_refreshable` covers the
+    `authenticate()`-before-list fallback for non-refreshable (live-GET) adapters.
   - `test_prefetch_scales_to_blind_fanout` — blind-capable primary → `prepare_book` count
     == `min(blind_post_max_count, len(blind_slots))`, not the fixed `captcha_prefetch_count`.
 - **Docs:** `CLAUDE.md` (race-path blind invariant); `PLAN.md` (new §

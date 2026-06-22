@@ -306,8 +306,9 @@ in `core/` — never directly. This is the cut line for parallel work.
   other booked reservation by its `book()` `confirmation_code` (a `None` conf or a `CancelError` →
   `log.critical`, never crashes — load-bearing reason the TTID/teetime_id id-extraction fix matters),
   and `_cancel_task` cancels the hedge search. (b) **0 BOOKED** → `_reguard_before_fallback`
-  re-authenticates THEN `list_reservations` (a landed-but-uncertain POST may have booked silently):
-  a match short-circuits to `ALREADY_BOOKED` (no fallback book); else it awaits the hedge search and
+  FORCE-REFRESHES the reservation snapshot THEN `list_reservations` (a landed-but-uncertain POST may
+  have booked silently): a match short-circuits to `ALREADY_BOOKED` (no fallback book); else it awaits
+  the hedge search and
   falls through to the sequential `_book_from_candidates` loop, raising `_CourseSkippedError` if that
   too finds nothing. `SlotGoneError` from a blind POST is dropped (try the others); a non-SlotGone
   exception is logged + dropped (the §9 UNCERTAIN ambiguity is what the reguard covers). The CAPTCHA
@@ -350,6 +351,18 @@ in `core/` — never directly. This is the cut line for parallel work.
   `list_reservations()` to get a fresh snapshot. `list_reservations()` raises
   `RuntimeError` if `authenticate()` has never been called — preventing a silent
   empty-list from vacuously passing the pre-book guard in misconfigured deployments.
+- **Forcing a fresh reservation snapshot mid-run = `refresh_reservations`, NOT a
+  second `authenticate()`.** Because `authenticate()` is IDEMPOTENT (`if self._logged_in:
+  return` short-circuits before the login POST — RACE_PREWARM_PLAN §3.1), calling it again
+  does NOT rebuild the login-response cache: `list_reservations()` would return the STALE
+  pre-login snapshot. The `ReservationCacheRefreshable` capability Protocol (`core/adapter.py`,
+  `runtime_checkable`) exposes `refresh_reservations(creds)`, which `ForeUpAdapter` implements
+  as "reset `_logged_in`, then `authenticate()`" — forcing the warm-up GET + login POST so the
+  cache is current. **Load-bearing in `Orchestrator._reguard_before_fallback`** (the blind-POST
+  0-booked path): it must see a landed-but-uncertain blind reservation taken AFTER the T0 burst,
+  so it calls `refresh_reservations` when the adapter is `ReservationCacheRefreshable` (else
+  falls back to `authenticate()` for live-GET stores). A plain re-auth there would silently miss
+  the landed booking and let the fallback double-book.
 - **`WatchOrchestrator.check_once` does NOT acquire `request_lock`**. It is
   read-only. If it delegates to `UpgradeOrchestrator.maybe_upgrade`, THAT method
   acquires and releases the lock itself. Never call `maybe_upgrade` while already

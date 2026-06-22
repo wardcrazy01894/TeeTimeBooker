@@ -28,6 +28,7 @@ from .adapter import (
     CancelError,
     InventoryNotPublishedError,
     NoInventoryError,
+    ReservationCacheRefreshable,
     SlotGoneError,
 )
 from .clock import busy_wait_until
@@ -326,11 +327,15 @@ class Orchestrator:
                 booked.append(r)
             elif isinstance(r, SlotGoneError):
                 continue  # slot claimed between synthesize and book — drop
-            elif isinstance(r, BaseException):
+            elif isinstance(r, Exception):
                 # UNCERTAIN (timeout/5xx): the POST MAY have landed. Drop this candidate;
                 # the guards below (a sibling booked, or the re-guard list_reservations)
                 # prevent a double-book. M2.T3 still owns the post-mortem path.
                 log.warning("course %s: blind POST raised %r — dropping candidate", course_id, r)
+            elif isinstance(r, BaseException):
+                # Non-Exception (CancelledError/KeyboardInterrupt/SystemExit): never swallow a
+                # control-flow signal as a dropped booking — propagate it.
+                raise r
 
         if booked:
             # FAST PATH WON. Keep the rank-0 booked slot, cancel the rest by their own id.
@@ -346,9 +351,10 @@ class Orchestrator:
             )
             return best
 
-        # 0 BLIND BOOKED. A POST may have LANDED-but-UNCERTAIN. Re-guard with a FRESH read
-        # (re-auth rebuilds ForeUP's login cache, must-fix 3) BEFORE the search fallback so
-        # we never book a second slot on top of a landed one (must-fix 4).
+        # 0 BLIND BOOKED. A POST may have LANDED-but-UNCERTAIN. Re-guard with a FORCED-FRESH
+        # read (refresh_reservations rebuilds ForeUP's login cache — a plain idempotent re-auth
+        # would not, must-fix 1/3) BEFORE the search fallback so we never book a second slot on
+        # top of a landed one (must-fix 4).
         match = await self._reguard_before_fallback(adapter, course_id, request)
         if match is not None:
             await self._cancel_task(search_task)
@@ -430,17 +436,28 @@ class Orchestrator:
         course_id: CourseId,
         request: BookingRequest,
     ) -> ExistingReservation | None:
-        """Re-authenticate (to rebuild ForeUP's login-response reservation cache) THEN
-        list_reservations, returning a matching reservation if a blind POST landed-but-
-        uncertain. Auth-before-list order is load-bearing (must-fix 3)."""
+        """Force a FRESH reservation snapshot, THEN list_reservations, returning a
+        matching reservation if a blind POST landed-but-uncertain.
+
+        Snapshot-before-list order is load-bearing (must-fix 3). Crucially the refresh
+        must be a *forced* re-fetch: ForeUP's ``list_reservations()`` reads a cache built
+        at login time and ``authenticate()`` is IDEMPOTENT (a 2nd call short-circuits on
+        ``_logged_in`` and does NOT rebuild the cache), so a plain ``authenticate()`` here
+        would return the STALE pre-burst snapshot and let the fallback book a SECOND
+        reservation. Adapters that expose ``ReservationCacheRefreshable`` get the forced
+        re-login; others fall back to ``authenticate()`` (sufficient for live-GET stores
+        or any adapter that never reaches this path). Best-effort: a blip must not crash."""
         creds = self._creds.get(course_id)
         if creds is not None:
             try:
-                await adapter.authenticate(creds)
+                if isinstance(adapter, ReservationCacheRefreshable):
+                    await adapter.refresh_reservations(creds)
+                else:
+                    await adapter.authenticate(creds)
             except Exception as exc:  # best-effort: a re-auth blip must not crash the run
                 log.warning(
-                    "course %s: blind-POST re-guard re-auth failed (%s) — listing with the "
-                    "existing session",
+                    "course %s: blind-POST re-guard reservation refresh failed (%s) — "
+                    "listing with the existing session",
                     course_id,
                     exc,
                 )

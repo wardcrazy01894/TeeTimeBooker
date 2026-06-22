@@ -136,6 +136,36 @@ class BlindPostCapable(Protocol):
 
 
 @runtime_checkable
+class ReservationCacheRefreshable(Protocol):
+    """Opt-in capability: an adapter whose ``list_reservations()`` reads a SNAPSHOT
+    populated at ``authenticate()`` time, and which can force that snapshot to be
+    re-fetched mid-run.
+
+    ForeUP is the motivating case: ``list_reservations()`` returns a cache built from
+    the ``POST /login`` response body (the live ``GET /reservations`` endpoint is a
+    ~6 MB user profile with no usable list — see the root CLAUDE.md note), and
+    ``authenticate()`` is IDEMPOTENT — once ``_logged_in`` is True a second call is a
+    no-op, so it will NOT rebuild the cache. The blind-POST re-guard
+    (``Orchestrator._reguard_before_fallback``) needs a snapshot taken AFTER the T0
+    burst to see a landed-but-uncertain reservation; a plain re-``authenticate()``
+    would silently return the STALE pre-burst snapshot and let the fallback book a
+    SECOND reservation (double-book). ``refresh_reservations`` forces a fresh login so
+    the post-burst snapshot is real.
+
+    Adapters that already read reservations live (or that never reach the blind-POST
+    re-guard — only the blind-capable primary does) need not implement this; the
+    re-guard falls back to ``authenticate()`` for them.
+    """
+
+    async def refresh_reservations(self, creds: CourseCredentials) -> None:
+        """Force a fresh fetch of the reservation snapshot (e.g. ForeUP: reset the
+        logged-in flag and re-run the warm-up GET + login POST so the login-response
+        reservation cache is rebuilt). Best-effort: the caller wraps this in a
+        try/except — a re-auth blip must not crash the run."""
+        ...
+
+
+@runtime_checkable
 class CourseAdapter(Protocol):
     """Structural contract every course implementation satisfies.
 

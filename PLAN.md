@@ -312,7 +312,9 @@ alongside the real search GET (a hedge). Then:
   reservations by the `confirmation_code` each `book()` returned (this is why the §"book() id
   extraction" `TTID`/`teetime_id` fix is load-bearing — a `None` conf or a `CancelError` is logged
   `CRITICAL` but never crashes the run); the hedge search task is cancelled.
-- **0 BOOKED** → `_reguard_before_fallback` re-authenticates THEN `list_reservations` (a POST
+- **0 BOOKED** → `_reguard_before_fallback` FORCE-REFRESHES the reservation snapshot
+  (`refresh_reservations`, the `ReservationCacheRefreshable` capability — a plain re-auth is an
+  idempotent no-op and would return the stale pre-burst cache) THEN `list_reservations` (a POST
   that timed out may have landed silently — the §9 UNCERTAIN case). A match short-circuits to
   `ALREADY_BOOKED` with NO fallback book; otherwise await the hedge search and fall through to
   the sequential `_book_from_candidates` loop (and `_CourseSkippedError` if that finds nothing).
