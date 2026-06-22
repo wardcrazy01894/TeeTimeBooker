@@ -731,6 +731,40 @@ async def test_book_sends_correct_add_reservation_form() -> None:
 
 
 @respx.mock
+async def test_confirmation_patch_failure_after_payment_logs_exc_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """If the Kenna confirmation PATCH fails AFTER the card was charged, the error log
+    must carry exc_info=True so the operator sees the underlying HTTP failure
+    (status/body) in the traceback — not just 'manual check required'. Without it the
+    most actionable signal on a charged-but-unconfirmed booking is lost. (PR-D)"""
+    _setup_full_book_mocks()
+    # Override the confirmation PATCH to fail AFTER payment (last registration wins in respx).
+    respx.patch(url__regex=r".*/order-teetime/status/\d+.*").mock(
+        return_value=httpx.Response(500, text="kenna confirmation exploded")
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        slots = await adapter.search(_request(party_size=2, holes=9))
+        with (
+            caplog.at_level("ERROR"),
+            pytest.raises(RuntimeError, match="manual verification required"),
+        ):
+            await adapter.book(slots[0], _request(party_size=2, holes=9))
+
+    charged_logs = [
+        r
+        for r in caplog.records
+        if r.levelname == "ERROR" and "Card may have been charged" in r.getMessage()
+    ]
+    assert charged_logs, "expected a charged-card error log"
+    assert charged_logs[0].exc_info is not None, (
+        "charged-card error must log exc_info so the underlying HTTP failure is diagnosable"
+    )
+
+
+@respx.mock
 async def test_book_payment_failure_raises_runtime_error() -> None:
     _mock_auth()
     _mock_search()

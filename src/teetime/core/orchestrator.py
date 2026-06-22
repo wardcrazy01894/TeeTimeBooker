@@ -323,7 +323,9 @@ class Orchestrator:
 
         blind_results = await asyncio.gather(*blind_tasks, return_exceptions=True)
         booked: list[BookingResult] = []
-        for r in blind_results:
+        # blind_results is in the same order as `fire` (gather preserves task order),
+        # so each result pairs with the slot whose POST produced it.
+        for slot, r in zip(fire, blind_results, strict=True):
             if isinstance(r, BookingResult) and r.outcome == BookingOutcome.BOOKED:
                 booked.append(r)
             elif isinstance(r, SlotGoneError):
@@ -331,8 +333,14 @@ class Orchestrator:
             elif isinstance(r, Exception):
                 # UNCERTAIN (timeout/5xx): the POST MAY have landed. Drop this candidate;
                 # the guards below (a sibling booked, or the re-guard list_reservations)
-                # prevent a double-book. M2.T3 still owns the post-mortem path.
-                log.warning("course %s: blind POST raised %r — dropping candidate", course_id, r)
+                # prevent a double-book. M2.T3 still owns the post-mortem path. Name the
+                # slot so an operator can tell WHICH tee time may have landed silently.
+                log.warning(
+                    "course %s: blind POST for slot %s raised %r — dropping candidate",
+                    course_id,
+                    slot.slot_id,
+                    r,
+                )
             elif isinstance(r, BaseException):
                 # Non-Exception (CancelledError/KeyboardInterrupt/SystemExit): never swallow a
                 # control-flow signal as a dropped booking — propagate it.

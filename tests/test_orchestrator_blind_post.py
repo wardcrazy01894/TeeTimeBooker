@@ -382,6 +382,36 @@ async def test_uncertain_blind_post_does_not_crash_run() -> None:
     assert fa.cancel_call_count == 1
 
 
+async def test_uncertain_blind_post_drop_log_names_the_slot(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When a blind POST raises an uncertain (non-SlotGone) error and is dropped, the
+    WARNING must name WHICH slot was dropped (its slot_id), not just the exception —
+    otherwise an operator triaging a missed booking cannot tell which tee time the
+    landed-but-uncertain POST may have created. Observability polish (PR-D)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 15)])  # single slot → no ordering ambiguity
+    fa.set_book_side_effects([AdapterError("uncertain 5xx")])
+    fa.set_search_response([])  # fallback search finds nothing
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level("WARNING"):
+        await orch.run(_request(course_ids=(cid,)))
+
+    drop_logs = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING"
+        and "blind POST" in r.getMessage()
+        and "dropping candidate" in r.getMessage()
+    ]
+    assert drop_logs, "expected a blind-POST drop warning"
+    assert any("s-0815" in m for m in drop_logs), (
+        f"drop warning must name the slot_id; got: {drop_logs}"
+    )
+
+
 async def test_zero_booked_but_landed_uncertain_reguards_to_already_booked() -> None:
     """All blind POSTs 'fail' but one actually LANDED (uncertain): the re-guard
     re-authenticates, list_reservations now reveals the landed reservation, and the run
