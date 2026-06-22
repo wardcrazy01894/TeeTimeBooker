@@ -231,9 +231,19 @@ class WatchOrchestrator:
             return None
 
         # Gate 3: idempotency — already BOOKED in the store (main job or prior watch run).
+        # An ALREADY_BOOKED terminal deliberately does NOT short-circuit here: it falls
+        # through to _check_course, which does a live list_reservations and so gets BOTH the
+        # duplicate reconcile AND a recovery-book if the reservation was cancelled externally.
+        # Only a BOOKED terminal short-circuits, so the reconcile crash-net must be run
+        # explicitly below (it otherwise lives only in _check_course).
         prior = await self._store.get_terminal(request.request_id, target_date)
         if prior is not None and prior.outcome == BookingOutcome.BOOKED:
             if self._policy is not None and self._policy.enabled:
+                # CRASH-NET (M1): the blind-POST in-run _cancel_extras can fail and strand a
+                # live duplicate while the booking job still recorded BOOKED for the kept slot.
+                # The Gate-3 short-circuit otherwise bypasses the _check_course reconcile, so
+                # the extra would persist on every watch run. Reconcile here BEFORE upgrading.
+                await self._reconcile_booked_course(request, target_date, prior)
                 # Policy is active — check whether a higher-priority slot opened up.
                 # NOTE: caller must NOT hold request_lock here; _try_upgrade acquires it.
                 upgraded = await self._try_upgrade(request, target_date, prior)
@@ -381,6 +391,45 @@ class WatchOrchestrator:
         return await self._book_candidates(adapter, scoped, target_date, candidates)
 
     # --- multi-reservation reconcile (CRASH-NET backstop, BLIND_POST_PLAN PR4) ----
+
+    async def _reconcile_booked_course(
+        self,
+        request: BookingRequest,
+        target_date: date,
+        prior: BookingResult,
+    ) -> None:
+        """Run the duplicate-reservation reconcile for a date that already has a BOOKED
+        store terminal (the Gate-3 short-circuit path).
+
+        Why this exists: a failed in-run _cancel_extras (Orchestrator blind-POST path) can
+        leave a live duplicate while the booking job still records BOOKED for the kept slot.
+        Gate 3 returns on that terminal without reaching _check_course — where the >1-reservation
+        reconcile crash-net lives — so without this the stranded extra would never be collapsed.
+
+        Best-effort and cheap on the only live adapter: ForeUP authenticate() is idempotent and
+        list_reservations() reads the login-response cache, so the redundant fetch the subsequent
+        _try_upgrade also makes costs ~nothing. Exceptions propagate exactly as they already do
+        from the adjacent _try_upgrade call (Captcha/Auth/RateLimit surface to the caller); a
+        CancelError on an extra never crashes (handled inside _reconcile_duplicate_reservations)."""
+        course_id = prior.course_id
+        if course_id is None:
+            return
+        adapter = self._adapters.get(course_id)
+        if adapter is None:
+            return
+        creds = self._creds.get(course_id)
+        if creds is not None:
+            await adapter.authenticate(creds)
+        existing = await adapter.list_reservations()
+        matching = [
+            r
+            for r in existing
+            if r.tee_time.date() == target_date and r.party_size == len(request.players)
+        ]
+        if len(matching) > 1:
+            await self._reconcile_duplicate_reservations(
+                adapter, course_id, request, target_date, matching
+            )
 
     async def _reconcile_duplicate_reservations(
         self,
