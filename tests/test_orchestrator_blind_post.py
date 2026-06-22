@@ -16,6 +16,7 @@ Collaborators are FakeAdapter / FakeClock / InMemoryStore (BLIND_POST_PLAN.md §
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -195,8 +196,9 @@ async def test_blind_post_token_exhaustion_fires_fewer() -> None:
 async def test_blind_post_wins_even_if_hedge_search_errors() -> None:
     """Regression: a blind POST books, but the concurrent hedge search GET fails with a
     non-cancelled error (429 RateLimitError). Abandoning the hedge must NOT re-raise that
-    error and discard the real booking — the run returns BOOKED. (orchestrator._cancel_task
-    suppressed only CancelledError, so an already-failed hedge task re-raised on await.)"""
+    error and discard the real booking — the run returns BOOKED. (This is the already-DONE
+    hedge case; the still-PENDING CancelledError case is covered by
+    test_cancel_task_swallows_cancellederror_on_pending_hedge.)"""
     cid = CourseId("fake:mb")
     fa = FakeAdapter(course_id=cid, supports_blind_post=True)
     fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
@@ -210,6 +212,28 @@ async def test_blind_post_wins_even_if_hedge_search_errors() -> None:
     assert result.slot is not None
     assert result.slot.slot_id == "s-0815"  # midpoint slot kept
     assert fa.cancel_call_count == 1  # the one extra blind reservation cancelled
+
+
+async def test_cancel_task_swallows_cancellederror_on_pending_hedge() -> None:
+    """Regression: a hedge task still IN FLIGHT when abandoned raises asyncio.CancelledError
+    on ``await``. CancelledError is a BaseException, NOT an Exception, so a bare
+    ``suppress(Exception)`` would let it escape ``_cancel_task`` and bubble out of
+    ``_blind_post_course`` — discarding a won booking. ``_cancel_task`` must swallow it and
+    return cleanly. (FakeAdapter.search is synchronous, so the full-run tests above can only
+    exercise the already-DONE hedge; this hits the genuinely-pending path directly.)"""
+    started = asyncio.Event()
+
+    async def _never_finishes() -> object:
+        started.set()
+        await asyncio.sleep(3600)  # only cancellation ends it
+        return object()  # pragma: no cover - never reached
+
+    task: asyncio.Task[object] = asyncio.create_task(_never_finishes())
+    await started.wait()  # ensure it is actually running, not scheduled-and-immediately-done
+
+    await Orchestrator._cancel_task(task)  # must NOT raise CancelledError
+
+    assert task.cancelled()
 
 
 # --- gate exclusions ----------------------------------------------------
