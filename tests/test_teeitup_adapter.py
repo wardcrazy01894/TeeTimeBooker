@@ -813,6 +813,60 @@ async def test_book_payment_failure_raises_runtime_error() -> None:
 
 
 @respx.mock
+async def test_book_payment_failure_message_redacts_pii() -> None:
+    """L8 (full-repo-scan): the GNSVC payment-processor `Message` is server-controlled free
+    text on the PCI path — a decline/AVS message could embed account-holder PII. It is
+    interpolated into the raised RuntimeError (→ logs), so it must pass through redact_text."""
+    _mock_auth()
+    _mock_search()
+    respx.get(url__regex=r".*/tee-times/rate/\d+/invoice.*").mock(
+        return_value=httpx.Response(200, json=_INVOICE_RESPONSE)
+    )
+    respx.post(f"{_KENNA_API_BASE}{_SHOPPING_CART_PATH}").mock(
+        return_value=httpx.Response(201, json=_CART_RESPONSE)
+    )
+    respx.post(url__regex=r".*/shopping-cart/[^/]+/cart-item$").mock(
+        return_value=httpx.Response(200, json=_CART_ITEM_RESPONSE)
+    )
+    respx.put(url__regex=r".*/tee-time/lock$").mock(return_value=httpx.Response(204))
+    respx.post(f"{_KENNA_API_BASE}{_ORDERS_PATH}").mock(
+        return_value=httpx.Response(201, json=_ORDER_RESPONSE)
+    )
+    respx.post(url__regex=r".*/is-bookable$").mock(
+        return_value=httpx.Response(200, json=_IS_BOOKABLE_RESPONSE)
+    )
+    respx.post(f"{_KENNA_API_BASE}{_ORDER_TEETIME_PATH}").mock(
+        return_value=httpx.Response(200, json=_ORDER_TEETIME_RESPONSE)
+    )
+    respx.put(f"{_KENNA_API_BASE}{_PROFILE_PATH}").mock(
+        return_value=httpx.Response(200, json=_AUTH_RESPONSE)
+    )
+    respx.get(f"{_KENNA_API_BASE}{_TR_TOKEN_PATH}").mock(
+        return_value=httpx.Response(200, json=_FAKE_TR_TOKEN)
+    )
+    respx.post(f"{_GNSVC_BASE}{_ADD_RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "Success": False,
+                "Message": "Declined; contact holder jane@example.com",
+                "ReservationStatusID": 0,
+                "ValidationErrors": [],
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        slots = await adapter.search(_request(party_size=2, holes=9))
+        with pytest.raises(RuntimeError) as exc_info:
+            await adapter.book(slots[0], _request(party_size=2, holes=9))
+    msg = str(exc_info.value)
+    assert "jane@example.com" not in msg
+    assert "<redacted-email>" in msg
+
+
+@respx.mock
 async def test_book_payment_failure_message_does_not_echo_response_dict() -> None:
     # When Message is empty (falsy), the error must NOT fall back to dumping the full
     # response dict (which could contain card-echo fields from the payment processor).

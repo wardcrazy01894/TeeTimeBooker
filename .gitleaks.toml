@@ -8,11 +8,12 @@ title = "TeeTimeBooker gitleaks config"
 useDefault = true
 
 [[allowlists]]
-description = "Test fixtures — canonical Visa test PAN and test CVV in tests/"
+# Test fixtures (the canonical Visa test PAN 4111111111111111 and a test CVV) are allowlisted
+# ONLY by PATH — they may appear in tests/ but nowhere else. We deliberately do NOT add a
+# repo-wide `regexes` entry for the test PAN: that would allowlist it ANYWHERE (full-repo-scan
+# finding L9). With path-scoping, a real PAN accidentally committed outside tests/ is still
+# flagged. The test PAN is a known-fake card declined by any processor.
+description = "Test fixtures — canonical Visa test PAN / test CVV, scoped to tests/ by path"
 paths = [
     "tests/.*",
-]
-regexes = [
-    # Visa test PAN (4111111111111111) — not a real card; will be declined by any processor.
-    '''4111111111111111''',
 ]

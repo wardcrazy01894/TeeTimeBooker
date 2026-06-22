@@ -86,6 +86,7 @@ from ...core.models import (
     SlotId,
     TeeTimeSlot,
 )
+from ...core.redaction import redact_text
 
 _log = logging.getLogger(__name__)
 
@@ -610,10 +611,16 @@ class TeeItUpAdapter:
         gnsvc_data: dict[str, Any] = r.json()
         if not gnsvc_data.get("Success"):
             # Only log safe fields — never echo the full response (may contain card echo).
+            # `Message` is server-controlled processor free text (decline/AVS) on the PCI
+            # path and could embed account-holder PII, so route it through redact_text before
+            # it lands in the exception string → logs. StatusCode is a code, safe as-is.
+            # Scope note: redact_text covers email/phone/token, NOT a raw PAN — structured card
+            # fields are scrubbed by redact_payload at the store boundary, and a processor
+            # echoing a full PAN in a decline message is out of scope here.
             raise RuntimeError(
                 f"TeeItUp GNSVC payment failed: "
                 f"status={gnsvc_data.get('StatusCode')!r} "
-                f"message={gnsvc_data.get('Message')!r}"
+                f"message={redact_text(str(gnsvc_data.get('Message')))!r}"
             )
         reservation_status_id: int = int(gnsvc_data["ReservationStatusID"])
         _log.info("TeeItUp GNSVC payment processed: ReservationStatusID=%d", reservation_status_id)
