@@ -289,6 +289,49 @@ Sat+Sun) — so the daily crons book only the wanted days, one per day.
 
 The bot itself uses `zoneinfo` to compute T0 — that handles the ambiguous-hour and skipped-hour edge cases automatically. Mangrove Bay's booking window opening on a fall-back morning is unambiguous (06:00 EST, the second 06:00 of the night) by the standard `fold=0` semantics; we accept that.
 
+### 6.4 Blind-POST at T0 (BLIND_POST_PLAN.md)
+
+A blind-CAPABLE PRIMARY course (Mangrove Bay only) does NOT wait for the search GET to
+tell it which slots exist. ForeUP publishes the same morning grid every week, so the
+adapter can `synthesize_blind_slots` the in-window grid times and fire book POSTs at them
+the instant T0 hits — overlapping the network round-trips instead of paying search→rank→book
+serially. This is the §6.1 race path taken further: PR3 wires it into the orchestrator.
+
+**Gate (all five required, in `_should_blind_post`):** `not request.dry_run` AND the race
+path (`prefetch_book=True`, set only by `--wait`) AND `scheduler.blind_post_max_count > 0` AND
+`_is_blind_capable(adapter)` (`isinstance(a, BlindPostCapable) and a.supports_blind_post`) AND
+the course is the first-preference (PRIMARY) adapter. Any miss → the normal §6.1 search-book
+path. So the watcher, local-demo, dry-run, a fallback course, a non-MB course, and
+`blind_post_max_count=0` all keep the sequential path.
+
+**Hybrid net (`_blind_post_course`):** fire the top-`N` ranked in-window synthesized POSTs
+CONCURRENTLY (`N = min(len(synthesize_blind_slots(...)), captcha_pool_size())` — token-bounded)
+alongside the real search GET (a hedge). Then:
+- **≥1 BOOKED** → `_keep_best` re-ranks the booked slots with the same `rank_slots_for_request`
+  the search path uses and returns the winner; `_cancel_extras` cancels the other booked
+  reservations by the `confirmation_code` each `book()` returned (this is why the §"book() id
+  extraction" `TTID`/`teetime_id` fix is load-bearing — a `None` conf or a `CancelError` is logged
+  `CRITICAL` but never crashes the run); the hedge search task is cancelled.
+- **0 BOOKED** → `_reguard_before_fallback` FORCE-REFRESHES the reservation snapshot
+  (`refresh_reservations`, the `ReservationCacheRefreshable` capability — a plain re-auth is an
+  idempotent no-op and would return the stale pre-burst cache) THEN `list_reservations` (a POST
+  that timed out may have landed silently — the §9 UNCERTAIN case). A match short-circuits to
+  `ALREADY_BOOKED` with NO fallback book; otherwise await the hedge search and fall through to
+  the sequential `_book_from_candidates` loop (and `_CourseSkippedError` if that finds nothing).
+- A `SlotGoneError` from a blind POST is dropped (try the rest); a non-SlotGone exception is
+  logged + dropped (the reguard is what covers a possibly-landed POST).
+
+**CAPTCHA prefetch scales to the fan-out** (`_captcha_prefetch_count_for`): on the race path a
+blind-capable primary pre-solves `min(blind_post_max_count, len(synthesize_blind_slots(...)))`
+tokens so each blind POST has a pooled token in hand at T0; everything else uses the fixed
+`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (default 12, ge=0; 0
+disables blind fan-out) is decoupled from `captcha_prefetch_count` and lives in `SchedulerConfig`.
+
+State-machine note (§9.1): each blind POST is an independent entry into the POST/result phase.
+A 4xx → `SlotGoneError` (drop, try the rest); a 2xx → BOOKED (kept or cancelled by `_keep_best`/
+`_cancel_extras`); a timeout/5xx is the UNCERTAIN case the `_reguard_before_fallback` re-check
+resolves before any fallback booking, preserving the single-reservation-per-date invariant.
+
 ---
 
 ## 7. Auth & secrets

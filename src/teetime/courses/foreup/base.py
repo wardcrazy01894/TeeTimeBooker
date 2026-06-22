@@ -334,6 +334,20 @@ class ForeUpAdapter(CourseAdapter):
                 self._reservations_from_login = raw_res
         _log.info("ForeUP: login successful")
 
+    async def refresh_reservations(self, creds: CourseCredentials) -> None:
+        """Force a fresh login so ``list_reservations()`` returns a CURRENT snapshot.
+
+        ``ReservationCacheRefreshable`` capability (BLIND_POST_PLAN.md §6 must-fix).
+        ``list_reservations()`` reads the cache built from the ``POST /login`` response
+        body, and ``authenticate()`` is idempotent — once ``_logged_in`` is True it
+        short-circuits before the login POST, so it will NOT rebuild that cache. The
+        blind-POST re-guard needs a snapshot taken AFTER the T0 burst (to see a
+        landed-but-uncertain blind reservation); clearing ``_logged_in`` first makes the
+        next ``authenticate()`` re-run the warm-up GET + login POST and repopulate
+        ``_reservations_from_login`` with the current server state."""
+        self._logged_in = False
+        await self.authenticate(creds)
+
     async def search(
         self, request: BookingRequest, *, skip_initial_spacing: bool = False
     ) -> list[TeeTimeSlot]:

@@ -16,15 +16,19 @@ add the reconciliation branch in one place.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from .adapter import (
+    BlindPostCapable,
+    CancelError,
     InventoryNotPublishedError,
     NoInventoryError,
+    ReservationCacheRefreshable,
     SlotGoneError,
 )
 from .clock import busy_wait_until
@@ -196,6 +200,13 @@ class Orchestrator:
                 attempts=0,
             )
 
+        # Blind-POST fast path (BLIND_POST_PLAN.md §6/§11). Two-part capability gate
+        # (isinstance AND the boolean) + race path + PRIMARY course + not-dry-run + a
+        # positive fan-out cap. Everything else (non-capable, fallback course, dry-run,
+        # watcher/local-demo) takes the unchanged search path below.
+        if self._should_blind_post(adapter, course_id, request):
+            return await self._blind_post_course(adapter, course_id, request)
+
         slots = await self._poll_for_slots(adapter, request)
         if not slots:
             raise _CourseSkippedError()
@@ -215,8 +226,22 @@ class Orchestrator:
                 attempts=1,
             )
 
-        # candidates is non-empty here (an empty list raised _CourseSkippedError above), so
-        # the loop runs at least once and last_exc is set if we reach this point.
+        return await self._book_from_candidates(adapter, course_id, candidates, request)
+
+    async def _book_from_candidates(
+        self,
+        adapter: CourseAdapter,
+        course_id: CourseId,
+        candidates: list[TeeTimeSlot],
+        request: BookingRequest,
+    ) -> BookingResult:
+        """Sequential book loop over ranked candidates. Returns the first BOOKED; on
+        SlotGoneError tries the next. If every candidate is gone, raises
+        `_CourseSkippedError` so `run()` advances to the next course (NO_INVENTORY if
+        none book) — never an uncaught crash. Shared by the search path and the blind
+        path's search fallback."""
+        # candidates is non-empty here (callers raise _CourseSkippedError on empty), so
+        # the loop runs at least once and last_exc is set if we reach the exhaustion case.
         last_exc: SlotGoneError | None = None
         for candidate in candidates:
             try:
@@ -234,6 +259,217 @@ class Orchestrator:
             last_exc,
         )
         raise _CourseSkippedError()
+
+    # --- blind-POST fast path (BLIND_POST_PLAN.md §6/§7/§11) -----------
+
+    @staticmethod
+    def _is_blind_capable(adapter: CourseAdapter) -> bool:
+        """The two-part capability predicate: structural membership AND the boolean flag.
+        `runtime_checkable` only checks member PRESENCE, so the `supports_blind_post`
+        boolean is the real guard (a bare ForeUP course satisfies isinstance but defaults
+        False). See BLIND_POST_PLAN.md §3 / core/adapter.py BlindPostCapable."""
+        return isinstance(adapter, BlindPostCapable) and adapter.supports_blind_post
+
+    def _should_blind_post(
+        self,
+        adapter: CourseAdapter,
+        course_id: CourseId,
+        request: BookingRequest,
+    ) -> bool:
+        """Gate: blind-capable AND race path AND PRIMARY course AND not dry-run AND a
+        positive fan-out cap. Any miss → the unchanged search path."""
+        if request.dry_run or not self._prefetch_book:
+            return False
+        if self._scheduler.blind_post_max_count <= 0:
+            return False
+        if not self._is_blind_capable(adapter):
+            return False
+        primary = self._primary_adapter(request)
+        return primary is not None and primary[0] == course_id
+
+    async def _blind_post_course(
+        self,
+        adapter: CourseAdapter,
+        course_id: CourseId,
+        request: BookingRequest,
+    ) -> BookingResult:
+        """Fire the top-N ranked in-window blind book POSTs CONCURRENTLY with the real
+        search, keep the best that books and cancel the rest IN-RUN. If zero book,
+        re-guard against a landed-but-uncertain POST, then fall back to the existing
+        sequential search-book loop. See BLIND_POST_PLAN.md §6.
+
+        Runs inside `run()`'s advisory lock (no new lock acquisition; the reconcile +
+        record_terminal happen under that lock, §6 lock discipline)."""
+        # The gate (`_should_blind_post`) guarantees BlindPostCapable; narrow for mypy.
+        capable = cast(BlindPostCapable, adapter)
+        target_date = request.target_dates[0]
+        blind_slots = capable.synthesize_blind_slots(
+            request, target_date, max_count=self._scheduler.blind_post_max_count
+        )
+        # N = min(in-window grid count, pooled tokens in hand). Each book() pops one pooled
+        # token synchronously; with N <= pool none inline-solves at T0 (§5 token budget).
+        n = min(len(blind_slots), capable.captcha_pool_size())
+        fire = blind_slots[:n]
+
+        # Launch the blind burst AND the real-search hedge at the same instant.
+        blind_tasks = [asyncio.create_task(adapter.book(s, request)) for s in fire]
+        search_task = asyncio.create_task(self._poll_for_slots(adapter, request))
+        log.info(
+            "course %s: blind-POST firing %d concurrent book POST(s) at T0 + hedge search",
+            course_id,
+            len(fire),
+        )
+
+        blind_results = await asyncio.gather(*blind_tasks, return_exceptions=True)
+        booked: list[BookingResult] = []
+        for r in blind_results:
+            if isinstance(r, BookingResult) and r.outcome == BookingOutcome.BOOKED:
+                booked.append(r)
+            elif isinstance(r, SlotGoneError):
+                continue  # slot claimed between synthesize and book — drop
+            elif isinstance(r, Exception):
+                # UNCERTAIN (timeout/5xx): the POST MAY have landed. Drop this candidate;
+                # the guards below (a sibling booked, or the re-guard list_reservations)
+                # prevent a double-book. M2.T3 still owns the post-mortem path.
+                log.warning("course %s: blind POST raised %r — dropping candidate", course_id, r)
+            elif isinstance(r, BaseException):
+                # Non-Exception (CancelledError/KeyboardInterrupt/SystemExit): never swallow a
+                # control-flow signal as a dropped booking — propagate it.
+                raise r
+
+        if booked:
+            # FAST PATH WON. Keep the rank-0 booked slot, cancel the rest by their own id.
+            best, extras = self._keep_best(booked, request)
+            await self._cancel_extras(adapter, extras)
+            await self._cancel_task(search_task)  # we won; stop the hedge GET
+            log.info(
+                "course %s: blind-POST booked %d, kept %s, cancelled %d extra(s)",
+                course_id,
+                len(booked),
+                best.confirmation_code,
+                len(extras),
+            )
+            return best
+
+        # 0 BLIND BOOKED. A POST may have LANDED-but-UNCERTAIN. Re-guard with a FORCED-FRESH
+        # read (refresh_reservations rebuilds ForeUP's login cache — a plain idempotent re-auth
+        # would not, must-fix 1/3) BEFORE the search fallback so we never book a second slot on
+        # top of a landed one (must-fix 4).
+        match = await self._reguard_before_fallback(adapter, course_id, request)
+        if match is not None:
+            await self._cancel_task(search_task)
+            log.info(
+                "course %s: blind-POST re-guard found landed reservation %s — ALREADY_BOOKED",
+                course_id,
+                match.confirmation_code,
+            )
+            return BookingResult(
+                request_id=request.request_id,
+                outcome=BookingOutcome.ALREADY_BOOKED,
+                course_id=course_id,
+                slot=None,
+                confirmation_code=match.confirmation_code,
+                booked_at=self._clock.now_utc(),
+                attempts=0,
+            )
+
+        # CORRECTNESS FALLBACK: the real search is authoritative. Blind booked zero, so the
+        # blind and search book-sets are mutually exclusive — no same-slot dedup needed.
+        slots = await search_task
+        if not slots:
+            raise _CourseSkippedError()
+        candidates = self._rank_slots(slots, request)
+        if not candidates:
+            raise _CourseSkippedError()
+        return await self._book_from_candidates(adapter, course_id, candidates, request)
+
+    def _keep_best(
+        self,
+        booked: list[BookingResult],
+        request: BookingRequest,
+    ) -> tuple[BookingResult, list[BookingResult]]:
+        """Pick the rank-0 booked result (by the SAME rank_slots_for_request the search
+        path uses) and return (best, extras-to-cancel). Falls back to the first booked if
+        ranking yields nothing (defensive — synthesized slots are all in-window)."""
+        slots = [r.slot for r in booked if r.slot is not None]
+        ranked = rank_slots_for_request(slots, request)
+        if not ranked:
+            return booked[0], booked[1:]
+        best_slot_id = ranked[0].slot_id
+        best = next(
+            (r for r in booked if r.slot is not None and r.slot.slot_id == best_slot_id),
+            booked[0],
+        )
+        extras = [r for r in booked if r is not best]
+        return best, extras
+
+    async def _cancel_extras(
+        self,
+        adapter: CourseAdapter,
+        extras: list[BookingResult],
+    ) -> None:
+        """Cancel each surplus reservation by its OWN confirmation_code (PR0 made the
+        teetime_id extraction load-bearing). A cancel failure is logged CRITICAL (the user
+        then holds >1 reservation) but does NOT abort — we still keep the best, and the PR4
+        watch net is the backstop. See BLIND_POST_PLAN.md §7."""
+        for r in extras:
+            if r.confirmation_code is None:
+                log.critical(
+                    "blind-POST: a surplus reservation has no confirmation_code — cannot "
+                    "cancel it; the user may hold an extra reservation (course %s)",
+                    r.course_id,
+                )
+                continue
+            try:
+                await adapter.cancel_reservation(r.confirmation_code)
+            except CancelError as exc:
+                log.critical(
+                    "blind-POST: FAILED to cancel surplus reservation %s (%s) — the user "
+                    "holds >1 reservation; PR4 watch net will reconcile",
+                    r.confirmation_code,
+                    exc,
+                )
+
+    async def _reguard_before_fallback(
+        self,
+        adapter: CourseAdapter,
+        course_id: CourseId,
+        request: BookingRequest,
+    ) -> ExistingReservation | None:
+        """Force a FRESH reservation snapshot, THEN list_reservations, returning a
+        matching reservation if a blind POST landed-but-uncertain.
+
+        Snapshot-before-list order is load-bearing (must-fix 3). Crucially the refresh
+        must be a *forced* re-fetch: ForeUP's ``list_reservations()`` reads a cache built
+        at login time and ``authenticate()`` is IDEMPOTENT (a 2nd call short-circuits on
+        ``_logged_in`` and does NOT rebuild the cache), so a plain ``authenticate()`` here
+        would return the STALE pre-burst snapshot and let the fallback book a SECOND
+        reservation. Adapters that expose ``ReservationCacheRefreshable`` get the forced
+        re-login; others fall back to ``authenticate()`` (sufficient for live-GET stores
+        or any adapter that never reaches this path). Best-effort: a blip must not crash."""
+        creds = self._creds.get(course_id)
+        if creds is not None:
+            try:
+                if isinstance(adapter, ReservationCacheRefreshable):
+                    await adapter.refresh_reservations(creds)
+                else:
+                    await adapter.authenticate(creds)
+            except Exception as exc:  # best-effort: a re-auth blip must not crash the run
+                log.warning(
+                    "course %s: blind-POST re-guard reservation refresh failed (%s) — "
+                    "listing with the existing session",
+                    course_id,
+                    exc,
+                )
+        existing = await adapter.list_reservations()
+        return self._first_matching_reservation(existing, request)
+
+    @staticmethod
+    async def _cancel_task(task: asyncio.Task[object]) -> None:
+        """Cancel a hedge task and swallow the resulting CancelledError."""
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     # --- race-path pre-warm (login + reservation guard + CAPTCHA) ------
 
@@ -323,17 +559,42 @@ class Orchestrator:
     ) -> None:
         """Pre-solve N CAPTCHA tokens for the primary adapter so the first N ranked
         candidates at T0 each consume a pooled token instead of blocking ~75s on a fresh
-        solve. N = scheduler.captcha_prefetch_count. Best-effort: any failure is logged and
-        swallowed (book() solves inline). No-op for adapters without a CAPTCHA (TeeItUp, Fake).
+        solve. N = scheduler.captcha_prefetch_count for the single-POST race path, but SCALES
+        to min(blind_post_max_count, in-window grid count) when the primary is blind-capable
+        (BLIND_POST_PLAN.md §5/OQ3) so every concurrent blind POST has a token in hand. Best-
+        effort: any failure is logged and swallowed (book() solves inline). No-op for adapters
+        without a CAPTCHA (TeeItUp, Fake).
         """
+        count = self._captcha_prefetch_count_for(adapter, request)
         try:
-            await adapter.prepare_book(None, request, count=self._scheduler.captcha_prefetch_count)
+            await adapter.prepare_book(None, request, count=count)
         except Exception as exc:
             log.warning(
                 "race: CAPTCHA pre-fetch failed for %s (%s) — will solve inline in book()",
                 course_id,
                 exc,
             )
+
+    def _captcha_prefetch_count_for(
+        self,
+        adapter: CourseAdapter,
+        request: BookingRequest,
+    ) -> int:
+        """Tokens to pre-solve for the primary adapter. For a blind-capable primary (race,
+        not dry-run, positive cap), scale to min(blind_post_max_count, in-window grid count)
+        so each concurrent blind POST has a pooled token; otherwise the single-POST race
+        depth (captcha_prefetch_count). A 0-grid blind case falls back to the single-POST
+        depth so the search fallback still has tokens (§5)."""
+        default = self._scheduler.captcha_prefetch_count
+        if request.dry_run or self._scheduler.blind_post_max_count <= 0:
+            return default
+        if not self._is_blind_capable(adapter):
+            return default
+        blind_slots = cast(BlindPostCapable, adapter).synthesize_blind_slots(
+            request, request.target_dates[0], max_count=self._scheduler.blind_post_max_count
+        )
+        count = min(self._scheduler.blind_post_max_count, len(blind_slots))
+        return count if count > 0 else default
 
     # --- timing ---------------------------------------------------------
 
