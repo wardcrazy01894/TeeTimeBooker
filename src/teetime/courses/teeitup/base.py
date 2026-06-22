@@ -634,6 +634,7 @@ class TeeItUpAdapter:
                 "TeeItUp PATCH /order-teetime/status failed after payment succeeded. "
                 "Card may have been charged. ReservationStatusID=%d. Manual check required.",
                 reservation_status_id,
+                exc_info=True,
             )
             raise RuntimeError(
                 f"Booking payment succeeded (ReservationStatusID={reservation_status_id}) "

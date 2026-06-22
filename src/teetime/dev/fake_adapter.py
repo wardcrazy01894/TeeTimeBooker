@@ -50,7 +50,6 @@ class FakeAdapter:
         self._book_side_effects: list[BookingOutcome | AdapterError] = []
         self._existing: list[ExistingReservation] = []
         self._cancel_exc: CancelError | None = None
-        self._cancel_should_succeed: bool = True
         self._prepare_book_exc: Exception | None = None
         self._authenticate_side_effects: list[Exception | None] = []
         # AuthStateReportable knobs (RACE_PREWARM_PLAN §3.1 SF#1). `_authenticated`
@@ -69,7 +68,6 @@ class FakeAdapter:
         self.book_call_count: int = 0
         self.list_reservations_call_count: int = 0
         self.cancel_call_count: int = 0
-        self.aclose_call_count: int = 0
 
     # --- scripting surface ----------------------------------------------
 
@@ -93,7 +91,6 @@ class FakeAdapter:
     def set_cancel_to_raise(self, exc: CancelError) -> None:
         """Script cancel_reservation() to raise `exc` (simulates server refusal)."""
         self._cancel_exc = exc
-        self._cancel_should_succeed = False
 
     def set_prepare_book_to_raise(self, exc: Exception) -> None:
         """Script prepare_book() to raise `exc` (simulates CAPTCHA service failure)."""
@@ -253,7 +250,8 @@ class FakeAdapter:
         self._existing = [r for r in self._existing if r.confirmation_code != raw_id]
 
     async def aclose(self) -> None:
-        self.aclose_call_count += 1
+        # No real resources to release; present for CourseAdapter parity.
+        return None
 
     # --- helpers --------------------------------------------------------
 
