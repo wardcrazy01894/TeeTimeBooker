@@ -38,6 +38,33 @@ def test_redact_text_passthrough_when_no_pii() -> None:
     )
 
 
+def test_redact_text_masks_jwt() -> None:
+    """A JWT echoed in an upstream error body (ForeUP reflects request context on some 4xx)
+    must be masked — it is a session-bearing credential, not a debuggable id. Full-repo-scan
+    security finding L7."""
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJ1aWQiOjQyfQ.s3cr3t-SignatureValue_123"
+    out = redact_text(f'login rejected: {{"token":"{jwt}"}}')
+    assert jwt not in out
+    assert "<redacted-token>" in out
+
+
+def test_redact_text_masks_bearer_token() -> None:
+    """An `Authorization: Bearer <token>` value echoed back must be masked."""
+    out = redact_text("upstream said: Authorization: Bearer abc123.DEF456-ghi_789")
+    assert "abc123.DEF456-ghi_789" not in out
+    assert "Bearer <redacted-token>" in out
+
+
+def test_redact_text_token_masking_keeps_status_and_ids() -> None:
+    """Token masking must NOT over-redact: bare numeric ids / HTTP statuses / short words
+    survive so the logged error body stays debuggable."""
+    out = redact_text("Slot gone (409): reservation 1234567890 held; rate_type=walking")
+    assert "409" in out
+    assert "1234567890" in out
+    assert "walking" in out
+    assert "<redacted-token>" not in out
+
+
 def test_redacts_cred_style_card_keys() -> None:
     out = redact_payload(
         {

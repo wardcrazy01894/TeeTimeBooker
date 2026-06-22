@@ -143,14 +143,25 @@ def redact_payload(payload: Mapping[str, object]) -> dict[str, object]:
 # for debugging (the whole reason the error body is logged).
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE_RE = re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b")
+# A reflected session credential is the one thing in an error body more dangerous than PII.
+# Both patterns are HIGH-CONFIDENCE so they cannot swallow numeric ids / status codes:
+#   - JWT: three base64url segments, the first starting with "eyJ" (base64 of '{"') — this
+#     shape never collides with a bare id or a normal word.
+#   - Bearer: the literal "Bearer " prefix followed by the token run.
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+")
+_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 
 
 def redact_text(text: str) -> str:
-    """Scrub email addresses and separator-formatted phone numbers from free text.
+    """Scrub account-holder PII (email, separator-formatted phone) AND reflected session
+    credentials (JWTs, ``Bearer`` tokens) from free text.
 
-    For logging arbitrary upstream response bodies that may echo account-holder PII (the
-    ForeUP error path logs the body to diagnose a rejected booking). NOT a substitute for
-    ``redact_payload`` on structured attempt_log writes — this is a log-hygiene helper for
-    free-text strings only.
+    For logging arbitrary upstream response bodies, which may echo account-holder PII OR
+    request context — including auth tokens — back on a 4xx (the ForeUP error path logs the
+    body to diagnose a rejected booking). The token patterns are deliberately high-confidence
+    so a bare numeric confirmation id / HTTP status survives for debugging. NOT a substitute
+    for ``redact_payload`` on structured attempt_log writes — this is a free-text log helper.
     """
+    text = _BEARER_RE.sub("Bearer <redacted-token>", text)
+    text = _JWT_RE.sub("<redacted-token>", text)
     return _PHONE_RE.sub("<redacted-phone>", _EMAIL_RE.sub("<redacted-email>", text))
