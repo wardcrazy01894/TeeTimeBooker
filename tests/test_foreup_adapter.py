@@ -1021,6 +1021,26 @@ async def test_list_reservations_skips_unparseable_items(
     assert "id" in caplog.text
 
 
+async def test_list_reservations_unparseable_log_never_leaks_field_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The skip-log must carry the exception TYPE + keys, never a field VALUE. A parse error
+    can embed a value in its message (ValueError(f"Cannot parse tee_time: {raw_t!r}")), so we
+    log type(exc).__name__, not exc — otherwise PII/booking data leaks into the app log."""
+    canary = "LEAK-CANARY-DO-NOT-LOG-9f3a"
+    bad = {"tee_time": canary}  # unparseable → ValueError carrying the value in its message
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._reservations_from_login = [bad, _RAW_RESERVATION]
+        with caplog.at_level("WARNING"):
+            reservations = await adapter.list_reservations()
+    assert len(reservations) == 1  # bad item still skipped
+    assert "unparseable reservation" in caplog.text
+    assert "ValueError" in caplog.text  # the exception TYPE is logged (diagnostic)
+    assert "tee_time" in caplog.text  # the KEY is logged (schema-drift signal)
+    assert canary not in caplog.text  # the VALUE is NOT logged (the leak guard)
+
+
 async def test_list_reservations_returns_foreup_login_shape() -> None:
     """list_reservations() correctly parses the actual ForeUP login-response field names."""
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:

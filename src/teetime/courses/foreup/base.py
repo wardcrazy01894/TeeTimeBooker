@@ -708,10 +708,13 @@ class ForeUpAdapter(CourseAdapter):
                 # Don't drop silently: this list backs the layer-2 double-booking guard,
                 # the blind-POST re-guard, and the watcher reconcile. A ForeUP field-shape
                 # change would empty the list with no signal → the bot books a second time.
-                # Log the keys (for schema-drift diagnosis), never values (PII).
+                # Log the exception TYPE and the item's keys (for schema-drift diagnosis),
+                # never values (PII). We deliberately do NOT log `exc` itself: a parse error
+                # message can embed a field VALUE (e.g. ValueError(f"Cannot parse tee_time:
+                # {raw_t!r}")), which would leak data into the (unredacted) app log.
                 _log.warning(
                     "ForeUP: skipping unparseable reservation item (%s): keys=%s",
-                    exc,
+                    type(exc).__name__,
                     sorted(item) if isinstance(item, dict) else type(item).__name__,
                 )
                 continue
