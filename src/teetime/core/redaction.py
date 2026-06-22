@@ -147,9 +147,11 @@ _PHONE_RE = re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b")
 # Both patterns are HIGH-CONFIDENCE so they cannot swallow numeric ids / status codes:
 #   - JWT: three base64url segments, the first starting with "eyJ" (base64 of '{"') — this
 #     shape never collides with a bare id or a normal word.
-#   - Bearer: the literal "Bearer " prefix followed by the token run.
+#   - Bearer: the literal "Bearer " prefix (CASE-SENSITIVE — the real HTTP auth-scheme casing,
+#     so the English word "bearer" in prose is NOT a match) followed by a >=8-char token run
+#     (real tokens are long; the length floor stops it eating a short following word like "of").
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+")
-_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 
 
 def redact_text(text: str) -> str:

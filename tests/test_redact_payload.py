@@ -55,6 +55,16 @@ def test_redact_text_masks_bearer_token() -> None:
     assert "Bearer <redacted-token>" in out
 
 
+def test_redact_text_does_not_eat_prose_bearer() -> None:
+    """The Bearer pattern is case-sensitive + length-floored so it does NOT over-redact the
+    English word "bearer" in a narrative error body (PR #144 review): "the bearer of bad
+    news" must survive intact — over-redaction degrades debuggability."""
+    body = "the bearer of bad news: request 409 rejected"
+    out = redact_text(body)
+    assert out == body  # unchanged — no token masked
+    assert "<redacted-token>" not in out
+
+
 def test_redact_text_token_masking_keeps_status_and_ids() -> None:
     """Token masking must NOT over-redact: bare numeric ids / HTTP statuses / short words
     survive so the logged error body stays debuggable."""
