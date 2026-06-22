@@ -401,7 +401,18 @@ in `core/` — never directly. This is the cut line for parallel work.
 - **The watcher reconciles >1 live reservation per date — a CRASH-NET BACKSTOP
   (BLIND_POST_PLAN PR4).** When `_check_course` finds MORE THAN ONE live reservation
   matching `(target_date, party_size)` AND `one_booking_policy.enabled`, it calls
-  `_reconcile_duplicate_reservations` BEFORE the upgrade: keep the best-ranked (the same
+  `_reconcile_duplicate_reservations` BEFORE the upgrade. **The reconcile ALSO runs on the
+  Gate-3 short-circuit path:** when the store already holds a `BOOKED` terminal for the date,
+  `check_once` returns before reaching `_check_course`, so `_reconcile_booked_course` runs the
+  same reconcile on the booked course there — otherwise a duplicate stranded by a failed in-run
+  `_cancel_extras` (which still records `BOOKED` for the kept slot) would persist on every watch
+  run, undetected. (An `ALREADY_BOOKED` terminal deliberately does NOT short-circuit — it falls
+  through to `_check_course`, getting the live reconcile AND a recovery-book for free.) The
+  Gate-3 reconcile pre-check (`authenticate`/`list_reservations`) swallows a TRANSIENT blip
+  (logs + skips this cycle — `check_once`'s "all other exceptions → None return" contract holds),
+  and the whole Gate-3 policy block (reconcile + upgrade) DEFERS on `ConcurrentRunError` (a
+  concurrent run holds `request_lock`) rather than crashing — the held `BOOKED` terminal stays
+  valid and the next run retries. Either way the reconcile keeps the best-ranked (the same
   `rank_slots_for_request` midpoint-distance order the booking path uses — `_rank_reservations`
   builds a slot per reservation, ranks, and appends any out-of-window ones by `tee_time` so the
   order is TOTAL), cancel the rest, UNDER the `request_lock`. This is the BACKSTOP — the
