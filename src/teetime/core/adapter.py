@@ -265,9 +265,10 @@ class CourseAdapter(Protocol):
 
         MUST be safe to retry only if SlotGoneError is raised. On ANY other failure
         mode (including raw network errors, ambiguous 5xx, and surprise non-error
-        responses), the orchestrator transitions to the UNCERTAIN state in the §9
-        state machine and MUST NOT call book() again until reconcile via
-        list_reservations() has run — see PLAN.md §9.
+        responses), the booking is UNCERTAIN (the POST may have landed): the
+        orchestrator MUST NOT call book() again in-run. Reconciliation is deferred
+        to the watcher, which re-checks list_reservations() on its next poll — see
+        PLAN.md §9 / §9.1.
         """
         ...
 

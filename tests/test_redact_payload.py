@@ -213,7 +213,7 @@ def test_redacts_gnsvc_camelcase_name_and_payment_token() -> None:
 
 
 def test_redacts_nested_lists_of_lists() -> None:
-    # The recursive guard must descend into nested lists (M2.T3 payload shapes are unknown).
+    # The recursive guard must descend into nested lists (attempt_log payload shapes are unknown).
     out = redact_payload({"deep": [[{"cvv": "9"}], [{"ok": "keep"}]]})
     assert out["deep"][0][0]["cvv"] == "***"
     assert out["deep"][1][0]["ok"] == "keep"

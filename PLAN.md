@@ -388,7 +388,11 @@ This is belt-and-suspenders by design. The single most important rule: **after a
 
 ### 9.1 Booking state machine (M2 implementation contract)
 
-The orchestrator's per-(course, slot) booking attempt is a state machine with explicit write-to-store-first transitions (in-memory). Implementers MUST encode these states verbatim — no derived enum, no "happy path skips a state":
+The orchestrator's per-(course, slot) booking attempt is a state machine.
+There is **no in-run reconciliation**: an UNCERTAIN book raises out of the run
+(loud, non-zero exit) and is reconciled **asynchronously by the watcher** on its
+next poll. A synchronous in-run `RECONCILING` path was originally planned (M2.T3)
+and has been **cut** — see the rationale block below the diagram.
 
 ```
                       +-------------+
@@ -412,29 +416,24 @@ The orchestrator's per-(course, slot) booking attempt is a state machine with ex
             v                  v        |          |
    RETRY_DIFFERENT_SLOT     BOOKED      v          v
    (re-search, pick                +-----------+
-   next; max once)                 | UNCERTAIN |
+   next; max once)                 | UNCERTAIN |  POST may or may not have landed
             |                      +-----+-----+
-            +-> back to PRE_BOOK         | (writes UNCERTAIN row)
-                                         | wait reconcile_delay_s (5s)
+            +-> back to PRE_BOOK         |
+                                         | book() RAISES OUT of run()
+                                         | (no in-run reconcile; non-zero exit)
                                          v
-                                  +--------------+
-                                  | RECONCILING  | calls list_reservations
-                                  +------+-------+ matches by (tee_time,
-                                         |         party_size, course_id)
-                          +--------------+--------------+
-                          |                             |
-                          v                             v
-                       match found                no match
-                          |                             |
-                          v                             v
-                     BOOKED                          LOST
-                  (write terminal,             (record terminal NO_INVENTORY
-                   confirmation from            for THIS course+slot only;
-                   reconcile)                   orchestrator MAY try next
-                                                course but MUST NOT retry
-                                                this same course in the
-                                                same run — phantom-booking
-                                                risk)
+                              +------------------------+
+                              | watcher reconciles on  |  re-auth (fresh ForeUP
+                              | its next ~10-min poll   |  reservation snapshot)
+                              +-----------+------------+ + list_reservations
+                                          |              + duplicate crash-net
+                          +---------------+---------------+
+                          |                               |
+                          v                               v
+                  reservation found              no reservation
+                  (already-booked: record         (date still open:
+                   terminal; collapse any          watcher recovery-books it
+                   duplicate to one)               via the normal pre-book guard)
 ```
 
 **Invariants:**
@@ -444,18 +443,32 @@ The orchestrator's per-(course, slot) booking attempt is a state machine with ex
    layer 2). Two concurrent `POSTING` states for the same RequestId are
    impossible because `request_lock` (layer 5) is held for the whole run AND
    the orchestrator is single-threaded within a run.
-2. Every state transition appends to the in-memory `attempt_log`. If the
-   runner is killed between two states, the in-memory log is lost; the next
-   run has no UNCERTAIN state to resume from — instead it re-runs `PRE_BOOK`,
-   hits `list_reservations` (layer 2), and discovers any existing booking
-   before ever POSTing again. Never re-POST without going through PRE_BOOK.
-3. From `UNCERTAIN`, the only legal next state is `RECONCILING`. The
-   orchestrator MUST NOT call `book()` again before reconcile completes.
-4. `LOST` is terminal for THIS slot. The orchestrator may pick another
-   course (next in `course_preferences`), but never the same (course, slot).
+2. An UNCERTAIN book (timeout/ambiguous 5xx/suspicious response) **propagates
+   out of the run** — it is NEVER re-fired in the same run. Because the booker
+   never re-POSTs in-run, it can never double-book itself; the only retry is the
+   next watcher poll, which is itself guarded by a fresh `list_reservations`
+   pre-book check. This loud-exit behavior is load-bearing: an UNCERTAIN book
+   MUST NOT be caught and recorded as a clean `NO_INVENTORY` (that would mask a
+   possibly-landed reservation).
+3. `LOST` is terminal for THIS slot. The orchestrator may pick another course
+   (next in `course_preferences`), but never the same (course, slot).
 
-The Protocol's `book()` docstring references this diagram. `list_reservations`
-is part of the Protocol from M0 (review item 3) — not deferred to M2.T3.
+**Why no in-run reconciliation (M2.T3 cut):** The watcher already provides
+eventual (≤ one ~10-min poll) reconciliation of every UNCERTAIN outcome. Each
+watch run re-authenticates — rebuilding ForeUP's login-response reservation
+snapshot, so it sees a booking that landed AFTER the booker's run — then checks
+`list_reservations`: a silently-landed booking is detected and recorded, a
+genuinely-failed one is recovery-booked, and a duplicate is collapsed by
+`_reconcile_duplicate_reservations`. For an **unattended single-user bot** the
+≤10-min unknown window is harmless (no human acts on it to create a duplicate),
+so the marginal value of a synchronous in-run path did not justify the durable
+in-flight state it would require. **Consequence:** the watcher's uptime is now
+load-bearing — it is the system of record for reconciliation. The booker stays
+deliberately simple (single-attempt `book()`, raise on UNCERTAIN).
+
+The Protocol's `book()` docstring references this contract. `list_reservations`
+is part of the Protocol from M0 (review item 3) and is the foundation of both the
+pre-book guard and the watcher's reconciliation.
 
 ### 9.2 Cross-run double-booking defense
 
@@ -505,9 +518,10 @@ AND player PII (email, phone, mobile, member number, first/last name). (It DROPS
 SHA-256-hashing it — stronger for an audit blob, since a hash of a low-entropy phone number is
 reversible.) `BookingStore.append_attempt` applies `redact_payload` at the store boundary on
 every write, so redaction is non-bypassable — a caller cannot leak card data by forgetting to
-scrub. NOTE: `append_attempt` is not yet called by any flow — the post-mortem reconciliation
-path (M2.T3) is the intended first caller; the store-boundary guard means its writes are
-redacted by default. The guard is in place before that wiring lands.
+scrub. NOTE: `append_attempt` is not called by any production flow today (only the store's own
+unit tests exercise it). The post-mortem reconciliation path that would have been its first
+consumer (M2.T3) was **cut** (§9.1). The store-boundary redaction guard is kept regardless
+as non-bypassable defense-in-depth — any future caller's writes are redacted by default.
 
 ---
 
@@ -681,12 +695,12 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 | M1.T2 | Implement `core/config.py::load` (incl. `PlayerConfig`, `target_offsets` -> resolved-date helper, env-var ref resolution for player PII) | `config/example.toml`        | TOML round-trip; secret-env resolution; clear errors on missing env; PlayerConfig.email_env -> Player.email | `core/config.py`, `tests/test_config.py` | M1.T1, M1.T3 |
 | M1.T3 | Wire CLI (`teetime run`, `teetime show-config`) via Click | `core/config.py` shape       | `__main__.py` real impl              | `src/teetime/__main__.py`, `tests/test_cli.py`    | M1.T1, M1.T2 |
 
-### M2 — Orchestrator core (PARTIAL — M2.T3 reconciliation pending)
+### M2 — Orchestrator core (DONE — M2.T3 in-run reconciliation CUT; the watcher reconciles asynchronously, §9.1)
 | ID    | Task                                                | Inputs                  | Outputs                                                              | Owner-files                                | Deps        |
 |-------|-----------------------------------------------------|-------------------------|----------------------------------------------------------------------|--------------------------------------------|-------------|
 | M2.T1 | Implement `Orchestrator.run` with FakeAdapter, **InMemoryStore** (already a stub in `persistence/in_memory_store.py`), NoopNotifier; encode the §9.1 state machine | M1, all stubs           | end-to-end happy path, fallback path, idempotency path passing; state machine transitions match §9.1 diagram exactly | `core/orchestrator.py`, `persistence/in_memory_store.py`, `tests/test_orchestrator.py`, `tests/conftest.py` | M1.*  |
 | M2.T2 | Implement the `derive_request_id` helper body (the signature already exists in `core/models.py`); fingerprint per §13.1 | M1.T2                   | given identical config, identical RequestId across processes         | `core/models.py` (helper body), `tests/test_request_id.py` | M1.T2 |
-| M2.T3 | Implement post-mortem reconciliation: orchestrator calls the **already-defined** `adapter.list_reservations()` on UNCERTAIN, drives RECONCILING → BOOKED/LOST per §9.1 | M2.T1                   | reconciliation works against a scripted FakeAdapter that simulates connection-drop after server-side commit | `core/orchestrator.py` (no Protocol changes — `list_reservations` already on Protocol) | M2.T1 |
+| ~~M2.T3~~ **CUT** | ~~Implement in-run post-mortem reconciliation (UNCERTAIN → RECONCILING → BOOKED/LOST)~~ — **cut**: an UNCERTAIN book raises out of the run (loud, non-zero exit) and is reconciled **asynchronously by the watcher** on its next ≤10-min poll (re-auth + `list_reservations` + the duplicate crash-net). For an unattended single-user bot the ≤10-min unknown window is harmless, so the synchronous in-run path (and the durable in-flight state it would have required) was not worth building. The watcher's uptime is now load-bearing. See §9.1. | — | — | — | — |
 
 ### M3 — Persistence — **DROPPED**
 
