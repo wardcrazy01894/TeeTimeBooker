@@ -550,6 +550,31 @@ What we still DO NOT:
 - Hammer login on auth failure.
 - Bulk-book-and-cancel (the scalper pattern). One booking per request.
 
+**Blind-POST burst at T0 (Mangrove Bay; BLIND_POST_PLAN.md).** The one deliberate
+departure from the 250 ms spacing rule is the 06:00:00 drop on the race path. To beat
+the search→book round-trip on the most contested slots of the week, the booking
+`Orchestrator` fires up to `scheduler.blind_post_max_count` (default 12) book POSTs
+**concurrently** for the in-window morning grid synthesized from a frozen template (no
+search dependency), with the real search GET hedged alongside as a grid-drift fallback.
+The burst is bounded three ways — it is gated to the `--wait` race path, only the PRIMARY
+blind-capable course, and `min(blind_post_max_count, captcha_pool_size())` (each POST needs
+a pre-solved CAPTCHA token) — so it is a one-time fan-out of a handful of requests at a
+single instant, not sustained hammering. Critically, **one booking per request still
+holds**: the orchestrator keeps the best-ranked reservation and cancels every other one it
+created in the SAME run (`_cancel_extras`), and a fresh watch run reconciles any duplicate
+a crash left behind (keep-best, cancel-rest). This stays inside the "no bulk-book-and-cancel
+scalper pattern" line — the surplus POSTs exist only to win the race for ONE slot and are
+retracted within seconds, never held.
+
+> **Single-user residual (accepted).** Because ForeUP reservations carry no
+> ownership marker the bot can read (`is_managed` is always False for server-sourced
+> reservations — they have a raw id, no `TTB:` prefix), the watcher's keep-best-cancel-rest
+> reconcile cannot distinguish a duplicate the bot created from a *deliberate* second
+> booking the operator made manually on the same date + party size. If both exist, the
+> reconcile keeps the higher-ranked one and cancels the other. This is accepted for this
+> single-user personal bot; a multi-user version would need a durable per-reservation
+> ownership record (out of scope, M3 cut).
+
 **ToS posture (stated explicitly).** The user has a legitimate account and is automating a booking they are eligible to make. ForeUP's public stance ([zendesk article](https://foreup.zendesk.com/hc/en-us/articles/34034774453403-Preventing-Bots-From-Making-Tee-Times)) is that bot-driven bookings are unwelcome and they may add countermeasures. Risk areas the user accepts:
 - Solving the captcha and impersonating a browser to do so are evasions of a technical control; this materially raises ToS/detection risk versus the original notify-and-stop design.
 - The course may revoke the user's online booking privileges if they detect bot activity. Accepted for v0.

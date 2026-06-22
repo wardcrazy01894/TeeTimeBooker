@@ -61,6 +61,8 @@ Secrets are never stored in TOML — the config file references env var names, a
 
 **Skip a day.** To tell the bot *not* to book a specific date (e.g. you're out of town), set the env var named by `request.skip_dates_env` (default `TEETIME_SKIP_DATES`) to a comma/space-separated ISO date list, e.g. `export TEETIME_SKIP_DATES="2026-06-14, 2026-06-21"`. Both the booking job and the watcher skip those dates (and won't upgrade a held booking on them — cancel it yourself on the course site and it'll stay cancelled). Unset/empty/malformed = no skips (it never crashes the bot). In the hosted deployment this is a Key Vault secret you edit in the Azure Portal with no redeploy — see `infra/AZURE_PLAN.md`.
 
+**Blind-POST burst (Mangrove Bay only).** At the 06:00 ET drop the booking job fires up to `scheduler.blind_post_max_count` (default `12`) book POSTs **concurrently** for the known in-window morning grid, *without* waiting for the search round-trip, keeps the best-ranked reservation, and cancels the rest in the same run. The real search runs alongside as a grid-drift fallback. Set `scheduler.blind_post_max_count = 0` to disable it and fall back to the plain search-then-book path. This is capped by the pre-solved CAPTCHA pool and only ever fires for the primary, blind-capable course on the `--wait` race path.
+
 Copy `.env.example` to `.env` and fill in your values. Wrap any value that contains special characters (`&`, `!`, `$`, etc.) in **single quotes**:
 
 ```bash
@@ -237,6 +239,7 @@ All subsystems are `Protocol`-typed — orchestrators wire them together; nothin
 | M-feature-3 | Prefer slot closest to the window midpoint (midpoint-distance sort) | Done |
 | M-feature-1 | Cancellation watch job — poll every 10 min, book on cancellation | Done |
 | M-feature-2 | One-booking policy: auto-upgrade to higher-priority slot (cancel-before-book + CAPTCHA pre-fetch) | Done |
+| M-feature (blind-POST) | Concurrent blind book POSTs at T0 for the Mangrove Bay morning grid (keep best, cancel rest) + watcher crash-net reconcile | Done in code; live-pending-prod |
 | M-azure (IaC) | Azure v1 Bicep IaC: all modules implemented; dev CI-deployed in dry-run | Done |
 | M-azure (runtime) | Container entrypoint wiring; in-process `InMemoryStore` + `ConsoleNotifier` | Done |
 
@@ -250,4 +253,4 @@ See [PLAN.md §20](./PLAN.md) for the v0.5 milestone breakdown. See [PLAN.md §1
 - Player PII SHA-256-prefixed before writing to the attempt log
 - ForeUP: no credit-card data handled (card-on-file at ForeUP)
 - TeeItUp: card credentials passed directly to `tr.gnsvc.com` (GolfNow payment service); stored only in `.env` (gitignored), never in config files or logs
-- Anti-bot etiquette: honest User-Agent, ≥250 ms between requests, automatic 429 backoff
+- Anti-bot etiquette: honest User-Agent, ≥250 ms between requests, automatic 429 backoff. The one exception is the T0 blind-POST burst (Mangrove Bay), which fires several book POSTs concurrently at the 06:00 drop and immediately cancels all but the best — one booking per request still holds. See [PLAN.md §12](./PLAN.md)
