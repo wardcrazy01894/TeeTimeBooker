@@ -309,7 +309,16 @@ class ForeUpAdapter(CourseAdapter):
                 self._reservations_from_login = []  # don't leave stale cache
                 return
         except ValueError:
-            pass
+            # A 200 whose body isn't JSON (e.g. an HTML WAF/interstitial page). We still
+            # trust the 200 and proceed, but with no JWT and no reservation cache — a
+            # session that LOOKS healthy. Warn so this is diagnosable (otherwise a later
+            # empty list_reservations() vacuously passes the pre-book guard). Log only the
+            # body length, never the body (may carry markup/identifiers).
+            _log.warning(
+                "ForeUP: login returned 200 but body was not JSON (len=%d) — proceeding "
+                "without JWT/reservation cache",
+                len(r.text),
+            )
         self._logged_in = True
         # Extract JWT for use in cancel_reservation() requests.
         # ForeUP returns the session token in the login response body. The
@@ -695,7 +704,16 @@ class ForeUpAdapter(CourseAdapter):
         for item in self._reservations_from_login:
             try:
                 out.append(_parse_reservation(item, self.course_id, tz))
-            except (KeyError, ValueError, TypeError):
+            except (KeyError, ValueError, TypeError) as exc:
+                # Don't drop silently: this list backs the layer-2 double-booking guard,
+                # the blind-POST re-guard, and the watcher reconcile. A ForeUP field-shape
+                # change would empty the list with no signal → the bot books a second time.
+                # Log the keys (for schema-drift diagnosis), never values (PII).
+                _log.warning(
+                    "ForeUP: skipping unparseable reservation item (%s): keys=%s",
+                    exc,
+                    sorted(item) if isinstance(item, dict) else type(item).__name__,
+                )
                 continue
         _log.info("ForeUP: found %d existing reservation(s)", len(out))
         return out

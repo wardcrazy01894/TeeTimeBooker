@@ -299,13 +299,17 @@ async def test_authenticate_captcha_raises_captcha_error() -> None:
 
 
 @respx.mock
-async def test_authenticate_non_json_200_does_not_crash() -> None:
-    """HTTP 200 with a non-JSON body must not raise UnboundLocalError.
+async def test_authenticate_non_json_200_does_not_crash(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """HTTP 200 with a non-JSON body must not raise UnboundLocalError, but it MUST warn.
 
     The prior bug: `data` was unbound after `ValueError` from `r.json()`, causing
     `if isinstance(data, dict)` to raise UnboundLocalError. The fix initializes
     `data = {}` before the try block. A non-JSON 200 is treated as a successful
-    login (status 200 is trusted), but no JWT or reservations are extracted.
+    login (status 200 is trusted), but no JWT or reservations are extracted — so this
+    branch flips `_logged_in` True on a body we couldn't parse (e.g. a WAF interstitial).
+    That must be logged, or a session with no JWT/reservation cache looks healthy.
     """
     respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
         return_value=httpx.Response(200, text="<html/>")
@@ -315,10 +319,12 @@ async def test_authenticate_non_json_200_does_not_crash() -> None:
     )
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         adapter = _adapter(client)
-        await adapter.authenticate(CREDS)  # must not raise UnboundLocalError
+        with caplog.at_level("WARNING"):
+            await adapter.authenticate(CREDS)  # must not raise UnboundLocalError
     # 200 status → _logged_in=True; no JWT or reservations extracted from HTML body
     assert adapter._auth_token is None
     assert adapter._reservations_from_login == []
+    assert "not JSON" in caplog.text
 
 
 @respx.mock
@@ -998,14 +1004,21 @@ async def test_list_reservations_returns_parsed_items() -> None:
     assert reservations[0].party_size == 2
 
 
-async def test_list_reservations_skips_unparseable_items() -> None:
-    """Items that can't be parsed are silently skipped."""
+async def test_list_reservations_skips_unparseable_items(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Items that can't be parsed are skipped AND logged at WARNING — a silent drop
+    here would hide a ForeUP schema change that empties the double-booking guard."""
     bad = {"id": "X"}  # no tee_time field
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         adapter = _adapter(client)
         adapter._reservations_from_login = [bad, _RAW_RESERVATION]
-        reservations = await adapter.list_reservations()
+        with caplog.at_level("WARNING"):
+            reservations = await adapter.list_reservations()
     assert len(reservations) == 1  # bad item skipped, good item kept
+    assert "unparseable reservation" in caplog.text
+    # the logged context names the keys (for schema-drift diagnosis) but never values/PII
+    assert "id" in caplog.text
 
 
 async def test_list_reservations_returns_foreup_login_shape() -> None:
