@@ -193,6 +193,19 @@ in `core/` — never directly. This is the cut line for parallel work.
   first (the `_guard_captcha` check runs before the 400→SlotGone mapping). Caveat: each
   fallback candidate re-solves a fresh CAPTCHA (~75 s, single-use token), so at a competitive
   drop the fallbacks are best-effort.
+- **A `RateLimitError` (HTTP 429) anywhere in a course's flow skips the course — it does NOT
+  crash the booking job.** `run()`'s per-course loop catches `RateLimitError` (raised from the
+  search GET, the blind-POST hedge search, OR the book POST — one catch covers all paths since
+  they all propagate through `_run_course`), logs it with `retry_after_s`, and `continue`s to the
+  next course preference exactly like an empty course. A 429 is rejected by the platform BEFORE
+  processing, so no reservation was created (unlike the §9 UNCERTAIN timeout/5xx case), making the
+  course-skip safe. If no course books, `run()` records the clean `NO_INVENTORY` terminal +
+  notifies (the booking command then exits non-zero via a `ClickException`, no traceback) rather
+  than dying with an uncaught error and no record. **`CaptchaError`/`AuthError` are deliberately
+  NOT caught here** — they are operator-action errors and must still propagate for a non-zero exit
+  (a broken CAPTCHA/credential pipeline must not hide behind a clean `NO_INVENTORY`). This mirrors
+  the watcher's contract (which also exits 0 on a 429 and reserves non-zero for Captcha/Auth),
+  except the booking job tries the next course first instead of aborting the whole run.
 - **Transient-failure retry is for IDEMPOTENT ForeUP calls only.** `ForeUpAdapter.
   _send_with_retry` retries on `httpx.TransportError` (read/connect timeouts,
   network blips — the observed prod failure was a lone `httpx.ReadTimeout` that
