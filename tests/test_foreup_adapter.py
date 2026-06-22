@@ -21,6 +21,7 @@ from teetime.core.adapter import (
     CaptchaError,
     CourseAdapter,
     RateLimitError,
+    ReservationCacheRefreshable,
     SlotGoneError,
 )
 from teetime.core.models import (
@@ -180,6 +181,56 @@ async def test_authenticate_is_idempotent_skips_relogin_when_already_logged_in()
         assert adapter._logged_in is True
         assert warm.call_count == 1, "second authenticate() must not re-warm"
         assert login.call_count == 1, "second authenticate() must not re-login"
+
+
+@respx.mock
+async def test_refresh_reservations_forces_relogin_and_rebuilds_cache() -> None:
+    """`refresh_reservations()` (ReservationCacheRefreshable) must FORCE a fresh login even
+    when already logged in, so `list_reservations()` reflects the CURRENT server state.
+
+    This is the blind-POST re-guard must-fix: `authenticate()` is idempotent (no-op when
+    `_logged_in`), so a landed-but-uncertain reservation created during the T0 burst would be
+    invisible if the re-guard only re-authenticated. The first login returns an EMPTY list; the
+    second (forced) login returns the now-landed reservation. Without the forced relogin the
+    cache would stay empty and the orchestrator would double-book."""
+    warm = respx.get(f"{FOREUP_BASE_URL}/index.php/booking/19671/2149").mock(
+        return_value=httpx.Response(200, text="<html/>")
+    )
+    login = respx.post(f"{FOREUP_BASE_URL}{LOGIN_PATH}").mock(
+        side_effect=[
+            httpx.Response(200, json={"success": True, "msg": "ok", "reservations": []}),
+            httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "msg": "ok",
+                    "reservations": [_RAW_FOREUP_LOGIN_RESERVATION],
+                },
+            ),
+        ]
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        assert adapter._reservations_from_login == []  # nothing booked yet
+
+        # A second plain authenticate() would short-circuit (idempotent) — but
+        # refresh_reservations() must force the warm-up GET + login POST again.
+        await adapter.refresh_reservations(CREDS)
+
+        assert warm.call_count == 2, "refresh_reservations must re-warm"
+        assert login.call_count == 2, "refresh_reservations must re-login"
+        assert adapter._logged_in is True
+        assert adapter._reservations_from_login == [_RAW_FOREUP_LOGIN_RESERVATION]
+
+
+async def test_foreup_adapter_is_reservation_cache_refreshable() -> None:
+    """ForeUpAdapter structurally satisfies the ReservationCacheRefreshable capability so
+    the orchestrator's `isinstance` branch routes it to the forced refresh."""
+
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        assert isinstance(adapter, ReservationCacheRefreshable)
 
 
 @respx.mock

@@ -180,6 +180,10 @@ def test_container_and_example_captcha_prefetch_match() -> None:
         "captcha_prefetch_lead_s drift between example.toml and container.toml — keep the "
         "race-path prefetch lead in sync."
     )
+    assert example.get("blind_post_max_count") == container.get("blind_post_max_count"), (
+        "blind_post_max_count drift between example.toml and container.toml — keep the "
+        "blind-POST fan-out cap in sync (BLIND_POST_PLAN.md §5)."
+    )
 
 
 def test_container_and_example_party_size_match() -> None:

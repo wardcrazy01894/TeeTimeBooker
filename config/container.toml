@@ -79,6 +79,11 @@ captcha_prefetch_lead_s = 120
 # Race path: pre-solve this many CAPTCHA tokens concurrently during the busy-wait so the
 # first ranked candidate + the next N-1 fallbacks each fire instantly at T0 (RACE_PREWARM_PLAN §4.4).
 captcha_prefetch_count = 3
+# Blind-POST fan-out cap (BLIND_POST_PLAN.md §5): a blind-capable PRIMARY (Mangrove Bay) fires up
+# to this many concurrent book POSTs for the top-N ranked in-window grid slots at T0, keeps the
+# best, cancels the rest. The CAPTCHA prefetch scales to min(this, in-window grid count). 0 disables
+# blind fan-out (single-POST race path). Bounded further by the pooled-token count at fire time.
+blind_post_max_count = 12
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from

@@ -182,6 +182,16 @@ class SchedulerConfig(BaseModel):
     # 3 balances solve-cost/rate-limit against fallback depth at a competitive drop
     # (RACE_PREWARM_PLAN §4.4). Ignored off the race path (upgrade/inline solve count=1).
     captcha_prefetch_count: int = Field(default=3, ge=1)
+    # Blind-POST fan-out cap (BLIND_POST_PLAN.md §5, OQ3). On the race path, for a
+    # blind-capable PRIMARY course (Mangrove Bay), the orchestrator fires up to this many
+    # concurrent book POSTs for the top-N ranked in-window grid slots at T0, keeps the best,
+    # and cancels the rest. DECOUPLED from captcha_prefetch_count (the single-POST race
+    # prefetch depth): the CAPTCHA prefetch SCALES to min(blind_post_max_count, in-window
+    # grid count) when the primary is blind-capable. The actual burst N is further bounded by
+    # the pooled-token count. `0` DISABLES blind fan-out (single-POST race path). Default 12 ≈
+    # the full 08:45-10:00 Mangrove Bay window. Ignored off the race path and for non-capable
+    # or non-primary courses.
+    blind_post_max_count: int = Field(default=12, ge=0)
 
 
 class NotifierConfig(BaseModel):
