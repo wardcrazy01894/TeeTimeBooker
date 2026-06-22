@@ -467,9 +467,18 @@ class Orchestrator:
 
     @staticmethod
     async def _cancel_task(task: asyncio.Task[object]) -> None:
-        """Cancel a hedge task and swallow the resulting CancelledError."""
+        """Abandon a hedge task: cancel it and discard its result/exception.
+
+        We only call this once a blind POST has WON (or the re-guard found a landed
+        reservation), so the hedge search's outcome is irrelevant. ``task.cancel()`` is a
+        no-op on an already-DONE task, and ``await`` then re-raises whatever it stored —
+        which for the hedge search can be a non-cancelled error (e.g. a 429 ``RateLimitError``
+        or a ``CaptchaError`` at the drop, since ``_poll_for_slots`` only swallows
+        inventory-not-published). Suppressing only ``CancelledError`` would let that error
+        propagate out of ``_blind_post_course`` and discard a real, successful booking. So
+        suppress everything: abandoning the hedge must never fail the run."""
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
+        with contextlib.suppress(Exception):
             await task
 
     # --- race-path pre-warm (login + reservation guard + CAPTCHA) ------

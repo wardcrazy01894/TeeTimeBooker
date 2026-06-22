@@ -22,7 +22,7 @@ from uuid import uuid4
 
 import pytest
 
-from teetime.core.adapter import AdapterError, CancelError, SlotGoneError
+from teetime.core.adapter import AdapterError, CancelError, RateLimitError, SlotGoneError
 from teetime.core.clock import FakeClock
 from teetime.core.config import SchedulerConfig
 from teetime.core.models import (
@@ -190,6 +190,26 @@ async def test_blind_post_token_exhaustion_fires_fewer() -> None:
     assert result.outcome == BookingOutcome.BOOKED
     assert fa.book_call_count == 1  # only the single pooled token was spent
     assert fa.cancel_call_count == 0  # nothing to cancel — one booking
+
+
+async def test_blind_post_wins_even_if_hedge_search_errors() -> None:
+    """Regression: a blind POST books, but the concurrent hedge search GET fails with a
+    non-cancelled error (429 RateLimitError). Abandoning the hedge must NOT re-raise that
+    error and discard the real booking — the run returns BOOKED. (orchestrator._cancel_task
+    suppressed only CancelledError, so an already-failed hedge task re-raised on await.)"""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    # The hedge search is throttled at the drop — the worst-case real-world race.
+    fa.set_search_to_raise(RateLimitError("throttled", retry_after_s=30))
+
+    orch, _, _ = _build({cid: fa})
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED  # the blind booking is kept, not lost
+    assert result.slot is not None
+    assert result.slot.slot_id == "s-0815"  # midpoint slot kept
+    assert fa.cancel_call_count == 1  # the one extra blind reservation cancelled
 
 
 # --- gate exclusions ----------------------------------------------------
