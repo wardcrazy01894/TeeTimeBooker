@@ -73,7 +73,7 @@ PATCHing Manual → Manual is idempotent (no error, returns 200 with current sta
 does NOT terminate a replica that is ALREADY running at the moment $50 trips.
 The watch job fires every 10 minutes; at $50, one or more replicas may be
 mid-execution. Those replicas continue to bill compute time until they complete
-or time out (`replicaTimeout = 120 s` for watch, `1200 s` for booking jobs).
+or time out (`replicaTimeout = 300 s` for watch, `1200 s` for booking jobs).
 The killswitch MUST also stop in-flight executions to halt ALL variable spend.
 
 **Research result (confirmed, Microsoft Learn):**
@@ -143,7 +143,7 @@ the system-assigned managed identity using `audience: https://management.azure.c
 All 12 run as parallel Logic App actions.
 
 **Both levers are required.** A killswitch that only disables schedules (lever a)
-leaves a watch replica mid-execution billing compute until it times out (120 s).
+leaves a watch replica mid-execution billing compute until it times out (300 s).
 A killswitch that only stops in-flight replicas (lever b) does not prevent the
 NEXT cron fire 10 minutes later from spawning a new replica. Both are needed.
 
@@ -408,7 +408,7 @@ provides approximately a 5–10× safety margin before the killswitch fires.
 
 **Per-run cost protection** (e.g., stopping a job that is over-running a time
 limit) is handled by `replicaTimeout` in compute.bicep (1200 s for booking
-jobs, 120 s for the watch job) — that is an ACA platform control, not a cost
+jobs, 300 s for the watch job) — that is an ACA platform control, not a cost
 alert.
 
 ### Item 8: Testing without spending $50

@@ -32,7 +32,7 @@ sections):
 | NI10 count=1 total-failure must re-raise | **fixed** — N-dependent raise contract specified + tested | §4.3, §8.1 stub |
 | NIT7 parity test asserts both fields | **fixed** — assert count AND lead; note lead absent from container/local today | §4.4, §7.2 |
 | NIT8 dev --wait token cost | **fixed (note)** — dev ACA jobs do NOT pass --wait; documented | §4.6 |
-| OQ1 default N | **resolved → N=5** (recommended; covers the full 2026 5-attempt spread) | §4.4, §9 |
+| OQ1 default N | **resolved → N=3** (user directive; covers the realistic competitive-drop fallback depth) | §4.4, §9 |
 | OQ2 pre-T0 ALREADY_BOOKED short-circuit | **resolved → SHIP IT** (recommended) | §3.2, §9 |
 
 ## 0. Problem
@@ -411,8 +411,8 @@ current `captcha_prefetch_lead_s = 120` already equals the provider's max poll b
 needs NO change** for N ≤ a handful. Login prewarm (~2s) runs concurrently with the solves
 (`asyncio.gather`), so it adds nothing to the lead. We keep `captcha_prefetch_lead_s = 120`.
 
-Default N=5 (configurable; OQ1 resolution). N up to ~5 is safe on the 120s lead. Do NOT set N
-so high that 2captcha rate-limits concurrent submissions (out of scope; 5 is within free-tier
+Default N=3 (configurable; OQ1 resolution). N up to ~5 is safe on the 120s lead. Do NOT set N
+so high that 2captcha rate-limits concurrent submissions (out of scope; ≤5 is within free-tier
 norms — see §10 confidence note on concurrent-submission tolerance).
 
 ### 4.7 Multi-course fallback is NOT accelerated (SF4 — stated explicitly)
@@ -431,7 +431,7 @@ path that rarely fires).
 
 ### 4.6 Cost (reviewer pre-empt #9 + NIT8)
 
-N tokens = N × ~$0.003 per run. At N=5, ~$0.015/run; weekly Sat+Sun = ~$0.030/week ≈ $1.56/yr.
+N tokens = N × ~$0.003 per run. At N=3, ~$0.009/run; weekly Sat+Sun = ~$0.018/week ≈ $0.94/yr.
 Negligible. Note: tokens NOT consumed by book() are simply discarded (no refund) — the cost is
 paid whether or not fallbacks fire. Acceptable.
 
@@ -639,10 +639,10 @@ In `tests/test_orchestrator.py`:
   the `count=N` plumbing.
 
 In `tests/test_config*.py`:
-- `test_scheduler_captcha_prefetch_count_default_is_five` (NEW default per OQ1)
+- `test_scheduler_captcha_prefetch_count_default_is_three` (default per OQ1)
 - `test_scheduler_captcha_prefetch_count_rejects_zero` (ge=1 validation; RED first)
 In `tests/test_container_config_parity.py` (NIT7 — assert BOTH fields):
-- `test_captcha_prefetch_count_matches_across_configs` — `captcha_prefetch_count` equal (= 5)
+- `test_captcha_prefetch_count_matches_across_configs` — `captcha_prefetch_count` equal (= 3)
   across example/container/local.
 - `test_captcha_prefetch_lead_matches_across_configs` — `captcha_prefetch_lead_s` equal where
   present; after PR2 adds it explicitly to container/local, assert all three == 120 (the test
@@ -722,14 +722,14 @@ In `tests/test_orchestrator.py`:
   and never on the prod race path, so ignoring is acceptable. Signature parity is the requirement.
 
 ### 8.6 `core/config.py` (PR2)
-- `SchedulerConfig.captcha_prefetch_count: int = Field(default=5, ge=1)` (default bumped to 5 per
-  OQ1; already on disk at 3 — PR2 changes the default and the TOMLs).
+- `SchedulerConfig.captcha_prefetch_count: int = Field(default=3, ge=1)` (default N=3 per OQ1;
+  all three TOMLs carry 3 to match).
 
 ## 9. Resolved questions (round 2)
 
-1. **Default N → 5.** RESOLVED: recommend `captcha_prefetch_count = 5` (was 3). Covers the full
-   2026 5-attempt fallback spread; cost negligible; fits the 120s concurrent lead. PR2 sets the
-   default to 5 and updates all three TOMLs.
+1. **Default N → 3.** RESOLVED: `captcha_prefetch_count = 3` (user directive, overriding the
+   plan's earlier N=5 proposal). Covers the realistic competitive-drop fallback depth; cost
+   negligible; fits the 120s concurrent lead. PR2 sets the default to 3 and updates all three TOMLs.
 2. **Pre-T0 ALREADY_BOOKED short-circuit → SHIP IT.** RESOLVED: recommend shipping the
    short-circuit (§3.2) with the SF6 verification line. The wasted-busy-wait saving is real; the
    only staleness gap (a manual booking placed after prewarm but before T0) is already covered by
