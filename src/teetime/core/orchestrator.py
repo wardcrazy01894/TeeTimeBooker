@@ -90,6 +90,18 @@ class Orchestrator:
         async with self._store.request_lock(request.request_id):
             prior = await self._store.get_terminal(request.request_id, resolved_date)
             if prior is not None:
+                # Idempotency replay: a prior terminal exists. Log it too (same line as the
+                # main-loop terminal below) so a re-run's resolved decision is in the app log,
+                # not silently returned. (The pre-T0 already-booked short-circuit has its own
+                # `race: short-circuited pre-T0` line, so it is intentionally not double-logged.)
+                log.info(
+                    "booking: run terminal (idempotent replay) outcome=%s course=%s "
+                    "confirmation=%s date=%s",
+                    prior.outcome.value,
+                    prior.course_id,
+                    prior.confirmation_code,
+                    resolved_date,
+                )
                 return prior
 
             t0_target = self._compute_t0_minus_early()
