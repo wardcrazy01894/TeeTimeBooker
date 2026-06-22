@@ -1,6 +1,6 @@
 # TeeTimeBooker — v0 Plan
 
-> **Scope of v0:** a Python bot that books one or more tee times at **Mangrove Bay Golf Course** (St. Petersburg, FL) at the moment its 7-day booking window opens (6:00 AM America/New_York). No frontend. No third-party booking sites that don't actually take the booking. No real bookings against ForeUP from these stubs — implementation lands in M2/M5 once Spike S1 confirms endpoint shapes.
+> **Scope of v0:** a Python bot that books one or more tee times at **Mangrove Bay Golf Course** (St. Petersburg, FL) at the moment its 7-day booking window opens (6:00 AM America/New_York). No frontend. No third-party booking sites that don't actually take the booking. No third-party booking sites that don't actually take the booking. (Historical scope note: the ForeUP adapter is now fully implemented and **LIVE in prod** — `dryRun=false`, `infra/v2.5.0` — see §16 M6; the original "no real bookings from these stubs until M2/M5" caveat is superseded.)
 
 This plan is structured for parallel execution. Milestones are sequential; tasks within a milestone are tagged with explicit dependencies, so an "army of agents" can pick up anything green.
 
@@ -13,7 +13,7 @@ This plan is structured for parallel execution. Milestones are sequential; tasks
                      |   ACA Job cron (v1)         |
                      | (UTC; daily × DST half)     |
                      +--------------+--------------+
-                                    |  workflow_dispatch / cron fires ~10 min early
+                                    |  ACA on-demand execution / cron fires ~10 min early
                                     v
 +---------------------------------------------------------------------------+
 |                              CLI (`teetime run`)                           |
@@ -1048,7 +1048,7 @@ proceed to T2 without S4 since WatchOrchestrator.check_once does not call cancel
 | ~~Q1~~ | ~~**Shared vs separate SQLite file for watch job.**~~ **SUPERSEDED**: the durable store (M3) was dropped entirely. Both jobs use `InMemoryStore` and start each run fresh. The single source of truth for booking state is `list_reservations()`. Concurrent-run serialization is handled by ACA Job `parallelism=1` (one execution per job) — no shared file needed. | — | Resolved/superseded |
 | ~~Q2~~ | ~~**Watch job enabled by default or opt-in?**~~ **RESOLVED**: When `watcher.enabled = false`, the watch job logs a **warning** (`"Watch job is disabled in config — set watcher.enabled = true to activate"`) and exits cleanly (exit 0). GH Actions run must not show as ❌ for an intentionally disabled feature. | — | Resolved |
 | ~~Q3~~ | ~~**MANAGED_BOOKING_TAG echo.**~~ **RESOLVED**: We use **Option A** (TTB: prefix stored in `BookingResult.confirmation_code`, not echoed to/from server). `is_managed` works by checking the stored `confirmation_code` in `booking_history`, not by reading a notes field from the server. Whether or not ForeUP echoes a notes field is irrelevant. See §20 "MANAGED_BOOKING_TAG implementation (Option A — LOCKED IN)". | — | Resolved |
-| ~~Q4~~ | ~~**Cancellation window.**~~ **RESOLVED**: Use **18-hour safe default** (`cancellation_deadline_hours = 18`). User believes Mangrove Bay permits same-day cancellations but wants 18h as a guard against attempting a cancel+rebook so close to tee time that the player drives to the wrong course. Spike S4 will confirm the actual policy. | — | Resolved (default set; S4 confirms) |
+| ~~Q4~~ | ~~**Cancellation window.**~~ **SUPERSEDED**: the `cancellation_deadline_hours = 18` field was never built. The freeze mechanism that shipped is `request.booking_cutoff` (default 16:00 ET the day before; `core/booking_cutoff.py` + `BookingCutoffConfig`), which freezes a target date — no new booking AND no upgrade — once wall-clock passes the cutoff. See §4.1 and LEADTIME_SKIP_PLAN.md. | — | Superseded by `booking_cutoff` |
 | ~~Q5~~ | ~~**One-booking policy scope.**~~ **RESOLVED**: **Cross-course upgrades enabled.** The priority list can mix courses (e.g. `mangrove_bay 09:00` → `twin_brooks 08:45` → `mangrove_bay 09:30`). If a higher-ranked (course, time) combination opens, the current booking — regardless of course — is cancelled and the better slot is booked. | — | Resolved |
 
 ---
