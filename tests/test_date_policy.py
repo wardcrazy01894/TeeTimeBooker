@@ -114,34 +114,39 @@ def test_none_cutoff_is_back_compat() -> None:
 
 
 @pytest.mark.parametrize(
-    ("now", "skip_dates"),
+    ("offset", "skip_target"),
     [
-        (_et(2026, 6, 7, 6, 0), frozenset()),  # actionable
-        (_et(2026, 6, 13, 16, 0), frozenset()),  # past cutoff
-        (_et(2026, 6, 7, 6, 0), frozenset({TARGET})),  # skipped
-        (_et(2026, 6, 13, 17, 0), frozenset({TARGET})),  # both
+        (7, False),  # 7-day target, not skipped -> actionable (the normal booking case)
+        (7, True),  # 7-day target, skipped -> frozen by skip
+        (0, False),  # same-day target -> frozen by cutoff (cutoff instant already past)
+        (0, True),  # same-day target + skipped -> cutoff wins (precedence)
     ],
 )
-def test_booker_routes_through_frozen_reason(
-    now: datetime, skip_dates: frozenset[date_cls]
-) -> None:
+def test_booker_routes_through_frozen_reason(offset: int, skip_target: bool) -> None:
     """The booker's should_book_today must agree with frozen_reason on the cutoff+skip
-    decision: for a WANTED weekday, it returns False exactly when frozen_reason is
-    non-None. This pins that the booker shares the one primitive (no divergence)."""
+    decision: for a WANTED weekday it returns False exactly when frozen_reason is non-None.
+    Pins that the booker shares the one primitive (no divergence).
+
+    `target` is computed FROM the clock (today + offset) — the same way should_book_today
+    does — so the comparison is self-consistent. offset=0 makes the cutoff reachable (the
+    day-before-cutoff instant is already past); offset=7 is the real booking case where the
+    cutoff is ~6 days out and only the skip leg can fire.
+    """
     cutoff = BookingCutoffConfig()
-    # today + 7 = TARGET (a Sunday). clock is `now`; offset 7 lands on TARGET.
+    now = _et(2026, 6, 13, 17, 0)  # 17:00 ET, just past a 16:00 day-before cutoff instant
     clock = FakeClock(start=now)
     today = now.astimezone(ZoneInfo(ET)).date()
-    assert today + timedelta(days=7) == TARGET  # sanity: scenario targets TARGET
-    wanted = frozenset({TARGET.weekday()})  # Sunday wanted -> weekday gate always passes
+    target = today + timedelta(days=offset)
+    wanted = frozenset({target.weekday()})  # weekday gate always passes -> isolates cutoff+skip
+    skip = frozenset({target}) if skip_target else frozenset()
 
     booker_ok = should_book_today(
         clock,
         timezone=ET,
-        target_offset=7,
+        target_offset=offset,
         wanted_weekdays=wanted,
-        skip_dates=skip_dates,
+        skip_dates=skip,
         cutoff=cutoff,
     )
-    frozen = frozen_reason(now, TARGET, timezone=ET, cutoff=cutoff, skip_dates=skip_dates)
+    frozen = frozen_reason(now, target, timezone=ET, cutoff=cutoff, skip_dates=skip)
     assert booker_ok is (frozen is None)
