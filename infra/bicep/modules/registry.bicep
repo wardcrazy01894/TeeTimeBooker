@@ -55,12 +55,20 @@ var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 // Resources
 // ---------------------------------------------------------------------------
 
-// acr purge command: keep the `purgeKeepCount` most-recent tags matching the bot
-// image repo, delete older ones plus any untagged (dangling) manifests. `--ago 0d`
-// = count-based purge (no age floor). Single quotes around the filter are escaped
-// (\') for the Bicep string; the whole thing is base64-wrapped as an EncodedTask.
-var purgeFilter = 'teetime:.*'
-var purgeCmd = 'acr purge --filter \'${purgeFilter}\' --keep ${purgeKeepCount} --ago 0d --untagged'
+// acr purge command: keep the `purgeKeepCount` most-recent tags PER REPOSITORY, delete
+// older ones plus any untagged (dangling) manifests. `--ago 0d` = count-based purge (no
+// age floor). Single quotes around each filter are escaped (\') for the Bicep string; the
+// whole thing is base64-wrapped as an EncodedTask.
+//
+// SHARED-ACR ISOLATION (critical): on the shared registry, prod images live in the
+// `teetime` repo and dev images in a SEPARATE `teetime-dev` repo (dev auto-deploys many
+// times/day; prod's tag is static between rare infra/v* releases). `--keep` is applied
+// PER REPOSITORY, and — decisively — prod's `teetime` repo is written ONLY by prod, so dev's
+// high-frequency pushes can NEVER evict prod's pinned image (the 06:00 booking pull). Both
+// repos are listed so dev's repo is also pruned and never grows unbounded. A bare per-env ACR
+// (dev-owned, not the shared one) only ever holds `teetime:.*`; the extra filter is a harmless
+// no-op there.
+var purgeCmd = 'acr purge --filter \'teetime:.*\' --filter \'teetime-dev:.*\' --keep ${purgeKeepCount} --ago 0d --untagged'
 var purgeTaskYaml = 'version: v1.1.0\nsteps:\n  - cmd: ${purgeCmd}\n    disableWorkingDirectoryOverride: true\n    timeout: 3600\n'
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {

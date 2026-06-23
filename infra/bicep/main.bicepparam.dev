@@ -12,15 +12,24 @@ param envName = 'dev'
 param location = 'eastus2'
 
 // containerImage is a placeholder for local/manual deploy only — CI injects containerImage
-// inline (resolved from the ACR login server after ACR creation); this placeholder is never
-// read by CI. Format: <acrLoginServer>/teetime:<tag>
-param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime:dev'
+// inline (resolved from the shared ACR login server); this placeholder is never read by CI.
+// Dev uses the SEPARATE `teetime-dev` repo in the shared ACR (§2.1). Format:
+// <sharedAcrLoginServer>/teetime-dev:<tag>
+param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime-dev:dev'
 
 // Budget params are NOT set here. budget.bicep is subscription-scoped and
 // deployed separately. See AZURE_PLAN.md §9.2.
 
 param acrSku = 'Basic'
 param kvSku = 'standard'
+
+// Shared-ACR consolidation (full-repo-scan cost finding): dev does NOT create its own ACR
+// (~$5/mo saved). It pulls from the single SHARED ACR owned by prod (the stable env) via a
+// cross-RG AcrPull grant. CI resolves the shared ACR name at deploy time; these values are
+// for manual/local deploys. acrOwnerEnv defaults 'prod', so envName='dev' is a non-owner.
+// See AZURE_PLAN.md §2.1 + infra/bicep/modules/acr-pull-cross-rg.bicep.
+param sharedAcrName = 'teetimeprod4jteeywdlnz5e'
+param sharedAcrResourceGroup = 'rg-teetime-prod'
 
 // Permanent dry-run in dev — the bot performs no real booking POSTs. Dev MUST
 // stay true until production cutover. See AZURE_PLAN.md §10.3.
