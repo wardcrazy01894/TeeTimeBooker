@@ -75,6 +75,31 @@ def test_redact_text_token_masking_keeps_status_and_ids() -> None:
     assert "<redacted-token>" not in out
 
 
+def test_redact_text_masks_bare_pan() -> None:
+    """A raw PAN echoed in a free-text upstream message (e.g. a GNSVC payment-decline
+    `Message`) must be masked — `redact_payload`'s Luhn value-guard only covers STRUCTURED
+    writes, so the free-text log path needs its own scrub. Full-repo-scan security finding."""
+    out = redact_text("card 4111111111111111 declined: insufficient funds")
+    assert "4111111111111111" not in out
+    assert "<redacted-pan>" in out
+    assert "insufficient funds" in out  # surrounding prose survives
+
+
+def test_redact_text_masks_pan_with_separators() -> None:
+    """Group-separated PAN formats (spaces or dashes) are masked too."""
+    assert "4242 4242 4242 4242" not in redact_text("paid with 4242 4242 4242 4242 ok")
+    assert "4242-4242-4242-4242" not in redact_text("paid with 4242-4242-4242-4242 ok")
+
+
+def test_redact_text_pan_scrub_keeps_non_luhn_and_short_ids() -> None:
+    """The PAN scrub is Luhn-gated and length-bounded (13-19 digits), so it does NOT eat
+    a bare confirmation id: a 10-digit id and a 16-digit NON-Luhn run both survive."""
+    out = redact_text("reservation 1234567890 / ref 4111111111111112 still pending")
+    assert "1234567890" in out  # 10 digits: below the 13-digit PAN floor
+    assert "4111111111111112" in out  # 16 digits but Luhn-invalid → not a PAN
+    assert "<redacted-pan>" not in out
+
+
 def test_redacts_cred_style_card_keys() -> None:
     out = redact_payload(
         {
