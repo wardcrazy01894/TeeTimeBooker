@@ -20,10 +20,13 @@ v0 is single-user, run as Azure Container Apps Jobs (GitHub Actions is CI/deploy
 
 ## Status
 
-M1 + M5 + M-feature-1 (watch job) + M-feature-2 (auto-upgrade) + M-feature-3 (slot ranking)
-complete. M2 is
-PARTIAL — the core orchestrator is done, but M2.T3 (post-mortem reconciliation,
-the UNCERTAIN→RECONCILING→BOOKED/LOST path) is not yet implemented. ForeUP adapter
+M1 + M2 + M5 + M-feature-1 (watch job) + M-feature-2 (auto-upgrade) + M-feature-3 (slot ranking)
+complete. M2.T3 (a synchronous in-run UNCERTAIN→RECONCILING→BOOKED/LOST path) was
+**CUT**: an UNCERTAIN book (timeout/5xx) raises out of the run loudly and is reconciled
+**asynchronously by the watcher** on its next ≤10-min poll (re-auth + `list_reservations`
++ the duplicate crash-net). For an unattended single-user bot the ≤10-min unknown window is
+harmless, so the in-run path wasn't worth its durable-state cost — the watcher's uptime is
+now load-bearing. See PLAN.md §9.1. ForeUP adapter
 fully implemented; live dry-run confirmed against Mangrove Bay. TeeItUp adapter
 fully implemented; live booking + cancel confirmed against Sydney Marovitz
 (2026-05-29). M3 (SQLite) and M4 (email notifications) are CUT — `InMemoryStore`
@@ -71,8 +74,8 @@ renamed `-edt`/`-est` jobs are deployed in both envs and the old `-edt-sun`/`-es
 orphans were deleted per the AZURE_PLAN.md §10.2 runbook (the ARM-incremental orphan risk
 is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lose one
 10-min cycle (placeholder-image / transient ACR 401) — it self-heals on the next fire.
-Remaining v0 task: **M2.T3** (post-mortem reconciliation) — still unimplemented,
-independent of all the above.
+No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
+**cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
@@ -145,10 +148,15 @@ in `core/` — never directly. This is the cut line for parallel work.
   (`{days_before, time_of_day}`, default 16:00 ET the day before) FREEZES a target
   date once wall-clock passes `time_of_day` on `days_before` days before it: no new
   booking AND no upgrade — whatever is held at the cutoff is final (held bookings are
-  never auto-cancelled). The pure, clock-injected, zoneinfo-correct predicate is
-  `core/booking_cutoff.py::is_past_booking_cutoff`; it is composed into the watcher's
-  stop-acting gate and added defense-in-depth to the booking-day gate. It is booking
-  POLICY, not request identity — it does NOT feed the RequestId fingerprint.
+  never auto-cancelled). The cutoff + skip-days decision is composed in ONE shared,
+  pure, clock/now-injected primitive — `core/booking_cutoff.py::frozen_reason(now,
+  target_date, *, timezone, cutoff, skip_dates) -> "cutoff" | "skip" | None` — which
+  BOTH the watcher's stop-acting gate (`_should_stop_acting_on_date`, which adds its
+  own deadline leg) and the booking-day gate (`should_book_today`, which adds its own
+  weekday leg) route through, so the two callers can never silently diverge.
+  `is_past_booking_cutoff` is the cutoff-only convenience (a thin clock-reading wrapper
+  over `frozen_reason`). It is booking POLICY, not request identity — it does NOT feed
+  the RequestId fingerprint.
 - **Skip-days are FAIL-OPEN, resolved at load (LEADTIME_SKIP_PLAN F2).**
   `request.skip_dates_env` names an env var holding a comma/space-separated ISO date
   list; `core/skip_dates.parse_skip_dates` resolves it into `request.skip_dates`
@@ -217,8 +225,8 @@ in `core/` — never directly. This is the cut line for parallel work.
   wasted a whole 10-min watch cycle) around the warm-up GET, login POST, search
   GET, and cancel DELETE. It does NOT retry HTTP status errors (those surface via
   `raise_for_status` after it returns) and **`book()`'s POST is never wrapped** —
-  that stays single-attempt (§9; a timed-out book is the UNCERTAIN case M2.T3
-  owns, not a safe re-fire). Tuned by ctor `max_retries` (default 2) /
+  that stays single-attempt (§9; a timed-out book is the UNCERTAIN case the watcher
+  reconciles asynchronously, not a safe in-run re-fire). Tuned by ctor `max_retries` (default 2) /
   `retry_backoff_s` (default 0.5s, linear); tests pass `retry_backoff_s=0`. The
   watch ACA Job's `replicaTimeout` is 300s (not 120s) to give these retries
   headroom — see `compute.bicep` / AZURE_PLAN §5.4.
@@ -375,9 +383,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   `list_reservations()` reads from that snapshot. Consequence: reservations made
   AFTER `authenticate()` completes (e.g. a manual booking during the bot's run
   window) are not visible to `list_reservations()` in the same run. For the
-  pre-book layer-2 guard this is acceptable (seconds of staleness). The RECONCILING
-  path (M2.T3, not yet implemented) must re-authenticate before calling
-  `list_reservations()` to get a fresh snapshot. `list_reservations()` raises
+  pre-book layer-2 guard this is acceptable (seconds of staleness). Any path that
+  needs to see a booking made AFTER the initial login — the watcher's reconciliation
+  of an UNCERTAIN booking, and the blind-POST `_reguard_before_fallback` — must force
+  a fresh snapshot before calling `list_reservations()` (via `refresh_reservations`,
+  next bullet). `list_reservations()` raises
   `RuntimeError` if `authenticate()` has never been called — preventing a silent
   empty-list from vacuously passing the pre-book guard in misconfigured deployments.
 - **Forcing a fresh reservation snapshot mid-run = `refresh_reservations`, NOT a
@@ -558,9 +568,11 @@ Per-milestone rules:
   the test should verify the structural contract (`isinstance(impl, Protocol)`)
   and at least one behavioral path. See `tests/test_adapter_stub.py` for the
   reference pattern.
-- For the §9.1 state-machine work (M2.T1, M2.T3): each transition listed in
+- For the §9.1 state-machine work (M2.T1): each transition listed in
   the diagram needs its own failing test before the orchestrator branch that
   implements it. The state machine is too subtle to backfill tests onto.
+  (The in-run RECONCILING transition — M2.T3 — was cut; the watcher owns
+  reconciliation asynchronously, §9.1.)
 - `pytest -k <name>` for fast inner-loop iteration; full suite before commit.
 - If you find a bug in already-merged code, write the failing test that
   reproduces it FIRST, then fix. The test is the regression guard.

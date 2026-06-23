@@ -34,7 +34,7 @@ from datetime import date, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from .booking_cutoff import is_past_booking_cutoff
+from .booking_cutoff import frozen_reason
 from .clock import Clock
 
 if TYPE_CHECKING:
@@ -74,15 +74,16 @@ def should_book_today(
     target = today + timedelta(days=target_offset)
     if target.weekday() not in wanted_weekdays:
         return False
-    # Skip control (LEADTIME_SKIP_PLAN F2): refuse a target date the operator marked to skip.
-    # Compared against the RESERVATION date (today+offset), NEVER the execution day.
-    if target in skip_dates:
-        return False
-    # Defense-in-depth (LEADTIME_SKIP_PLAN F1): also refuse if the target is already past its
-    # hard 4PM-day-before cutoff. The watcher is the primary enforcer; this is belt-and-
-    # suspenders for the booking cron. With the default 16:00-day-before cutoff and a 7-day
-    # offset the cutoff is ~6 days in the FUTURE at the 05:50 cron, so it can NEVER bite a legit
-    # booking (Edge E10) — it only matters for pathological small offsets / late manual runs.
-    return cutoff is None or not is_past_booking_cutoff(
-        clock, target, timezone=timezone, cutoff=cutoff
+    # Skip (F2) + hard-cutoff (F1) freeze: refuse a target date the operator marked to skip OR
+    # one already past its hard 4PM-day-before cutoff. BOTH are evaluated by the SHARED
+    # `frozen_reason` primitive — the watcher's stop-acting gate uses the same one, so the two
+    # callers can't diverge. Compared against the RESERVATION date (today+offset), NEVER the
+    # execution day. The cutoff leg is belt-and-suspenders for the booking cron: with the default
+    # 16:00-day-before cutoff and a 7-day offset it is ~6 days in the FUTURE at the 05:50 cron, so
+    # it can NEVER bite a legit booking (Edge E10) — only pathological small offsets / late runs.
+    return (
+        frozen_reason(
+            clock.now_utc(), target, timezone=timezone, cutoff=cutoff, skip_dates=skip_dates
+        )
+        is None
     )

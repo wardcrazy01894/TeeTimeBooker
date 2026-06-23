@@ -276,19 +276,22 @@ class CourseAdapter(Protocol):
 
         MUST be safe to retry only if SlotGoneError is raised. On ANY other failure
         mode (including raw network errors, ambiguous 5xx, and surprise non-error
-        responses), the orchestrator transitions to the UNCERTAIN state in the §9
-        state machine and MUST NOT call book() again until reconcile via
-        list_reservations() has run — see PLAN.md §9.
+        responses), the booking is UNCERTAIN (the POST may have landed): the
+        orchestrator MUST NOT call book() again in-run. Reconciliation is deferred
+        to the watcher, which re-checks list_reservations() on its next poll — see
+        PLAN.md §9 / §9.1.
         """
         ...
 
     async def list_reservations(self) -> list[ExistingReservation]:
         """Return the authenticated user's existing reservations on this course.
 
-        Load-bearing for §9 layers 2 (pre-book remote check) and 4 (post-mortem
-        reconciliation). The orchestrator calls this BEFORE the book() POST to
-        guard against an already-existing booking, and AGAIN after any uncertain
-        book() failure to determine whether the POST landed.
+        Load-bearing for §9 layer 2 (the pre-book remote check) and for the
+        watcher's asynchronous reconciliation. The orchestrator calls this BEFORE
+        the book() POST to guard against an already-existing booking; the watcher
+        calls it on each poll (after re-authenticating) to detect a booking that
+        landed during an earlier UNCERTAIN run. The booker does NOT re-call it
+        in-run after an uncertain book() — book() raises out instead (§9.1).
 
         MUST be a read-only operation with no side effects on the booking system.
         MAY return reservations for dates outside the current request — caller

@@ -379,16 +379,20 @@ This is the subtlest correctness property. Scenario: bot calls `POST /reservatio
 
 1. **Pre-flight in-process idempotency.** Before any work: `store.get_terminal(request_id, date)`. If a terminal `BOOKED` exists in this run's in-memory store, return it. (Guards against re-entrant calls within the same process — unlikely but cheap.)
 2. **Pre-book remote check.** Right before POST, the adapter calls `list_reservations()` and aborts if a reservation already exists for the target date. **This is the load-bearing double-booking guard** — it works regardless of whether a prior run's history is available.
-3. **Single attempt per slot, by default.** `book()` is non-retryable EXCEPT on `SlotGoneError`. A book-POST **4xx** (both `409` and `400`) is mapped to `SlotGoneError`: a 4xx means ForeUP definitively created no reservation, so the orchestrator advances to the next-ranked slot (prod 2026-06-07: a `400` when the prime slot was claimed mid-race must NOT crash the job and abandon the other ranked slots). The full response body is logged before raising. Anything ambiguous (timeout/5xx) raises as-is and the orchestrator reaches the post-mortem path:
-4. **Post-mortem reconciliation.** Any failure during/after POST that didn't return a clean adapter error triggers: wait 5 s, list reservations again, match by tee_time + party_size. If found, treat as success and persist the confirmation. If not, treat as no-op and try next course.
+3. **Single attempt per slot, by default.** `book()` is non-retryable EXCEPT on `SlotGoneError`. A book-POST **4xx** (both `409` and `400`) is mapped to `SlotGoneError`: a 4xx means ForeUP definitively created no reservation, so the orchestrator advances to the next-ranked slot (prod 2026-06-07: a `400` when the prime slot was claimed mid-race must NOT crash the job and abandon the other ranked slots). The full response body is logged before raising. Anything ambiguous (timeout/5xx) is UNCERTAIN — `book()` raises as-is and the booker does NOT reconcile in-run (layer 4 is the watcher, async).
+4. **Post-mortem reconciliation — asynchronous, by the watcher (NOT in-run).** An UNCERTAIN book (the POST may have landed) raises out of the run loudly (non-zero exit); the booker never re-POSTs in-run. The watcher reconciles on its next ≤10-min poll: it re-authenticates (rebuilding ForeUP's reservation snapshot, so a booking that landed AFTER the booker's run is visible), calls `list_reservations()`, then records a landed booking, recovery-books a genuinely-failed one, or collapses a duplicate via `_reconcile_duplicate_reservations`. (A synchronous in-run reconcile — M2.T3 — was cut; see §9.1.)
 5. **In-process advisory lock.** `BookingStore.request_lock(request_id)` is held for the duration of `Orchestrator.run`. Attempting a second concurrent code path in the same process raises `ConcurrentRunError` immediately (no waiting).
 6. **ACA Job concurrency.** ACA Jobs run with `parallelism=1` — at most one replica per job runs at a time, so two cron-fired runs of the same job can't overlap. This is the cross-PROCESS serialization layer — it replaces any need for a cross-run durable lock. (The former `book.yml` GH Actions `concurrency:` group served this role before scheduling moved to ACA Jobs.)
 
-This is belt-and-suspenders by design. The single most important rule: **after any POST whose result is uncertain, ALWAYS reconcile via list-reservations before doing anything else.**
+This is belt-and-suspenders by design. The single most important rule: **the booker never re-POSTs after an uncertain result — it raises out, and the watcher reconciles via list-reservations on its next poll (§9.1).**
 
 ### 9.1 Booking state machine (M2 implementation contract)
 
-The orchestrator's per-(course, slot) booking attempt is a state machine with explicit write-to-store-first transitions (in-memory). Implementers MUST encode these states verbatim — no derived enum, no "happy path skips a state":
+The orchestrator's per-(course, slot) booking attempt is a state machine.
+There is **no in-run reconciliation**: an UNCERTAIN book raises out of the run
+(loud, non-zero exit) and is reconciled **asynchronously by the watcher** on its
+next poll. A synchronous in-run `RECONCILING` path was originally planned (M2.T3)
+and has been **cut** — see the rationale block below the diagram.
 
 ```
                       +-------------+
@@ -412,29 +416,24 @@ The orchestrator's per-(course, slot) booking attempt is a state machine with ex
             v                  v        |          |
    RETRY_DIFFERENT_SLOT     BOOKED      v          v
    (re-search, pick                +-----------+
-   next; max once)                 | UNCERTAIN |
+   next; max once)                 | UNCERTAIN |  POST may or may not have landed
             |                      +-----+-----+
-            +-> back to PRE_BOOK         | (writes UNCERTAIN row)
-                                         | wait reconcile_delay_s (5s)
+            +-> back to PRE_BOOK         |
+                                         | book() RAISES OUT of run()
+                                         | (no in-run reconcile; non-zero exit)
                                          v
-                                  +--------------+
-                                  | RECONCILING  | calls list_reservations
-                                  +------+-------+ matches by (tee_time,
-                                         |         party_size, course_id)
-                          +--------------+--------------+
-                          |                             |
-                          v                             v
-                       match found                no match
-                          |                             |
-                          v                             v
-                     BOOKED                          LOST
-                  (write terminal,             (record terminal NO_INVENTORY
-                   confirmation from            for THIS course+slot only;
-                   reconcile)                   orchestrator MAY try next
-                                                course but MUST NOT retry
-                                                this same course in the
-                                                same run — phantom-booking
-                                                risk)
+                              +------------------------+
+                              | watcher reconciles on  |  re-auth (fresh ForeUP
+                              | its next ~10-min poll   |  reservation snapshot)
+                              +-----------+------------+ + list_reservations
+                                          |              + duplicate crash-net
+                          +---------------+---------------+
+                          |                               |
+                          v                               v
+                  reservation found              no reservation
+                  (already-booked: record         (date still open:
+                   terminal; collapse any          watcher recovery-books it
+                   duplicate to one)               via the normal pre-book guard)
 ```
 
 **Invariants:**
@@ -444,18 +443,42 @@ The orchestrator's per-(course, slot) booking attempt is a state machine with ex
    layer 2). Two concurrent `POSTING` states for the same RequestId are
    impossible because `request_lock` (layer 5) is held for the whole run AND
    the orchestrator is single-threaded within a run.
-2. Every state transition appends to the in-memory `attempt_log`. If the
-   runner is killed between two states, the in-memory log is lost; the next
-   run has no UNCERTAIN state to resume from — instead it re-runs `PRE_BOOK`,
-   hits `list_reservations` (layer 2), and discovers any existing booking
-   before ever POSTing again. Never re-POST without going through PRE_BOOK.
-3. From `UNCERTAIN`, the only legal next state is `RECONCILING`. The
-   orchestrator MUST NOT call `book()` again before reconcile completes.
-4. `LOST` is terminal for THIS slot. The orchestrator may pick another
-   course (next in `course_preferences`), but never the same (course, slot).
+2. An UNCERTAIN book (timeout/ambiguous 5xx/suspicious response) **propagates
+   out of the run** — it is NEVER re-fired in the same run. Because the booker
+   never re-POSTs in-run, it can never double-book itself; the only retry is the
+   next watcher poll, which is itself guarded by a fresh `list_reservations`
+   pre-book check. This loud-exit behavior is load-bearing: an UNCERTAIN book
+   MUST NOT be caught and recorded as a clean `NO_INVENTORY` (that would mask a
+   possibly-landed reservation).
+3. `LOST` is terminal for THIS slot. The orchestrator may pick another course
+   (next in `course_preferences`), but never the same (course, slot).
 
-The Protocol's `book()` docstring references this diagram. `list_reservations`
-is part of the Protocol from M0 (review item 3) — not deferred to M2.T3.
+**Why no in-run reconciliation (M2.T3 cut):** The watcher already provides
+eventual (≤ one ~10-min poll) reconciliation of every UNCERTAIN outcome. Each
+watch run re-authenticates — rebuilding ForeUP's login-response reservation
+snapshot, so it sees a booking that landed AFTER the booker's run — then checks
+`list_reservations`: a silently-landed booking is detected and recorded, a
+genuinely-failed one is recovery-booked, and a duplicate is collapsed by
+`_reconcile_duplicate_reservations`. For an **unattended single-user bot** the
+≤10-min unknown window is harmless (no human acts on it to create a duplicate),
+so the marginal value of a synchronous in-run path did not justify the durable
+in-flight state it would require. **Consequence:** the watcher's uptime is now
+load-bearing — it is the system of record for reconciliation. The booker stays
+deliberately simple (single-attempt `book()`, raise on UNCERTAIN).
+
+**Accepted residual — reconciliation stops at the booking cutoff.** The watcher's
+stop-acting gate (`_should_stop_acting_on_date`) freezes a date once it is past the
+16:00-day-before cutoff (or the watch deadline), BEFORE the reconcile/upgrade path runs.
+So an UNCERTAIN booking is only reconciled while the date is still actionable. For the
+06:00 booker (target 7 days out) this is a non-issue: ~6 days / hundreds of polls of
+reconcile runway before any freeze. The one true edge is the watcher's OWN recovery-book
+raising UNCERTAIN in the final minutes before the cutoff — after the freeze that date is
+no longer reconciled. Narrow and single-user-accepted (no human is acting on it), but
+noted here so the residual is honest, not hidden.
+
+The Protocol's `book()` docstring references this contract. `list_reservations`
+is part of the Protocol from M0 (review item 3) and is the foundation of both the
+pre-book guard and the watcher's reconciliation.
 
 ### 9.2 Cross-run double-booking defense
 
@@ -478,7 +501,7 @@ calls `list_reservations`, and sees any booking that landed — no phantom booki
 ## 10. Observability
 
 - **Logs** via the stdlib `logging` module -> plain text to stderr (NOT `structlog`/JSON; that dep was dropped). Captured by the ACA Job logs; tailed locally. Critical-path lines (T0 fire, DST/booking-day skip, booking outcome, NO_INVENTORY) are greppable.
-- **In-memory event log** (`attempt_log`). Every state transition (per §9.1 state machine) gets an entry: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `RECONCILING`, `BOOKED`, `LOST`, etc. Lives in process memory only; useful for within-run correlation and log emission.
+- **In-memory event log** (`attempt_log`). Illustrative within-run transitions: `T_RACE_BEGIN`, `SEARCH_START`, `SEARCH_OK`, `SEARCH_EMPTY`, `PRE_BOOK`, `BOOK_POST`, `UNCERTAIN`, `BOOKED`, `LOST`, etc. (No `RECONCILING` — the in-run reconcile was cut, §9.1.) Lives in process memory only; `append_attempt` has no production caller today (the store-boundary redaction guard is kept regardless — §10.1).
 - **Notify-on-failure** is the alert. Non-`BOOKED` outcomes print to console (ConsoleNotifier). The golf course sends booking confirmation emails directly to the user's account email.
 - **Metric surface (future, UNIMPLEMENTED):** count + duration of each event keyed by course; alert if `T_RACE_BEGIN -> BOOK_OK` latency exceeds 5s for two consecutive runs. v0/v1 ship no metrics emission or latency alerting — state is in-process and ConsoleNotifier is the only sink.
 
@@ -505,9 +528,10 @@ AND player PII (email, phone, mobile, member number, first/last name). (It DROPS
 SHA-256-hashing it — stronger for an audit blob, since a hash of a low-entropy phone number is
 reversible.) `BookingStore.append_attempt` applies `redact_payload` at the store boundary on
 every write, so redaction is non-bypassable — a caller cannot leak card data by forgetting to
-scrub. NOTE: `append_attempt` is not yet called by any flow — the post-mortem reconciliation
-path (M2.T3) is the intended first caller; the store-boundary guard means its writes are
-redacted by default. The guard is in place before that wiring lands.
+scrub. NOTE: `append_attempt` is not called by any production flow today (only the store's own
+unit tests exercise it). The post-mortem reconciliation path that would have been its first
+consumer (M2.T3) was **cut** (§9.1). The store-boundary redaction guard is kept regardless
+as non-bypassable defense-in-depth — any future caller's writes are redacted by default.
 
 ---
 
@@ -681,12 +705,12 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 | M1.T2 | Implement `core/config.py::load` (incl. `PlayerConfig`, `target_offsets` -> resolved-date helper, env-var ref resolution for player PII) | `config/example.toml`        | TOML round-trip; secret-env resolution; clear errors on missing env; PlayerConfig.email_env -> Player.email | `core/config.py`, `tests/test_config.py` | M1.T1, M1.T3 |
 | M1.T3 | Wire CLI (`teetime run`, `teetime show-config`) via Click | `core/config.py` shape       | `__main__.py` real impl              | `src/teetime/__main__.py`, `tests/test_cli.py`    | M1.T1, M1.T2 |
 
-### M2 — Orchestrator core (PARTIAL — M2.T3 reconciliation pending)
+### M2 — Orchestrator core (DONE — M2.T3 in-run reconciliation CUT; the watcher reconciles asynchronously, §9.1)
 | ID    | Task                                                | Inputs                  | Outputs                                                              | Owner-files                                | Deps        |
 |-------|-----------------------------------------------------|-------------------------|----------------------------------------------------------------------|--------------------------------------------|-------------|
 | M2.T1 | Implement `Orchestrator.run` with FakeAdapter, **InMemoryStore** (already a stub in `persistence/in_memory_store.py`), NoopNotifier; encode the §9.1 state machine | M1, all stubs           | end-to-end happy path, fallback path, idempotency path passing; state machine transitions match §9.1 diagram exactly | `core/orchestrator.py`, `persistence/in_memory_store.py`, `tests/test_orchestrator.py`, `tests/conftest.py` | M1.*  |
 | M2.T2 | Implement the `derive_request_id` helper body (the signature already exists in `core/models.py`); fingerprint per §13.1 | M1.T2                   | given identical config, identical RequestId across processes         | `core/models.py` (helper body), `tests/test_request_id.py` | M1.T2 |
-| M2.T3 | Implement post-mortem reconciliation: orchestrator calls the **already-defined** `adapter.list_reservations()` on UNCERTAIN, drives RECONCILING → BOOKED/LOST per §9.1 | M2.T1                   | reconciliation works against a scripted FakeAdapter that simulates connection-drop after server-side commit | `core/orchestrator.py` (no Protocol changes — `list_reservations` already on Protocol) | M2.T1 |
+| ~~M2.T3~~ **CUT** | ~~Implement in-run post-mortem reconciliation (UNCERTAIN → RECONCILING → BOOKED/LOST)~~ — **cut**: an UNCERTAIN book raises out of the run (loud, non-zero exit) and is reconciled **asynchronously by the watcher** on its next ≤10-min poll (re-auth + `list_reservations` + the duplicate crash-net). For an unattended single-user bot the ≤10-min unknown window is harmless, so the synchronous in-run path (and the durable in-flight state it would have required) was not worth building. The watcher's uptime is now load-bearing. See §9.1. | — | — | — | — |
 
 ### M3 — Persistence — **DROPPED**
 
@@ -706,7 +730,7 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 | **S1** | **Spike: confirm ForeUP endpoints, request shapes, captcha posture, schedule_id** for Mangrove Bay | live ForeUP, browser devtools | the `test_foreup_canary.py` live-drift canary + a 1-page note in `docs/foreup-spike.md` (committed) | `tests/test_foreup_canary.py`, `docs/foreup-spike.md`              | M1.*         |
 | M5.T1 | Implement `ForeUpAdapter.authenticate`                      | S1 findings         | auth round-trip; JWT extracted; AuthError on bad creds          | `courses/foreup/base.py`, `tests/test_foreup_auth.py`                | S1           |
 | M5.T2 | Implement `ForeUpAdapter.search` + criteria filtering       | S1, M5.T1           | parse `/api/booking/times`; map to `TeeTimeSlot`; raise InventoryNotPublishedError for empty-pre-T0 | `courses/foreup/base.py`, `tests/test_foreup_search.py` | M5.T1        |
-| M5.T3 | Implement `ForeUpAdapter.book` + `ForeUpAdapter.list_reservations` (Protocol method already defined in `core/adapter.py`; M5.T3 implements its body) | S1, M5.T1, M5.T2    | book POST happy path; conflict → SlotGoneError; list_reservations returns matching ExistingReservation; orchestrator-driven reconciliation works end-to-end | `courses/foreup/base.py`, `tests/test_foreup_book.py`                | M5.T2        |
+| M5.T3 | Implement `ForeUpAdapter.book` + `ForeUpAdapter.list_reservations` (Protocol method already defined in `core/adapter.py`; M5.T3 implements its body) | S1, M5.T1, M5.T2    | book POST happy path; conflict → SlotGoneError; list_reservations returns matching ExistingReservation (the pre-book guard; the in-run reconcile was cut, §9.1) | `courses/foreup/base.py`, `tests/test_foreup_book.py`                | M5.T2        |
 | M5.T4 | Captcha + rate-limit detection                              | S1                  | adapter raises `CaptchaError` / `RateLimitError` from canned responses | `courses/foreup/base.py`, `tests/test_foreup_protection.py`           | M5.T1        |
 | M5.T5 | Wire `MangroveBayAdapter` and confirm `schedule_id`         | S1                  | end-to-end dry-run against live ForeUP succeeds                 | `courses/foreup/mangrove_bay.py`                                     | M5.T1..T4    |
 
@@ -743,7 +767,7 @@ Each item from the brief, addressed:
 
 - **GH Actions cron jitter (~1–15 min):** §6.2. Fire 10 min early; bot's busy-wait nails T0. Worst case (no run that day) is accepted; v1 mitigation is Cloud Scheduler.
 - **DST and 6:00 AM ET:** §6.3. Two crons + DST-half check + `zoneinfo` for actual T0 computation. Math shown.
-- **Double-booking risk:** §9. Six layers of defense; reconciliation is the load-bearing one.
+- **Double-booking risk:** §9. Layered defense; the **pre-book `list_reservations` remote check** is the load-bearing one (the in-run reconcile was cut — the watcher reconciles the UNCERTAIN case asynchronously, §9.1).
 - **ForeUP captcha:** §8 row "Captcha challenge"; §12. The booking step is gated by an invisible reCAPTCHA, which the bot solves via 2captcha — see `foreup/captcha.py`. S1 confirmed no login captcha. Caveat: a synchronous solve (~15–30 s) in the booking POST can blow the T0 race window — see §19 / `infra/AZURE_PLAN.md` for the pre-fetch consideration.
 - **Account lockout:** §8.1. Three auth failures → halt current run + notify (in-run only; no durable cooldown across runs).
 - **Credit-card storage:** §7. **By platform.** ForeUP: none (card-on-file). TeeItUp: PAN/CVV/expiry/billing are passed to `tr.gnsvc.com` on each booking (no wallet); sourced from env vars, never committed, and dropped by `redact_payload` at the `append_attempt` store boundary on every `attempt_log` write (§10.1).

@@ -217,7 +217,8 @@ class ForeUpAdapter(CourseAdapter):
         this returns. `send` must be a thunk that issues a FRESH request each call.
 
         MUST NOT wrap book()'s POST — that is single-attempt by contract (§9
-        double-booking defense; a timed-out book is the UNCERTAIN case M2.T3 owns).
+        double-booking defense; a timed-out book is the UNCERTAIN case, reconciled
+        asynchronously by the watcher, never re-fired in-run).
         Backoff is linear (retry_backoff_s * attempt); set retry_backoff_s=0 in tests.
         """
         attempts = self._max_retries + 1

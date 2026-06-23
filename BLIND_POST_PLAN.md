@@ -483,7 +483,8 @@ Blind-POST is a NEW pre-state that FANS OUT the `POSTING` state:
 Invariants preserved: each individual `book()` is still called at most once per
 slot per run (the fan-out is across DISTINCT slots, not retries of one). UNCERTAIN
 (timeout/5xx) on any single blind POST still propagates as today — that POST's task
-returns the exception; M2.T3 still owns the post-mortem path. A blind POST 4xx maps
+returns the exception; reconciliation of a possibly-landed POST is the watcher's job,
+asynchronously (M2.T3's in-run path was cut — PLAN.md §9.1). A blind POST 4xx maps
 to `SlotGoneError` (existing `book()` behavior) and is dropped from `booked`.
 
 > **Reviewer pre-empt — UNCERTAIN inside the fan-out (must-fix 4).** If a blind POST

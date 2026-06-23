@@ -8,9 +8,18 @@ v0 (M2.T1) implements:
   with poll loop -> filter/pick best -> book (or DRY_RUN gate)
 - terminal persistence + notifier delivery
 
-The full §9.1 state machine (UNCERTAIN -> RECONCILING -> BOOKED/LOST) is M2.T3.
-This file deliberately keeps `book()` non-retryable (raises out) so M2.T3 can
-add the reconciliation branch in one place.
+An UNCERTAIN book (timeout/5xx — the POST may or may not have landed) is NOT
+reconciled synchronously in-run. This file deliberately keeps `book()`
+non-retryable (it raises out), so an ambiguous POST is never re-fired within a
+run — which means the booker can never double-book itself. Reconciliation is
+the WATCHER's job, asynchronously: every ~10-min poll re-authenticates (rebuilding
+ForeUP's login-response reservation snapshot), checks `list_reservations`, and
+recovers either way — a silently-landed booking is detected, a genuinely-failed
+one is re-booked, and a duplicate is collapsed by the watch reconcile crash-net.
+The ~10-min unknown window is harmless for an unattended single-user bot (nobody
+acts on the gap), so the dedicated synchronous post-mortem path (formerly planned
+as M2.T3) was cut. Consequence: the watcher's uptime is load-bearing — it is now
+the system of record for reconciliation. See PLAN.md §9.1.
 """
 
 from __future__ import annotations
@@ -378,8 +387,10 @@ class Orchestrator:
             elif isinstance(r, Exception):
                 # UNCERTAIN (timeout/5xx): the POST MAY have landed. Drop this candidate;
                 # the guards below (a sibling booked, or the re-guard list_reservations)
-                # prevent a double-book. M2.T3 still owns the post-mortem path. Name the
-                # slot so an operator can tell WHICH tee time may have landed silently.
+                # prevent a double-book. Anything that slips past them is reconciled by the
+                # watcher on its next ~10-min poll (re-auth + list_reservations + the duplicate
+                # crash-net) — there is no synchronous post-mortem path. Name the slot so an
+                # operator can tell WHICH tee time may have landed silently.
                 log.warning(
                     "course %s: blind POST for slot %s raised %r — dropping candidate",
                     course_id,
