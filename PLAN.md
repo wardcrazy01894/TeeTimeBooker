@@ -1,6 +1,6 @@
 # TeeTimeBooker — v0 Plan
 
-> **Scope of v0:** a Python bot that books one or more tee times at **Mangrove Bay Golf Course** (St. Petersburg, FL) at the moment its 7-day booking window opens (6:00 AM America/New_York). No frontend. No third-party booking sites that don't actually take the booking. No third-party booking sites that don't actually take the booking. (Historical scope note: the ForeUP adapter is now fully implemented and **LIVE in prod** — `dryRun=false`, latest infra tag `infra/v2.6.0` — see §16 M6; the original "no real bookings from these stubs until M2/M5" caveat is superseded.)
+> **Scope of v0:** a Python bot that books one or more tee times at **Mangrove Bay Golf Course** (St. Petersburg, FL) at the moment its 7-day booking window opens (6:00 AM America/New_York). No frontend. No third-party booking sites that don't actually take the booking. (Historical scope note: the ForeUP adapter is now fully implemented and **LIVE in prod** — `dryRun=false`, latest infra tag `infra/v2.6.0` — see §16 M6; the original "no real bookings from these stubs until M2/M5" caveat is superseded.)
 
 This plan is structured for parallel execution. Milestones are sequential; tasks within a milestone are tagged with explicit dependencies, so an "army of agents" can pick up anything green.
 
@@ -299,7 +299,8 @@ serially. This is the §6.1 race path taken further: PR3 wires it into the orche
 
 **Gate (all five required, in `_should_blind_post`):** `not request.dry_run` AND the race
 path (`prefetch_book=True`, set only by `--wait`) AND `scheduler.blind_post_max_count > 0` AND
-`_is_blind_capable(adapter)` (`isinstance(a, BlindPostCapable) and a.supports_blind_post`) AND
+`_is_blind_capable(adapter)` (the explicit `adapter.capabilities.blind_post` flag; #147 replaced
+the old `isinstance(a, BlindPostCapable) and a.supports_blind_post` double-gate) AND
 the course is the first-preference (PRIMARY) adapter. Any miss → the normal §6.1 search-book
 path. So the watcher, local-demo, dry-run, a fallback course, a non-MB course, and
 `blind_post_max_count=0` all keep the sequential path.
