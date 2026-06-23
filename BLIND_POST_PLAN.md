@@ -1,6 +1,16 @@
 # BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
 
-**Status:** LIVE in prod (`infra/v2.5.0`, deployed 2026-06-22 with `dryRun=false`). PR0–PR5
+> **GATE MECHANISM SUPERSEDED IN PART (#147, `infra/v2.6.0`):** this doc's "Mechanism" /
+> PR-table sections describe the gate as `runtime_checkable BlindPostCapable` + a
+> `supports_blind_post: bool` + `isinstance(adapter, BlindPostCapable) and adapter.supports_blind_post`.
+> That double-gate was REPLACED by the explicit frozen `AdapterCapabilities(blind_post=...)` flag —
+> the orchestrator now gates on `adapter.capabilities.blind_post` alone, and `BlindPostCapable`
+> survives ONLY as a typing cast-target (for `captcha_pool_size()` / `synthesize_blind_slots()`).
+> See `core/adapter.py` and the root `CLAUDE.md` blind-POST bullet for the current design. The rest
+> of this plan (the T0 burst, keep-best/cancel-extras, reguard, watcher reconcile) is unchanged.
+
+**Status:** LIVE in prod (`infra/v2.5.0`, deployed 2026-06-22 with `dryRun=false`; the #147 gate
+refactor rode `infra/v2.6.0`). PR0–PR5
 MERGED — the orchestrator blind path is
 live in code (gate + hybrid net + keep-best/cancel-extras + reguard + prefetch scaling;
 `core/orchestrator.py`, default `blind_post_max_count=12`), the watcher >1-reservation crash-net

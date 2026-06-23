@@ -307,7 +307,7 @@ async def test_watch_polls_at_early_morning() -> None:
 
 
 async def test_watch_polls_at_any_hour() -> None:
-    """At 23:00 ET (formerly after polling_end_hour) the watcher still searches."""
+    """At 23:00 ET the watcher still searches (no time-of-day gate; the old hours gate was removed in MULTIDAY PR4)."""
     adapter = FakeAdapter(course_id=COURSE_ID)
     adapter.set_search_response([_slot()])
     watch, _, _ = _build(adapter, now_utc=ELEVEN_PM_ET_UTC)  # 23:00 ET (prev day)
