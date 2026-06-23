@@ -38,6 +38,7 @@ from teetime.core.adapter import (
     NoInventoryError,
     RateLimitError,
 )
+from teetime.core.booking_cutoff import frozen_reason
 from teetime.core.clock import FakeClock
 from teetime.core.config import (
     BookingCutoffConfig,
@@ -1551,3 +1552,35 @@ async def test_watch_booked_terminal_reconcile_defers_when_lock_contended() -> N
     assert adapter.cancel_call_count == 0  # deferred — nothing cancelled
     remaining = await adapter.list_reservations()
     assert {r.confirmation_code for r in remaining} == {"res-0945", "res-1015"}
+
+
+# ---------------------------------------------------------------------------
+# Shared actionability primitive: the watcher's stop-acting gate delegates its
+# cutoff+skip decision to booking_cutoff.frozen_reason (the same primitive the
+# booker uses), so the two callers cannot diverge. The deadline leg stays
+# watcher-specific; these scenarios keep `now` before the deadline to isolate it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("now", "skip_dates"),
+    [
+        (datetime(2026, 5, 9, 14, 0, tzinfo=UTC), frozenset()),  # week before -> actionable
+        (datetime(2026, 5, 9, 14, 0, tzinfo=UTC), frozenset({TARGET_DATE})),  # skipped
+        (datetime(2026, 5, 15, 21, 0, tzinfo=UTC), frozenset()),  # 17:00 ET D-1 -> past cutoff
+        (datetime(2026, 5, 15, 21, 0, tzinfo=UTC), frozenset({TARGET_DATE})),  # both -> cutoff wins
+    ],
+)
+def test_watch_stop_acting_routes_through_frozen_reason(
+    now: datetime, skip_dates: frozenset[date]
+) -> None:
+    """_should_stop_acting_on_date (when NOT past the watch deadline) returns exactly what
+    frozen_reason returns for the same (now, target, cutoff, skip) — pinning that the watcher
+    shares the booker's cutoff+skip primitive."""
+    cutoff = BookingCutoffConfig()
+    watch, _, _ = _build(FakeAdapter(course_id=COURSE_ID), cutoff=cutoff, skip_dates=skip_dates)
+    assert not watch._is_past_watch_deadline(now, TARGET_DATE)  # scenario stays pre-deadline
+    expected = frozen_reason(
+        now, TARGET_DATE, timezone="America/New_York", cutoff=cutoff, skip_dates=skip_dates
+    )
+    assert watch._should_stop_acting_on_date(now, TARGET_DATE) == expected

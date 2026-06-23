@@ -98,7 +98,7 @@ from .adapter import (
     RateLimitError,
     SlotGoneError,
 )
-from .booking_cutoff import cutoff_instant
+from .booking_cutoff import REASON_CUTOFF, REASON_SKIP, frozen_reason
 from .models import (
     MANAGED_BOOKING_TAG,
     BookingOutcome,
@@ -125,13 +125,18 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Watcher-specific stop reason (the cutoff/skip reasons come from booking_cutoff as
+# REASON_CUTOFF / REASON_SKIP — keyed by the constants below so the dict can't drift from
+# what `_should_stop_acting_on_date` / `frozen_reason` actually return).
+_REASON_DEADLINE = "deadline"
+
 # Distinct log line per stop-acting reason (LEADTIME_SKIP_PLAN): an operator reading a run can
 # tell WHY a date was frozen — deadline vs hard cutoff vs an explicit skip — rather than seeing
 # one generic "stopping" message. Keyed by the reason `_should_stop_acting_on_date` returns.
 _STOP_ACTING_MESSAGES: dict[str, str] = {
-    "deadline": "watch: target_date %s has passed, stopping",
-    "cutoff": "watch: target_date %s frozen by 4PM-day-before cutoff, stopping",
-    "skip": "watch: target_date %s skipped (TEETIME_SKIP_DATES), stopping",
+    _REASON_DEADLINE: "watch: target_date %s has passed, stopping",
+    REASON_CUTOFF: "watch: target_date %s frozen by 4PM-day-before cutoff, stopping",
+    REASON_SKIP: "watch: target_date %s skipped (TEETIME_SKIP_DATES), stopping",
 }
 
 
@@ -703,21 +708,28 @@ class WatchOrchestrator:
         ABOVE both the Gate-3 store-BOOKED upgrade and the `_check_course` live-reservation
         upgrade, so a frozen date never reaches `book()` or cancel+rebook.
 
+        The deadline gate is watcher-specific; the cutoff + skip decision is delegated to the
+        SHARED `booking_cutoff.frozen_reason` primitive (the booker's `should_book_today` routes
+        through the same one), so the two callers can't diverge. `now` is passed through (not
+        re-read), so the deadline and cutoff are evaluated at the same instant.
+
         Reasons (each maps to its OWN `check_once` log line so an operator can tell WHY a date
         froze — do NOT collapse to one generic message):
-        - ``"deadline"``: past the watch deadline (the round has happened / day after target).
-        - ``"cutoff"``: past the hard 4PM-day-before booking cutoff (F1). Strictly EARLIER than
-          the deadline, so it bites first. Compared against the passed `now` (consistent with the
-          deadline check) via `cutoff_instant`, not by re-reading the clock.
-        - ``"skip"``: the date is in the operator's skip set (F2, TEETIME_SKIP_DATES). This is
-          the defense-in-depth backstop — the CLI also drops skipped dates before polling.
+        - ``_REASON_DEADLINE``: past the watch deadline (the round has happened / day after target).
+        - ``REASON_CUTOFF``: past the hard 4PM-day-before booking cutoff (F1). Checked before skip
+          inside `frozen_reason`, so a date both past-cutoff and skipped reports the cutoff.
+        - ``REASON_SKIP``: the date is in the operator's skip set (F2, TEETIME_SKIP_DATES). The
+          defense-in-depth backstop — the CLI also drops skipped dates before polling.
         """
         if self._is_past_watch_deadline(now, target_date):
-            return "deadline"
-        if self._cutoff is not None and now >= cutoff_instant(
-            target_date, timezone=self._scheduler.timezone, cutoff=self._cutoff
-        ):
-            return "cutoff"
-        if target_date in self._skip_dates:
-            return "skip"
-        return None
+            return _REASON_DEADLINE
+        # Cutoff + skip share the booker's primitive (frozen_reason) so the two callers can't
+        # diverge; the deadline above is watcher-specific. `now` is passed (not re-read) so the
+        # deadline and cutoff are evaluated at the same instant.
+        return frozen_reason(
+            now,
+            target_date,
+            timezone=self._scheduler.timezone,
+            cutoff=self._cutoff,
+            skip_dates=self._skip_dates,
+        )

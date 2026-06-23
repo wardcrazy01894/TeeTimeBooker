@@ -148,10 +148,15 @@ in `core/` — never directly. This is the cut line for parallel work.
   (`{days_before, time_of_day}`, default 16:00 ET the day before) FREEZES a target
   date once wall-clock passes `time_of_day` on `days_before` days before it: no new
   booking AND no upgrade — whatever is held at the cutoff is final (held bookings are
-  never auto-cancelled). The pure, clock-injected, zoneinfo-correct predicate is
-  `core/booking_cutoff.py::is_past_booking_cutoff`; it is composed into the watcher's
-  stop-acting gate and added defense-in-depth to the booking-day gate. It is booking
-  POLICY, not request identity — it does NOT feed the RequestId fingerprint.
+  never auto-cancelled). The cutoff + skip-days decision is composed in ONE shared,
+  pure, clock/now-injected primitive — `core/booking_cutoff.py::frozen_reason(now,
+  target_date, *, timezone, cutoff, skip_dates) -> "cutoff" | "skip" | None` — which
+  BOTH the watcher's stop-acting gate (`_should_stop_acting_on_date`, which adds its
+  own deadline leg) and the booking-day gate (`should_book_today`, which adds its own
+  weekday leg) route through, so the two callers can never silently diverge.
+  `is_past_booking_cutoff` is the cutoff-only convenience (a thin clock-reading wrapper
+  over `frozen_reason`). It is booking POLICY, not request identity — it does NOT feed
+  the RequestId fingerprint.
 - **Skip-days are FAIL-OPEN, resolved at load (LEADTIME_SKIP_PLAN F2).**
   `request.skip_dates_env` names an env var holding a comma/space-separated ISO date
   list; `core/skip_dates.parse_skip_dates` resolves it into `request.skip_dates`
