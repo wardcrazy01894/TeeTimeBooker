@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
-from ..core.adapter import AdapterError, CancelError
+from ..core.adapter import AdapterCapabilities, AdapterError, CancelError
 from ..core.models import (
     MANAGED_BOOKING_TAG,
     BookingOutcome,
@@ -37,7 +37,7 @@ class FakeAdapter:
 
     def __init__(self, *, course_id: CourseId, supports_blind_post: bool = False) -> None:
         self.course_id = course_id
-        # BlindPostCapable knob (BLIND_POST_PLAN.md PR1). Defaults False to mirror a
+        # Blind-POST knob: backs `self.capabilities` below. Defaults False to mirror a
         # bare ForeUP course; orchestrator tests flip it True to exercise the blind path.
         self.supports_blind_post = supports_blind_post
         self._blind_slots: list[TeeTimeSlot] | None = None
@@ -67,6 +67,11 @@ class FakeAdapter:
         self.book_call_count: int = 0
         self.list_reservations_call_count: int = 0
         self.cancel_call_count: int = 0
+        # Capability record mirroring a real adapter: blind_post reflects the ctor knob.
+        # (FakeAdapter reports auth state via is_authenticated but is NOT
+        # ReservationCacheRefreshable — it ships no refresh_reservations — matching how the
+        # orchestrator gates each capability.)
+        self.capabilities = AdapterCapabilities(blind_post=supports_blind_post)
 
     # --- scripting surface ----------------------------------------------
 

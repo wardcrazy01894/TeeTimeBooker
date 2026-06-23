@@ -7,9 +7,9 @@ reservation that books, and cancels the rest IN-RUN. If zero blind POSTs book, i
 re-guards (re-auth + ``list_reservations``) against a landed-but-uncertain POST
 before falling through to the existing sequential search-book loop.
 
-The capability gate is two-part — ``isinstance(adapter, BlindPostCapable) and
-adapter.supports_blind_post`` — AND race-path AND primary AND not-dry-run AND
-``blind_post_max_count > 0``. Everything else uses the unchanged search path.
+The capability gate is the explicit ``adapter.capabilities.blind_post`` flag — AND
+race-path AND primary AND not-dry-run AND ``blind_post_max_count > 0``. Everything else
+uses the unchanged search path.
 
 Collaborators are FakeAdapter / FakeClock / InMemoryStore (BLIND_POST_PLAN.md §6/§7/§11).
 """

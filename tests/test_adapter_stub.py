@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date, time
 from uuid import uuid4
 
-from teetime.core.adapter import CourseAdapter
+from teetime.core.adapter import AdapterCapabilities, CourseAdapter
 from teetime.core.models import (
     BookingRequest,
     BookingResult,
@@ -29,6 +29,7 @@ class _FakeAdapter:
     """Smallest thing that structurally satisfies CourseAdapter."""
 
     course_id = CourseId("fake:course")
+    capabilities = AdapterCapabilities()
 
     async def authenticate(self, creds: CourseCredentials) -> None:
         return None

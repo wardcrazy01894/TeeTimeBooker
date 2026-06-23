@@ -1,13 +1,13 @@
-"""PR1 of BLIND_POST_PLAN.md: the BlindPostCapable capability Protocol + the
-FakeAdapter knob. No orchestrator wiring yet — these tests pin the structural
-contract and the capability VALUE semantics the orchestrator gate will rely on.
+"""BLIND_POST_PLAN.md capability surface — now expressed via the explicit
+`AdapterCapabilities` record (PR: capability flags over runtime_checkable protocols).
 
-Key subtlety (reviewer nit 1): `BlindPostCapable` is `runtime_checkable`, which
-only checks member PRESENCE. So every ForeUP adapter (incl. Mangrove Bay) satisfies
-`isinstance(_, BlindPostCapable)` once the base ships the methods — the
-`supports_blind_post` BOOLEAN is the real guard. The orchestrator gate is
-`isinstance(a, BlindPostCapable) and a.supports_blind_post`; both halves are tested
-here. TeeItUp lacks the members, so it is the one adapter excluded by isinstance.
+The orchestrator gates the blind path on `adapter.capabilities.blind_post`, NOT on
+`isinstance(adapter, BlindPostCapable)`. The old two-part `isinstance(_, BlindPostCapable)
+and supports_blind_post` gate was a footgun: `runtime_checkable` only checks member
+PRESENCE, so EVERY ForeUP adapter satisfied the isinstance once the base shipped the
+methods — the boolean was the real (but hidden) guard. The flag makes that explicit and
+unfoolable. `BlindPostCapable` survives only as the typing cast-target the orchestrator
+uses to CALL the methods once the flag says they exist.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from uuid import uuid4
 
 import pytest
 
-from teetime.core.adapter import BlindPostCapable
 from teetime.core.models import (
     BookingRequest,
     CourseId,
@@ -45,13 +44,13 @@ def _request() -> BookingRequest:
 
 
 def _gate_capable(adapter: object) -> bool:
-    """The exact predicate the orchestrator gate will use (PR3)."""
-    return isinstance(adapter, BlindPostCapable) and adapter.supports_blind_post
+    """The exact predicate the orchestrator gate uses."""
+    return adapter.capabilities.blind_post  # type: ignore[attr-defined]
 
 
 def _bare_foreup() -> ForeUpAdapter:
     """A ForeUP course with NO committed blind-POST template/grid (base behavior).
-    Mangrove Bay overrides synthesize + flips the flag in PR2; the bare base does not."""
+    Mangrove Bay overrides synthesize + flips the flag; the bare base does not."""
     return ForeUpAdapter(
         course_id=CourseId("foreup:bare"),
         course_pk=1,
@@ -61,34 +60,31 @@ def _bare_foreup() -> ForeUpAdapter:
     )
 
 
-# --- structural Protocol membership --------------------------------------
+# --- capability flag ------------------------------------------------------
 
 
-def test_foreup_base_structurally_satisfies_protocol_but_not_capable() -> None:
-    """A bare ForeUP course inherits supports_blind_post + captcha_pool_size +
-    synthesize_blind_slots — so it satisfies the runtime_checkable Protocol. But
-    supports_blind_post defaults False, so it is NOT blind-capable by the gate
-    predicate (the boolean is the real guard, not the isinstance)."""
+def test_foreup_base_is_not_blind_capable() -> None:
+    """A bare ForeUP course inherits the blind-POST methods (for parity) but its
+    capabilities.blind_post defaults False, so the gate excludes it — the flag is the
+    guard, not method presence."""
     adapter = _bare_foreup()
-    assert isinstance(adapter, BlindPostCapable)
-    assert adapter.supports_blind_post is False
+    assert adapter.capabilities.blind_post is False
     assert _gate_capable(adapter) is False
 
 
 def test_mangrove_bay_is_blind_capable() -> None:
-    """PR2: Mangrove Bay flips supports_blind_post True and overrides synthesize, so it
-    is the one ForeUP course the orchestrator gate admits to the blind path."""
+    """Mangrove Bay is the one ForeUP course that flips capabilities.blind_post True
+    (and overrides synthesize), so the orchestrator gate admits it to the blind path."""
     adapter = MangroveBayAdapter()
-    assert isinstance(adapter, BlindPostCapable)
-    assert adapter.supports_blind_post is True
+    assert adapter.capabilities.blind_post is True
     assert _gate_capable(adapter) is True
 
 
-def test_teeitup_lacks_blind_members_so_not_protocol_member() -> None:
-    """TeeItUp ships none of the blind members, so isinstance excludes it outright —
-    a non-capable platform can never reach the blind path even by accident."""
+def test_teeitup_is_not_blind_capable() -> None:
+    """TeeItUp ships capabilities.blind_post=False (no template/grid, no CAPTCHA pool) —
+    it can never reach the blind path even by accident."""
     adapter = SydneyMarovitzAdapter()
-    assert not isinstance(adapter, BlindPostCapable)
+    assert adapter.capabilities.blind_post is False
     assert _gate_capable(adapter) is False
 
 
@@ -97,19 +93,15 @@ def test_teeitup_lacks_blind_members_so_not_protocol_member() -> None:
 
 def test_fake_adapter_capable_when_knob_true() -> None:
     adapter = FakeAdapter(course_id=CID, supports_blind_post=True)
-    assert isinstance(adapter, BlindPostCapable)
-    assert adapter.supports_blind_post is True
+    assert adapter.capabilities.blind_post is True
     assert _gate_capable(adapter) is True
 
 
 def test_fake_adapter_default_is_not_capable() -> None:
-    """Default FakeAdapter mirrors a bare ForeUP course: structurally a member (it has
-    the methods for parity) but supports_blind_post defaults False → gate excludes it."""
+    """Default FakeAdapter mirrors a bare ForeUP course: it has the methods (for parity)
+    but capabilities.blind_post defaults False → the gate excludes it."""
     adapter = FakeAdapter(course_id=CID)
-    # Structurally a Protocol member even when not capable — this is precisely why the
-    # gate is two-part (isinstance AND the boolean), not a bare isinstance check.
-    assert isinstance(adapter, BlindPostCapable)
-    assert adapter.supports_blind_post is False
+    assert adapter.capabilities.blind_post is False
     assert _gate_capable(adapter) is False
 
 
@@ -129,7 +121,7 @@ def test_fake_captcha_pool_size_scriptable() -> None:
 
 def test_foreup_base_synthesize_raises_not_implemented() -> None:
     """The base ForeUP synthesize is a stub: a bare ForeUP course has no committed
-    template+grid, so calling it raises. (Mangrove Bay overrides it in PR2.)"""
+    template+grid, so calling it raises. (Mangrove Bay overrides it.)"""
     adapter = _bare_foreup()
     with pytest.raises(NotImplementedError):
         adapter.synthesize_blind_slots(_request(), date(2026, 5, 16), max_count=3)

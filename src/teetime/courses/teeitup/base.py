@@ -69,6 +69,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from ...core.adapter import (
+    AdapterCapabilities,
     AuthError,
     CancelError,
     InventoryNotPublishedError,
@@ -161,6 +162,10 @@ class TeeItUpAdapter:
     """
 
     booking_page_url: ClassVar[str] = ""
+    # TeeItUp is not blind-POST capable (no committed template/grid; it also has no
+    # CAPTCHA pool). It is likewise NOT ReservationCacheRefreshable (live-GET reservations)
+    # nor AuthStateReportable (no soft-login path) — those remain isinstance presence-checks.
+    capabilities: AdapterCapabilities = AdapterCapabilities(blind_post=False)
 
     def __init__(
         self,
