@@ -152,18 +152,34 @@ _PHONE_RE = re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b")
 #     (real tokens are long; the length floor stops it eating a short following word like "of").
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+")
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+# A raw PAN can appear in a free-text upstream message (e.g. a GNSVC payment-decline
+# `Message`), which `redact_payload`'s value-level Luhn guard does NOT cover (it only sees
+# STRUCTURED payloads). Candidate = a 13-19-digit run, optionally grouped by single spaces or
+# dashes, not embedded in a longer pure-digit run. We mask only candidates that ALSO pass Luhn
+# (see `_looks_like_pan`/`_luhn_ok`), so bare numeric ids / statuses and non-card long numbers
+# survive for debugging — same masking-over-leaking trade-off as the value guard (a 13-digit
+# epoch-millis int could be over-masked; log timestamps as ISO-8601 to avoid it).
+_PAN_TEXT_RE = re.compile(r"(?<!\d)\d(?:[ -]?\d){12,18}(?!\d)")
+
+
+def _mask_pan_match(m: re.Match[str]) -> str:
+    digits = "".join(ch for ch in m.group(0) if ch.isdigit())
+    return "<redacted-pan>" if _luhn_ok(digits) else m.group(0)
 
 
 def redact_text(text: str) -> str:
-    """Scrub account-holder PII (email, separator-formatted phone) AND reflected session
-    credentials (JWTs, ``Bearer`` tokens) from free text.
+    """Scrub account-holder PII (email, separator-formatted phone), reflected session
+    credentials (JWTs, ``Bearer`` tokens), AND Luhn-valid PANs from free text.
 
     For logging arbitrary upstream response bodies, which may echo account-holder PII OR
-    request context — including auth tokens — back on a 4xx (the ForeUP error path logs the
-    body to diagnose a rejected booking). The token patterns are deliberately high-confidence
-    so a bare numeric confirmation id / HTTP status survives for debugging. NOT a substitute
-    for ``redact_payload`` on structured attempt_log writes — this is a free-text log helper.
+    request context — including auth tokens or (on a payment decline) a raw card number —
+    back on a 4xx (the ForeUP/TeeItUp error paths log the body to diagnose a rejected
+    booking). The token + PAN patterns are deliberately high-confidence (the PAN scrub is
+    Luhn-gated and length-bounded) so a bare numeric confirmation id / HTTP status survives
+    for debugging. NOT a substitute for ``redact_payload`` on structured attempt_log writes —
+    this is a free-text log helper.
     """
     text = _BEARER_RE.sub("Bearer <redacted-token>", text)
     text = _JWT_RE.sub("<redacted-token>", text)
+    text = _PAN_TEXT_RE.sub(_mask_pan_match, text)
     return _PHONE_RE.sub("<redacted-phone>", _EMAIL_RE.sub("<redacted-email>", text))

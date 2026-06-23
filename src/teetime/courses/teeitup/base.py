@@ -645,9 +645,10 @@ class TeeItUpAdapter:
             # `Message` is server-controlled processor free text (decline/AVS) on the PCI
             # path and could embed account-holder PII, so route it through redact_text before
             # it lands in the exception string → logs. StatusCode is a code, safe as-is.
-            # Scope note: redact_text covers email/phone/token, NOT a raw PAN — structured card
-            # fields are scrubbed by redact_payload at the store boundary, and a processor
-            # echoing a full PAN in a decline message is out of scope here.
+            # Scope note: redact_text scrubs email/phone/token AND Luhn-valid PANs — so a
+            # processor echoing a full card number in the decline Message is masked here, in
+            # addition to redact_payload scrubbing structured card fields at the store boundary.
+            # (Only space/dash-grouped PANs are matched, not dotted separators — see redaction.py.)
             raise RuntimeError(
                 f"TeeItUp GNSVC payment failed: "
                 f"status={gnsvc_data.get('StatusCode')!r} "
