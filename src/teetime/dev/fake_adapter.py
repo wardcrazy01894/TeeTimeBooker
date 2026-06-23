@@ -37,9 +37,10 @@ class FakeAdapter:
 
     def __init__(self, *, course_id: CourseId, supports_blind_post: bool = False) -> None:
         self.course_id = course_id
-        # Blind-POST knob: backs `self.capabilities` below. Defaults False to mirror a
-        # bare ForeUP course; orchestrator tests flip it True to exercise the blind path.
-        self.supports_blind_post = supports_blind_post
+        # Blind-POST knob (ctor param `supports_blind_post`): feeds `self.capabilities`
+        # below. Defaults False to mirror a bare ForeUP course; orchestrator tests flip it
+        # True to exercise the blind path. The gate reads `capabilities.blind_post`, so no
+        # separate `self.supports_blind_post` attribute is kept (it would be write-only).
         self._blind_slots: list[TeeTimeSlot] | None = None
         self._captcha_pool_size: int = 99
         self.synthesize_blind_slots_call_count: int = 0
