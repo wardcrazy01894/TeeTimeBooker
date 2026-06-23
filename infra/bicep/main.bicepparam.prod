@@ -21,13 +21,14 @@ param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime:PLACEHOLDER_VERSION
 // Budget params are NOT set here. budget.bicep is subscription-scoped and
 // deployed separately. See AZURE_PLAN.md §9.2.
 
-param acrSku = 'Basic'
 param kvSku = 'standard'
 
-// Shared-ACR consolidation: prod is the ACR OWNER (acrOwnerEnv defaults 'prod') — it creates
-// and holds the single shared ACR that dev also pulls from. The sharedAcrName/
-// sharedAcrResourceGroup params are unused for the owner (left at their '' defaults). See
-// AZURE_PLAN.md §2.1.
+// Shared-ACR consolidation: prod is a NON-OWNER — it pulls from the single shared ACR in the
+// DEDICATED rg-teetime-shared (deployed separately) and pushes to its `teetime` repo there
+// (dev uses `teetime-dev`). CI resolves the name at deploy time; these are for manual deploys.
+// See AZURE_PLAN.md §2.1 + infra/bicep/modules/acr-pull-cross-rg.bicep.
+param sharedAcrName = 'teetimesharedhe44piukeamjk'
+param sharedAcrResourceGroup = 'rg-teetime-shared'
 
 // Prod runs real bookings (no dry-run). Flip to false only at production cutover.
 // Left explicit (matches the param default) so the intent is visible in review.

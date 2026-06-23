@@ -24,9 +24,10 @@ infra/
     main.bicepparam.prod     # prod parameter values (dryRun=false, enablePurgeProtection=true)
     modules/
       identity.bicep         # user-assigned MI for all ACA Jobs
-      registry.bicep         # ACR Basic; AcrPull RBAC to job MI; weekly `acr purge` task (keep last 10 tags)
-                             #   SHARED: deployed ONLY by the OWNER env (prod). Both envs use one ACR (~$5/mo saved).
-      acr-pull-cross-rg.bicep  # non-owner env (dev): cross-RG AcrPull on the shared (prod) ACR for the dev job MI
+      registry.bicep         # ACR Basic; weekly `acr purge` task (keep last 10 tags PER repo: teetime + teetime-dev)
+                             #   the SINGLE shared ACR — deployed standalone to rg-teetime-shared (envName=shared);
+                             #   NOT created by either env's main.bicep. Both envs use one ACR (~$5/mo saved).
+      acr-pull-cross-rg.bicep  # BOTH envs: cross-RG AcrPull on the shared ACR (in rg-teetime-shared) for the job MI
       keyvault.bicep         # Key Vault Standard; Secrets User RBAC to job MI
                              #   dev: enablePurgeProtection=false
                              #   prod: enablePurgeProtection=true

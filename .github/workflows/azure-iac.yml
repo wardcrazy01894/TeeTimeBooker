@@ -90,16 +90,16 @@ jobs:
         run: az bicep build --file infra/bicep/main.bicep
       - name: Deployment what-if (advisory, never fails the PR)
         env:
-          SHARED_ACR_RG: rg-teetime-prod
+          SHARED_ACR_RG: rg-teetime-shared
         run: |
-          # dev is a non-owner env post-consolidation → it needs the shared ACR (prod-owned)
-          # name + RG to validate the cross-RG AcrPull. Resolve best-effort; advisory only.
+          # dev is a non-owner env → it needs the shared ACR (in rg-teetime-shared) name + RG
+          # to validate the cross-RG AcrPull. Resolve best-effort; advisory only.
           SHARED_ACR_NAME=$(az acr list -g "${SHARED_ACR_RG}" --query "[0].name" -o tsv 2>/dev/null || echo "")
           az deployment group what-if \
             --resource-group "${RESOURCE_GROUP}" \
             --template-file infra/bicep/main.bicep \
             --parameters envName=dev location="${AZURE_LOCATION}" \
-                         acrSku=Basic kvSku=standard dryRun=true \
+                         kvSku=standard dryRun=true \
                          enablePurgeProtection=false \
                          sharedAcrName="${SHARED_ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
@@ -132,9 +132,9 @@ jobs:
       # the auto-deploy path. Full-repo-scan finding H1.
       ENABLE_KILLSWITCH: "true"
       KILLSWITCH_RBAC_ROLE_ID: "3e2d5a14-96bd-4469-9f96-b9c3270aa9e6"
-      # Shared-ACR consolidation: dev pulls from the shared ACR in the OWNER (prod) RG
+      # Shared-ACR consolidation: dev pulls from the single shared ACR in rg-teetime-shared
       # instead of creating its own. See AZURE_PLAN.md §2.1 / acr-pull-cross-rg.bicep.
-      SHARED_ACR_RG: rg-teetime-prod
+      SHARED_ACR_RG: rg-teetime-shared
     steps:
       - uses: actions/checkout@v5
       - name: Azure login (OIDC)
@@ -163,11 +163,11 @@ jobs:
           echo "ENABLE_SCHEDULES=${ENS}" >> "$GITHUB_ENV"
           echo "Latch from ${PARAM_FILE}: killswitchFired=${KSF} enableSchedules=${ENS}"
       # Shared-ACR consolidation: dev no longer creates its own ACR — it pulls from the
-      # SHARED ACR (prod-owned, in ${SHARED_ACR_RG}). Resolve it FIRST (it pre-exists);
+      # SHARED ACR (in ${SHARED_ACR_RG}). Resolve it FIRST (it pre-exists, deployed separately);
       # then a two-pass deploy: pass 1 (bootstrap public image) stands up dev's resources +
       # the cross-RG AcrPull grant on the shared ACR; then build+push the dev image INTO the
-      # shared ACR (the CI SP has Contributor on the prod RG); pass 2 re-points the job at it.
-      - name: Resolve SHARED ACR (prod-owned, cross-RG; timing-independent)
+      # shared ACR (the CI SP has Contributor on rg-teetime-shared); pass 2 re-points the job.
+      - name: Resolve SHARED ACR (cross-RG; timing-independent)
         run: |
           ACR_LOGIN_SERVER=$(az acr list -g "${SHARED_ACR_RG}" --query "[0].loginServer" -o tsv)
           test -n "${ACR_LOGIN_SERVER}" || { echo "::error::No shared ACR in ${SHARED_ACR_RG}"; exit 1; }
@@ -180,7 +180,7 @@ jobs:
             --resource-group "${RESOURCE_GROUP}" \
             --template-file infra/bicep/main.bicep \
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
-                         acrSku=Basic kvSku=standard \
+                         kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
                          enableKillswitch="${ENABLE_KILLSWITCH}" \
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
@@ -202,7 +202,7 @@ jobs:
             --resource-group "${RESOURCE_GROUP}" \
             --template-file infra/bicep/main.bicep \
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
-                         acrSku=Basic kvSku=standard \
+                         kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
                          enableKillswitch="${ENABLE_KILLSWITCH}" \
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
@@ -242,6 +242,9 @@ jobs:
       # the shared inline-param block below expands to a valid bool/string in prod.
       ENABLE_KILLSWITCH: "false"
       KILLSWITCH_RBAC_ROLE_ID: ""
+      # Shared-ACR consolidation: prod is now a NON-OWNER too — it pulls from the single shared
+      # ACR in rg-teetime-shared (deployed separately) and pushes to the `teetime` repo there.
+      SHARED_ACR_RG: rg-teetime-shared
     steps:
       - uses: actions/checkout@v5
       - name: Azure login (OIDC)
@@ -269,42 +272,51 @@ jobs:
           echo "KILLSWITCH_FIRED=${KSF}" >> "$GITHUB_ENV"
           echo "ENABLE_SCHEDULES=${ENS}" >> "$GITHUB_ENV"
           echo "Latch from ${PARAM_FILE}: killswitchFired=${KSF} enableSchedules=${ENS}"
-      - name: Deploy pass 1 (bootstrap image — creates ACR + all resources)
+      # Shared-ACR consolidation: prod no longer creates its own ACR — it pulls from the
+      # SHARED ACR (in ${SHARED_ACR_RG}, deployed separately). Resolve it FIRST; then a
+      # two-pass deploy: pass 1 (bootstrap public image) stands up prod's resources + the
+      # cross-RG AcrPull grant on the shared ACR; then build+push the prod image into the
+      # shared ACR's `teetime` repo (separate from dev's `teetime-dev`); pass 2 re-points.
+      - name: Resolve SHARED ACR (cross-RG; timing-independent)
         run: |
-          az deployment group create \
-            --name "teetime-${ENVNAME}" \
-            --resource-group "${RESOURCE_GROUP}" \
-            --template-file infra/bicep/main.bicep \
-            --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
-                         acrSku=Basic kvSku=standard \
-                         dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
-                         enableKillswitch="${ENABLE_KILLSWITCH}" \
-                         killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
-                         killswitchFired="${KILLSWITCH_FIRED}" \
-                         enableSchedules="${ENABLE_SCHEDULES}" \
-                         usePublicBootstrapImage=true \
-                         containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
-      - name: Resolve ACR login server (direct query, timing-independent)
-        run: |
-          ACR_LOGIN_SERVER=$(az acr list -g "${RESOURCE_GROUP}" --query "[0].loginServer" -o tsv)
-          test -n "${ACR_LOGIN_SERVER}" || { echo "::error::No ACR in ${RESOURCE_GROUP}"; exit 1; }
+          ACR_LOGIN_SERVER=$(az acr list -g "${SHARED_ACR_RG}" --query "[0].loginServer" -o tsv)
+          test -n "${ACR_LOGIN_SERVER}" || { echo "::error::No shared ACR in ${SHARED_ACR_RG}"; exit 1; }
           echo "ACR_LOGIN_SERVER=${ACR_LOGIN_SERVER}" >> "$GITHUB_ENV"
           echo "ACR_NAME=${ACR_LOGIN_SERVER%%.*}" >> "$GITHUB_ENV"
-      - name: Build + push image to ACR
-        run: az acr build -r "${ACR_NAME}" -t "teetime:${{ github.sha }}" .
-      - name: Deploy pass 2 (real image)
+      - name: Deploy pass 1 (bootstrap image — prod resources + cross-RG AcrPull on shared ACR)
         run: |
           az deployment group create \
             --name "teetime-${ENVNAME}" \
             --resource-group "${RESOURCE_GROUP}" \
             --template-file infra/bicep/main.bicep \
             --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
-                         acrSku=Basic kvSku=standard \
+                         kvSku=standard \
                          dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
                          enableKillswitch="${ENABLE_KILLSWITCH}" \
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          killswitchFired="${KILLSWITCH_FIRED}" \
                          enableSchedules="${ENABLE_SCHEDULES}" \
+                         sharedAcrName="${ACR_NAME}" \
+                         sharedAcrResourceGroup="${SHARED_ACR_RG}" \
+                         usePublicBootstrapImage=true \
+                         containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
+      - name: Build + push image to SHARED ACR (prod repo)
+        run: az acr build -r "${ACR_NAME}" -t "teetime:${{ github.sha }}" .
+      - name: Deploy pass 2 (real image from shared ACR)
+        run: |
+          az deployment group create \
+            --name "teetime-${ENVNAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --template-file infra/bicep/main.bicep \
+            --parameters envName="${ENVNAME}" location="${AZURE_LOCATION}" \
+                         kvSku=standard \
+                         dryRun="${DRY_RUN}" enablePurgeProtection="${PURGE_PROT}" \
+                         enableKillswitch="${ENABLE_KILLSWITCH}" \
+                         killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
+                         killswitchFired="${KILLSWITCH_FIRED}" \
+                         enableSchedules="${ENABLE_SCHEDULES}" \
+                         sharedAcrName="${ACR_NAME}" \
+                         sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
       - name: Budget reminder (operator deploys manually — see AZURE_PLAN.md §9.2)

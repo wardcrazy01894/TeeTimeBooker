@@ -29,20 +29,14 @@ param containerImage string
 // budget.bicep is subscription-scoped and deployed in a separate
 // az deployment sub create command from azure-iac.yml. See AZURE_PLAN.md §9.2.
 
-@description('ACR SKU tier.')
-@allowed(['Basic', 'Standard', 'Premium'])
-param acrSku string = 'Basic'
+@description('''Shared-ACR consolidation (AZURE_PLAN.md §2.1): the single ACR lives in a
+DEDICATED resource group (rg-teetime-shared) and is deployed separately (registry.bicep,
+envName=shared). NEITHER env creates an ACR — each env grants its own job MI a cross-RG
+AcrPull on the shared registry (acr-pull-cross-rg.bicep). Name of that shared ACR.''')
+param sharedAcrName string
 
-@description('''Shared-ACR consolidation: the OWNER env (prod) creates the single shared ACR;
-every other env (dev) skips ACR creation and instead gets a cross-RG AcrPull on the shared
-registry. Owner is derived from envName (prod owns). See AZURE_PLAN.md §2.1 + acr-pull-cross-rg.bicep.''')
-param acrOwnerEnv string = 'prod'
-
-@description('Name of the shared ACR (the owner env\'s registry). REQUIRED for a non-owner env (dev) — it references this existing ACR cross-RG for the AcrPull grant + the image login server. Ignored for the owner env (it creates + names its own). E.g. teetimeprod<suffix>.')
-param sharedAcrName string = ''
-
-@description('Resource group holding the shared ACR (the owner env\'s RG, e.g. rg-teetime-prod). REQUIRED for a non-owner env (dev); ignored for the owner.')
-param sharedAcrResourceGroup string = ''
+@description('Resource group holding the shared ACR (rg-teetime-shared). The cross-RG AcrPull grant is deployed there.')
+param sharedAcrResourceGroup string
 
 @description('Key Vault SKU name.')
 @allowed(['standard', 'premium'])
@@ -83,10 +77,6 @@ param killswitchRbacRoleId string = ''
 // so the intent is preserved; only the effective value passed to compute is changed.
 var effectiveEnableSchedules = enableSchedules && !killswitchFired
 
-// Shared-ACR consolidation: the owner env creates the single shared ACR; others pull
-// from it cross-RG. Prod owns (it is the stable env; dev is disposable and depends on it).
-var isAcrOwner = envName == acrOwnerEnv
-
 // ---------------------------------------------------------------------------
 // Module: identity
 // User-assigned managed identity — the SINGLE principalId for all RBAC.
@@ -105,27 +95,16 @@ module identity 'modules/identity.bicep' = {
 }
 
 // ---------------------------------------------------------------------------
-// Module: registry
-// ACR Basic — bot image repository.
-// See: infra/AZURE_PLAN.md §2 (service selection), §7.2 (AcrPull role)
+// Module: shared-ACR cross-RG AcrPull
+// The single ACR lives in a DEDICATED rg-teetime-shared (deployed separately via
+// registry.bicep, envName=shared). NEITHER env creates an ACR — each env grants its own
+// job MI AcrPull on the shared registry via a cross-RG role assignment (nested deployment
+// scoped to sharedAcrResourceGroup), same pattern as killswitch-rbac-prod.bicep. The CI SP
+// has User Access Administrator on rg-teetime-shared, so this needs no operator step.
+// See: infra/AZURE_PLAN.md §2.1.
 // ---------------------------------------------------------------------------
 
-// Owner env (prod) creates + owns the single shared ACR (and grants its own MI AcrPull).
-module registry 'modules/registry.bicep' = if (isAcrOwner) {
-  name: 'registry-${envName}'
-  params: {
-    envName: envName
-    location: location
-    acrSku: acrSku
-    jobPrincipalId: identity.outputs.principalId
-  }
-}
-
-// Non-owner env (dev) does NOT create an ACR. It grants its OWN job MI AcrPull on the
-// shared ACR, which lives in the owner env's RG — a cross-RG role assignment (nested
-// deployment scoped to sharedAcrResourceGroup), same pattern as killswitch-rbac-prod.bicep.
-// The CI SP has User Access Administrator on the owner RG, so this needs no operator step.
-module sharedAcrPull 'modules/acr-pull-cross-rg.bicep' = if (!isAcrOwner) {
+module sharedAcrPull 'modules/acr-pull-cross-rg.bicep' = {
   name: 'shared-acrpull-${envName}'
   scope: resourceGroup(sharedAcrResourceGroup)
   params: {
@@ -191,12 +170,11 @@ module compute 'modules/compute.bicep' = {
   }
   // keyvault and logs are already implicit dependencies via their outputs
   // consumed above (vaultUri, workspaceId/Key), so they are NOT listed here
-  // (Bicep no-unnecessary-dependson). The ACR-pull grant IS listed: compute derives the
-  // ACR login server from the containerImage string (not a module output), so there is no
-  // implicit edge — but the job's AcrPull role assignment must exist before the job can
-  // pull. Owner env (prod) waits on its registry module; non-owner (dev) waits on the
-  // cross-RG AcrPull grant on the shared ACR.
-  dependsOn: isAcrOwner ? [registry] : [sharedAcrPull]
+  // (Bicep no-unnecessary-dependson). The cross-RG AcrPull grant IS listed: compute derives
+  // the ACR login server from the containerImage string (not a module output), so there is no
+  // implicit edge — but the job's AcrPull role assignment on the shared ACR must exist before
+  // the job can pull.
+  dependsOn: [sharedAcrPull]
 }
 
 // ---------------------------------------------------------------------------
@@ -226,8 +204,8 @@ module killswitch 'modules/killswitch.bicep' = if (enableKillswitch && !empty(ki
 @description('ACA Job resource name, for manual trigger via az containerapp job start.')
 output jobName string = compute.outputs.jobName
 
-@description('Shared ACR login server, for image push commands. Owner env (prod) emits its created registry\'s login server; non-owner (dev) emits the shared ACR\'s login server (derived from sharedAcrName). Uses safe-deref so the un-deployed registry module on the non-owner path resolves cleanly.')
-output acrLoginServer string = registry.?outputs.loginServer ?? '${sharedAcrName}.azurecr.io'
+@description('Shared ACR login server (in rg-teetime-shared), for image push commands. Derived from sharedAcrName; the ACR is deployed separately, not by this template.')
+output acrLoginServer string = '${sharedAcrName}.azurecr.io'
 
 @description('Key Vault URI, for az keyvault secret set commands.')
 output keyVaultUri string = keyvault.outputs.vaultUri
