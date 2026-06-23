@@ -37,7 +37,7 @@ class FakeAdapter:
 
     def __init__(self, *, course_id: CourseId, supports_blind_post: bool = False) -> None:
         self.course_id = course_id
-        # BlindPostCapable knob (BLIND_POST_PLAN.md PR1). Defaults False to mirror a
+        # Blind-POST knob: backs `self.capabilities` below. Defaults False to mirror a
         # bare ForeUP course; orchestrator tests flip it True to exercise the blind path.
         self.supports_blind_post = supports_blind_post
         self._blind_slots: list[TeeTimeSlot] | None = None
