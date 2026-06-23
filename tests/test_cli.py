@@ -142,6 +142,37 @@ def test_run_nonzero_exit_on_no_inventory(monkeypatch: pytest.MonkeyPatch) -> No
     assert "no_inventory" in result.output.lower()
 
 
+def test_run_logs_exception_on_orchestrator_raise(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Full-repo-scan observability finding: if `orch.run()` RAISES (CaptchaError/AuthError/
+    an uncaught HTTPStatusError on the ForeUP book POST), the booking CLI must log the failure
+    WITH a traceback (exc_info) before the process exits — otherwise the once-a-day 06:00
+    failure cause never reaches Log Analytics. The exception must still propagate (non-zero
+    exit); we log-and-re-raise, never swallow. Stub the Orchestrator collaborator to raise."""
+
+    class _RaisingOrchestrator:
+        def __init__(self, **_: object) -> None: ...
+
+        async def run(self, request: object) -> BookingResult:
+            raise RuntimeError("boom: captcha pipeline broken")
+
+    monkeypatch.setattr(main_mod, "Orchestrator", _RaisingOrchestrator)
+    runner = CliRunner()
+    with caplog.at_level(logging.ERROR):
+        result = runner.invoke(
+            cli,
+            ["run", "--config", str(EXAMPLE_TOML), "--dry-run", "false", "--use-fake-adapter"],
+        )
+    assert result.exit_code != 0, result.output
+    rec = next(
+        (r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info is not None),
+        None,
+    )
+    assert rec is not None, "expected an ERROR log with exc_info when the orchestrator raises"
+    assert rec.exc_info is not None and "boom: captcha pipeline broken" in str(rec.exc_info[1])
+
+
 def test_run_without_fake_adapter_fails_on_missing_creds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
