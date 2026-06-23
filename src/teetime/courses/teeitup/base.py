@@ -140,6 +140,24 @@ def _raise_for_booking_step(r: httpx.Response, slot_id: str, step: str) -> None:
         raise RateLimitError(f"Rate limited at {step} (429)")
     if _HTTP_BAD_REQUEST <= r.status_code < _HTTP_SERVER_ERROR:
         raise SlotGoneError(f"Slot {slot_id}: {step} returned {r.status_code} (slot unavailable)")
+    # 5xx (or anything else non-2xx) is the AMBIGUOUS UNCERTAIN case — log status + body so it
+    # is diagnosable, then propagate via raise_for_status.
+    _log_http_error_then_raise(r, step)
+
+
+def _log_http_error_then_raise(r: httpx.Response, step: str) -> None:
+    """Log status + redacted body at WARNING before ``raise_for_status``, so a 5xx/UNCERTAIN
+    failure at a book() step is diagnosable from logs alone — mirroring ForeUP ``book()``'s
+    body-logging (a bare ``raise_for_status`` discards both the status reason and the body).
+    No-op on 2xx; drop-in for ``r.raise_for_status()`` on the book() critical path."""
+    if r.is_success:
+        return
+    _log.warning(
+        "teeitup %s failed: status=%d body=%s",
+        step,
+        r.status_code,
+        redact_text(r.text[:500]),
+    )
     r.raise_for_status()
 
 
@@ -410,7 +428,7 @@ class TeeItUpAdapter:
             params={"gncFacilityId": self._gnc_facility_id, "playerCount": party_size},
             headers=h,
         )
-        invoice_r.raise_for_status()
+        _log_http_error_then_raise(invoice_r, "invoice fetch")
         invoice_resp: dict[str, Any] = invoice_r.json()
         tee_time_notes: str = ""
         terms_and_conditions: str = ""
@@ -423,7 +441,7 @@ class TeeItUpAdapter:
 
         # Step 2: Create shopping cart (server assigns ID)
         r = await self._http.post(f"{_KENNA_API_BASE}{_SHOPPING_CART_PATH}", headers=h)
-        r.raise_for_status()
+        _log_http_error_then_raise(r, "create cart")
         cart_id: str = r.json()["id"]
 
         # Step 3: Add cart item
@@ -562,7 +580,7 @@ class TeeItUpAdapter:
 
         # Step 9: GET /tr/token — transaction token for GNSVC
         tr = await self._http.get(f"{_KENNA_API_BASE}{_TR_TOKEN_PATH}", headers=h)
-        tr.raise_for_status()
+        _log_http_error_then_raise(tr, "tr/token fetch")
         tr_token: str = tr.json()
 
         # Step 10: POST https://tr.gnsvc.com/AddReservation — card payment (form-encoded)
@@ -612,6 +630,14 @@ class TeeItUpAdapter:
             timeout=60.0,  # payment processing can be slow
             follow_redirects=False,
         )
+        if not r.is_success:
+            # The CARD POST: log STATUS ONLY, never the body — the GNSVC response may echo
+            # card fields (see the Success=false handler below). A 5xx here is the most
+            # dangerous UNCERTAIN case ("did the charge land?"), so the status must be logged.
+            _log.warning(
+                "teeitup GNSVC AddReservation failed: status=%d (body omitted — may echo card)",
+                r.status_code,
+            )
         r.raise_for_status()
         gnsvc_data: dict[str, Any] = r.json()
         if not gnsvc_data.get("Success"):
