@@ -92,8 +92,8 @@ jobs:
         env:
           SHARED_ACR_RG: rg-teetime-shared
         run: |
-          # dev is a non-owner env post-consolidation → it needs the shared ACR (prod-owned)
-          # name + RG to validate the cross-RG AcrPull. Resolve best-effort; advisory only.
+          # dev is a non-owner env → it needs the shared ACR (in rg-teetime-shared) name + RG
+          # to validate the cross-RG AcrPull. Resolve best-effort; advisory only.
           SHARED_ACR_NAME=$(az acr list -g "${SHARED_ACR_RG}" --query "[0].name" -o tsv 2>/dev/null || echo "")
           az deployment group what-if \
             --resource-group "${RESOURCE_GROUP}" \
