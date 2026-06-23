@@ -1039,8 +1039,9 @@ Consolidating the two per-env ACRs into one shared (prod-owned) ACR. Prod is unt
 dev changes. Order:
 
 1. **Merge the shared-ACR PR.** Dev auto-deploys: it stops creating its own ACR, gets a cross-RG
-   AcrPull on the prod ACR, builds `teetime:<sha>` into the prod ACR, and re-points the dev jobs
-   at `teetimeprod<suffix>.azurecr.io`. (No operator step — the CI SP already has Contributor +
+   AcrPull on the prod ACR, builds `teetime-dev:<sha>` into the prod ACR (a SEPARATE repo from
+   prod's `teetime` — §2.1 repo isolation), and re-points the dev jobs at
+   `teetimeprod<suffix>.azurecr.io`. (No operator step — the CI SP already has Contributor +
    UAA on `rg-teetime-prod`.)
 2. **Verify dev pulls from the shared ACR:**
    `az containerapp job show -g rg-teetime-dev -n teetime-job-dev-edt --query "properties.configuration.registries[0].server" -o tsv`
