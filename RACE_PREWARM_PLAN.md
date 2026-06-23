@@ -631,9 +631,10 @@ New `tests/test_captcha_pool.py` (respx + a counting fake provider — see 8.3):
   (the token was accepted; the slot was gone).
 
 In `tests/test_orchestrator.py`:
-- `test_run_prefetches_count_tokens_on_race_path` — scheduler.captcha_prefetch_count=5 (new
-  default), prefetch_book=True; assert `fa.prepare_book` was called with `count=5` (FakeAdapter
-  records `last_prepare_count` — already on disk).
+- `test_run_prefetches_count_tokens_on_race_path` — scheduler.captcha_prefetch_count (this plan
+  proposed a default of 5; the default later landed at **3**, see #137), prefetch_book=True; assert
+  `fa.prepare_book` was called with that `count` (FakeAdapter records `last_prepare_count` — already
+  on disk).
 - `test_run_fallback_candidates_consume_pooled_tokens` — covered at the ForeUP adapter level in
   `test_captcha_pool.py` (FakeAdapter does not model a pool); the orchestrator test asserts only
   the `count=N` plumbing.

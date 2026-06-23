@@ -141,8 +141,8 @@ infra/
     main.bicepparam.prod       # prod environment parameter values
     modules/
       identity.bicep           # user-assigned managed identity for the Container Apps Jobs
-      registry.bicep           # ACR Basic; grants AcrPull to the job MI. SHARED: deployed ONLY by the owner env (prod) — see §2.1
-      acr-pull-cross-rg.bicep  # non-owner env (dev): cross-RG AcrPull on the shared (prod) ACR for the dev job MI (§2.1)
+      registry.bicep           # ACR Basic; grants AcrPull to the job MI. SHARED: deployed standalone to the dedicated rg-teetime-shared (envName=shared), NOT by either env's main.bicep — see §2.1
+      acr-pull-cross-rg.bicep  # BOTH envs (non-owners): cross-RG AcrPull on the shared ACR in rg-teetime-shared for the job MI (§2.1)
       keyvault.bicep           # Key Vault Standard; grants Key Vault Secrets User to the job MI; soft-delete 90d
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
       compute.bicep            # ACA Environment (Consumption) + 2× booking ACA Jobs (DST crons) + watch ACA Job
@@ -195,7 +195,7 @@ before module B references the resource.
 
 | Constant | Value | Reason |
 |---|---|---|
-| KV secret names | `MB-USERNAME`, `MB-PASSWORD`, `PLAYER1-EMAIL`, `PLAYER1-PHONE`, `PLAYER1-MB-MEMBER`, `TWOCAPTCHA-API-KEY` | Bot reads these by name; names are part of the interface contract |
+| KV secret names | `MB-USERNAME`, `MB-PASSWORD`, `PLAYER1-EMAIL`, `PLAYER1-PHONE`, `PLAYER1-MB-MEMBER`, `TWOCAPTCHA-API-KEY`, `TEETIME-SKIP-DATES` | Bot reads these by name; names are part of the interface contract (7 secrets — `TEETIME-SKIP-DATES` added in PR #111) |
 | RBAC role IDs | `Key Vault Secrets User` = `4633458b-17de-408a-b874-0445c86b69e6`; `AcrPull` = `7f951dda-4ed3-4680-a7ca-43fe172d538d` | Stable Azure built-in role GUIDs |
 | `parallelism` | `1` | Never run two replicas of the booking job simultaneously — see §6 |
 | `replicaCompletionCount` | `1` | Pair with parallelism=1; see §6 |
