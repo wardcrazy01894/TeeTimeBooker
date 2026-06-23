@@ -25,6 +25,8 @@ infra/
     modules/
       identity.bicep         # user-assigned MI for all ACA Jobs
       registry.bicep         # ACR Basic; AcrPull RBAC to job MI; weekly `acr purge` task (keep last 10 tags)
+                             #   SHARED: deployed ONLY by the OWNER env (prod). Both envs use one ACR (~$5/mo saved).
+      acr-pull-cross-rg.bicep  # non-owner env (dev): cross-RG AcrPull on the shared (prod) ACR for the dev job MI
       keyvault.bicep         # Key Vault Standard; Secrets User RBAC to job MI
                              #   dev: enablePurgeProtection=false
                              #   prod: enablePurgeProtection=true

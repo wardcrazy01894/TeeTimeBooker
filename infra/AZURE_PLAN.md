@@ -91,6 +91,26 @@ resolved at container start by the ACA platform using the same user-assigned MI.
 | Container registry | **ACR Basic** | Docker Hub | Private registry; managed identity pull avoids credentials; Basic is sufficient for 1-2 image tags |
 | Region | **East US 2** | Other regions | Closest to Mangrove Bay / ForeUP origin; lowest egress latency to foreupsoftware.com |
 
+### 2.1 Shared ACR (one registry for both envs)
+
+The two environments share a **single** ACR instead of one per env (~$5/mo saved; full-repo-scan
+cost finding). The **owner** env (`acrOwnerEnv`, default `prod`) creates and holds the ACR via
+`registry.bicep`; every other env (dev) **skips ACR creation** and instead gets a cross-RG
+**AcrPull** grant on the shared ACR via `acr-pull-cross-rg.bicep` (a nested deployment scoped to
+the owner's RG — same pattern as `killswitch-rbac-prod.bicep`).
+
+Why prod owns it: prod is the **stable** env whose 06:00 image-pull is load-bearing, and dev is
+**disposable** (its RG/vault are torn down during iteration). Putting the shared resource in prod
+and depending dev on it is the correct dependency direction — a dev teardown never touches the
+shared ACR. Prod's deploy is **unchanged** (it owns its ACR exactly as before), so this change is
+**dev-only** and carries no prod risk. Dev's CI build pushes `teetime:<sha>` into the shared
+(prod) ACR; the CI SP already has Contributor + User Access Administrator on `rg-teetime-prod`
+(for the killswitch cross-RG RBAC), so no operator step is needed. Trade-off: dev + prod images
+share the shared ACR's repo and the 10-tag purge window — acceptable for a single-user bot.
+
+Cutover (one-time): merge this change → dev auto-deploys and re-points to the shared ACR → verify
+the dev job pulls → `az acr delete` the old `teetimedev<suffix>` registry. See §10.6.
+
 ---
 
 ## 3. Module layout
@@ -107,7 +127,8 @@ infra/
     main.bicepparam.prod       # prod environment parameter values
     modules/
       identity.bicep           # user-assigned managed identity for the Container Apps Jobs
-      registry.bicep           # ACR Basic; grants AcrPull to the job MI
+      registry.bicep           # ACR Basic; grants AcrPull to the job MI. SHARED: deployed ONLY by the owner env (prod) — see §2.1
+      acr-pull-cross-rg.bicep  # non-owner env (dev): cross-RG AcrPull on the shared (prod) ACR for the dev job MI (§2.1)
       keyvault.bicep           # Key Vault Standard; grants Key Vault Secrets User to the job MI; soft-delete 90d
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
       compute.bicep            # ACA Environment (Consumption) + 2× booking ACA Jobs (DST crons) + watch ACA Job
@@ -996,6 +1017,24 @@ docstring.)
   **auto-created by the Azure platform** alongside App Insights — it is NOT in our Bicep. It
   appears on its own shortly after the App Insights resource sees telemetry; prod will get it
   too. Nothing to add to IaC.
+
+### 10.6 Shared-ACR cutover (one-time, dev-only — see §2.1)
+
+Consolidating the two per-env ACRs into one shared (prod-owned) ACR. Prod is untouched; only
+dev changes. Order:
+
+1. **Merge the shared-ACR PR.** Dev auto-deploys: it stops creating its own ACR, gets a cross-RG
+   AcrPull on the prod ACR, builds `teetime:<sha>` into the prod ACR, and re-points the dev jobs
+   at `teetimeprod<suffix>.azurecr.io`. (No operator step — the CI SP already has Contributor +
+   UAA on `rg-teetime-prod`.)
+2. **Verify dev pulls from the shared ACR:**
+   `az containerapp job show -g rg-teetime-dev -n teetime-job-dev-edt --query "properties.configuration.registries[0].server" -o tsv`
+   → must be the prod ACR login server. Optionally `az containerapp job start` the dev watch job
+   and confirm the replica pulls (Succeeded, no ImagePullBackOff).
+3. **Delete the now-orphaned dev ACR** (the $5/mo saving):
+   `az acr delete -n teetimedev<suffix> -g rg-teetime-dev --yes`
+   (guard-allowed; only the dev registry — never the prod/shared one).
+4. Done — one ACR, ~$5/mo saved. Rollback: revert the PR; dev's next deploy recreates its own ACR.
 
 ---
 
