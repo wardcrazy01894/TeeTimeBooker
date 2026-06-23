@@ -102,11 +102,26 @@ the owner's RG — same pattern as `killswitch-rbac-prod.bicep`).
 Why prod owns it: prod is the **stable** env whose 06:00 image-pull is load-bearing, and dev is
 **disposable** (its RG/vault are torn down during iteration). Putting the shared resource in prod
 and depending dev on it is the correct dependency direction — a dev teardown never touches the
-shared ACR. Prod's deploy is **unchanged** (it owns its ACR exactly as before), so this change is
-**dev-only** and carries no prod risk. Dev's CI build pushes `teetime:<sha>` into the shared
-(prod) ACR; the CI SP already has Contributor + User Access Administrator on `rg-teetime-prod`
-(for the killswitch cross-RG RBAC), so no operator step is needed. Trade-off: dev + prod images
-share the shared ACR's repo and the 10-tag purge window — acceptable for a single-user bot.
+shared ACR. Prod's deploy is **unchanged** (it owns its ACR exactly as before). The CI SP already
+has Contributor + User Access Administrator on `rg-teetime-prod` (for the killswitch cross-RG
+RBAC), so no operator step is needed.
+
+**Repo isolation (load-bearing — do NOT collapse).** Dev's CI build pushes into a SEPARATE repo
+`teetime-dev:<sha>`, while prod pushes `teetime:<sha>`. This is not cosmetic: dev auto-deploys
+many times/day and prod's tag is static between rare `infra/v*` releases, so if both shared one
+repo under the weekly `--keep N` purge, dev churn would evict prod's pinned image within days →
+`ImagePullBackOff` on the next 06:00 cron → silent missed booking. With separate repos, prod's
+`teetime` repo is written ONLY by prod, so dev can never evict it; the purge task lists both
+repos (`--filter 'teetime:.*' --filter 'teetime-dev:.*'`, keep-N per repository) so dev's repo is
+still pruned.
+
+**Accepted couplings:** (1) the dev deploy now hard-depends on the prod ACR being resolvable —
+if `rg-teetime-prod`'s ACR is briefly absent (prod RG mid-rebuild / future rename), the dev
+pipeline's "Resolve SHARED ACR" step fails fast (it was self-contained before). Stable in
+practice (prod ACR is long-lived). (2) A dev RG teardown+rebuild gives the dev MI a new
+principalId, leaving a stale AcrPull assignment on the prod ACR pointing at the deleted principal
+(harmless — Azure GCs it; same as the existing killswitch cross-RG RBAC). Clean up if desired with
+`az role assignment list --assignee <oldPrincipalId>`.
 
 Cutover (one-time): merge this change → dev auto-deploys and re-points to the shared ACR → verify
 the dev job pulls → `az acr delete` the old `teetimedev<suffix>` registry. See §10.6.

@@ -67,3 +67,23 @@ def test_dev_param_file_points_at_shared_acr() -> None:
     text = PARAM_DEV.read_text()
     assert "param sharedAcrResourceGroup = 'rg-teetime-prod'" in text
     assert "param sharedAcrName =" in text
+
+
+def test_purge_isolates_prod_and_dev_repos() -> None:
+    """C1 regression guard: prod images (`teetime`) and dev images (`teetime-dev`) live in
+    SEPARATE repos so dev's high-frequency churn can never evict prod's pinned tag via the
+    per-repo `--keep` purge. The shared ACR's purge task must prune BOTH repos."""
+    text = (BICEP_DIR / "modules" / "registry.bicep").read_text()
+    assert "--filter \\'teetime:.*\\'" in text
+    assert "--filter \\'teetime-dev:.*\\'" in text
+
+
+def test_dev_workflow_pushes_to_separate_repo() -> None:
+    """C1 regression guard (workflow side): the dev CI build pushes to `teetime-dev`, the
+    prod build to `teetime` — so they never share a repo in the shared ACR."""
+    wf = (
+        Path(__file__).resolve().parent.parent / ".github" / "workflows" / "azure-iac.yml"
+    ).read_text()
+    assert "teetime-dev:${{ github.sha }}" in wf  # dev pushes/deploys the dev repo
+    # prod build/deploy still uses the bare `teetime` repo (unchanged).
+    assert 'az acr build -r "${ACR_NAME}" -t "teetime:${{ github.sha }}"' in wf

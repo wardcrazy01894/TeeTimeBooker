@@ -190,8 +190,11 @@ jobs:
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=true \
                          containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest'
-      - name: Build + push image to SHARED ACR
-        run: az acr build -r "${ACR_NAME}" -t "teetime:${{ github.sha }}" .
+      # Dev pushes to a SEPARATE repo (teetime-dev) in the shared ACR — NOT prod's `teetime`
+      # repo — so dev's high-frequency builds can never evict prod's pinned image via the
+      # per-repo purge. See registry.bicep purge filter + AZURE_PLAN.md §2.1.
+      - name: Build + push image to SHARED ACR (dev repo)
+        run: az acr build -r "${ACR_NAME}" -t "teetime-dev:${{ github.sha }}" .
       - name: Deploy pass 2 (real image from shared ACR)
         run: |
           az deployment group create \
@@ -208,7 +211,7 @@ jobs:
                          sharedAcrName="${ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \
-                         containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
+                         containerImage="${ACR_LOGIN_SERVER}/teetime-dev:${{ github.sha }}"
       - name: Budget reminder (operator deploys manually — see AZURE_PLAN.md §9.2)
         # Budgets are subscription-scoped; the CI service principal is RG-scoped by
         # design (least privilege), so it cannot create them. The $20 email budget and
