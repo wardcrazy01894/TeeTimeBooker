@@ -14,6 +14,7 @@ Coverage areas:
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from uuid import uuid4
@@ -820,3 +821,30 @@ async def test_upgrade_notifies_on_successful_upgrade() -> None:
     assert notified.outcome == BookingOutcome.BOOKED
     assert notified.course_id == COURSE_B
     assert notified is result  # same object returned and notified
+
+
+async def test_upgrade_logs_decision(caplog: pytest.LogCaptureFixture) -> None:
+    """A successful upgrade emits an INFO 'upgrade: upgraded' line naming the from/to
+    courses + priority — the audit trail for a prod cancel+rebook. full-repo-scan
+    observability finding: this success-decision log had no test pinning it."""
+    orc, _fa, fb, st, _nt = _make_orchestrator()
+    request = _make_request()
+    current = _managed_booking(request=request)
+    await st.record_terminal(current, TARGET_DATE)
+    fb.set_search_response(
+        [
+            _make_slot(
+                course_id=COURSE_B,
+                tee_time=datetime(2026, 6, 7, 9, 15, tzinfo=ET),
+                slot_id="better-1",
+            )
+        ]
+    )
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.upgrade_orchestrator"):
+        result = await orc.maybe_upgrade(request, TARGET_DATE, current)
+
+    assert result is not None
+    assert any("upgrade: upgraded" in r.getMessage() for r in caplog.records), (
+        "expected an 'upgrade: upgraded' INFO line on a successful upgrade"
+    )

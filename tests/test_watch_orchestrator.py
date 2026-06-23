@@ -197,6 +197,24 @@ async def test_watch_check_once_books_when_slot_available() -> None:
     assert stored.outcome == BookingOutcome.BOOKED
 
 
+async def test_watch_booked_logs_decision(caplog: pytest.LogCaptureFixture) -> None:
+    """The watcher's recovery-book emits an INFO 'watch: booked' line naming the course,
+    date, and confirmation — the only record that a prod recovery/upgrade booking happened
+    (InMemoryStore is in-process; logs are the sole post-hoc signal). full-repo-scan
+    observability finding: this success-decision log had no test pinning it."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_search_response([_slot(hour=9, minute=15)])
+    watch, _, _ = _build(adapter)
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.watch_orchestrator"):
+        result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is not None and result.outcome == BookingOutcome.BOOKED
+    assert any("watch: booked" in r.getMessage() for r in caplog.records), (
+        "expected a 'watch: booked' INFO line on a recovery booking"
+    )
+
+
 async def test_watch_search_preserves_leading_spacing() -> None:
     """SF5 invariant (Change D / PR3): the watcher must NEVER pass skip_initial_spacing —
     it issues one date per search() call, so the leading courtesy sleep is its ONLY
@@ -1296,6 +1314,28 @@ async def test_watch_reconcile_keeps_best_by_rank() -> None:
     remaining = await adapter.list_reservations()
     assert [r.confirmation_code for r in remaining] == ["res-0945"]
     assert adapter.cancel_call_count == 2
+
+
+async def test_watch_reconcile_logs_decision(caplog: pytest.LogCaptureFixture) -> None:
+    """The duplicate-reconcile emits an INFO 'watch: reconciled' line naming the kept
+    confirmation + cancelled count — the audit trail for the crash-net collapsing a
+    multi-reservation state. full-repo-scan observability finding: not previously pinned."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=10, minute=15, code="res-1015"),
+            _reservation(hour=9, minute=45, code="res-0945"),  # best
+        ]
+    )
+    adapter.set_search_response([])
+    watch, _, _ = _build(adapter, policy=OneBookingPolicyConfig(enabled=True))
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.watch_orchestrator"):
+        await watch.check_once(_request(), TARGET_DATE)
+
+    assert any("watch: reconciled" in r.getMessage() for r in caplog.records), (
+        "expected a 'watch: reconciled' INFO line when duplicates are collapsed"
+    )
 
 
 async def test_watch_single_reservation_unchanged() -> None:

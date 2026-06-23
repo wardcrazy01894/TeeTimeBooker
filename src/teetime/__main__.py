@@ -311,7 +311,15 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
         # solved when actually booking. See core/orchestrator._prefetch_captcha.
         prefetch_book=wait,
     )
-    result = await orch.run(request)
+    try:
+        result = await orch.run(request)
+    except Exception:
+        # A once-a-day 06:00 run has no human watching; if run() raises (CaptchaError/
+        # AuthError/an uncaught HTTPStatusError on the book POST) the cause must reach the
+        # app log with a traceback before the process exits. Log + re-raise (never swallow —
+        # CaptchaError/AuthError must still produce a non-zero exit for the operator).
+        log.error("Booking run failed with an exception", exc_info=True)
+        raise
     if result.outcome.value not in {"booked", "dry_run", "already_booked"}:
         raise click.ClickException(f"booking failed: outcome={result.outcome.value}")
 

@@ -7,6 +7,7 @@ and tr.gnsvc.com. Payment flow confirmed from HAR capture (2026-05-29).
 from __future__ import annotations
 
 import json as json_mod
+import logging
 from datetime import date, time
 from decimal import Decimal
 from urllib.parse import parse_qs
@@ -644,6 +645,44 @@ async def test_book_propagates_5xx_at_lock_as_uncertain() -> None:
         slots = await adapter.search(_request(party_size=2, holes=9))
         with pytest.raises(httpx.HTTPStatusError):
             await adapter.book(slots[0], _request(party_size=2, holes=9))
+
+
+@respx.mock
+async def test_book_5xx_logs_status_and_body_before_raising(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 5xx at a book() step must be diagnosable from logs alone: status + redacted body +
+    step are logged at WARNING before the HTTPStatusError propagates (mirrors ForeUP's book()
+    body-logging — a bare raise_for_status discards both). full-repo-scan observability
+    finding (High): the TeeItUp pre-payment/UNCERTAIN steps flew blind."""
+    _mock_auth()
+    _mock_search()
+    respx.get(url__regex=r".*/tee-times/rate/\d+/invoice.*").mock(
+        return_value=httpx.Response(200, json=_INVOICE_RESPONSE)
+    )
+    respx.post(f"{_KENNA_API_BASE}{_SHOPPING_CART_PATH}").mock(
+        return_value=httpx.Response(201, json=_CART_RESPONSE)
+    )
+    respx.post(url__regex=r".*/shopping-cart/[^/]+/cart-item$").mock(
+        return_value=httpx.Response(200, json=_CART_ITEM_RESPONSE)
+    )
+    respx.put(url__regex=r".*/tee-time/lock$").mock(
+        return_value=httpx.Response(503, text="upstream lock service unavailable")
+    )
+    async with httpx.AsyncClient() as client:
+        adapter = _adapter(client)
+        await adapter.authenticate(CREDS)
+        slots = await adapter.search(_request(party_size=2, holes=9))
+        with (
+            caplog.at_level(logging.WARNING, logger="teetime.courses.teeitup.base"),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await adapter.book(slots[0], _request(party_size=2, holes=9))
+
+    rec = next((r for r in caplog.records if "503" in r.getMessage()), None)
+    assert rec is not None, "expected a WARNING logging status 503 before the raise"
+    assert "upstream lock service unavailable" in rec.getMessage()
+    assert "lock tee time" in rec.getMessage()  # the failing step is named
 
 
 def _setup_full_book_mocks() -> tuple[respx.Route, respx.Route]:
