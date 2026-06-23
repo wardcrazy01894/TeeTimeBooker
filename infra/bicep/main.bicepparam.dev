@@ -20,16 +20,14 @@ param containerImage = 'PLACEHOLDER_ACR_LOGIN_SERVER/teetime-dev:dev'
 // Budget params are NOT set here. budget.bicep is subscription-scoped and
 // deployed separately. See AZURE_PLAN.md §9.2.
 
-param acrSku = 'Basic'
 param kvSku = 'standard'
 
 // Shared-ACR consolidation (full-repo-scan cost finding): dev does NOT create its own ACR
-// (~$5/mo saved). It pulls from the single SHARED ACR owned by prod (the stable env) via a
-// cross-RG AcrPull grant. CI resolves the shared ACR name at deploy time; these values are
-// for manual/local deploys. acrOwnerEnv defaults 'prod', so envName='dev' is a non-owner.
-// See AZURE_PLAN.md §2.1 + infra/bicep/modules/acr-pull-cross-rg.bicep.
-param sharedAcrName = 'teetimeprod4jteeywdlnz5e'
-param sharedAcrResourceGroup = 'rg-teetime-prod'
+// (~$5/mo saved). Both envs pull from ONE shared ACR in the DEDICATED rg-teetime-shared via a
+// cross-RG AcrPull grant. CI resolves the shared ACR name at deploy time; these values are for
+// manual/local deploys. See AZURE_PLAN.md §2.1 + infra/bicep/modules/acr-pull-cross-rg.bicep.
+param sharedAcrName = 'teetimesharedhe44piukeamjk'
+param sharedAcrResourceGroup = 'rg-teetime-shared'
 
 // Permanent dry-run in dev — the bot performs no real booking POSTs. Dev MUST
 // stay true until production cutover. See AZURE_PLAN.md §10.3.

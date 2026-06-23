@@ -94,37 +94,36 @@ resolved at container start by the ACA platform using the same user-assigned MI.
 ### 2.1 Shared ACR (one registry for both envs)
 
 The two environments share a **single** ACR instead of one per env (~$5/mo saved; full-repo-scan
-cost finding). The **owner** env (`acrOwnerEnv`, default `prod`) creates and holds the ACR via
-`registry.bicep`; every other env (dev) **skips ACR creation** and instead gets a cross-RG
-**AcrPull** grant on the shared ACR via `acr-pull-cross-rg.bicep` (a nested deployment scoped to
-the owner's RG — same pattern as `killswitch-rbac-prod.bicep`).
+cost finding). The shared ACR lives in a **dedicated `rg-teetime-shared`** resource group and is
+deployed separately (`registry.bicep`, `envName=shared`) — **neither** env's `main.bicep` creates
+an ACR. Each env grants its own job MI a cross-RG **AcrPull** on the shared registry via
+`acr-pull-cross-rg.bicep` (a nested deployment scoped to `rg-teetime-shared` — same pattern as
+`killswitch-rbac-prod.bicep`), and pushes/pulls its own image there.
 
-Why prod owns it: prod is the **stable** env whose 06:00 image-pull is load-bearing, and dev is
-**disposable** (its RG/vault are torn down during iteration). Putting the shared resource in prod
-and depending dev on it is the correct dependency direction — a dev teardown never touches the
-shared ACR. Prod's deploy is **unchanged** (it owns its ACR exactly as before). The CI SP already
-has Contributor + User Access Administrator on `rg-teetime-prod` (for the killswitch cross-RG
-RBAC), so no operator step is needed.
+Why a dedicated RG: the shared ACR is a resource neither env owns, so it gets its own
+lifecycle-independent RG — a teardown of either env's RG never touches it. The CI service principal
+is granted **Contributor + User Access Administrator** on `rg-teetime-shared` (one-time operator
+step) so CI can build/push images there and create each env's cross-RG AcrPull grant.
 
 **Repo isolation (load-bearing — do NOT collapse).** Dev's CI build pushes into a SEPARATE repo
 `teetime-dev:<sha>`, while prod pushes `teetime:<sha>`. This is not cosmetic: dev auto-deploys
 many times/day and prod's tag is static between rare `infra/v*` releases, so if both shared one
 repo under the weekly `--keep N` purge, dev churn would evict prod's pinned image within days →
 `ImagePullBackOff` on the next 06:00 cron → silent missed booking. With separate repos, prod's
-`teetime` repo is written ONLY by prod, so dev can never evict it; the purge task lists both
-repos (`--filter 'teetime:.*' --filter 'teetime-dev:.*'`, keep-N per repository) so dev's repo is
-still pruned.
+`teetime` repo is written ONLY by prod, so dev can never evict it; the purge task (on the shared
+ACR) lists both repos (`--filter 'teetime:.*' --filter 'teetime-dev:.*'`, keep-N per repository)
+so dev's repo is still pruned.
 
-**Accepted couplings:** (1) the dev deploy now hard-depends on the prod ACR being resolvable —
-if `rg-teetime-prod`'s ACR is briefly absent (prod RG mid-rebuild / future rename), the dev
-pipeline's "Resolve SHARED ACR" step fails fast (it was self-contained before). Stable in
-practice (prod ACR is long-lived). (2) A dev RG teardown+rebuild gives the dev MI a new
-principalId, leaving a stale AcrPull assignment on the prod ACR pointing at the deleted principal
+**Accepted couplings:** (1) BOTH env deploys now hard-depend on the shared ACR being resolvable —
+if `rg-teetime-shared`'s ACR is absent, the "Resolve SHARED ACR" step fails fast. The shared ACR is
+long-lived, so stable in practice. (2) An env RG teardown+rebuild gives that env's MI a new
+principalId, leaving a stale AcrPull assignment on the shared ACR pointing at the deleted principal
 (harmless — Azure GCs it; same as the existing killswitch cross-RG RBAC). Clean up if desired with
 `az role assignment list --assignee <oldPrincipalId>`.
 
-Cutover (one-time): merge this change → dev auto-deploys and re-points to the shared ACR → verify
-the dev job pulls → `az acr delete` the old `teetimedev<suffix>` registry. See §10.6.
+This SUPERSEDES the earlier "prod owns the shared ACR" interim design — the ACR was moved out of
+`rg-teetime-prod` into the dedicated `rg-teetime-shared`, and prod became a non-owner like dev.
+Cutover runbook: §10.6.
 
 ---
 
@@ -1033,24 +1032,30 @@ docstring.)
   appears on its own shortly after the App Insights resource sees telemetry; prod will get it
   too. Nothing to add to IaC.
 
-### 10.6 Shared-ACR cutover (one-time, dev-only — see §2.1)
+### 10.6 Shared-ACR cutover (one-time — dedicated rg-teetime-shared, see §2.1)
 
-Consolidating the two per-env ACRs into one shared (prod-owned) ACR. Prod is untouched; only
-dev changes. Order:
+Consolidating to ONE shared ACR in a dedicated `rg-teetime-shared`, with BOTH envs as non-owners.
+The prod re-point has a short cutover window (run off-peak, away from 05:50 ET). Order:
 
-1. **Merge the shared-ACR PR.** Dev auto-deploys: it stops creating its own ACR, gets a cross-RG
-   AcrPull on the prod ACR, builds `teetime-dev:<sha>` into the prod ACR (a SEPARATE repo from
-   prod's `teetime` — §2.1 repo isolation), and re-points the dev jobs at
-   `teetimeprod<suffix>.azurecr.io`. (No operator step — the CI SP already has Contributor +
-   UAA on `rg-teetime-prod`.)
-2. **Verify dev pulls from the shared ACR:**
+1. **One-time setup (operator, done):** `az group create -n rg-teetime-shared`; grant the CI SP
+   **Contributor + User Access Administrator** on it; deploy the shared ACR
+   (`az deployment group create -g rg-teetime-shared --template-file modules/registry.bicep
+   --parameters envName=shared acrSku=Basic jobPrincipalId=''`). Note the ACR name
+   (`teetimeshared<suffix>`) → it's the `sharedAcrName` in both param files.
+2. **Merge the migration PR.** Dev auto-deploys: re-points to the shared ACR, grants its cross-RG
+   AcrPull, builds `teetime-dev:<sha>` there. Verify:
    `az containerapp job show -g rg-teetime-dev -n teetime-job-dev-edt --query "properties.configuration.registries[0].server" -o tsv`
-   → must be the prod ACR login server. Optionally `az containerapp job start` the dev watch job
-   and confirm the replica pulls (Succeeded, no ImagePullBackOff).
-3. **Delete the now-orphaned dev ACR** (the $5/mo saving):
-   `az acr delete -n teetimedev<suffix> -g rg-teetime-dev --yes`
-   (guard-allowed; only the dev registry — never the prod/shared one).
-4. Done — one ACR, ~$5/mo saved. Rollback: revert the PR; dev's next deploy recreates its own ACR.
+   → the shared ACR login server.
+3. **Tag `infra/v*` → prod deploys** (manual-approval gate). Prod re-points to the shared ACR,
+   grants its cross-RG AcrPull, builds `teetime:<sha>` there. **Short window:** during the
+   two-pass deploy a watch cron firing mid-deploy loses one ~10-min cycle (benign). Verify the
+   prod jobs' `registries[0].server` is the shared ACR + the image exists + the prod MI has
+   AcrPull on the shared ACR.
+4. **Delete the old prod-resident ACR** (the $5/mo saving): `az acr delete -n teetimeprod<suffix>
+   -g rg-teetime-prod --yes` (guard-allowed). The old dev ACR was already deleted in the interim step.
+5. **Clean orphans:** stale cross-RG AcrPull assignments (from any RG rebuild) on the shared ACR;
+   confirm no leftover per-env ACRs. Done — one ACR in `rg-teetime-shared`, ~$5/mo saved.
+   Rollback: revert the PR; each env's next deploy still pulls from the shared ACR (it persists).
 
 ---
 

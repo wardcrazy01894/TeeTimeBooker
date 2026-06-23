@@ -16,6 +16,7 @@ BICEP_DIR = Path(__file__).resolve().parent.parent / "infra" / "bicep"
 MAIN = BICEP_DIR / "main.bicep"
 CROSS_RG = BICEP_DIR / "modules" / "acr-pull-cross-rg.bicep"
 PARAM_DEV = BICEP_DIR / "main.bicepparam.dev"
+PARAM_PROD = BICEP_DIR / "main.bicepparam.prod"
 
 
 @pytest.fixture(scope="module")
@@ -37,36 +38,40 @@ def test_cross_rg_module_grants_acrpull_on_existing_acr(cross_rg: str) -> None:
     assert "param jobPrincipalId string" in cross_rg
 
 
-def test_main_creates_acr_only_for_owner_env(main: str) -> None:
-    # The registry (ACR-creating) module is gated on the owner; non-owner gets a cross-RG pull.
-    assert "var isAcrOwner = envName == acrOwnerEnv" in main
-    assert "module registry 'modules/registry.bicep' = if (isAcrOwner)" in main
-    assert "module sharedAcrPull 'modules/acr-pull-cross-rg.bicep' = if (!isAcrOwner)" in main
+def test_main_never_creates_acr_always_pulls_shared(main: str) -> None:
+    # Dedicated shared RG: NEITHER env creates an ACR — main.bicep has no registry module and
+    # always deploys the cross-RG AcrPull grant (no owner conditional).
+    assert "module registry 'modules/registry.bicep'" not in main
+    assert "isAcrOwner" not in main
+    assert "acrOwnerEnv" not in main
+    assert "module sharedAcrPull 'modules/acr-pull-cross-rg.bicep' = {" in main
 
 
 def test_shared_acrpull_is_cross_rg_scoped(main: str) -> None:
-    # The non-owner's AcrPull grant lands in the shared ACR's (owner's) RG.
+    # The AcrPull grant lands in the shared ACR's dedicated RG.
     assert "scope: resourceGroup(sharedAcrResourceGroup)" in main
 
 
-def test_owner_defaults_to_prod(main: str) -> None:
-    assert "param acrOwnerEnv string = 'prod'" in main
+def test_shared_acr_params_are_required(main: str) -> None:
+    # Both env deploys MUST supply the shared ACR name + RG (no defaults — there is no owner).
+    assert "param sharedAcrName string\n" in main
+    assert "param sharedAcrResourceGroup string\n" in main
 
 
-def test_compute_depends_on_the_right_acr_grant(main: str) -> None:
-    # Owner waits on its registry module; non-owner on the cross-RG pull grant.
-    assert "dependsOn: isAcrOwner ? [registry] : [sharedAcrPull]" in main
+def test_compute_depends_on_the_acr_grant(main: str) -> None:
+    assert "dependsOn: [sharedAcrPull]" in main
 
 
-def test_acr_login_server_output_is_safe_for_non_owner(main: str) -> None:
-    # Safe-deref so the un-deployed registry module on the non-owner path resolves cleanly.
-    assert "registry.?outputs.loginServer ?? '${sharedAcrName}.azurecr.io'" in main
+def test_acr_login_server_output_derives_from_shared_name(main: str) -> None:
+    # No registry module to read an output from — the login server is derived from the name.
+    assert "output acrLoginServer string = '${sharedAcrName}.azurecr.io'" in main
 
 
-def test_dev_param_file_points_at_shared_acr() -> None:
-    text = PARAM_DEV.read_text()
-    assert "param sharedAcrResourceGroup = 'rg-teetime-prod'" in text
-    assert "param sharedAcrName =" in text
+def test_param_files_point_at_dedicated_shared_rg() -> None:
+    for text in (PARAM_DEV.read_text(), PARAM_PROD.read_text()):
+        assert "param sharedAcrResourceGroup = 'rg-teetime-shared'" in text
+        assert "param sharedAcrName =" in text
+        assert "param acrSku" not in text  # acrSku removed (main.bicep no longer declares it)
 
 
 def test_purge_isolates_prod_and_dev_repos() -> None:
