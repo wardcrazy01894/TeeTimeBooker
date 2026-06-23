@@ -639,8 +639,8 @@ async def test_http_status_errors_are_not_retried() -> None:
 @respx.mock
 async def test_book_is_not_retried_on_transient_error() -> None:
     """book()'s POST is single-attempt: a transport error propagates and is NEVER
-    retried (§9 double-booking defense — a timed-out book is the UNCERTAIN case for
-    M2.T3 reconciliation, not a safe re-fire)."""
+    retried (§9 double-booking defense — a timed-out book is the UNCERTAIN case the
+    watcher reconciles asynchronously, not a safe in-run re-fire)."""
     route = respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
         side_effect=httpx.ReadTimeout("slow")
     )

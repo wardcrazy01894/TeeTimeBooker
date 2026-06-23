@@ -1,8 +1,9 @@
 """M2.T1 happy path + idempotency + course fallback tests for Orchestrator.
 
-Full §9.1 state machine (UNCERTAIN → RECONCILING → BOOKED/LOST) is M2.T3.
-This file pins the v0 happy + idempotent + dry-run + course-fallback +
-already-booked paths.
+An UNCERTAIN book (timeout/5xx) raises out of the run — there is no in-run
+RECONCILING transition (M2.T3 was cut; the watcher reconciles asynchronously,
+PLAN.md §9.1). This file pins the v0 happy + idempotent + dry-run +
+course-fallback + already-booked paths.
 """
 
 from __future__ import annotations
