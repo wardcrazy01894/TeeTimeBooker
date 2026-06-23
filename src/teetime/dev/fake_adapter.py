@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
-from ..core.adapter import AdapterError, CancelError
+from ..core.adapter import AdapterCapabilities, AdapterError, CancelError
 from ..core.models import (
     MANAGED_BOOKING_TAG,
     BookingOutcome,
@@ -67,6 +67,11 @@ class FakeAdapter:
         self.book_call_count: int = 0
         self.list_reservations_call_count: int = 0
         self.cancel_call_count: int = 0
+        # Capability record mirroring a real adapter: blind_post reflects the ctor knob.
+        # (FakeAdapter reports auth state via is_authenticated but is NOT
+        # ReservationCacheRefreshable — it ships no refresh_reservations — matching how the
+        # orchestrator gates each capability.)
+        self.capabilities = AdapterCapabilities(blind_post=supports_blind_post)
 
     # --- scripting surface ----------------------------------------------
 

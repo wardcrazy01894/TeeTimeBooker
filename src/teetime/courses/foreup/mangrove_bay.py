@@ -16,11 +16,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import date
-from typing import ClassVar
 from zoneinfo import ZoneInfo
 
 import httpx
 
+from ...core.adapter import AdapterCapabilities
 from ...core.models import BookingRequest, CourseId, TeeTimeSlot
 from ...core.slot_utils import rank_slots_for_request
 from .base import FOREUP_BASE_URL, ForeUpAdapter, _parse_slot
@@ -159,7 +159,9 @@ class MangroveBayAdapter(ForeUpAdapter):
     """
 
     booking_page_url = MANGROVE_BAY_BOOKING_PAGE_URL
-    supports_blind_post: ClassVar[bool] = True
+    # The only course that flips blind_post on (overrides synthesize_blind_slots below);
+    # inherits ForeUP's refreshable + auth-state capabilities.
+    capabilities: AdapterCapabilities = AdapterCapabilities(blind_post=True)
 
     def __init__(
         self,

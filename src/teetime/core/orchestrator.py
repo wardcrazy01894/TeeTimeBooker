@@ -306,11 +306,13 @@ class Orchestrator:
 
     @staticmethod
     def _is_blind_capable(adapter: CourseAdapter) -> bool:
-        """The two-part capability predicate: structural membership AND the boolean flag.
-        `runtime_checkable` only checks member PRESENCE, so the `supports_blind_post`
-        boolean is the real guard (a bare ForeUP course satisfies isinstance but defaults
-        False). See BLIND_POST_PLAN.md §3 / core/adapter.py BlindPostCapable."""
-        return isinstance(adapter, BlindPostCapable) and adapter.supports_blind_post
+        """Blind-POST gate: the explicit `capabilities.blind_post` flag (NOT isinstance).
+        A True flag promises captcha_pool_size() + synthesize_blind_slots() exist, so callers
+        cast to `BlindPostCapable` to invoke them. See AdapterCapabilities / BLIND_POST_PLAN.md
+        §3 — this replaces the old `isinstance(adapter, BlindPostCapable) and supports_blind_post`
+        double-gate (isinstance was always True for any ForeUP adapter; the boolean was the real,
+        hidden guard)."""
+        return adapter.capabilities.blind_post
 
     def _should_blind_post(
         self,

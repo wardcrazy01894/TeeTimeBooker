@@ -301,26 +301,31 @@ in `core/` — never directly. This is the cut line for parallel work.
 - **`cancel_reservation` is on the `CourseAdapter` Protocol** (breaking — all
   adapters must implement it). Raises `CancelError` on failure. Returns normally
   on 404 (already-cancelled is the desired post-condition). See `core/adapter.py`.
-- **Blind-POST is an ADAPTER CAPABILITY, never a config flag (`BlindPostCapable`,
-  BLIND_POST_PLAN.md).** A separate `runtime_checkable` Protocol in `core/adapter.py`
-  with three members: `supports_blind_post: bool`, `captcha_pool_size() -> int`, and
-  `synthesize_blind_slots(request, target_date, *, max_count) -> list[TeeTimeSlot]`.
-  CRITICAL SUBTLETY: `runtime_checkable` checks only member PRESENCE, so EVERY ForeUP
-  adapter (the base ships all three members) satisfies `isinstance(a, BlindPostCapable)`
-  — the `supports_blind_post` **boolean** is the real guard. The orchestrator gate (the
-  race path only, PR3) is therefore the two-part predicate
-  `isinstance(a, BlindPostCapable) and a.supports_blind_post`. The `ForeUpAdapter` base
-  defaults `supports_blind_post=False` and its `synthesize_blind_slots` raises
-  `NotImplementedError` (a bare ForeUP course has no committed template/grid); a capable
-  course (Mangrove Bay) flips the boolean True and overrides `synthesize_blind_slots`.
-  TeeItUp ships none of the members → `isinstance` excludes it outright. So a non-capable
-  course can never reach the blind path even with a mis-edited config.
+- **Blind-POST is an ADAPTER CAPABILITY, never a config flag — gated by an explicit
+  `AdapterCapabilities` record (`core/adapter.py`, BLIND_POST_PLAN.md).** Every adapter
+  exposes `capabilities: AdapterCapabilities` (frozen dataclass); the orchestrator gate is
+  the single flag `adapter.capabilities.blind_post`. `BlindPostCapable` survives ONLY as a
+  typing cast-target (`captcha_pool_size() -> int`, `synthesize_blind_slots(request,
+  target_date, *, max_count) -> list[TeeTimeSlot]`) the orchestrator casts to in order to
+  CALL those methods once the flag says they exist — it is NOT `isinstance`-checked anymore.
+  This REPLACED the old footgun: `BlindPostCapable` was `runtime_checkable` and the base
+  shipped the methods, so EVERY ForeUP adapter satisfied `isinstance(a, BlindPostCapable)`
+  and the `supports_blind_post` boolean was the real (hidden) guard. The flag makes it
+  explicit and unfoolable. The `ForeUpAdapter` base sets `capabilities=AdapterCapabilities(
+  blind_post=False)` and its `synthesize_blind_slots` raises `NotImplementedError` (a bare
+  ForeUP course has no committed template/grid); Mangrove Bay overrides with
+  `blind_post=True` + `synthesize_blind_slots`. TeeItUp + the default FakeAdapter are
+  `blind_post=False`. So a non-capable course can never reach the blind path even with a
+  mis-edited config. (The other two opt-in capabilities — `ReservationCacheRefreshable`,
+  `AuthStateReportable` — remain HONEST `runtime_checkable` `isinstance` presence-checks:
+  for those "has the method" *is* the capability, so they can't desync the way a flag could
+  and are deliberately NOT folded into `AdapterCapabilities`.)
 - **The orchestrator blind path fires at T0, RACE PATH ONLY (BLIND_POST_PLAN PR3).**
   `_run_course` consults `_should_blind_post(adapter, course_id, request)` after the layer-2
   pre-book guard and BEFORE the sequential search — a five-part gate, ALL required:
   `not request.dry_run` AND `self._prefetch_book` (the `--wait` race path) AND
-  `scheduler.blind_post_max_count > 0` AND `_is_blind_capable(adapter)` (the two-part
-  `isinstance(a, BlindPostCapable) and a.supports_blind_post`) AND the course is the PRIMARY
+  `scheduler.blind_post_max_count > 0` AND `_is_blind_capable(adapter)` (the explicit
+  `adapter.capabilities.blind_post` flag) AND the course is the PRIMARY
   (first-preference) adapter. Any miss → the normal search-book loop. When it passes,
   `_blind_post_course` runs the **hybrid net**: it fires the top-`N` ranked in-window
   `synthesize_blind_slots` POSTs CONCURRENTLY (`asyncio.create_task` + `gather(return_exceptions=True)`)

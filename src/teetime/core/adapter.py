@@ -11,6 +11,7 @@ course-specific errors into our typed exceptions. They do NOT own:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Protocol, runtime_checkable
 
@@ -70,33 +71,39 @@ class CancelError(AdapterError):
     """
 
 
-@runtime_checkable
-class BlindPostCapable(Protocol):
-    """Opt-in capability: a course adapter that can fire BLIND book POSTs at T0.
+@dataclass(frozen=True, slots=True)
+class AdapterCapabilities:
+    """Explicit capability record exposed by every CourseAdapter as ``.capabilities``.
 
-    See BLIND_POST_PLAN.md §3. Blind-POST builds a book payload from a frozen
-    static template plus a *computed* slot id (no live search dependency) and fires
-    the top-N ranked in-window candidates CONCURRENTLY at the 06:00 drop, keeping
-    the best reservation that books and cancelling the rest.
+    Replaces the misleading ``isinstance(adapter, BlindPostCapable) and
+    adapter.supports_blind_post`` double-gate. Because ``runtime_checkable`` only checks
+    member PRESENCE, EVERY ForeUP adapter satisfied ``isinstance(_, BlindPostCapable)``
+    once the base shipped the methods — so the boolean was the *real* (but hidden) guard.
+    A plain flag on the adapter says exactly what it means and cannot be half-satisfied.
 
-    The capability gate is intentionally an ADAPTER ATTRIBUTE, never a config flag:
-    a non-capable course cannot blind-POST even with a fat-fingered config, because
-    the orchestrator branches on `isinstance(adapter, BlindPostCapable) and
-    adapter.supports_blind_post` against the concrete adapter object. A bare ForeUP
-    course (or TeeItUp, or the default FakeAdapter) is NOT capable until it ships and
-    validates its own template + tee-time grid. Mangrove Bay is the only capable
-    course in this feature's v0.
+    ``blind_post=True`` is a PROMISE that ``captcha_pool_size()`` + ``synthesize_blind_slots()``
+    are implemented (the orchestrator casts to ``BlindPostCapable`` to call them). A bare
+    ForeUP course, TeeItUp, and the default FakeAdapter are NOT capable; Mangrove Bay is the
+    only capable course in v0.
 
-    Note (nit 1): the Protocol declares `supports_blind_post: bool` as a plain
-    attribute while concrete impls (MangroveBayAdapter, ForeUpAdapter base) declare it
-    `ClassVar[bool]`. This is intentional and sound — `runtime_checkable` only checks
-    member PRESENCE, and a ClassVar is readable as an instance attribute, so
-    `isinstance(adapter, BlindPostCapable) and adapter.supports_blind_post` works for
-    both class-level and instance-level declarations. Consequence: every ForeUP adapter
-    satisfies isinstance once the base ships the members; the BOOLEAN is the real guard.
+    Scope note: the other opt-in capabilities — ``ReservationCacheRefreshable`` and
+    ``AuthStateReportable`` — remain honest ``isinstance`` presence-checks, because for those
+    "has the method" *is* the capability (they cannot desync the way a flag could) and they are
+    not footguns. This record can grow to fold them in if that calculus ever changes.
     """
 
-    supports_blind_post: bool
+    blind_post: bool = False
+
+
+class BlindPostCapable(Protocol):
+    """Structural shape the orchestrator casts to in order to CALL the blind-POST methods.
+
+    Typing-only cast target — the runtime gate is ``adapter.capabilities.blind_post`` (see
+    ``AdapterCapabilities``), NOT ``isinstance``. See BLIND_POST_PLAN.md §3: blind-POST builds
+    a book payload from a frozen static template plus a *computed* slot id (no live search
+    dependency) and fires the top-N ranked in-window candidates CONCURRENTLY at the 06:00 drop,
+    keeping the best reservation that books and cancelling the rest.
+    """
 
     def captcha_pool_size(self) -> int:
         """Number of pre-solved CAPTCHA tokens currently in the FIFO pool.
@@ -201,6 +208,10 @@ class CourseAdapter(Protocol):
     """
 
     course_id: CourseId
+    # Explicit capability record (see AdapterCapabilities). The orchestrator branches on
+    # `adapter.capabilities.blind_post` rather than `isinstance(adapter, BlindPostCapable)`,
+    # so a non-capable course can never reach the blind path even with a mis-edited config.
+    capabilities: AdapterCapabilities
 
     async def authenticate(self, creds: CourseCredentials) -> None:
         """Establish an authenticated session. Idempotent. Raises AuthError on bad creds."""

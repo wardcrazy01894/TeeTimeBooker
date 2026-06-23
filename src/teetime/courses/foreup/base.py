@@ -48,6 +48,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from ...core.adapter import (
+    AdapterCapabilities,
     AuthError,
     CancelError,
     CaptchaError,
@@ -101,13 +102,14 @@ class ForeUpAdapter(CourseAdapter):
 
     course_id: CourseId
 
-    # Blind-POST capability (BLIND_POST_PLAN.md §3). A bare ForeUP course is NOT
-    # capable — a subclass must ship + validate its own static payload template and
-    # tee-time grid, then override this to True and implement synthesize_blind_slots
-    # (Mangrove Bay does so in PR2). The orchestrator gates the blind path on
-    # `isinstance(adapter, BlindPostCapable) and adapter.supports_blind_post`, so
-    # leaving this False keeps a course on the existing search→book path.
-    supports_blind_post: ClassVar[bool] = False
+    # Blind-POST capability (BLIND_POST_PLAN.md §3). A bare ForeUP course is NOT capable —
+    # a subclass must ship + validate its own static payload template and tee-time grid, then
+    # override `capabilities` with blind_post=True and implement synthesize_blind_slots
+    # (Mangrove Bay does so). The orchestrator gates the blind path on
+    # `adapter.capabilities.blind_post`, so leaving this False keeps a course on the existing
+    # search→book path. (ForeUP IS ReservationCacheRefreshable + AuthStateReportable — those
+    # stay honest isinstance presence-checks, not capabilities flags; see AdapterCapabilities.)
+    capabilities: AdapterCapabilities = AdapterCapabilities(blind_post=False)
 
     # Each subclass MUST override this with the ForeUP booking page URL for that course.
     # Used by _build_adapters() to configure the CAPTCHA provider with the correct page.
