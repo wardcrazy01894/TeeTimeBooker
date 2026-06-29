@@ -1,11 +1,13 @@
-"""PR3 of BLIND_POST_PLAN.md: the orchestrator blind-POST race path + hybrid fallback.
+"""BLIND_POST_PLAN.md + RESEARCH_FALLBACK_PLAN.md: the orchestrator blind-POST race path
++ post-reguard fresh-search fallback.
 
 At the 06:00 ET drop, for a blind-CAPABLE primary course on the race path
 (``prefetch_book=True``, not dry-run), the orchestrator fires the top-N ranked
-in-window blind book POSTs CONCURRENTLY with the real search, keeps the best
-reservation that books, and cancels the rest IN-RUN. If zero blind POSTs book, it
-re-guards (re-auth + ``list_reservations``) against a landed-but-uncertain POST
-before falling through to the existing sequential search-book loop.
+in-window blind book POSTs CONCURRENTLY (NO concurrent hedge search — dropped by
+RESEARCH_FALLBACK_PLAN), keeps the best reservation that books, and cancels the rest
+IN-RUN. If zero blind POSTs book, it re-guards (re-auth + ``list_reservations``) against a
+landed-but-uncertain POST, then fires a FRESH search STRICTLY AFTER the re-guard and falls
+through to the existing sequential search-book loop.
 
 The capability gate is the explicit ``adapter.capabilities.blind_post`` flag — AND
 race-path AND primary AND not-dry-run AND ``blind_post_max_count > 0``. Everything else
