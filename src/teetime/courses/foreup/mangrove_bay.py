@@ -130,9 +130,9 @@ BLIND_POST_TEMPLATE: dict[str, object] = {
 # 8 tee times/hour at minutes :00,:07,:15,:22,:30,:37,:45,:52 (confirmed gap-free across the
 # live-searchable afternoon union). Mornings sell out inside the 7-day window so could not be
 # searched directly; this grid is EXTRAPOLATED from that proven cadence over the 08:45-10:00
-# booking window. It is a best-effort starting point: the real T0 search runs concurrently as
-# the grid-drift fallback, and synthesize_blind_slots logs the firing grid (and search() logs
-# the real matched morning times) so a real drop can confirm or correct it retroactively.
+# booking window. It is a best-effort starting point: on a 0-booked drop the post-reguard fresh
+# search is the grid-drift fallback, and synthesize_blind_slots logs the firing grid (and search()
+# logs the real matched morning times) so a real drop can confirm or correct it retroactively.
 # If a drop shows drift, update this list — `None` would fail loud (nit 3), but it is populated.
 BLIND_POST_MORNING_GRID: list[str] | None = [
     "08:45",
@@ -152,10 +152,11 @@ BLIND_POST_MORNING_GRID: list[str] | None = [
 class MangroveBayAdapter(ForeUpAdapter):
     """Mangrove Bay specialization. Sets the IDs; inherits all HTTP logic from ForeUpAdapter.
 
-    Blind-POST capable (BLIND_POST_PLAN.md): at the 06:00 ET drop the race-path
-    Orchestrator fires concurrent book POSTs for the top-N ranked in-window slots
-    synthesized from BLIND_POST_TEMPLATE + a computed start_front, keeps the best, and
-    cancels the rest. The real search runs concurrently as the grid-drift fallback.
+    Blind-POST capable (BLIND_POST_PLAN.md + RESEARCH_FALLBACK_PLAN.md): at the 06:00 ET
+    drop the race-path Orchestrator fires concurrent book POSTs for the top-N ranked
+    in-window slots synthesized from BLIND_POST_TEMPLATE + a computed start_front, keeps the
+    best, and cancels the rest. Only if zero POSTs book does a FRESH search run (after the
+    re-guard) as the grid-drift fallback — there is no concurrent hedge search.
     """
 
     booking_page_url = MANGROVE_BAY_BOOKING_PAGE_URL
@@ -200,7 +201,7 @@ class MangroveBayAdapter(ForeUpAdapter):
 
         The raw is fed through the SAME ``_parse_slot`` the search path uses, so a
         synthesized slot is byte-identical to a searched one for the same raw — keeping the
-        blind candidates and the concurrent grid-drift fallback consistent.
+        blind candidates and the post-reguard fresh-search fallback consistent.
         """
         if BLIND_POST_MORNING_GRID is None:
             # Fail loud rather than silently enumerating nothing (BLIND_POST_PLAN nit 3).
@@ -235,8 +236,9 @@ class MangroveBayAdapter(ForeUpAdapter):
         # and the in-window times we will blind-POST. The separate in-window vs survived
         # counts let an empty result be diagnosed from logs — "0 in window" (grid drift /
         # wrong window) vs "in window but 0 survived" (mis-set holes/max_price/party size) —
-        # instead of looking identical. Diff against the concurrent real search (search()
-        # logs its matched morning tee times) to confirm or correct the derived grid. PII-free.
+        # instead of looking identical. Diff against the post-reguard fresh search on a
+        # 0-booked drop (search() logs its matched morning tee times) to confirm or correct
+        # the derived grid. PII-free.
         _log.info(
             "MB blind-POST: %d grid time(s), %d in window, %d survived spots/holes/price; "
             "firing %d for %s (grid=%s, times=%s, max_count=%d)",
