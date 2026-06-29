@@ -621,6 +621,35 @@ async def test_reguard_falls_back_to_authenticate_for_non_refreshable() -> None:
     assert fa.order == ["auth", "list"]
 
 
+async def test_reguard_skips_refresh_when_no_creds() -> None:
+    """Defensive branch (full-repo-scan CI coverage): with NO creds registered for the
+    course, the re-guard cannot re-auth — it skips the refresh entirely and lists on the
+    existing session (no refresh call, no crash, no course-skip)."""
+    cid = CourseId("fake:mb")
+
+    class _RecordAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(course_id=cid, supports_blind_post=True)
+            self.refreshed = False
+
+        async def refresh_reservations(self, creds: CourseCredentials) -> None:
+            self.refreshed = True  # must NOT be reached when creds are absent
+
+        async def list_reservations(self) -> list[ExistingReservation]:
+            self.list_reservations_call_count += 1
+            return []
+
+    fa = _RecordAdapter()
+    orch, _, _ = _build({cid: fa})
+    orch._creds = {}  # simulate a course with no registered creds
+
+    result = await orch._reguard_before_fallback(fa, cid, _request(course_ids=(cid,)))
+
+    assert result is None  # empty reservation list → no match
+    assert fa.refreshed is False  # no creds → no refresh attempt
+    assert fa.list_reservations_call_count == 1  # still lists on the existing session
+
+
 async def test_reguard_refresh_failure_skips_fallback_no_crash() -> None:
     """full-repo-scan correctness #1: if the 0-booked re-guard's forced re-auth FAILS
     (a transient TransportError at T0), the session is left unauthenticated — we must NOT
