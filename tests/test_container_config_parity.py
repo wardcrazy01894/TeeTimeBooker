@@ -186,6 +186,29 @@ def test_container_and_example_captcha_prefetch_match() -> None:
     )
 
 
+def test_container_and_example_blind_fallback_reserve_match() -> None:
+    """The blind-POST 0-booked fallback token reserve must agree across the committed configs.
+
+    ``blind_post_fallback_token_reserve`` (RESEARCH_FALLBACK_PLAN §2 Q3) pre-solves spare
+    CAPTCHA tokens beyond the blind burst so the post-reguard fresh search books with a
+    pooled token, not a ~75 s inline solve. It is a race-critical pool-depth knob; a silent
+    drift would mean prod reserves a different number of spare tokens than reviewed.
+    ``config/local.toml`` is gitignored (absent in CI), so we anchor to ``example.toml``.
+    """
+    example = _load(_EXAMPLE_TOML).get("scheduler", {})
+    container = _load(_CONTAINER_TOML).get("scheduler", {})
+    assert example.get("blind_post_fallback_token_reserve") is not None, (
+        "example.toml [scheduler] is missing blind_post_fallback_token_reserve — pin the "
+        "blind-POST fallback reserve depth explicitly (RESEARCH_FALLBACK_PLAN §2 Q3)."
+    )
+    assert example.get("blind_post_fallback_token_reserve") == container.get(
+        "blind_post_fallback_token_reserve"
+    ), (
+        "blind_post_fallback_token_reserve drift between example.toml and container.toml — "
+        "keep the blind-POST fallback reserve depth in sync (RESEARCH_FALLBACK_PLAN §2 Q3)."
+    )
+
+
 def test_container_and_example_party_size_match() -> None:
     """The committed reference config and the Azure container must agree on size.
 

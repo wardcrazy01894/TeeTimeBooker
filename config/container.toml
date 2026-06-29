@@ -88,6 +88,12 @@ captcha_prefetch_count = 3
 # fan-out added 2captcha cost + T0 footprint without improving the catch rate. 3 fires the 3 grid
 # slots closest to the window midpoint (the highest-ranked candidates).
 blind_post_max_count = 3
+# Blind-POST 0-booked fallback reserve (RESEARCH_FALLBACK_PLAN.md §2 Q3): EXTRA CAPTCHA tokens
+# pre-solved beyond the blind burst so the post-reguard FRESH search books with a fresh POOLED
+# token instead of a ~75s inline solve. The 3 blind POSTs pop their tokens; these 2 REMAIN
+# pooled for the fallback. Paid pre-T0 on every drop (incl. the happy path where they go
+# unused). 0 = no reserve.
+blind_post_fallback_token_reserve = 2
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from
