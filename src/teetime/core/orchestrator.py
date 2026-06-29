@@ -346,10 +346,14 @@ class Orchestrator:
         course_id: CourseId,
         request: BookingRequest,
     ) -> BookingResult:
-        """Fire the top-N ranked in-window blind book POSTs CONCURRENTLY with the real
-        search, keep the best that books and cancel the rest IN-RUN. If zero book,
-        re-guard against a landed-but-uncertain POST, then fall back to the existing
-        sequential search-book loop. See BLIND_POST_PLAN.md §6.
+        """Fire the top-N ranked in-window blind book POSTs CONCURRENTLY at T0, keep the best
+        that books and cancel the rest IN-RUN. If zero book, re-guard against a landed-but-
+        uncertain POST, then fire a FRESH search (AFTER the re-guard) and fall back to the
+        sequential search-book loop. See BLIND_POST_PLAN.md §6 + RESEARCH_FALLBACK_PLAN.
+
+        NO concurrent hedge search (RESEARCH_FALLBACK_PLAN §2 Q1): the happy path issues zero
+        search GETs, and the 0-booked path issues exactly one FRESH search post-re-guard — the
+        freshest possible snapshot, taken after the re-auth, with no shared-client cookie race.
 
         Runs inside `run()`'s advisory lock (no new lock acquisition; the reconcile +
         record_terminal happen under that lock, §6 lock discipline)."""
@@ -360,15 +364,16 @@ class Orchestrator:
             request, target_date, max_count=self._scheduler.blind_post_max_count
         )
         # N = min(in-window grid count, pooled tokens in hand). Each book() pops one pooled
-        # token synchronously; with N <= pool none inline-solves at T0 (§5 token budget).
+        # token synchronously; with N <= pool none inline-solves at T0 (§5 token budget). The
+        # blind_post_fallback_token_reserve tokens beyond N stay pooled for the fresh-search
+        # fallback below (RESEARCH_FALLBACK_PLAN §2 Q3).
         n = min(len(blind_slots), capable.captcha_pool_size())
         fire = blind_slots[:n]
 
-        # Launch the blind burst AND the real-search hedge at the same instant.
+        # Launch ONLY the blind burst at T0 — no concurrent hedge search.
         blind_tasks = [asyncio.create_task(adapter.book(s, request)) for s in fire]
-        search_task = asyncio.create_task(self._poll_for_slots(adapter, request))
         log.info(
-            "course %s: blind-POST firing %d concurrent book POST(s) at T0 + hedge search",
+            "course %s: blind-POST firing %d concurrent book POST(s) at T0",
             course_id,
             len(fire),
         )
@@ -416,7 +421,6 @@ class Orchestrator:
             # FAST PATH WON. Keep the rank-0 booked slot, cancel the rest by their own id.
             best, extras = self._keep_best(booked, request)
             await self._cancel_extras(adapter, extras)
-            await self._cancel_task(search_task)  # we won; stop the hedge GET
             log.info(
                 "course %s: blind-POST booked %d, kept %s, cancelled %d extra(s)",
                 course_id,
@@ -432,7 +436,6 @@ class Orchestrator:
         # top of a landed one (must-fix 4).
         match = await self._reguard_before_fallback(adapter, course_id, request)
         if match is not None:
-            await self._cancel_task(search_task)
             log.info(
                 "course %s: blind-POST re-guard found landed reservation %s — ALREADY_BOOKED",
                 course_id,
@@ -448,9 +451,12 @@ class Orchestrator:
                 attempts=0,
             )
 
-        # CORRECTNESS FALLBACK: the real search is authoritative. Blind booked zero, so the
-        # blind and search book-sets are mutually exclusive — no same-slot dedup needed.
-        slots = await search_task
+        # CORRECTNESS FALLBACK: fire a FRESH search NOW — strictly after the re-guard re-auth,
+        # so it sees the freshest post-burst availability (not a stale ~T0 hedge snapshot) and
+        # never races the shared-client cookie rotation (RESEARCH_FALLBACK_PLAN §2 Q1/Q2). The
+        # real search is authoritative; blind booked zero, so the blind and search book-sets are
+        # mutually exclusive — no same-slot dedup needed.
+        slots = await self._poll_for_slots(adapter, request)
         if not slots:
             raise _CourseSkippedError()
         candidates = self._rank_slots(slots, request)
@@ -538,38 +544,6 @@ class Orchestrator:
                 )
         existing = await adapter.list_reservations()
         return self._first_matching_reservation(existing, request)
-
-    @staticmethod
-    async def _cancel_task(task: asyncio.Task[object]) -> None:
-        """Abandon a hedge task: cancel it and discard its result/exception.
-
-        We only call this once a blind POST has WON (or the re-guard found a landed
-        reservation), so the hedge search's outcome is irrelevant. Two cases are both
-        handled by the ``try/except`` below so abandoning the hedge can never fail the run:
-
-        - The hedge is still IN FLIGHT: ``task.cancel()`` schedules a cancellation and
-          ``await task`` raises ``asyncio.CancelledError`` — caught by the explicit
-          ``except asyncio.CancelledError`` and dropped silently (the expected case).
-        - The hedge is already DONE: ``task.cancel()`` is a no-op and ``await`` re-raises
-          whatever it stored — for the hedge search that can be a non-cancelled error
-          (e.g. a 429 ``RateLimitError`` or a ``CaptchaError`` at the drop, since
-          ``_poll_for_slots`` only swallows inventory-not-published). Caught by
-          ``except Exception`` and logged at debug (not fully invisible) before dropping.
-
-        Letting either escape ``_blind_post_course`` would discard a real, successful
-        booking, so both are handled explicitly. ``KeyboardInterrupt``/``SystemExit`` (the
-        other ``BaseException``s) are NOT ``Exception`` subclasses, so they are NOT caught
-        and propagate normally."""
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass  # expected: the hedge was still in flight when we cancelled it
-        except Exception as exc:
-            # The hedge had already finished with a non-cancel error (e.g. a 429 or a
-            # CAPTCHA challenge at the drop). We won, so it's irrelevant — but log at debug
-            # so it isn't fully invisible if we later need to explain a hedge failure.
-            log.debug("course: abandoned hedge search finished with %r — discarding", exc)
 
     # --- race-path pre-warm (login + reservation guard + CAPTCHA) ------
 

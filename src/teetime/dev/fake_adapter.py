@@ -61,6 +61,10 @@ class FakeAdapter:
         self.authenticate_call_count: int = 0
         self.search_call_count: int = 0
         self.last_search_skip_initial_spacing: bool | None = None
+        # book_call_count observed at the START of each search() — lets a test prove the
+        # blind-POST fresh-search fallback fired AFTER the whole blind burst (e.g. == [2]
+        # means the single search saw both blind books). RESEARCH_FALLBACK_PLAN §5.5.
+        self.search_book_counts: list[int] = []
         self.prepare_book_call_count: int = 0
         # Records the `count` passed to the most recent prepare_book() call, so
         # orchestrator tests can assert the race path requests N pooled tokens.
@@ -179,6 +183,7 @@ class FakeAdapter:
         self, request: BookingRequest, *, skip_initial_spacing: bool = False
     ) -> list[TeeTimeSlot]:
         self.search_call_count += 1
+        self.search_book_counts.append(self.book_call_count)
         self.last_search_skip_initial_spacing = skip_initial_spacing
         if self._search_exc is not None:
             raise self._search_exc

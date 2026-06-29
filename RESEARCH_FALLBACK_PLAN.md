@@ -1,7 +1,9 @@
 # RESEARCH_FALLBACK_PLAN.md
 
-> **Status:** RATIFIED (plan-with-review, 1 round → adversarial-reviewer **APPROVE**, no
-> must-fixes; the 3 should-fixes + 2 nits are folded in below, tagged inline). Course-dependent
+> **Status:** IMPLEMENTED (all 3 PRs merged: PR1 config field #158, PR2 prefetch reserve #159,
+> PR3 drop-hedge + fresh post-reguard search). RATIFIED first via plan-with-review (1 round →
+> adversarial-reviewer **APPROVE**, no must-fixes; the 3 should-fixes + 2 nits folded in below,
+> tagged inline). Course-dependent
 > "re-search after blind-fail" change to the booking `Orchestrator`. Extends
 > `BLIND_POST_PLAN.md` §6/§11. Race-critical 6:00 AM-drop code; correctness > cleverness.
 >
