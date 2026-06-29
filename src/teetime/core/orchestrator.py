@@ -181,7 +181,7 @@ class Orchestrator:
                 except _CourseSkippedError:
                     continue
                 except RateLimitError as exc:
-                    # A 429 anywhere in this course's flow (search/hedge/book) means the
+                    # A 429 anywhere in this course's flow (search/blind fallback/book) means the
                     # platform is throttling us. A 429 is REJECTED before processing, so no
                     # reservation was created (unlike the §9 UNCERTAIN timeout/5xx) — it is
                     # safe to treat like an empty course: log + try the next preference, and

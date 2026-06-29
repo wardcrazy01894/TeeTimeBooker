@@ -250,9 +250,12 @@ async def test_happy_path_issues_no_search() -> None:
 
 
 async def test_zero_booked_fires_fresh_search_after_blind_burst() -> None:
-    """When 0 blind POSTs book, EXACTLY ONE fresh search fires, and it runs AFTER the whole
-    blind burst (not a concurrent hedge): ``search_book_counts == [2]`` proves the single
-    search observed both blind books before it ran. The fallback then books the search slot
+    """When 0 blind POSTs book, EXACTLY ONE search fires and the fallback books its slot.
+    ``search_book_counts == [2]`` records that the single search observed both blind books at
+    its start — a CHARACTERIZATION guard, not a non-concurrency proof (it is green on the old
+    concurrent-hedge code too, since FIFO scheduling ran the blind tasks before the hedge). The
+    genuine post-re-guard ordering discriminator is ``test_fresh_search_runs_after_reguard``;
+    this test pins the single-search count + that the fallback books the fresh result
     (RESEARCH_FALLBACK_PLAN §2 Q1)."""
     cid = CourseId("fake:mb")
     fa = FakeAdapter(course_id=cid, supports_blind_post=True)
@@ -441,7 +444,7 @@ async def test_blind_post_logs_slot_gone_count(
     fa = FakeAdapter(course_id=cid, supports_blind_post=True)
     fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
     fa.set_book_side_effects([SlotGoneError("gone1"), SlotGoneError("gone2")])
-    fa.set_search_response([])  # hedge search finds nothing → NO_INVENTORY
+    fa.set_search_response([])  # fresh fallback search finds nothing → NO_INVENTORY
 
     orch, _, _ = _build({cid: fa})
     with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
