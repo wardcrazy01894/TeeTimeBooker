@@ -213,11 +213,12 @@ in `core/` — never directly. This is the cut line for parallel work.
   and `continue`s to the
   next course preference exactly like an empty course. A 429 is rejected by the platform BEFORE
   processing, so no reservation was created (unlike the §9 UNCERTAIN timeout/5xx case), making the
-  course-skip safe. (Caveat for the only LIVE adapter: ForeUP raises `RateLimitError` ONLY from
-  `search()` — a 429 on ForeUP's `book()` POST goes through `raise_for_status` and surfaces as a
-  raw `HTTPStatusError`, which this catch does NOT handle; ForeUP `book()` never produces a 429
-  because 409/400 already map to `SlotGoneError` first. The book-POST disjunct is reachable in
-  prod only via TeeItUp's pre-payment steps, which are out of deployed scope.) If no course books, `run()` records the clean `NO_INVENTORY` terminal +
+  course-skip safe. (For the only LIVE adapter, ForeUP `book()` ALSO maps a 429 → `RateLimitError`
+  — parity with `search()`/`cancel`, so a throttle on the booking POST skips the course cleanly
+  instead of surfacing as a raw `HTTPStatusError` that would crash the sequential / blind-fallback
+  `_book_from_candidates` path. 409/400 still map to `SlotGoneError` FIRST, so a 429 only arises
+  when ForeUP genuinely throttles the POST. The TeeItUp book-POST disjunct stays out of deployed
+  scope.) If no course books, `run()` records the clean `NO_INVENTORY` terminal +
   notifies (the booking command then exits non-zero via a `ClickException`, no traceback) rather
   than dying with an uncaught error and no record. **`CaptchaError`/`AuthError` are deliberately
   NOT caught here** — they are operator-action errors and must still propagate for a non-zero exit

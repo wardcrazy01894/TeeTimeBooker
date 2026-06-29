@@ -621,6 +621,79 @@ async def test_reguard_falls_back_to_authenticate_for_non_refreshable() -> None:
     assert fa.order == ["auth", "list"]
 
 
+async def test_reguard_refresh_failure_skips_fallback_no_crash() -> None:
+    """full-repo-scan correctness #1: if the 0-booked re-guard's forced re-auth FAILS
+    (a transient TransportError at T0), the session is left unauthenticated — we must NOT
+    fall through to a fallback book() (which would raise AuthError on the dead session and
+    CRASH the run, AND risk double-booking a landed-but-uncertain blind POST). The course is
+    SKIPPED cleanly (→ NO_INVENTORY); the watcher reconciles within ≤10 min. NO fallback
+    search or book fires."""
+    cid = CourseId("fake:mb")
+
+    class _RefreshFailsAdapter(FakeAdapter):
+        async def refresh_reservations(self, creds: CourseCredentials) -> None:
+            raise RuntimeError("transient re-auth blip at T0")
+
+    fa = _RefreshFailsAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_book_side_effects([SlotGoneError("gone"), SlotGoneError("gone")])
+    fa.set_search_response([_bslot(cid, 9, 0)])  # would be booked if the fallback wrongly ran
+
+    orch, _, _ = _build({cid: fa})
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.NO_INVENTORY
+    assert fa.book_call_count == 2  # only the 2 blind POSTs; NO fallback book
+    assert fa.search_call_count == 0  # NO fallback search after the failed re-guard
+
+
+async def test_zero_booked_logs_fresh_search_transition(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """full-repo-scan observability: on a 0-booked blind wipeout with a CLEAN re-guard, the
+    transition to the fresh fallback search is logged explicitly so the path taken is stated,
+    not reconstructed from the absence of a reguard-match line."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_book_side_effects([SlotGoneError("gone"), SlotGoneError("gone"), BookingOutcome.BOOKED])
+    fa.set_search_response([_bslot(cid, 9, 0)])
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert any("fresh fallback search" in r.getMessage() for r in caplog.records), (
+        "expected an explicit blind→fresh-search transition log line"
+    )
+
+
+async def test_total_blind_wipeout_logs_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """full-repo-scan observability: a TOTAL blind wipeout (every fired POST slot-gone, 0
+    booked) — the prime 'why no 6am booking' signal — is logged at WARNING, distinct from a
+    partial loss (which stays INFO)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_book_side_effects([SlotGoneError("gone"), SlotGoneError("gone")])
+    fa.set_search_response([])  # fallback also empty → NO_INVENTORY
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.WARNING, logger="teetime.core.orchestrator"):
+        await orch.run(_request(course_ids=(cid,)))
+
+    wipeout = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and "slot-gone" in r.getMessage()
+    ]
+    assert wipeout, "expected a WARNING line for a total blind wipeout"
+    assert any("wipeout" in m.lower() for m in wipeout)
+
+
 # --- CAPTCHA prefetch scales to blind fan-out ---------------------------
 
 

@@ -861,6 +861,34 @@ async def test_book_400_raises_slot_gone_so_orchestrator_tries_next() -> None:
 
 
 @respx.mock
+async def test_book_429_raises_rate_limit_not_httpstatuserror() -> None:
+    """A 429 on the booking POST means ForeUP throttled us BEFORE creating a reservation.
+    It must surface as RateLimitError (parity with search()/cancel) so run()'s per-course
+    loop skips the course cleanly, NOT a raw HTTPStatusError that crashes the sequential /
+    blind-fallback book path (_book_from_candidates only catches SlotGoneError).
+    full-repo-scan correctness #2."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(429, headers={"retry-after": "45"})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(RateLimitError) as exc_info:
+            await adapter.book(slot, _request())
+    assert exc_info.value.retry_after_s == 45.0
+
+
+@respx.mock
 async def test_book_logs_response_body_on_error(caplog: pytest.LogCaptureFixture) -> None:
     """On any non-2xx reservation POST, the response body must be logged (it used to be
     thrown away by raise_for_status, leaving us blind to WHY ForeUP rejected the booking —

@@ -409,12 +409,17 @@ class Orchestrator:
 
         if gone:
             # Aggregate, not per-slot: at a competitive drop many/all blind POSTs can lose the
-            # race. One line tells an operator how many of the N fired came back slot-gone.
-            log.info(
-                "course %s: blind-POST %d of %d slot(s) came back slot-gone (claimed pre-book)",
+            # race. One line tells an operator how many of the N fired came back slot-gone. A
+            # TOTAL wipeout (every fired POST gone AND nothing booked) is the prime "why no 6am
+            # booking" signal, so escalate it to WARNING — distinct from a partial loss (INFO).
+            total_wipeout = gone == len(fire) and not booked
+            log.log(
+                logging.WARNING if total_wipeout else logging.INFO,
+                "course %s: blind-POST %d of %d slot(s) came back slot-gone (claimed pre-book)%s",
                 course_id,
                 gone,
                 len(fire),
+                " — TOTAL wipeout, falling back to a fresh search" if total_wipeout else "",
             )
 
         if booked:
@@ -455,7 +460,12 @@ class Orchestrator:
         # so it sees the freshest post-burst availability (not a stale ~T0 hedge snapshot) and
         # never races the shared-client cookie rotation (RESEARCH_FALLBACK_PLAN §2 Q1/Q2). The
         # real search is authoritative; blind booked zero, so the blind and search book-sets are
-        # mutually exclusive — no same-slot dedup needed.
+        # mutually exclusive — no same-slot dedup needed. Log the transition so the path taken is
+        # explicit in the logs rather than inferred from the absence of a reguard-match line.
+        log.info(
+            "course %s: blind-POST booked 0, re-guard clean — firing fresh fallback search",
+            course_id,
+        )
         slots = await self._poll_for_slots(adapter, request)
         if not slots:
             raise _CourseSkippedError()
@@ -535,13 +545,22 @@ class Orchestrator:
                     await adapter.refresh_reservations(creds)
                 else:
                     await adapter.authenticate(creds)
-            except Exception as exc:  # best-effort: a re-auth blip must not crash the run
+            except Exception as exc:
+                # The forced re-auth FAILED — the session is now unauthenticated (ForeUP's
+                # refresh_reservations resets _logged_in BEFORE re-login, so a failure leaves
+                # it False). We can neither trust list_reservations to reveal a landed-but-
+                # uncertain blind POST NOR safely book a fallback: book() would raise AuthError
+                # on the dead session (crashing the run with no terminal) AND a stale snapshot
+                # could let us double-book on top of a landed reservation. SKIP the course
+                # cleanly instead; the watcher reconciles any landed reservation on its next
+                # ≤10-min poll. full-repo-scan correctness #1.
                 log.warning(
-                    "course %s: blind-POST re-guard reservation refresh failed (%s) — "
-                    "listing with the existing session",
+                    "course %s: blind-POST re-guard re-auth failed (%s) — skipping the "
+                    "fallback this run; watcher will reconcile",
                     course_id,
                     exc,
                 )
+                raise _CourseSkippedError() from exc
         existing = await adapter.list_reservations()
         return self._first_matching_reservation(existing, request)
 
