@@ -82,6 +82,13 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
 
+**Merged post-`infra/v2.7.0`, NOT yet deployed (awaits the next image build + ACA redeploy):**
+the blind-POST fallback rework (RESEARCH_FALLBACK_PLAN.md, PRs #157–#160) — `blind_post_max_count`
+lowered 12→**3** in the shipped configs, a new `blind_post_fallback_token_reserve` (default 2), and
+the orchestrator **dropped the concurrent hedge search** (the 0-booked path now fires a FRESH search
+strictly after the re-guard). Deployed prod (v2.7.0) still runs the old cap-12 + concurrent-hedge
+behavior until redeployed, so `main` ≠ deployed prod for the booking flow.
+
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
 to main via `.github/workflows/azure-iac.yml` with `dryRun = true` — no real

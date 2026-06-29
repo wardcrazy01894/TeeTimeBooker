@@ -188,9 +188,11 @@ class SchedulerConfig(BaseModel):
     # and cancels the rest. DECOUPLED from captcha_prefetch_count (the single-POST race
     # prefetch depth): the CAPTCHA prefetch SCALES to min(blind_post_max_count, in-window
     # grid count) when the primary is blind-capable. The actual burst N is further bounded by
-    # the pooled-token count. `0` DISABLES blind fan-out (single-POST race path). Default 12 ≈
-    # the full 08:45-10:00 Mangrove Bay window. Ignored off the race path and for non-capable
-    # or non-primary courses.
+    # the pooled-token count. `0` DISABLES blind fan-out (single-POST race path). The code
+    # default is 12 (the superseded "all-in-window" value), but the SHIPPED configs override to
+    # 3 — the top 3 slots nearest the window midpoint; the surplus POSTs past the first success
+    # bounce on ForeUP's "1 reservation/day" rule (see config/example.toml, RESEARCH_FALLBACK_PLAN).
+    # Ignored off the race path and for non-capable or non-primary courses.
     blind_post_max_count: int = Field(default=12, ge=0)
     # Blind-POST 0-booked fallback reserve (RESEARCH_FALLBACK_PLAN §2 Q3). EXTRA CAPTCHA
     # tokens to pre-solve BEYOND the blind burst so the post-reguard FRESH search's book()

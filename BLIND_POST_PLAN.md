@@ -12,8 +12,11 @@
 **Status:** LIVE in prod (`infra/v2.5.0`, deployed 2026-06-22 with `dryRun=false`; the #147 gate
 refactor rode `infra/v2.6.0`). PR0–PR5
 MERGED — the orchestrator blind path is
-live in code (gate + hybrid net + keep-best/cancel-extras + reguard + prefetch scaling;
-`core/orchestrator.py`, default `blind_post_max_count=12`), the watcher >1-reservation crash-net
+live in code (gate + blind burst + keep-best/cancel-extras + reguard + prefetch scaling;
+`core/orchestrator.py`). **Superseded by `RESEARCH_FALLBACK_PLAN.md` (merged):** the concurrent
+hedge search was DROPPED — the 0-booked path now fires a FRESH search after the re-guard — and
+`blind_post_max_count` was lowered to **3** in the shipped configs (code default still 12) with a
+new `blind_post_fallback_token_reserve` (default 2). The watcher >1-reservation crash-net
 reconcile backstop is in place (`core/watch_orchestrator.py`), and the docs (PLAN §12 etiquette
 paragraph + README + the opt-in `tests/test_foreup_canary.py` template-drift canary) are landed.
 Real effect is prod-only (the gate requires the `--wait` race path + `not dry_run`); it went live
@@ -327,11 +330,11 @@ _blind_post_course(adapter, course_id, request):     # NO target_date arg — de
   applied to the `.slot` of each `BOOKED` blind result. This is the SAME ranking
   used pre-fire (to order which slots to blind-POST) and the SAME ranking the
   search path uses — so blind and search agree by construction (reviewer pre-empt).
-- If ANY blind POST booked, we never consult the search result — the fast path
-  already holds the best in-window slot we could fire for. The search task is
-  cancelled (it was a hedge).
-- If NO blind POST booked, the search result is authoritative and the existing
-  sequential loop runs, unchanged.
+- If ANY blind POST booked, we are done — the fast path already holds the best
+  in-window slot. No search runs at all. (SUPERSEDED: the original design ran a
+  concurrent hedge search and cancelled it here; RESEARCH_FALLBACK_PLAN dropped it.)
+- If NO blind POST booked, a FRESH search runs (strictly after the re-guard) and
+  the existing sequential loop runs on its result, unchanged.
 
 **Lock discipline:** the blind burst itself does not need the lock for the POSTs
 (ForeUP is the serialization point and concurrency is intended), but the
@@ -487,13 +490,13 @@ Blind-POST is a NEW pre-state that FANS OUT the `POSTING` state:
        v
    BLIND_FANOUT  (capable + race + primary + not-dry-run)
        │  fire N concurrent book() POSTs (each = one POSTING, one token)
-       │  + concurrent real search() (hedge)
+       │  (NO concurrent hedge search — dropped by RESEARCH_FALLBACK_PLAN)
        ├── ≥1 BOOKED ──→ KEEP_BEST ──→ cancel extras IN-RUN by own id (under lock) ──→ BOOKED (terminal)
        │                                  └ cancel-extra fails → log CRITICAL, still BOOKED;
        │                                    PR4 watch net reconciles via re-auth+list_reservations
        └── 0 BOOKED  ──→ REGUARD (force-refresh snapshot + list_reservations; landed-but-uncertain check, must-fix 1/4)
                             ├── match found ──→ ALREADY_BOOKED (terminal; do NOT search-book)
-                            └── no match ──→ SEARCH_FALLBACK ──→ existing sequential candidate loop
+                            └── no match ──→ FRESH search() (after reguard) ──→ existing sequential candidate loop
                                               ├ books → BOOKED
                                               └ exhausted/empty → _CourseSkippedError → next course / NO_INVENTORY
 ```

@@ -305,28 +305,35 @@ the course is the first-preference (PRIMARY) adapter. Any miss → the normal §
 path. So the watcher, local-demo, dry-run, a fallback course, a non-MB course, and
 `blind_post_max_count=0` all keep the sequential path.
 
-**Hybrid net (`_blind_post_course`):** fire the top-`N` ranked in-window synthesized POSTs
-CONCURRENTLY (`N = min(len(synthesize_blind_slots(...)), captcha_pool_size())` — token-bounded)
-alongside the real search GET (a hedge). Then:
+**Blind net (`_blind_post_course`)** — see `RESEARCH_FALLBACK_PLAN.md` for the ratified
+fallback design: fire the top-`N` ranked in-window synthesized POSTs CONCURRENTLY
+(`N = min(len(synthesize_blind_slots(...)), captcha_pool_size())` — token-bounded). There is
+**NO concurrent hedge search** (the original hedge was dropped — RESEARCH_FALLBACK_PLAN §2 Q1).
+Then:
 - **≥1 BOOKED** → `_keep_best` re-ranks the booked slots with the same `rank_slots_for_request`
   the search path uses and returns the winner; `_cancel_extras` cancels the other booked
   reservations by the `confirmation_code` each `book()` returned (this is why the §"book() id
   extraction" `TTID`/`teetime_id` fix is load-bearing — a `None` conf or a `CancelError` is logged
-  `CRITICAL` but never crashes the run); the hedge search task is cancelled.
+  `CRITICAL` but never crashes the run). The happy path issues **zero** search GETs.
 - **0 BOOKED** → `_reguard_before_fallback` FORCE-REFRESHES the reservation snapshot
   (`refresh_reservations`, the `ReservationCacheRefreshable` capability — a plain re-auth is an
   idempotent no-op and would return the stale pre-burst cache) THEN `list_reservations` (a POST
   that timed out may have landed silently — the §9 UNCERTAIN case). A match short-circuits to
-  `ALREADY_BOOKED` with NO fallback book; otherwise await the hedge search and fall through to
-  the sequential `_book_from_candidates` loop (and `_CourseSkippedError` if that finds nothing).
+  `ALREADY_BOOKED` with NO fallback book; otherwise it fires a FRESH search STRICTLY AFTER the
+  re-guard re-auth (freshest post-burst snapshot, no shared-client cookie race) and falls through
+  to the sequential `_book_from_candidates` loop (and `_CourseSkippedError` if that finds nothing
+  — or if the re-guard re-auth itself failed, leaving the session unauthenticated).
 - A `SlotGoneError` from a blind POST is dropped (try the rest); a non-SlotGone exception is
   logged + dropped (the reguard is what covers a possibly-landed POST).
 
 **CAPTCHA prefetch scales to the fan-out** (`_captcha_prefetch_count_for`): on the race path a
-blind-capable primary pre-solves `min(blind_post_max_count, len(synthesize_blind_slots(...)))`
-tokens so each blind POST has a pooled token in hand at T0; everything else uses the fixed
-`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (default 12, ge=0; 0
-disables blind fan-out) is decoupled from `captcha_prefetch_count` and lives in `SchedulerConfig`.
+blind-capable primary pre-solves `min(blind_post_max_count, len(synthesize_blind_slots(...)))
++ scheduler.blind_post_fallback_token_reserve` tokens — the burst portion gives each blind POST a
+pooled token at T0 and the reserve (default 2) tokens REMAIN pooled so the 0-booked fresh-search
+fallback books with a pooled token, not a ~75 s inline solve. Everything else uses the fixed
+`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (code default 12, ge=0; 0
+disables blind fan-out — **but the shipped configs set 3**) is decoupled from
+`captcha_prefetch_count` and lives in `SchedulerConfig`.
 
 State-machine note (§9.1): each blind POST is an independent entry into the POST/result phase.
 A 4xx → `SlotGoneError` (drop, try the rest); a 2xx → BOOKED (kept or cancelled by `_keep_best`/
@@ -578,9 +585,11 @@ What we still DO NOT:
 **Blind-POST burst at T0 (Mangrove Bay; BLIND_POST_PLAN.md).** The one deliberate
 departure from the 250 ms spacing rule is the 06:00:00 drop on the race path. To beat
 the search→book round-trip on the most contested slots of the week, the booking
-`Orchestrator` fires up to `scheduler.blind_post_max_count` (default 12) book POSTs
-**concurrently** for the in-window morning grid synthesized from a frozen template (no
-search dependency), with the real search GET hedged alongside as a grid-drift fallback.
+`Orchestrator` fires up to `scheduler.blind_post_max_count` (code default 12, but the shipped
+configs set **3**) book POSTs **concurrently** for the in-window morning grid synthesized from a
+frozen template (no search dependency). If zero POSTs book, a single FRESH search runs as the
+grid-drift fallback — STRICTLY AFTER the re-guard, not concurrently (the original hedge was
+dropped; RESEARCH_FALLBACK_PLAN.md §2 Q1).
 The burst is bounded three ways — it is gated to the `--wait` race path, only the PRIMARY
 blind-capable course, and `min(blind_post_max_count, captcha_pool_size())` (each POST needs
 a pre-solved CAPTCHA token) — so it is a one-time fan-out of a handful of requests at a
