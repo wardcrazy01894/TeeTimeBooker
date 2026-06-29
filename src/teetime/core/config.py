@@ -192,6 +192,14 @@ class SchedulerConfig(BaseModel):
     # the full 08:45-10:00 Mangrove Bay window. Ignored off the race path and for non-capable
     # or non-primary courses.
     blind_post_max_count: int = Field(default=12, ge=0)
+    # Blind-POST 0-booked fallback reserve (RESEARCH_FALLBACK_PLAN §2 Q3). EXTRA CAPTCHA
+    # tokens to pre-solve BEYOND the blind burst so the post-reguard FRESH search's book()
+    # pops a fresh POOLED token instead of a ~75s inline solve. The burst size is unchanged
+    # (synthesize_blind_slots truncates to blind_post_max_count), so these tokens are never
+    # fired — they REMAIN pooled for the late fallback (all tokens are solved in one
+    # concurrent batch, so the reserve is "present," not "fresher"). Race-critical pool
+    # depth → parity-checked across the committed configs. `0` = no reserve (off).
+    blind_post_fallback_token_reserve: int = Field(default=2, ge=0)
 
 
 class NotifierConfig(BaseModel):

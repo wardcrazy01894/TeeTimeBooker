@@ -252,6 +252,12 @@ remove.
   hand; an inline solve at T0 is exactly the failure mode we removed.
 - **Etiquette cap (ToS, §9):** N is hard-capped by `blind_post_max_count`. We do NOT fan
   out beyond it (and never beyond the in-window grid). Then cancel N−1 within ~1 s.
+- **0-booked fallback reserve (extends this — see `RESEARCH_FALLBACK_PLAN.md`).** A follow-up
+  ratified plan adds `scheduler.blind_post_fallback_token_reserve` (default 2) so the prefetch
+  solves `min(blind_post_max_count, grid) + reserve`: the blind burst pops its N, and the
+  reserve tokens REMAIN pooled so the 0-booked **fresh** search fallback books with a pooled
+  token instead of a ~75 s inline solve. That plan also drops the concurrent hedge search and
+  re-searches AFTER the re-guard. The config field lands first (inert); the wiring follows.
 
 ---
 

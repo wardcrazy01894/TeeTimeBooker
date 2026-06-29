@@ -11,6 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from teetime.core.config import (
     AppConfig,
@@ -18,6 +19,7 @@ from teetime.core.config import (
     MissingEnvVarError,
     PlayerConfig,
     RequestConfig,
+    SchedulerConfig,
     TimeWindowConfig,
     _hydrate_skip,
     load,
@@ -163,6 +165,19 @@ def test_cutoff_config_rejects_negative_days_before() -> None:
     """days_before must be >= 0 (a negative value would target a date AFTER the reservation)."""
     with pytest.raises(ValueError, match="days_before must be >= 0"):
         BookingCutoffConfig(days_before=-1)
+
+
+def test_scheduler_default_fallback_token_reserve() -> None:
+    """RESEARCH_FALLBACK_PLAN §2 Q3 / PR1: the blind-POST 0-booked fallback reserve
+    defaults to 2 spare CAPTCHA tokens — pre-solved BEYOND the blind burst so the
+    post-reguard FRESH search books with a pooled token, not a ~75s inline solve."""
+    assert SchedulerConfig().blind_post_fallback_token_reserve == 2
+
+
+def test_fallback_token_reserve_rejects_negative() -> None:
+    """The reserve is a token COUNT (ge=0; 0 = off) — a negative value is nonsensical."""
+    with pytest.raises(ValidationError):
+        SchedulerConfig(blind_post_fallback_token_reserve=-1)
 
 
 def test_container_config_enables_watcher(env_set: None) -> None:
