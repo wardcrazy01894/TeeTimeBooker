@@ -1,11 +1,13 @@
-"""PR3 of BLIND_POST_PLAN.md: the orchestrator blind-POST race path + hybrid fallback.
+"""BLIND_POST_PLAN.md + RESEARCH_FALLBACK_PLAN.md: the orchestrator blind-POST race path
++ post-reguard fresh-search fallback.
 
 At the 06:00 ET drop, for a blind-CAPABLE primary course on the race path
 (``prefetch_book=True``, not dry-run), the orchestrator fires the top-N ranked
-in-window blind book POSTs CONCURRENTLY with the real search, keeps the best
-reservation that books, and cancels the rest IN-RUN. If zero blind POSTs book, it
-re-guards (re-auth + ``list_reservations``) against a landed-but-uncertain POST
-before falling through to the existing sequential search-book loop.
+in-window blind book POSTs CONCURRENTLY (NO concurrent hedge search — dropped by
+RESEARCH_FALLBACK_PLAN), keeps the best reservation that books, and cancels the rest
+IN-RUN. If zero blind POSTs book, it re-guards (re-auth + ``list_reservations``) against a
+landed-but-uncertain POST, then fires a FRESH search STRICTLY AFTER the re-guard and falls
+through to the existing sequential search-book loop.
 
 The capability gate is the explicit ``adapter.capabilities.blind_post`` flag — AND
 race-path AND primary AND not-dry-run AND ``blind_post_max_count > 0``. Everything else
@@ -159,8 +161,8 @@ async def test_blind_post_keep_best_agrees_with_search_ranking() -> None:
 
 
 async def test_blind_post_all_gone_falls_back_to_search() -> None:
-    """Every blind POST 4xx → SlotGoneError; the concurrent search returns a slot that
-    books via the existing sequential fallback loop."""
+    """Every blind POST 4xx → SlotGoneError; the FRESH post-reguard fallback search returns a
+    slot that books via the existing sequential fallback loop."""
     cid = CourseId("fake:mb")
     fa = FakeAdapter(course_id=cid, supports_blind_post=True)
     blind = [_bslot(cid, 8, 0), _bslot(cid, 8, 15)]
@@ -619,6 +621,35 @@ async def test_reguard_falls_back_to_authenticate_for_non_refreshable() -> None:
     await orch._reguard_before_fallback(fa, cid, req)
 
     assert fa.order == ["auth", "list"]
+
+
+async def test_reguard_skips_refresh_when_no_creds() -> None:
+    """Defensive branch (full-repo-scan CI coverage): with NO creds registered for the
+    course, the re-guard cannot re-auth — it skips the refresh entirely and lists on the
+    existing session (no refresh call, no crash, no course-skip)."""
+    cid = CourseId("fake:mb")
+
+    class _RecordAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(course_id=cid, supports_blind_post=True)
+            self.refreshed = False
+
+        async def refresh_reservations(self, creds: CourseCredentials) -> None:
+            self.refreshed = True  # must NOT be reached when creds are absent
+
+        async def list_reservations(self) -> list[ExistingReservation]:
+            self.list_reservations_call_count += 1
+            return []
+
+    fa = _RecordAdapter()
+    orch, _, _ = _build({cid: fa})
+    orch._creds = {}  # simulate a course with no registered creds
+
+    result = await orch._reguard_before_fallback(fa, cid, _request(course_ids=(cid,)))
+
+    assert result is None  # empty reservation list → no match
+    assert fa.refreshed is False  # no creds → no refresh attempt
+    assert fa.list_reservations_call_count == 1  # still lists on the existing session
 
 
 async def test_reguard_refresh_failure_skips_fallback_no_crash() -> None:

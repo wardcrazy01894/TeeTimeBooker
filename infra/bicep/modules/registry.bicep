@@ -1,6 +1,7 @@
 // registry.bicep — Azure Container Registry (ACR) Basic SKU.
 // Hosts the bot container image. The Container Apps Job pulls from this
-// registry using a system-assigned managed identity with the AcrPull role.
+// registry using a user-assigned managed identity (identity.bicep) granted the
+// AcrPull role — cross-RG via acr-pull-cross-rg.bicep in the shared-ACR model.
 // ACR admin account is disabled; no password stored anywhere.
 //
 // Cost: ~$5.00/mo flat for Basic SKU (East US 2, April 2026).
@@ -75,6 +76,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: acrName
   location: location
   tags: {
+    application: 'teetime'
     environment: envName
     managedBy: 'bicep'
   }

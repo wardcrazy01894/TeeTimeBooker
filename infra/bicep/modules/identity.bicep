@@ -32,6 +32,11 @@ param location string
 resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: 'mi-teetime-${envName}'
   location: location
+  tags: {
+    application: 'teetime'
+    environment: envName
+    managedBy: 'bicep'
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -321,7 +321,9 @@ class TeeItUpAdapter:
             f"{_KENNA_API_BASE}{_AUTH_PATH}", json=payload, headers=self._common_headers()
         )
         if r.status_code == _HTTP_UNAUTHORIZED:
-            raise AuthError(f"TeeItUp login rejected for {creds.username!r}")
+            # Do NOT embed creds.username (the account email) — this message is logged with
+            # exc_info by __main__ and ships to Log Analytics (full-repo-scan: no PII in logs).
+            raise AuthError(f"TeeItUp login rejected (401) for {self.course_id}")
         if r.status_code == _HTTP_RATE_LIMIT:
             retry = r.headers.get("retry-after")
             raise RateLimitError(
@@ -334,7 +336,8 @@ class TeeItUpAdapter:
         self._customer = data.get("customer") or {}
         phone_numbers = self._customer.get("phoneNumbers") or [{}]
         self._phone_number = str(phone_numbers[0].get("value", ""))
-        _log.info("TeeItUp authenticated: user=%s", self._customer.get("username"))
+        # Log the (non-PII) course id, not the account username/email (ships to Log Analytics).
+        _log.info("TeeItUp authenticated: course=%s", self.course_id)
 
         # Cache card credentials for book()
         self._cvv = creds.extra.get("cvv", "")
