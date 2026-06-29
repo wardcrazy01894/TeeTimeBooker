@@ -292,7 +292,9 @@ class ForeUpAdapter(CourseAdapter):
         _log.info("ForeUP: warming up session cookie...")
         warmup_path = f"/index.php/booking/{self._course_pk}/{self._booking_class_id}"
         await self._send_with_retry(lambda: self._c().get(warmup_path), op="warm-up")
-        _log.info("ForeUP: logging in as %s...", creds.username)
+        # Log the (non-PII) course id, not creds.username — the username is the account
+        # EMAIL and this line ships to Log Analytics (full-repo-scan security: no PII in logs).
+        _log.info("ForeUP: logging in to %s...", self.course_id)
         r = await self._send_with_retry(
             lambda: self._c().post(
                 LOGIN_PATH,
