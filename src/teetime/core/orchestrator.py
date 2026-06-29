@@ -381,11 +381,17 @@ class Orchestrator:
         blind_results = await asyncio.gather(*blind_tasks, return_exceptions=True)
         booked: list[BookingResult] = []
         gone = 0  # SlotGoneError count — logged in aggregate so a total wipeout is diagnosable
-        # A control-flow BaseException (CancelledError/KeyboardInterrupt/SystemExit — e.g. a
-        # SIGTERM at container scale-down) surfacing in ONE task is CAPTURED here, not re-raised
-        # mid-loop: a booked SIBLING later in `fire` must be secured first, or it would be left
-        # live on the server with no in-run keep/record/cancel (full-repo-scan #e1). It is
-        # propagated after the booked branch below, but only if nothing booked.
+        # A BaseException surfacing in gather's RESULTS — a CHILD book() task raising
+        # asyncio.CancelledError, or any other BaseException subclass — is CAPTURED here, not
+        # re-raised mid-loop: a booked SIBLING later in `fire` must be secured first, or it would
+        # be left live on the server with no in-run keep/record/cancel (full-repo-scan #e1). It is
+        # propagated after the booked branch below, but only if nothing booked. SCOPE (verified):
+        # gather(return_exceptions=True) does NOT route KeyboardInterrupt/SystemExit here — it
+        # re-raises those out of the `await` before this loop runs — and a default SIGTERM kills
+        # the process with no Python exception; the parent task's OWN cancellation likewise
+        # propagates out of the await, not into the results. So this guards the exotic
+        # child-raised-CancelledError / BaseException-subclass case — defensive depth, not a hot
+        # path (nothing in the current code cancels individual blind_tasks; the hedge was removed).
         pending_base_exc: BaseException | None = None
         # blind_results is in the same order as `fire` (gather preserves task order),
         # so each result pairs with the slot whose POST produced it.
@@ -418,8 +424,9 @@ class Orchestrator:
                     r,
                 )
             elif isinstance(r, BaseException):
-                # Capture the control-flow signal; do NOT raise here (would abandon a booked
-                # sibling). Re-raised after the booked branch iff nothing booked (#e1).
+                # A captured BaseException (a child CancelledError or other BaseException
+                # subclass — see the scope note above). Capture it; do NOT raise here (would
+                # abandon a booked sibling). Re-raised after the booked branch iff nothing booked.
                 pending_base_exc = r
 
         if gone:
@@ -450,9 +457,9 @@ class Orchestrator:
             )
             return best
 
-        # 0 BLIND BOOKED, so there is no reservation to secure. If a control-flow signal
-        # (SIGTERM/KeyboardInterrupt/SystemExit) arrived during the burst, propagate it NOW —
-        # we deferred it only to protect a booked sibling, and there is none (#e1).
+        # 0 BLIND BOOKED, so there is no reservation to secure. If a BaseException was captured
+        # during the burst, propagate it NOW — we deferred it only to protect a booked sibling,
+        # and there is none (#e1).
         if pending_base_exc is not None:
             raise pending_base_exc
 

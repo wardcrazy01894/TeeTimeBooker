@@ -364,10 +364,14 @@ in `core/` — never directly. This is the cut line for parallel work.
   shared-client cookie race — RESEARCH_FALLBACK_PLAN §2 Q1/Q2) and falls through to the sequential
   `_book_from_candidates` loop, raising `_CourseSkippedError` if that too finds nothing. `SlotGoneError` from a blind POST is dropped (try the others); a non-SlotGone
   exception is logged + dropped (the §9 UNCERTAIN ambiguity is what the reguard covers). A
-  **control-flow `BaseException`** (CancelledError/KeyboardInterrupt/SystemExit — e.g. a SIGTERM
-  mid-burst) is CAPTURED, not raised mid-loop: a booked SIBLING is secured first (kept + returned
-  BOOKED) and the signal is re-raised only if NOTHING booked — so a shutdown never abandons a live
-  reservation (#e1). The CAPTCHA
+  **`BaseException` captured in `gather`'s results** (a child `book()` raising
+  `asyncio.CancelledError`, or any other `BaseException` subclass) is CAPTURED, not raised
+  mid-loop: a booked SIBLING is secured first (kept + returned BOOKED) and it is re-raised only if
+  NOTHING booked (#e1). Scope (verified): `gather(return_exceptions=True)` re-raises
+  `KeyboardInterrupt`/`SystemExit` out of the `await` (they never reach the results), a default
+  SIGTERM kills the process with no Python exception, and the parent task's own cancellation also
+  bypasses the results — so this is defensive depth for the exotic child-`BaseException` case, not
+  a real shutdown handler. The CAPTCHA
   prefetch SCALES on the race path: `_captcha_prefetch_count_for` returns
   `min(blind_post_max_count, len(synthesize_blind_slots(...))) + scheduler.blind_post_fallback_token_reserve`
   for a blind-capable primary — the burst portion gives each blind POST a pooled token, and the
