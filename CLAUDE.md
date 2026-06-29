@@ -208,8 +208,8 @@ in `core/` — never directly. This is the cut line for parallel work.
   drop the fallbacks are best-effort.
 - **A `RateLimitError` (HTTP 429) anywhere in a course's flow skips the course — it does NOT
   crash the booking job.** `run()`'s per-course loop catches `RateLimitError` (raised from the
-  search GET, the blind-POST hedge search, or — TeeItUp only — a pre-payment book step; one catch
-  covers all paths since they all propagate through `_run_course`), logs it with `retry_after_s`,
+  search GET, the blind-POST 0-booked fresh fallback search, or — TeeItUp only — a pre-payment book
+  step; one catch covers all paths since they all propagate through `_run_course`), logs it with `retry_after_s`,
   and `continue`s to the
   next course preference exactly like an empty course. A 429 is rejected by the platform BEFORE
   processing, so no reservation was created (unlike the §9 UNCERTAIN timeout/5xx case), making the
@@ -340,19 +340,21 @@ in `core/` — never directly. This is the cut line for parallel work.
   `scheduler.blind_post_max_count > 0` AND `_is_blind_capable(adapter)` (the explicit
   `adapter.capabilities.blind_post` flag) AND the course is the PRIMARY
   (first-preference) adapter. Any miss → the normal search-book loop. When it passes,
-  `_blind_post_course` runs the **hybrid net**: it fires the top-`N` ranked in-window
-  `synthesize_blind_slots` POSTs CONCURRENTLY (`asyncio.create_task` + `gather(return_exceptions=True)`)
-  alongside the real `search` GET, where `N = min(len(blind_slots), captcha_pool_size())` (token-bounded).
-  Outcomes: (a) **≥1 BOOKED** → `_keep_best` re-ranks the booked slots with the SAME
-  `rank_slots_for_request` the search path uses, returns the winner, `_cancel_extras` cancels every
-  other booked reservation by its `book()` `confirmation_code` (a `None` conf or a `CancelError` →
-  `log.critical`, never crashes — load-bearing reason the TTID/teetime_id id-extraction fix matters),
-  and `_cancel_task` cancels the hedge search. (b) **0 BOOKED** → `_reguard_before_fallback`
-  FORCE-REFRESHES the reservation snapshot THEN `list_reservations` (a landed-but-uncertain POST may
-  have booked silently): a match short-circuits to `ALREADY_BOOKED` (no fallback book); else it awaits
-  the hedge search and
-  falls through to the sequential `_book_from_candidates` loop, raising `_CourseSkippedError` if that
-  too finds nothing. `SlotGoneError` from a blind POST is dropped (try the others); a non-SlotGone
+  `_blind_post_course` fires the top-`N` ranked in-window `synthesize_blind_slots` POSTs
+  CONCURRENTLY (`asyncio.create_task` + `gather(return_exceptions=True)`), where
+  `N = min(len(blind_slots), captcha_pool_size())` (token-bounded). **There is NO concurrent
+  hedge search** (RESEARCH_FALLBACK_PLAN §2 Q1): the happy path issues zero search GETs and the
+  0-booked path issues exactly one FRESH search post-re-guard. Outcomes: (a) **≥1 BOOKED** →
+  `_keep_best` re-ranks the booked slots with the SAME `rank_slots_for_request` the search path
+  uses, returns the winner, `_cancel_extras` cancels every other booked reservation by its
+  `book()` `confirmation_code` (a `None` conf or a `CancelError` → `log.critical`, never crashes —
+  load-bearing reason the TTID/teetime_id id-extraction fix matters); it returns WITHOUT any
+  search. (b) **0 BOOKED** → `_reguard_before_fallback` FORCE-REFRESHES the reservation snapshot
+  THEN `list_reservations` (a landed-but-uncertain POST may have booked silently): a match
+  short-circuits to `ALREADY_BOOKED` (no fallback book, NO search); else it fires a FRESH
+  `_poll_for_slots` search STRICTLY AFTER the re-guard re-auth (freshest post-burst snapshot, no
+  shared-client cookie race — RESEARCH_FALLBACK_PLAN §2 Q1/Q2) and falls through to the sequential
+  `_book_from_candidates` loop, raising `_CourseSkippedError` if that too finds nothing. `SlotGoneError` from a blind POST is dropped (try the others); a non-SlotGone
   exception is logged + dropped (the §9 UNCERTAIN ambiguity is what the reguard covers). The CAPTCHA
   prefetch SCALES on the race path: `_captcha_prefetch_count_for` returns
   `min(blind_post_max_count, len(synthesize_blind_slots(...))) + scheduler.blind_post_fallback_token_reserve`

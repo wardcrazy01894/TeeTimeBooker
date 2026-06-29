@@ -256,9 +256,10 @@ remove.
   ratified plan adds `scheduler.blind_post_fallback_token_reserve` (default 2) so the prefetch
   solves `min(blind_post_max_count, grid) + reserve`: the blind burst pops its N, and the
   reserve tokens REMAIN pooled so the 0-booked **fresh** search fallback books with a pooled
-  token instead of a ~75 s inline solve. **DONE:** the config field (PR1) + the
-  `_captcha_prefetch_count_for` reserve wiring (PR2) are merged. The control-flow change — drop
-  the concurrent hedge search and re-search AFTER the re-guard — is PR3.
+  token instead of a ~75 s inline solve. **DONE (all 3 PRs merged):** the config field (PR1), the
+  `_captcha_prefetch_count_for` reserve wiring (PR2), and the control-flow change (PR3 — dropped
+  the concurrent hedge search; the 0-booked path now fires a FRESH search STRICTLY AFTER the
+  re-guard). `_cancel_task` was deleted (no hedge task to abandon).
 
 ---
 

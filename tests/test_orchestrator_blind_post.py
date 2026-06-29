@@ -16,7 +16,6 @@ Collaborators are FakeAdapter / FakeClock / InMemoryStore (BLIND_POST_PLAN.md §
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -24,7 +23,7 @@ from uuid import uuid4
 
 import pytest
 
-from teetime.core.adapter import AdapterError, CancelError, RateLimitError, SlotGoneError
+from teetime.core.adapter import AdapterError, CancelError, SlotGoneError
 from teetime.core.clock import FakeClock
 from teetime.core.config import SchedulerConfig
 from teetime.core.models import (
@@ -177,7 +176,41 @@ async def test_blind_post_all_gone_falls_back_to_search() -> None:
     assert result.slot is not None
     assert result.slot.slot_id == "s-0900"  # booked via the search fallback
     assert fa.book_call_count == 3  # 2 blind + 1 fallback
-    assert fa.search_call_count >= 1
+    assert fa.search_call_count == 1  # exactly one FRESH fallback search (no concurrent hedge)
+
+
+async def test_zero_booked_empty_fresh_search_skips_course() -> None:
+    """0 blind booked + the FRESH fallback search finds nothing → the course is skipped and
+    the run records NO_INVENTORY (graceful, not a crash). Exactly one search GET fired
+    (RESEARCH_FALLBACK_PLAN §2 Q1)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_book_side_effects([SlotGoneError("gone"), SlotGoneError("gone")])
+    fa.set_search_response([])  # the fresh fallback search is empty too
+
+    orch, _, _ = _build({cid: fa})
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.NO_INVENTORY
+    assert fa.search_call_count >= 1  # a FRESH fallback search was attempted (then polled empty)
+
+
+async def test_non_capable_course_issues_exactly_one_search() -> None:
+    """COURSE-DEPENDENCY no-regression: a non-blind-capable primary takes the normal
+    _run_course search path untouched — it issues EXACTLY ONE search (no blind burst, no
+    hedge, no second search) and never enters the blind path (RESEARCH_FALLBACK_PLAN §2,
+    course-dependency requirement)."""
+    cid = CourseId("fake:course")
+    fa = FakeAdapter(course_id=cid)  # not blind-capable
+    fa.set_search_response([_bslot(cid, 8, 0)])
+
+    orch, _, _ = _build({cid: fa})
+    result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert fa.search_call_count == 1
+    assert fa.synthesize_blind_slots_call_count == 0  # never entered the blind path
 
 
 async def test_blind_post_token_exhaustion_fires_fewer() -> None:
@@ -196,53 +229,86 @@ async def test_blind_post_token_exhaustion_fires_fewer() -> None:
     assert fa.cancel_call_count == 0  # nothing to cancel — one booking
 
 
-async def test_blind_post_wins_even_if_hedge_search_errors() -> None:
-    """RED-GREEN GUARD for this fix: a blind POST books, but the concurrent hedge search GET
-    fails with a non-cancelled error (429 RateLimitError) and the hedge task is already DONE
-    (storing that error) when abandoned. Against the prior ``suppress(asyncio.CancelledError)``
-    the ``await task`` re-raises the stored RateLimitError out of ``_blind_post_course`` and
-    discards the real booking; the fix (``suppress(asyncio.CancelledError, Exception)``) keeps
-    it — the run returns BOOKED. This is the test that goes red on the old code. (The
-    still-PENDING CancelledError arm is guarded separately, as defense-in-depth, by
-    test_cancel_task_swallows_cancellederror_on_pending_hedge.)"""
+async def test_happy_path_issues_no_search() -> None:
+    """REPLACES test_blind_post_wins_even_if_hedge_search_errors. The concurrent hedge search
+    is GONE (RESEARCH_FALLBACK_PLAN §2 Q1): when a blind POST books, the happy path returns
+    WITHOUT issuing any search GET. Pins the hedge removal AND happy-path no-regression (no
+    wasted/cancelled GET at the most latency-critical instant)."""
     cid = CourseId("fake:mb")
     fa = FakeAdapter(course_id=cid, supports_blind_post=True)
     fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
-    # The hedge search is throttled at the drop — the worst-case real-world race.
-    fa.set_search_to_raise(RateLimitError("throttled", retry_after_s=30))
+    # Both blind POSTs book (default side effect is BOOKED) → keep best, cancel the extra.
 
     orch, _, _ = _build({cid: fa})
     result = await orch.run(_request(course_ids=(cid,)))
 
-    assert result.outcome == BookingOutcome.BOOKED  # the blind booking is kept, not lost
+    assert result.outcome == BookingOutcome.BOOKED
     assert result.slot is not None
     assert result.slot.slot_id == "s-0815"  # midpoint slot kept
     assert fa.cancel_call_count == 1  # the one extra blind reservation cancelled
+    assert fa.search_call_count == 0  # NO hedge — the blind win needs no search GET
 
 
-async def test_cancel_task_swallows_cancellederror_on_pending_hedge() -> None:
-    """DEFENSE-IN-DEPTH guard (does NOT go red on the current fix — the prior code already
-    suppressed CancelledError; the real red-green guard for this PR is
-    test_blind_post_wins_even_if_hedge_search_errors). This pins the OTHER arm so a future edit
-    can't quietly drop ``asyncio.CancelledError`` from the suppress tuple: a hedge task still IN
-    FLIGHT when abandoned raises CancelledError on ``await``, and CancelledError is a
-    BaseException, NOT an Exception — a bare ``suppress(Exception)`` would let it escape
-    ``_cancel_task`` and bubble out of ``_blind_post_course``, discarding a won booking. The
-    full-run tests can't reach this arm (FakeAdapter.search is synchronous, so the hedge task is
-    always already-DONE), so it is exercised directly here."""
-    started = asyncio.Event()
+async def test_zero_booked_fires_fresh_search_after_blind_burst() -> None:
+    """When 0 blind POSTs book, EXACTLY ONE search fires and the fallback books its slot.
+    ``search_book_counts == [2]`` records that the single search observed both blind books at
+    its start — a CHARACTERIZATION guard, not a non-concurrency proof (it is green on the old
+    concurrent-hedge code too, since FIFO scheduling ran the blind tasks before the hedge). The
+    genuine post-re-guard ordering discriminator is ``test_fresh_search_runs_after_reguard``;
+    this test pins the single-search count + that the fallback books the fresh result
+    (RESEARCH_FALLBACK_PLAN §2 Q1)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_book_side_effects([SlotGoneError("gone"), SlotGoneError("gone"), BookingOutcome.BOOKED])
+    fa.set_search_response([_bslot(cid, 9, 0)])
 
-    async def _never_finishes() -> object:
-        started.set()
-        await asyncio.sleep(3600)  # only cancellation ends it
-        return object()  # pragma: no cover - never reached
+    orch, _, _ = _build({cid: fa})
+    result = await orch.run(_request(course_ids=(cid,)))
 
-    task: asyncio.Task[object] = asyncio.create_task(_never_finishes())
-    await started.wait()  # ensure it is actually running, not scheduled-and-immediately-done
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.slot is not None
+    assert result.slot.slot_id == "s-0900"  # booked via the fresh fallback search
+    assert fa.search_call_count == 1
+    assert fa.search_book_counts == [2]  # the search ran AFTER both blind books
 
-    await Orchestrator._cancel_task(task)  # must NOT raise CancelledError
 
-    assert task.cancelled()
+async def test_fresh_search_runs_after_reguard() -> None:
+    """The fresh fallback search runs STRICTLY AFTER the re-guard (refresh → list), so it
+    books off the freshest post-re-auth snapshot and never races the shared-client cookie
+    rotation (RESEARCH_FALLBACK_PLAN §2 Q2). Driven via _blind_post_course DIRECTLY: a full
+    run()'s pre-T0 prewarm + T0 layer-2 guard also call list_reservations, which would muddy a
+    whole-run order recording (see the existing reguard order tests, which drive it directly
+    too)."""
+    cid = CourseId("fake:mb")
+
+    class _OrderAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(course_id=cid, supports_blind_post=True)
+            self.order: list[str] = []
+
+        async def refresh_reservations(self, creds: CourseCredentials) -> None:
+            self.order.append("refresh")
+
+        async def list_reservations(self) -> list[ExistingReservation]:
+            self.order.append("list")
+            return await super().list_reservations()
+
+        async def search(
+            self, request: BookingRequest, *, skip_initial_spacing: bool = False
+        ) -> list[TeeTimeSlot]:
+            self.order.append("search")
+            return await super().search(request, skip_initial_spacing=skip_initial_spacing)
+
+    fa = _OrderAdapter()
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_book_side_effects([SlotGoneError("gone"), SlotGoneError("gone"), BookingOutcome.BOOKED])
+    fa.set_search_response([_bslot(cid, 9, 0)])
+
+    orch, _, _ = _build({cid: fa})
+    await orch._blind_post_course(fa, cid, _request(course_ids=(cid,)))
+
+    assert fa.order == ["refresh", "list", "search"]
 
 
 # --- gate exclusions ----------------------------------------------------
@@ -378,7 +444,7 @@ async def test_blind_post_logs_slot_gone_count(
     fa = FakeAdapter(course_id=cid, supports_blind_post=True)
     fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
     fa.set_book_side_effects([SlotGoneError("gone1"), SlotGoneError("gone2")])
-    fa.set_search_response([])  # hedge search finds nothing → NO_INVENTORY
+    fa.set_search_response([])  # fresh fallback search finds nothing → NO_INVENTORY
 
     orch, _, _ = _build({cid: fa})
     with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
@@ -497,6 +563,7 @@ async def test_zero_booked_but_landed_uncertain_reguards_to_already_booked() -> 
     assert result.outcome == BookingOutcome.ALREADY_BOOKED
     assert result.confirmation_code == "LANDED-123"
     assert fa.book_call_count == 2  # only the 2 blind POSTs; NO fallback book
+    assert fa.search_call_count == 0  # reguard match short-circuits BEFORE the fresh search
 
 
 async def test_reguard_refreshes_before_listing() -> None:
