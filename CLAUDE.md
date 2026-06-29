@@ -35,7 +35,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.7.0`).
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.8.0`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -57,9 +57,15 @@ reservation PER day:
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
-**LIVE in PROD** (latest infra tag `infra/v2.7.0` = `main`@`b2c0051`, deployed 2026-06-23; the
+**LIVE in PROD** (latest infra tag `infra/v2.8.0` = `main`@`21b24cf`, deployed 2026-06-29 — the
+**blind-POST fallback rework + full-repo-scan hardening** (a booking-behavior change): the deployed
+booking jobs now run `blind_post_max_count=3` + `blind_post_fallback_token_reserve=2`, the concurrent
+hedge search is dropped, and the 0-booked path fires a FRESH search strictly after the re-guard
+(RESEARCH_FALLBACK_PLAN.md, PRs #157–#160) plus the robustness fixes #161–#164 (book() 429→RateLimit,
+reguard skip-on-reauth-fail, blind-burst BaseException secures a booked sibling). Prior tag
+`infra/v2.7.0` = `main`@`b2c0051`, deployed 2026-06-23; the
 booking/runtime feature set below shipped at `infra/v2.5.0` = `main`@`ddf0112`, deployed 2026-06-22,
-`dryRun=false`. `infra/v2.7.0` is **observability + redaction hardening, no booking-behavior change** —
+`dryRun=false`. `infra/v2.7.0` was **observability + redaction hardening, no booking-behavior change** —
 booking-job `_run` logs a traceback before exit on a failed run (#154), and `redact_text` Luhn-masks
 PANs in free-text logs (#153). `infra/v2.6.0` was the **infra-only shared-ACR consolidation** — ACR
 moved to a dedicated `rg-teetime-shared` with both envs as non-owners, see AZURE_PLAN §2.1/§10.6):
@@ -82,12 +88,15 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
 
-**Merged post-`infra/v2.7.0`, NOT yet deployed (awaits the next image build + ACA redeploy):**
-the blind-POST fallback rework (RESEARCH_FALLBACK_PLAN.md, PRs #157–#160) — `blind_post_max_count`
-lowered 12→**3** in the shipped configs, a new `blind_post_fallback_token_reserve` (default 2), and
-the orchestrator **dropped the concurrent hedge search** (the 0-booked path now fires a FRESH search
-strictly after the re-guard). Deployed prod (v2.7.0) still runs the old cap-12 + concurrent-hedge
-behavior until redeployed, so `main` ≠ deployed prod for the booking flow.
+**DEPLOYED at `infra/v2.8.0` (2026-06-29):** the blind-POST fallback rework
+(RESEARCH_FALLBACK_PLAN.md, PRs #157–#160) — `blind_post_max_count` lowered 12→**3** in the shipped
+configs, a new `blind_post_fallback_token_reserve` (default 2), and the orchestrator **dropped the
+concurrent hedge search** (the 0-booked path now fires a FRESH search strictly after the re-guard) —
+PLUS the full-repo-scan hardening (PRs #161–#164): `book()` 429→`RateLimitError`, the re-guard
+skips the fallback (no crash, no double-book) when the forced re-auth fails, and the blind burst
+secures a booked sibling before propagating a captured `BaseException`. The prod jobs were rebuilt +
+redeployed on the `infra/v2.8.0` image (`teetime:21b24cf`); first real booking exercise is the next
+wanted-day drop (Sat/Sun 06:00 ET).
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
