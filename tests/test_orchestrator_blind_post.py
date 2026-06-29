@@ -477,6 +477,60 @@ async def test_uncertain_blind_post_does_not_crash_run() -> None:
     assert fa.cancel_call_count == 1
 
 
+class _ShutdownBoom(BaseException):
+    """A control-flow BaseException (stand-in for SIGTERM/KeyboardInterrupt/SystemExit
+    surfacing inside one blind book() task mid-burst). NOT an Exception, so the orchestrator
+    must treat it as a control-flow signal, not a dropped booking."""
+
+
+class _BaseExcDuringBurst(FakeAdapter):
+    """One blind book() POST (the `boom_slot_id` slot) raises a control-flow BaseException;
+    every other slot books normally. Deterministic by slot id (not call order), so the
+    interleaving of the concurrent burst doesn't matter."""
+
+    def __init__(self, cid: CourseId, *, boom_slot_id: str) -> None:
+        super().__init__(course_id=cid, supports_blind_post=True)
+        self._boom_slot_id = boom_slot_id
+
+    async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
+        if slot.slot_id == self._boom_slot_id:
+            raise _ShutdownBoom("control-flow signal mid-burst")
+        return await super().book(slot, request)
+
+
+async def test_blind_burst_baseexception_does_not_strand_booked_sibling() -> None:
+    """full-repo-scan #e1: if one blind task surfaces a BaseException (e.g. SIGTERM at
+    container shutdown) while a SIBLING POST booked, the run must SECURE the booking (keep it,
+    return BOOKED) rather than re-raising mid-loop and abandoning a live reservation. The old
+    code raised the BaseException as soon as the loop reached it, stranding the booked slot
+    (no keep/record/cancel) — recovered only by the watcher. Now a booked sibling wins."""
+    cid = CourseId("fake:mb")
+    # rank-0 slot 08:15 (midpoint) books; the 08:30 POST hits the shutdown signal.
+    fa = _BaseExcDuringBurst(cid, boom_slot_id="s-0830")
+    fa.set_blind_slots([_bslot(cid, 8, 15), _bslot(cid, 8, 30)])
+
+    orch, _, _ = _build({cid: fa})
+    result = await orch.run(_request(course_ids=(cid,)))  # must NOT raise _ShutdownBoom
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.slot is not None
+    assert result.slot.slot_id == "s-0815"  # the booked sibling is kept, not abandoned
+    assert fa.cancel_call_count == 0  # only one booked → nothing to cancel
+
+
+async def test_blind_burst_baseexception_propagates_when_nothing_booked() -> None:
+    """Guard: with ZERO blind bookings, a control-flow BaseException is still propagated (it is
+    not swallowed) — there is no booking to secure, so the signal must surface. Only a booked
+    sibling defers it (the test above)."""
+    cid = CourseId("fake:mb")
+    fa = _BaseExcDuringBurst(cid, boom_slot_id="s-0815")
+    fa.set_blind_slots([_bslot(cid, 8, 15)])  # the only slot raises → 0 booked
+
+    orch, _, _ = _build({cid: fa})
+    with pytest.raises(_ShutdownBoom):
+        await orch.run(_request(course_ids=(cid,)))
+
+
 async def test_uncertain_blind_post_drop_log_names_the_slot(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

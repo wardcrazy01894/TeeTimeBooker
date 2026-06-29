@@ -381,6 +381,12 @@ class Orchestrator:
         blind_results = await asyncio.gather(*blind_tasks, return_exceptions=True)
         booked: list[BookingResult] = []
         gone = 0  # SlotGoneError count — logged in aggregate so a total wipeout is diagnosable
+        # A control-flow BaseException (CancelledError/KeyboardInterrupt/SystemExit — e.g. a
+        # SIGTERM at container scale-down) surfacing in ONE task is CAPTURED here, not re-raised
+        # mid-loop: a booked SIBLING later in `fire` must be secured first, or it would be left
+        # live on the server with no in-run keep/record/cancel (full-repo-scan #e1). It is
+        # propagated after the booked branch below, but only if nothing booked.
+        pending_base_exc: BaseException | None = None
         # blind_results is in the same order as `fire` (gather preserves task order),
         # so each result pairs with the slot whose POST produced it.
         for slot, r in zip(fire, blind_results, strict=True):
@@ -389,6 +395,15 @@ class Orchestrator:
             elif isinstance(r, SlotGoneError):
                 gone += 1  # slot claimed between synthesize and book — drop
                 continue
+            elif isinstance(r, BookingResult):  # pragma: no cover - defensive (#e2)
+                # Non-BOOKED BookingResult: unreachable today (a live-mode book() returns BOOKED
+                # or raises), but if that ever changes, log rather than drop it silently.
+                log.warning(
+                    "course %s: blind POST for slot %s returned non-BOOKED outcome %s — dropping",
+                    course_id,
+                    slot.slot_id,
+                    r.outcome,
+                )
             elif isinstance(r, Exception):
                 # UNCERTAIN (timeout/5xx): the POST MAY have landed. Drop this candidate;
                 # the guards below (a sibling booked, or the re-guard list_reservations)
@@ -403,9 +418,9 @@ class Orchestrator:
                     r,
                 )
             elif isinstance(r, BaseException):
-                # Non-Exception (CancelledError/KeyboardInterrupt/SystemExit): never swallow a
-                # control-flow signal as a dropped booking — propagate it.
-                raise r
+                # Capture the control-flow signal; do NOT raise here (would abandon a booked
+                # sibling). Re-raised after the booked branch iff nothing booked (#e1).
+                pending_base_exc = r
 
         if gone:
             # Aggregate, not per-slot: at a competitive drop many/all blind POSTs can lose the
@@ -434,6 +449,12 @@ class Orchestrator:
                 len(extras),
             )
             return best
+
+        # 0 BLIND BOOKED, so there is no reservation to secure. If a control-flow signal
+        # (SIGTERM/KeyboardInterrupt/SystemExit) arrived during the burst, propagate it NOW —
+        # we deferred it only to protect a booked sibling, and there is none (#e1).
+        if pending_base_exc is not None:
+            raise pending_base_exc
 
         # 0 BLIND BOOKED. A POST may have LANDED-but-UNCERTAIN. Re-guard with a FORCED-FRESH
         # read (refresh_reservations rebuilds ForeUP's login cache — a plain idempotent re-auth

@@ -363,7 +363,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   `_poll_for_slots` search STRICTLY AFTER the re-guard re-auth (freshest post-burst snapshot, no
   shared-client cookie race — RESEARCH_FALLBACK_PLAN §2 Q1/Q2) and falls through to the sequential
   `_book_from_candidates` loop, raising `_CourseSkippedError` if that too finds nothing. `SlotGoneError` from a blind POST is dropped (try the others); a non-SlotGone
-  exception is logged + dropped (the §9 UNCERTAIN ambiguity is what the reguard covers). The CAPTCHA
+  exception is logged + dropped (the §9 UNCERTAIN ambiguity is what the reguard covers). A
+  **control-flow `BaseException`** (CancelledError/KeyboardInterrupt/SystemExit — e.g. a SIGTERM
+  mid-burst) is CAPTURED, not raised mid-loop: a booked SIBLING is secured first (kept + returned
+  BOOKED) and the signal is re-raised only if NOTHING booked — so a shutdown never abandons a live
+  reservation (#e1). The CAPTCHA
   prefetch SCALES on the race path: `_captcha_prefetch_count_for` returns
   `min(blind_post_max_count, len(synthesize_blind_slots(...))) + scheduler.blind_post_fallback_token_reserve`
   for a blind-capable primary — the burst portion gives each blind POST a pooled token, and the
