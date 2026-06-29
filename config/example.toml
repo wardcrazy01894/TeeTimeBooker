@@ -114,11 +114,15 @@ captcha_prefetch_lead_s = 120                  # race path (--wait): start the C
 captcha_prefetch_count  = 3                    # race path: pre-solve this many tokens concurrently
                                                # so the first N ranked candidates each fire instantly
                                                # (RACE_PREWARM_PLAN §4.4)
-blind_post_max_count    = 12                   # blind-POST fan-out cap (BLIND_POST_PLAN.md §5):
+blind_post_max_count    = 3                    # blind-POST fan-out cap (BLIND_POST_PLAN.md §5):
                                                # a blind-capable PRIMARY (Mangrove Bay) fires up to
                                                # this many concurrent book POSTs at T0, keeps the
                                                # best, cancels the rest; CAPTCHA prefetch scales to it.
                                                # 0 disables blind fan-out (single-POST race path).
+                                               # 3 (was 12 = full grid): surplus POSTs past the first
+                                               # success bounce on ForeUP's "1 reservation/day" rule,
+                                               # so 3 = the 3 slots nearest the midpoint, no catch-rate
+                                               # loss (live-validated 2026-06-27/28).
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from

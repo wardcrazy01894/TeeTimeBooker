@@ -83,7 +83,11 @@ captcha_prefetch_count = 3
 # to this many concurrent book POSTs for the top-N ranked in-window grid slots at T0, keeps the
 # best, cancels the rest. The CAPTCHA prefetch scales to min(this, in-window grid count). 0 disables
 # blind fan-out (single-POST race path). Bounded further by the pooled-token count at fire time.
-blind_post_max_count = 12
+# Set to 3 (was 12 = the full 08:45-10:00 grid): in the 2026-06-27/28 live drops every surplus POST
+# past the first success was rejected by ForeUP's "1 online reservation per day" rule, so the wider
+# fan-out added 2captcha cost + T0 footprint without improving the catch rate. 3 fires the 3 grid
+# slots closest to the window midpoint (the highest-ranked candidates).
+blind_post_max_count = 3
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from
