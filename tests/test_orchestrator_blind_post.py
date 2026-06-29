@@ -79,7 +79,7 @@ def _bslot(cid: CourseId, hour: int, minute: int) -> TeeTimeSlot:
     )
 
 
-def _scheduler(*, lead_s: int = 30, blind_max: int = 12) -> SchedulerConfig:
+def _scheduler(*, lead_s: int = 30, blind_max: int = 12, reserve: int = 2) -> SchedulerConfig:
     return SchedulerConfig(
         timezone="America/New_York",
         fire_time=time(6, 0, 0),
@@ -89,6 +89,7 @@ def _scheduler(*, lead_s: int = 30, blind_max: int = 12) -> SchedulerConfig:
         captcha_prefetch_lead_s=lead_s,
         captcha_prefetch_count=3,
         blind_post_max_count=blind_max,
+        blind_post_fallback_token_reserve=reserve,
     )
 
 
@@ -556,13 +557,14 @@ async def test_reguard_falls_back_to_authenticate_for_non_refreshable() -> None:
 # --- CAPTCHA prefetch scales to blind fan-out ---------------------------
 
 
-async def test_prefetch_scales_to_blind_fanout() -> None:
-    """For a blind-capable primary, the pre-T0 CAPTCHA prefetch solves
-    min(blind_post_max_count, len(blind_slots)) tokens — NOT the fixed
-    captcha_prefetch_count."""
+async def test_prefetch_scales_to_blind_fanout_plus_reserve() -> None:
+    """For a blind-capable primary, the pre-T0 CAPTCHA prefetch solves the burst
+    min(blind_post_max_count, len(blind_slots)) PLUS blind_post_fallback_token_reserve
+    spare tokens for the 0-booked fresh-search fallback (RESEARCH_FALLBACK_PLAN §2 Q3) —
+    NOT the fixed captcha_prefetch_count."""
     cid = CourseId("fake:mb")
     fa = FakeAdapter(course_id=cid, supports_blind_post=True)
-    # 5 in-window blind slots, cap 12 → expect min(12, 5) = 5 tokens prefetched.
+    # 5 blind slots, cap 12, reserve 2 → min(12, 5) + 2 = 7 tokens prefetched.
     fa.set_blind_slots(
         [
             _bslot(cid, 7, 30),
@@ -573,20 +575,64 @@ async def test_prefetch_scales_to_blind_fanout() -> None:
         ]
     )
 
-    orch, _, _ = _build({cid: fa}, scheduler=_scheduler(blind_max=12))
+    orch, _, _ = _build({cid: fa}, scheduler=_scheduler(blind_max=12, reserve=2))
+    await orch.run(_request(course_ids=(cid,)))
+
+    assert fa.last_prepare_count == 7
+
+
+async def test_prefetch_reserve_respects_blind_max() -> None:
+    """The burst portion stays capped by blind_post_max_count; the reserve is added on top.
+    cap 3, an 8-slot grid, reserve 2 → min(3, 8) + 2 = 5 (synthesize truncates to cap)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 7, m) for m in (0, 7, 14, 21, 28, 35, 42, 49)])  # 8 slots
+
+    orch, _, _ = _build({cid: fa}, scheduler=_scheduler(blind_max=3, reserve=2))
     await orch.run(_request(course_ids=(cid,)))
 
     assert fa.last_prepare_count == 5
 
 
+async def test_prefetch_reserve_zero_grid_uses_default() -> None:
+    """A blind-capable primary with an EMPTY grid falls back to the single-POST prefetch
+    depth (captcha_prefetch_count) and adds NO reserve — the reserve is only for a real
+    blind burst (RESEARCH_FALLBACK_PLAN §2 Q3, 0-grid degenerate case)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([])  # empty grid → min(cap, 0) = 0
+    fa.set_search_response([_bslot(cid, 8, 0)])
+
+    orch, _, _ = _build({cid: fa}, scheduler=_scheduler(blind_max=12, reserve=2))
+    await orch.run(_request(course_ids=(cid,)))
+
+    assert fa.last_prepare_count == 3  # captcha_prefetch_count, no reserve added
+
+
+async def test_reserve_does_not_increase_blind_burst() -> None:
+    """The inflated prefetch (burst + reserve) must NOT enlarge the blind burst: the burst
+    is bounded by len(blind_slots), not the deepened pool. 3-slot grid, pool 5 (= 3 burst +
+    2 reserve) → exactly 3 blind book POSTs fire (RESEARCH_FALLBACK_PLAN §2 Q3)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15), _bslot(cid, 8, 30)])  # 3 slots
+    fa.set_captcha_pool_size(5)  # mimic the reserve-deepened pool (3 burst + 2 reserve)
+    fa.set_book_side_effects([BookingOutcome.BOOKED, BookingOutcome.BOOKED, BookingOutcome.BOOKED])
+
+    orch, _, _ = _build({cid: fa}, scheduler=_scheduler(blind_max=3, reserve=2))
+    await orch.run(_request(course_ids=(cid,)))
+
+    assert fa.book_call_count == 3  # min(len(blind_slots)=3, pool=5), NOT 5
+
+
 async def test_non_blind_primary_prefetch_uses_fixed_count() -> None:
     """A non-capable primary keeps the single-POST race prefetch depth
-    (captcha_prefetch_count), unaffected by blind_post_max_count."""
+    (captcha_prefetch_count), unaffected by blind_post_max_count OR the reserve."""
     cid = CourseId("fake:course")
     fa = FakeAdapter(course_id=cid)  # not capable
     fa.set_search_response([_bslot(cid, 8, 0)])
 
-    orch, _, _ = _build({cid: fa}, scheduler=_scheduler(blind_max=12))
+    orch, _, _ = _build({cid: fa}, scheduler=_scheduler(blind_max=12, reserve=2))
     await orch.run(_request(course_ids=(cid,)))
 
-    assert fa.last_prepare_count == 3  # captcha_prefetch_count, not blind_post_max_count
+    assert fa.last_prepare_count == 3  # captcha_prefetch_count, not blind_post_max_count + reserve

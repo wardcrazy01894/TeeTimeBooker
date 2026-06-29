@@ -355,8 +355,12 @@ in `core/` — never directly. This is the cut line for parallel work.
   too finds nothing. `SlotGoneError` from a blind POST is dropped (try the others); a non-SlotGone
   exception is logged + dropped (the §9 UNCERTAIN ambiguity is what the reguard covers). The CAPTCHA
   prefetch SCALES on the race path: `_captcha_prefetch_count_for` returns
-  `min(blind_post_max_count, len(synthesize_blind_slots(...)))` for a blind-capable primary (so each
-  blind POST has a pooled token), else the fixed `scheduler.captcha_prefetch_count` (default 3).
+  `min(blind_post_max_count, len(synthesize_blind_slots(...))) + scheduler.blind_post_fallback_token_reserve`
+  for a blind-capable primary — the burst portion gives each blind POST a pooled token, and the
+  `blind_post_fallback_token_reserve` (default 2) spare tokens REMAIN pooled so the 0-booked
+  fresh-search fallback books with a pooled token instead of a ~75s inline solve
+  (RESEARCH_FALLBACK_PLAN §2 Q3). A 0-grid blind case adds NO reserve and falls back to the fixed
+  `scheduler.captcha_prefetch_count` (default 3), as does any non-capable primary.
 - **`delete_terminal` is on the `BookingStore` Protocol** (all stores must
   implement it; `InMemoryStore` does). Used only by `UpgradeOrchestrator` after
   a successful cancel+rebook to clear the old in-process idempotency record
