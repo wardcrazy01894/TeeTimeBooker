@@ -676,6 +676,17 @@ class ForeUpAdapter(CourseAdapter):
             # slot instead of crashing. NOT the §9 UNCERTAIN case (a 4xx is unambiguous
             # that nothing was booked). See PLAN §9.
             raise SlotGoneError(f"Slot unbookable (HTTP 400): {redact_text(r.text[:300])}")
+        if r.status_code == _HTTP_RATE_LIMIT:
+            # 429 on the booking POST: the platform throttled us BEFORE creating a
+            # reservation (rejected pre-processing, so nothing was booked — distinct from the
+            # §9 UNCERTAIN 5xx). Map to RateLimitError for parity with search()/cancel so the
+            # orchestrator's per-course loop skips the course cleanly; otherwise a 429 here
+            # falls to raise_for_status() and crashes the sequential / blind-fallback book
+            # path (_book_from_candidates catches only SlotGoneError). full-repo-scan #2.
+            raise RateLimitError(
+                "Rate limited by ForeUP on book POST",
+                retry_after_s=float(r.headers.get("retry-after", 60)),
+            )
         r.raise_for_status()
         data: Any = r.json() if r.text else {}
         # Do NOT log the full response body — ForeUP echoes the account holder's
