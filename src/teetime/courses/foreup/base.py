@@ -660,6 +660,13 @@ class ForeUpAdapter(CourseAdapter):
             # which left us blind to WHY ForeUP rejected the 2026-06-07 booking. r.text
             # is truncated to keep logs sane (and any card data already lives only in
             # the request, never the response).
+            # PII NOTE (full-repo-scan, ACCEPTED): redact_text masks emails/phones/JWTs/PANs but
+            # NOT bare personal names, so a ForeUP error body that echoed the account holder's
+            # name could reach Log Analytics. Accepted deliberately: ForeUP error bodies are
+            # generic ("Time not available.", "...1 reservation per day."), the name appears in
+            # SUCCESS echoes (which we log keys-only), this is a single-user bot logging the
+            # operator's OWN name into their OWN workspace, and the diagnostic body outweighs a
+            # theoretical own-name leak. Revisit (log body length only) if this ever multi-users.
             _log.warning(
                 "ForeUP: book POST for slot %s → HTTP %d. Response: %s",
                 slot.slot_id,
