@@ -167,8 +167,10 @@ class ReservationCacheRefreshable(Protocol):
     async def refresh_reservations(self, creds: CourseCredentials) -> None:
         """Force a fresh fetch of the reservation snapshot (e.g. ForeUP: reset the
         logged-in flag and re-run the warm-up GET + login POST so the login-response
-        reservation cache is rebuilt). Best-effort: the caller wraps this in a
-        try/except — a re-auth blip must not crash the run."""
+        reservation cache is rebuilt). If this raises, the re-guard does NOT proceed on the
+        existing session — it SKIPS the course this run (the session is now unauthenticated,
+        so a fallback book would crash and could double-book a landed POST); the watcher
+        reconciles. Never crashes the run."""
         ...
 
 

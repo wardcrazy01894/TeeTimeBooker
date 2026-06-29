@@ -82,6 +82,13 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
 
+**Merged post-`infra/v2.7.0`, NOT yet deployed (awaits the next image build + ACA redeploy):**
+the blind-POST fallback rework (RESEARCH_FALLBACK_PLAN.md, PRs #157–#160) — `blind_post_max_count`
+lowered 12→**3** in the shipped configs, a new `blind_post_fallback_token_reserve` (default 2), and
+the orchestrator **dropped the concurrent hedge search** (the 0-booked path now fires a FRESH search
+strictly after the re-guard). Deployed prod (v2.7.0) still runs the old cap-12 + concurrent-hedge
+behavior until redeployed, so `main` ≠ deployed prod for the booking flow.
+
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
 to main via `.github/workflows/azure-iac.yml` with `dryRun = true` — no real
@@ -208,8 +215,8 @@ in `core/` — never directly. This is the cut line for parallel work.
   drop the fallbacks are best-effort.
 - **A `RateLimitError` (HTTP 429) anywhere in a course's flow skips the course — it does NOT
   crash the booking job.** `run()`'s per-course loop catches `RateLimitError` (raised from the
-  search GET, the blind-POST 0-booked fresh fallback search, or — TeeItUp only — a pre-payment book
-  step; one catch covers all paths since they all propagate through `_run_course`), logs it with `retry_after_s`,
+  search GET, the ForeUP `book()` POST, the blind-POST 0-booked fresh fallback search, or — TeeItUp
+  only — a pre-payment book step; one catch covers all paths since they all propagate through `_run_course`), logs it with `retry_after_s`,
   and `continue`s to the
   next course preference exactly like an empty course. A 429 is rejected by the platform BEFORE
   processing, so no reservation was created (unlike the §9 UNCERTAIN timeout/5xx case), making the

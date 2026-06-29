@@ -74,9 +74,15 @@ How check_once() determines the "current booking" for maybe_upgrade():
     a permanent no-op.
 
 Race condition with the 6 AM booking run:
-    The watch job's read-only search phase is lock-free. If it proceeds to book,
-    it acquires the lock. If the 6 AM booking job holds the lock, ConcurrentRunError
-    is caught and check_once returns None. Safe.
+    The booker and watcher are SEPARATE ACA Jobs (separate processes), so they share
+    neither the in-process ``InMemoryStore`` nor its ``request_lock`` (a per-process set).
+    ``request_lock`` only serialises concurrent coroutines WITHIN one process — it is NOT a
+    cross-process guard. The actual cross-process double-book guard is the live
+    ``list_reservations()`` pre-book check (a TOCTOU window remains) PLUS the watcher's
+    >1-reservation reconcile crash-net, which collapses any duplicate a race leaves behind.
+    Within a single process (the watcher's own book vs upgrade), ConcurrentRunError is caught
+    and ``check_once`` returns None. Keep the reconcile net load-bearing — do NOT treat the
+    in-process lock as the cross-job guarantee.
 """
 
 from __future__ import annotations

@@ -398,7 +398,7 @@ async def test_run_falls_back_on_no_inventory_error() -> None:
     assert result.course_id == c2
 
 
-# --- Search/hedge errors exit clean, not crash (full-repo-scan PR C) ---
+# --- Search errors exit clean, not crash (full-repo-scan PR C) ---
 
 
 async def test_run_rate_limit_records_no_inventory_not_crash() -> None:
