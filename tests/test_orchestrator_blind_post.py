@@ -161,8 +161,8 @@ async def test_blind_post_keep_best_agrees_with_search_ranking() -> None:
 
 
 async def test_blind_post_all_gone_falls_back_to_search() -> None:
-    """Every blind POST 4xx → SlotGoneError; the concurrent search returns a slot that
-    books via the existing sequential fallback loop."""
+    """Every blind POST 4xx → SlotGoneError; the FRESH post-reguard fallback search returns a
+    slot that books via the existing sequential fallback loop."""
     cid = CourseId("fake:mb")
     fa = FakeAdapter(course_id=cid, supports_blind_post=True)
     blind = [_bslot(cid, 8, 0), _bslot(cid, 8, 15)]
