@@ -152,7 +152,8 @@ in TOML.
 ## 4. Template + grid sourcing (decision)
 
 **Decision: SHIP a static template + grid in the course module (option b), with the
-real T0 search as the correctness fallback (the hybrid net of §6).** We reject
+real search as the correctness fallback (a fresh post-reguard search on a 0-booked drop —
+the original concurrent "hybrid net" hedge was dropped, see RESEARCH_FALLBACK_PLAN.md).** We reject
 "harvest from an already-open date during `_prewarm_primary`" (option a) as the
 PRIMARY source for these reasons:
 
