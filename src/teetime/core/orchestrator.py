@@ -537,7 +537,10 @@ class Orchestrator:
         would return the STALE pre-burst snapshot and let the fallback book a SECOND
         reservation. Adapters that expose ``ReservationCacheRefreshable`` get the forced
         re-login; others fall back to ``authenticate()`` (sufficient for live-GET stores
-        or any adapter that never reaches this path). Best-effort: a blip must not crash."""
+        or any adapter that never reaches this path). If the forced re-auth RAISES, this does
+        NOT proceed on the existing session — it raises ``_CourseSkippedError`` so the course
+        is skipped cleanly (the session is unauthenticated; a fallback book would crash and
+        could double-book a landed POST). Never crashes the run; the watcher reconciles."""
         creds = self._creds.get(course_id)
         if creds is not None:
             try:

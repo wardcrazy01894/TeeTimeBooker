@@ -215,8 +215,8 @@ in `core/` — never directly. This is the cut line for parallel work.
   drop the fallbacks are best-effort.
 - **A `RateLimitError` (HTTP 429) anywhere in a course's flow skips the course — it does NOT
   crash the booking job.** `run()`'s per-course loop catches `RateLimitError` (raised from the
-  search GET, the blind-POST 0-booked fresh fallback search, or — TeeItUp only — a pre-payment book
-  step; one catch covers all paths since they all propagate through `_run_course`), logs it with `retry_after_s`,
+  search GET, the ForeUP `book()` POST, the blind-POST 0-booked fresh fallback search, or — TeeItUp
+  only — a pre-payment book step; one catch covers all paths since they all propagate through `_run_course`), logs it with `retry_after_s`,
   and `continue`s to the
   next course preference exactly like an empty course. A 429 is rejected by the platform BEFORE
   processing, so no reservation was created (unlike the §9 UNCERTAIN timeout/5xx case), making the
