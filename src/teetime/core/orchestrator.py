@@ -718,6 +718,13 @@ class Orchestrator:
             return default
         if not self._is_blind_capable(adapter):
             return default
+        # NOTE: this prefetch-time call (T0-lead) and `_blind_post_course`'s burst-time call
+        # (T0) both invoke synthesize_blind_slots with the same params. For MB's STATIC morning
+        # grid they are deterministic — len here == the burst's len — so the reserve tokens are
+        # guaranteed to survive the burst (burst N = min(len, pool) = len; reserve = pool - N).
+        # A FUTURE dynamic-grid adapter that could return MORE slots at T0 than at prefetch time
+        # would let the larger burst consume the reserve — revisit this invariant before
+        # onboarding one (RESEARCH_FALLBACK_PLAN §2 Q3).
         blind_slots = cast(BlindPostCapable, adapter).synthesize_blind_slots(
             request, request.target_dates[0], max_count=self._scheduler.blind_post_max_count
         )
