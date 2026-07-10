@@ -127,7 +127,14 @@ async def get_foreup_captcha_token_2captcha(
                 "json": "1",
             },
         )
-        r.raise_for_status()
+        # NOT raise_for_status(): httpx.HTTPStatusError embeds the full request URL in its
+        # message, and that message reaches Log Analytics via the booking-run `exc_info`
+        # log. The submit key travels in the body (URL-safe today), but the RESULT poll
+        # below carries it as a `key=` QUERY PARAM — a raise there would log the API key in
+        # cleartext. Sanitize BOTH legs (status survives; the URL does not). full-repo-scan
+        # 2026-07-09 security H1.
+        if not r.is_success:
+            raise RuntimeError(f"2captcha submission failed: HTTP {r.status_code}")
         submit: Any = r.json()
         if not isinstance(submit, dict) or submit.get("status") != 1:
             detail = submit.get("request") if isinstance(submit, dict) else repr(submit)
@@ -148,7 +155,12 @@ async def get_foreup_captcha_token_2captcha(
                 _TWOCAPTCHA_RESULT_URL,
                 params={"key": api_key, "action": "get", "id": task_id, "json": "1"},
             )
-            r.raise_for_status()
+            # See the submit-leg comment: the key is in THIS request's query string, so an
+            # HTTPStatusError here would leak it into the logged exception message.
+            if not r.is_success:
+                raise RuntimeError(
+                    f"2captcha result poll failed: HTTP {r.status_code} (task {task_id})"
+                )
             result: Any = r.json()
             if not isinstance(result, dict):
                 raise RuntimeError(f"2captcha unexpected response: {result!r}")

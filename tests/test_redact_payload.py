@@ -100,6 +100,39 @@ def test_redact_text_pan_scrub_keeps_non_luhn_and_short_ids() -> None:
     assert "<redacted-pan>" not in out
 
 
+def test_redact_text_masks_url_query_credential_params() -> None:
+    """BELT-AND-SUSPENDERS (full-repo-scan 2026-07-09 H1): an httpx error message can
+    embed a full request URL, and the 2captcha result poll carries the API key as a
+    `key=` query param. If such a string ever reaches a free-text log (e.g. via an
+    `exc_info` traceback message), the credential-shaped query values must be masked.
+    Non-secret params survive for diagnosis."""
+    out = redact_text(
+        "Server error '500' for url "
+        "'https://2captcha.com/res.php?key=aaaabbbbccccddddaaaabbbbccccdddd"
+        "&action=get&id=789&json=1'"
+    )
+    assert "aaaabbbbccccddddaaaabbbbccccdddd" not in out
+    assert "key=<redacted-key>" in out
+    assert "action=get" in out  # non-secret params survive
+    assert "id=789" in out
+    assert "500" in out
+
+
+def test_redact_text_query_scrub_keeps_non_credential_params() -> None:
+    """The query scrub is name-gated: only credential-named params (key/api_key/token/
+    secret/password …) are masked. Ordinary params — including ones whose NAME merely
+    CONTAINS 'key' (googlekey, sitekey) — survive, so a logged search URL stays
+    debuggable."""
+    out = redact_text(
+        "GET https://example.com/api?googlekey=6LeFakeKeyAAAAAAAAAAAAAA&date=2026-07-11"
+        "&schedule_id=2149"
+    )
+    assert "googlekey=6LeFakeKeyAAAAAAAAAAAAAA" in out
+    assert "date=2026-07-11" in out
+    assert "schedule_id=2149" in out
+    assert "<redacted-key>" not in out
+
+
 def test_redacts_cred_style_card_keys() -> None:
     out = redact_payload(
         {
