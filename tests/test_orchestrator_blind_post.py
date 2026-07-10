@@ -592,6 +592,31 @@ async def test_blind_burst_child_cancelled_does_not_strand_booked_sibling() -> N
     assert result.slot.slot_id == "s-0815"
 
 
+async def test_blind_burst_baseexception_capture_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """full-repo-scan 2026-07-09 observability M2: the captured-BaseException branch was
+    the ONLY gather-result branch with NO log — when a sibling booked, the captured
+    exception was discarded silently, making that outcome impossible to reconstruct from
+    prod logs. The capture must leave a WARNING naming the slot and the exception."""
+    cid = CourseId("fake:mb")
+    fa = _BaseExcDuringBurst(cid, boom_slot_id="s-0830", exc=_ShutdownBoom("boom mid-burst"))
+    fa.set_blind_slots([_bslot(cid, 8, 15), _bslot(cid, 8, 30)])
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.WARNING, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED  # sibling still secured
+    capture_logs = [
+        r for r in caplog.records if r.levelname == "WARNING" and "BaseException" in r.getMessage()
+    ]
+    assert capture_logs, "the captured BaseException left no log breadcrumb"
+    msg = capture_logs[0].getMessage()
+    assert "s-0830" in msg  # names WHICH slot's POST surfaced it
+    assert "boom mid-burst" in msg  # carries the exception itself
+
+
 async def test_blind_burst_baseexception_propagates_when_nothing_booked() -> None:
     """Guard: with ZERO blind bookings, a control-flow BaseException is still propagated (it is
     not swallowed) — there is no booking to secure, so the signal must surface. Only a booked
@@ -780,13 +805,20 @@ async def test_reguard_skips_refresh_when_no_creds() -> None:
     assert fa.list_reservations_call_count == 1  # still lists on the existing session
 
 
-async def test_reguard_refresh_failure_skips_fallback_no_crash() -> None:
+async def test_reguard_refresh_failure_skips_fallback_no_crash(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """full-repo-scan correctness #1: if the 0-booked re-guard's forced re-auth FAILS
     (a transient TransportError at T0), the session is left unauthenticated — we must NOT
     fall through to a fallback book() (which would raise AuthError on the dead session and
     CRASH the run, AND risk double-booking a landed-but-uncertain blind POST). The course is
     SKIPPED cleanly (→ NO_INVENTORY); the watcher reconciles within ≤10 min. NO fallback
-    search or book fires."""
+    search or book fires.
+
+    ALSO pins the WARNING (full-repo-scan 2026-07-09 observability M3): this log is the
+    ONLY evidence distinguishing "primary dropped at T0 on a re-auth blip" from a genuine
+    empty teesheet — both otherwise end in an identical clean NO_INVENTORY. Unpinned, it
+    could regress to DEBUG/removed with every behavior assert staying green."""
     cid = CourseId("fake:mb")
 
     class _RefreshFailsAdapter(FakeAdapter):
@@ -799,11 +831,19 @@ async def test_reguard_refresh_failure_skips_fallback_no_crash() -> None:
     fa.set_search_response([_bslot(cid, 9, 0)])  # would be booked if the fallback wrongly ran
 
     orch, _, _ = _build({cid: fa})
-    result = await orch.run(_request(course_ids=(cid,)))
+    with caplog.at_level(logging.WARNING, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
 
     assert result.outcome == BookingOutcome.NO_INVENTORY
     assert fa.book_call_count == 2  # only the 2 blind POSTs; NO fallback book
     assert fa.search_call_count == 0  # NO fallback search after the failed re-guard
+    reguard_warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "re-guard re-auth failed" in r.getMessage()
+    ]
+    assert reguard_warnings, "the re-guard re-auth failure left no WARNING"
+    assert "transient re-auth blip at T0" in reguard_warnings[0].getMessage()
 
 
 async def test_zero_booked_logs_fresh_search_transition(

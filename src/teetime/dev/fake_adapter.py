@@ -246,7 +246,8 @@ class FakeAdapter:
         return list(self._existing)
 
     async def cancel_reservation(self, confirmation_code: str) -> None:
-        """Simulate cancellation. If set_cancel_to_raise() was called, raises CancelError.
+        """Simulate cancellation. If set_cancel_to_raise() was called, raises the scripted
+        exception (CancelError, RateLimitError, a transport error, …).
         Otherwise removes the matching reservation from _existing (idempotent on 404-style
         not-found: if no matching reservation exists, returns normally).
 
