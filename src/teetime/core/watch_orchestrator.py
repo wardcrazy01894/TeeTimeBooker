@@ -97,7 +97,6 @@ from zoneinfo import ZoneInfo
 from ..persistence.store import ConcurrentRunError
 from .adapter import (
     AuthError,
-    CancelError,
     CaptchaError,
     InventoryNotPublishedError,
     NoInventoryError,
@@ -499,7 +498,14 @@ class WatchOrchestrator:
         - ``matching`` unchanged if the request_lock was contended (another run is
           already acting — let it reconcile rather than racing it).
 
-        Best-effort: a CancelError never crashes the run.
+        Best-effort: a cancel failure (CancelError, a network blip, any other transient)
+        is logged CRITICAL and never crashes the run — the loop continues to the next
+        extra and the stranded one is retried next cycle. The ONLY exceptions that
+        propagate are the watch-contract errors: ``RateLimitError`` (a 429 mid-reconcile
+        must abort the run rather than keep hammering a throttled platform — check_once's
+        429 handler re-raises and the 10-min cron is the backoff floor) and
+        ``CaptchaError``/``AuthError`` (operator-action, must reach check_once's
+        notify+re-raise path). full-repo-scan 2026-07-09 correctness M1.
         """
         ranked = self._rank_reservations(matching, course_id, request, target_date)
         keep, extras = ranked[0], ranked[1:]
@@ -508,12 +514,16 @@ class WatchOrchestrator:
                 for res in extras:
                     try:
                         await adapter.cancel_reservation(res.confirmation_code)
-                    except CancelError:
+                    except (RateLimitError, CaptchaError, AuthError):
+                        # Watch-contract errors — check_once's handlers own these.
+                        raise
+                    except Exception as exc:
                         log.critical(
-                            "watch: failed to cancel duplicate reservation %s on %s — "
+                            "watch: failed to cancel duplicate reservation %s on %s (%r) — "
                             "manual cleanup may be required",
                             res.confirmation_code,
                             target_date,
+                            exc,
                         )
         except ConcurrentRunError:
             log.debug(

@@ -364,9 +364,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   0-booked path issues exactly one FRESH search post-re-guard. Outcomes: (a) **≥1 BOOKED** →
   `_keep_best` re-ranks the booked slots with the SAME `rank_slots_for_request` the search path
   uses, returns the winner, `_cancel_extras` cancels every other booked reservation by its
-  `book()` `confirmation_code` (a `None` conf or a `CancelError` → `log.critical`, never crashes —
-  load-bearing reason the TTID/teetime_id id-extraction fix matters); it returns WITHOUT any
-  search. (b) **0 BOOKED** → `_reguard_before_fallback` FORCE-REFRESHES the reservation snapshot
+  `book()` `confirmation_code` (a `None` conf or ANY cancel failure — `CancelError`, a 429
+  `RateLimitError`, `CaptchaError`, a transport blip — → `log.critical`, never crashes and never
+  discards the kept booking; the catch is deliberately `Exception`-broad because with a booking in
+  hand nothing a SURPLUS cancel does may lose it — load-bearing reason the TTID/teetime_id
+  id-extraction fix matters); it returns WITHOUT any search. (b) **0 BOOKED** → `_reguard_before_fallback` FORCE-REFRESHES the reservation snapshot
   THEN `list_reservations` (a landed-but-uncertain POST may have booked silently): a match
   short-circuits to `ALREADY_BOOKED` (no fallback book, NO search); else it fires a FRESH
   `_poll_for_slots` search STRICTLY AFTER the re-guard re-auth (freshest post-burst snapshot, no
@@ -471,8 +473,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   this recovers a crash (or a failed in-run cancel) that left duplicates on a FRESH watch run
   (which re-authenticates, rebuilding ForeUP's login-response reservation snapshot, before
   `list_reservations`). Best-effort: a `ConcurrentRunError` defers (returns `matching` unchanged —
-  another run is acting), and a `CancelError` on an extra is logged `CRITICAL` and retried next
-  run; neither crashes. **Documented residual (single-user accepted):** a deliberate MANUAL
+  another run is acting), and ANY non-contract cancel failure on an extra (`CancelError`, a
+  transport blip, …) is logged `CRITICAL` and retried next run; neither crashes. The per-extra
+  catch deliberately re-raises the watch-contract errors — `RateLimitError` (a 429 mid-reconcile
+  aborts the run rather than hammering a throttled platform) and `CaptchaError`/`AuthError`
+  (operator-action, must reach `check_once`'s notify+re-raise path). **Documented residual (single-user accepted):** a deliberate MANUAL
   second booking on the same date+party_size would also be cancelled — server-sourced reservations
   are all `is_managed=False` (raw id, no `TTB:` prefix), so the N matches are indistinguishable.
   N=1 and `policy.enabled=false` leave reservations untouched.

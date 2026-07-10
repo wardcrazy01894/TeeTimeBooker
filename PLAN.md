@@ -313,8 +313,9 @@ Then:
 - **≥1 BOOKED** → `_keep_best` re-ranks the booked slots with the same `rank_slots_for_request`
   the search path uses and returns the winner; `_cancel_extras` cancels the other booked
   reservations by the `confirmation_code` each `book()` returned (this is why the §"book() id
-  extraction" `TTID`/`teetime_id` fix is load-bearing — a `None` conf or a `CancelError` is logged
-  `CRITICAL` but never crashes the run). The happy path issues **zero** search GETs.
+  extraction" `TTID`/`teetime_id` fix is load-bearing — a `None` conf or ANY cancel failure
+  (`CancelError`, 429, captcha, transport blip) is logged `CRITICAL` but never crashes the run or
+  discards the kept booking). The happy path issues **zero** search GETs.
 - **0 BOOKED** → `_reguard_before_fallback` FORCE-REFRESHES the reservation snapshot
   (`refresh_reservations`, the `ReservationCacheRefreshable` capability — a plain re-auth is an
   idempotent no-op and would return the stale pre-burst cache) THEN `list_reservations` (a POST

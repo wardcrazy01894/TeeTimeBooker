@@ -34,7 +34,6 @@ from zoneinfo import ZoneInfo
 from .adapter import (
     AuthStateReportable,
     BlindPostCapable,
-    CancelError,
     InventoryNotPublishedError,
     NoInventoryError,
     RateLimitError,
@@ -528,9 +527,17 @@ class Orchestrator:
         extras: list[BookingResult],
     ) -> None:
         """Cancel each surplus reservation by its OWN confirmation_code (PR0 made the
-        teetime_id extraction load-bearing). A cancel failure is logged CRITICAL (the user
+        teetime_id extraction load-bearing). ANY cancel failure is logged CRITICAL (the user
         then holds >1 reservation) but does NOT abort — we still keep the best, and the PR4
-        watch net is the backstop. See BLIND_POST_PLAN.md §7."""
+        watch net is the backstop. See BLIND_POST_PLAN.md §7.
+
+        The catch is deliberately ``Exception``, not just ``CancelError``: the real adapter
+        can also surface ``RateLimitError`` (a throttled DELETE), ``CaptchaError``, or a raw
+        ``httpx.TransportError`` here, and letting ANY of them propagate would discard the
+        successfully-booked ``best`` — a 429 turned the run into NO_INVENTORY (+ non-zero
+        exit) while the user actually held a live reservation, and a captcha/transport blip
+        crashed the job with no terminal. With a booking in hand, nothing a SURPLUS cancel
+        does may lose it. full-repo-scan 2026-07-09 correctness H2."""
         for r in extras:
             if r.confirmation_code is None:
                 log.critical(
@@ -541,9 +548,9 @@ class Orchestrator:
                 continue
             try:
                 await adapter.cancel_reservation(r.confirmation_code)
-            except CancelError as exc:
+            except Exception as exc:
                 log.critical(
-                    "blind-POST: FAILED to cancel surplus reservation %s (%s) — the user "
+                    "blind-POST: FAILED to cancel surplus reservation %s (%r) — the user "
                     "holds >1 reservation; PR4 watch net will reconcile",
                     r.confirmation_code,
                     exc,

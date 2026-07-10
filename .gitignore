@@ -225,3 +225,6 @@ __marimo__/
 infra/bicep/**/*.json
 # bicepconfig.json is a Bicep linter config (NOT a build artifact) — must be tracked.
 !infra/bicep/bicepconfig.json
+
+# Claude Code per-user local settings (machine-specific permission grants — never shared)
+.claude/settings.local.json

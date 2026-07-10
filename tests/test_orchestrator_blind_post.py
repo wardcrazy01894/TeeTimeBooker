@@ -24,9 +24,16 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
+import httpx
 import pytest
 
-from teetime.core.adapter import AdapterError, CancelError, SlotGoneError
+from teetime.core.adapter import (
+    AdapterError,
+    CancelError,
+    CaptchaError,
+    RateLimitError,
+    SlotGoneError,
+)
 from teetime.core.clock import FakeClock
 from teetime.core.config import SchedulerConfig
 from teetime.core.models import (
@@ -403,6 +410,49 @@ async def test_cancel_extra_failure_still_returns_best(
     # The CRITICAL log must NAME the leaked reservation (its confirmation_code) so an
     # operator can cancel it manually — asserting level alone would let a regression that
     # drops the id stay green. full-repo-scan observability finding.
+    assert any(r.levelname == "CRITICAL" and "s-0800" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "cancel_exc",
+    [
+        RateLimitError("throttled", retry_after_s=30),
+        CaptchaError("challenge on cancel"),
+        httpx.ReadTimeout("timed out"),
+    ],
+    ids=["rate-limit", "captcha", "transport"],
+)
+async def test_cancel_extra_non_cancel_error_still_returns_best(
+    cancel_exc: Exception,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A NON-CancelError failure on a SURPLUS cancel (429 throttle, captcha challenge,
+    network blip) must ALSO be logged CRITICAL and swallowed — the best reservation IS
+    booked and must be returned/recorded no matter what the surplus cancel does.
+
+    Before this guard, only CancelError was caught: a RateLimitError propagated to run()'s
+    per-course 429 skip and the run recorded NO_INVENTORY + exited non-zero while the user
+    actually held a live reservation; a CaptchaError/TransportError crashed the job with a
+    misleading error. full-repo-scan 2026-07-09 correctness H2."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_cancel_to_raise(cancel_exc)
+
+    orch, store, _ = _build({cid: fa})
+    req = _request(course_ids=(cid,))
+    with caplog.at_level("CRITICAL"):
+        result = await orch.run(req)
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert result.slot is not None
+    assert result.slot.slot_id == "s-0815"  # best still returned
+    # The BOOKED terminal must be recorded — the failed surplus cancel must not turn a
+    # successful booking into NO_INVENTORY (or a crash with no terminal).
+    terminal = await store.get_terminal(req.request_id, TARGET)
+    assert terminal is not None
+    assert terminal.outcome == BookingOutcome.BOOKED
+    # CRITICAL names the leaked reservation so an operator can cancel manually.
     assert any(r.levelname == "CRITICAL" and "s-0800" in r.getMessage() for r in caplog.records)
 
 
