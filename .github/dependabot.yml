@@ -1,0 +1,16 @@
+# Keeps the SHA/digest pins from rotting (full-repo-scan 2026-07-09 security Lows):
+# every GitHub Action is SHA-pinned and the Docker base image is digest-pinned, so
+# WITHOUT automated bumps those pins would silently fall behind upstream security
+# patches. Dependabot opens normal PRs — CI + the usual review/merge flow apply.
+# Python deps are deliberately NOT managed here: uv.lock freshness is enforced by
+# `uv lock --locked` in CI and bumped manually (pip-audit gates known vulns).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
