@@ -426,6 +426,16 @@ class Orchestrator:
                 # A captured BaseException (a child CancelledError or other BaseException
                 # subclass — see the scope note above). Capture it; do NOT raise here (would
                 # abandon a booked sibling). Re-raised after the booked branch iff nothing booked.
+                # Log the capture NOW: when a sibling books, this branch is otherwise the only
+                # gather outcome with no breadcrumb — the deferred exception would vanish from
+                # the logs entirely (full-repo-scan 2026-07-09 observability M2).
+                log.warning(
+                    "course %s: blind POST for slot %s surfaced BaseException %r — captured "
+                    "(deferred; re-raised only if nothing booked)",
+                    course_id,
+                    slot.slot_id,
+                    r,
+                )
                 pending_base_exc = r
 
         if gone:
