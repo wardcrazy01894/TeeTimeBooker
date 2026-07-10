@@ -35,7 +35,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.8.0`).
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.9.0`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -57,12 +57,14 @@ reservation PER day:
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
-**LIVE in PROD** (latest infra tag `infra/v2.8.0` = `main`@`21b24cf`, deployed 2026-06-29 — the
-**blind-POST fallback rework + full-repo-scan hardening** (a booking-behavior change): the deployed
-booking jobs now run `blind_post_max_count=3` + `blind_post_fallback_token_reserve=2`, the concurrent
+**LIVE in PROD** (latest infra tag `infra/v2.9.0` = `main`@`a67eccd`, deployed 2026-07-10 — the
+**2026-07-09 full-repo-scan fix batch + python 3.14 base** (booking-behavior + security changes,
+see the DEPLOYED paragraph below). Prior tag `infra/v2.8.0` = `main`@`21b24cf`, deployed
+2026-06-29 — the **blind-POST fallback rework + scan hardening** (a booking-behavior change): the
+booking jobs run `blind_post_max_count=3` + `blind_post_fallback_token_reserve=2`, the concurrent
 hedge search is dropped, and the 0-booked path fires a FRESH search strictly after the re-guard
 (RESEARCH_FALLBACK_PLAN.md, PRs #157–#160) plus the robustness fixes #161–#164 (book() 429→RateLimit,
-reguard skip-on-reauth-fail, blind-burst BaseException secures a booked sibling). Prior tag
+reguard skip-on-reauth-fail, blind-burst BaseException secures a booked sibling). Before that,
 `infra/v2.7.0` = `main`@`b2c0051`, deployed 2026-06-23; the
 booking/runtime feature set below shipped at `infra/v2.5.0` = `main`@`ddf0112`, deployed 2026-06-22,
 `dryRun=false`. `infra/v2.7.0` was **observability + redaction hardening, no booking-behavior change** —
@@ -88,15 +90,22 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
 
-**DEPLOYED at `infra/v2.8.0` (2026-06-29):** the blind-POST fallback rework
-(RESEARCH_FALLBACK_PLAN.md, PRs #157–#160) — `blind_post_max_count` lowered 12→**3** in the shipped
-configs, a new `blind_post_fallback_token_reserve` (default 2), and the orchestrator **dropped the
-concurrent hedge search** (the 0-booked path now fires a FRESH search strictly after the re-guard) —
-PLUS the full-repo-scan hardening (PRs #161–#164): `book()` 429→`RateLimitError`, the re-guard
-skips the fallback (no crash, no double-book) when the forced re-auth fails, and the blind burst
-secures a booked sibling before propagating a captured `BaseException`. The prod jobs were rebuilt +
-redeployed on the `infra/v2.8.0` image (`teetime:21b24cf`); first real booking exercise is the next
-wanted-day drop (Sat/Sun 06:00 ET).
+**DEPLOYED at `infra/v2.9.0` (2026-07-10):** the 2026-07-09 full-repo-scan fix batch + the
+python 3.14 base. Booking-behavior: a SURPLUS-cancel failure (429/captcha/transport blip while
+cancelling a blind-POST extra) can no longer discard the kept booking — `_cancel_extras` catches
+`Exception` broadly, and the watcher reconcile got the same broadening with the watch-contract
+errors re-raised (#166). Security: the 2captcha result-poll no longer leaks the API key into Log
+Analytics on a non-2xx (sanitized RuntimeError; `redact_text` also masks credential-named URL
+query params) (#167); the container runs as a non-root user on a digest-pinned
+`python:3.14-slim` base, all workflow actions are SHA-pinned, and Dependabot keeps the pins
+fresh (#168, #174 — dev venvs already ran 3.14, the image was the lagging environment).
+Observability: the blind-burst captured-`BaseException` branch now logs, the reguard-reauth-fail
+WARNING + reconcile CRITICAL are test-pinned, and lock-defer logs are visible at INFO (#173).
+Config/docs: `blind_post_max_count` code default aligned to **3**, the `tests/
+test_docs_consistency.py` tag-agreement CI guard + the CLAUDE.md change→docs map exist (#172).
+The prod jobs were rebuilt + redeployed on the `infra/v2.9.0` image (`teetime:a67eccd`, verified
+live on all three jobs); first real booking exercise on this image (and on CPython 3.14) is the
+next wanted-day drop (Sat/Sun 06:00 ET).
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
