@@ -1409,6 +1409,58 @@ async def test_watch_reconcile_cancel_error_does_not_crash() -> None:
     assert {r.confirmation_code for r in remaining} == {"res-0900", "res-0945", "res-1015"}
 
 
+async def test_watch_reconcile_transport_error_on_cancel_does_not_crash() -> None:
+    """A NON-CancelError transient (httpx.TransportError after adapter retries) while
+    cancelling a duplicate is ALSO caught (logged CRITICAL) and the loop continues —
+    parity with the CancelError branch. Before this guard it propagated out of the
+    reconcile, abandoning the partially-collapsed duplicate set for the cycle (and the
+    docstring's "best-effort" promise was narrower than the code delivered).
+    full-repo-scan 2026-07-09 correctness M1."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=0, code="res-0900"),
+            _reservation(hour=9, minute=45, code="res-0945"),  # best (midpoint)
+            _reservation(hour=10, minute=15, code="res-1015"),
+        ]
+    )
+    adapter.set_search_response([])
+    adapter.set_cancel_to_raise(httpx.ReadTimeout("timed out"))
+    watch, _, _ = _build(adapter, policy=OneBookingPolicyConfig(enabled=True))
+
+    # Must NOT propagate the transport error.
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None
+    # Both extras attempted despite the first raising → the loop continued.
+    assert adapter.cancel_call_count == 2
+
+
+async def test_watch_reconcile_rate_limit_on_cancel_aborts_run() -> None:
+    """WATCH-CONTRACT GUARD for the broadened reconcile catch: a RateLimitError on a
+    duplicate cancel must NOT be swallowed per-extra (that would keep hammering a
+    throttled platform) — it propagates so check_once's documented 429 handler re-raises
+    and the run aborts cleanly (the 10-min cron is the backoff floor). Pins that the
+    except-Exception broadening does not over-catch the contract errors."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=0, code="res-0900"),
+            _reservation(hour=9, minute=45, code="res-0945"),
+            _reservation(hour=10, minute=15, code="res-1015"),
+        ]
+    )
+    adapter.set_search_response([])
+    adapter.set_cancel_to_raise(RateLimitError("throttled", retry_after_s=60))
+    watch, _, _ = _build(adapter, policy=OneBookingPolicyConfig(enabled=True))
+
+    with pytest.raises(RateLimitError):
+        await watch.check_once(_request(), TARGET_DATE)
+
+    # Aborted on the FIRST throttled cancel — no second hammer at the platform.
+    assert adapter.cancel_call_count == 1
+
+
 async def test_watch_reconcile_defers_when_lock_contended() -> None:
     """If the request_lock is already held by another run, reconcile catches
     ConcurrentRunError and returns the reservations UNCHANGED (no cancels) — it lets the

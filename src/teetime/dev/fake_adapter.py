@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
-from ..core.adapter import AdapterCapabilities, AdapterError, CancelError
+from ..core.adapter import AdapterCapabilities, AdapterError
 from ..core.models import (
     MANAGED_BOOKING_TAG,
     BookingOutcome,
@@ -49,7 +49,7 @@ class FakeAdapter:
         self._book_exc: AdapterError | None = None
         self._book_side_effects: list[BookingOutcome | AdapterError] = []
         self._existing: list[ExistingReservation] = []
-        self._cancel_exc: CancelError | None = None
+        self._cancel_exc: Exception | None = None
         self._prepare_book_exc: Exception | None = None
         self._authenticate_side_effects: list[Exception | None] = []
         # AuthStateReportable knobs (RACE_PREWARM_PLAN §3.1 SF#1). `_authenticated`
@@ -97,8 +97,10 @@ class FakeAdapter:
     def set_existing_reservations(self, reservations: list[ExistingReservation]) -> None:
         self._existing = list(reservations)
 
-    def set_cancel_to_raise(self, exc: CancelError) -> None:
-        """Script cancel_reservation() to raise `exc` (simulates server refusal)."""
+    def set_cancel_to_raise(self, exc: Exception) -> None:
+        """Script cancel_reservation() to raise `exc` (simulates server refusal, or any
+        other failure mode the real adapter can surface mid-cancel: RateLimitError on a
+        throttled DELETE, CaptchaError, httpx.TransportError after retries)."""
         self._cancel_exc = exc
 
     def set_prepare_book_to_raise(self, exc: Exception) -> None:
