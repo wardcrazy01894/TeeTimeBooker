@@ -4,6 +4,13 @@
 // AcrPull role — cross-RG via acr-pull-cross-rg.bicep in the shared-ACR model.
 // ACR admin account is disabled; no password stored anywhere.
 //
+// NOTE (shared-ACR model, #148-#150): this template is deployed STANDALONE to
+// rg-teetime-shared (envName=shared) and is no longer reached from main.bicep.
+// The inline `jobPrincipalId`/`acrPullAssignment` AcrPull grant below is retained
+// only for the legacy per-env path and is a guarded NO-OP in the shared model
+// (deployed with jobPrincipalId='' per AZURE_PLAN §10.6) — BOTH envs get AcrPull
+// exclusively via acr-pull-cross-rg.bicep. Do not mistake it for the live grant.
+//
 // Cost: ~$5.00/mo flat for Basic SKU (East US 2, April 2026).
 // See: infra/AZURE_PLAN.md §2 (service selection), §7.2 (AcrPull role),
 //      §9.1 (cost estimate)
@@ -146,7 +153,7 @@ resource purgeTask 'Microsoft.ContainerRegistry/registries/tasks@2019-06-01-prev
 // Outputs
 // ---------------------------------------------------------------------------
 
-@description('ACR login server (e.g. teetimedev<suffix>.azurecr.io). Used in containerImage parameter.')
+@description('ACR login server (e.g. teetimeshared<suffix>.azurecr.io). Used in containerImage parameter.')
 output loginServer string = acr.properties.loginServer
 
 @description('ACR resource name.')

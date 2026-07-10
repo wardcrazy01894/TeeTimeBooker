@@ -45,7 +45,7 @@ param envName string
 @description('Azure region.')
 param location string
 
-@description('Full container image reference (e.g. teetimedev<suffix>.azurecr.io/teetime:v1.0.0).')
+@description('Full container image reference (e.g. teetimeshared<suffix>.azurecr.io/teetime-dev:<sha> for dev, .../teetime:<sha> for prod).')
 param containerImage string
 
 @description('Resource ID of the user-assigned managed identity (from identity.bicep). Assigned to both ACA job resources so KV/ACR RBAC covers both.')
