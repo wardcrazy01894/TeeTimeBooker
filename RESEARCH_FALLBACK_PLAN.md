@@ -357,11 +357,12 @@ Depends on PR1+PR2 (so the fresh fallback already has a deep pool when it lands)
   `CancelledError` from. The blind `book()` tasks are all `await`ed via `gather(...,
   return_exceptions=True)` (no orphan tasks). `BaseException` partition handling for the
   blind tasks (lines 400–403) is unchanged.
-- **Code-default exposure (reviewer nit):** `blind_post_max_count` defaults to **12** in code
-  (config.py:194); the deployed TOMLs pin 3. A deployment that OMITS the override would
-  prefetch `min(12, grid) + reserve` (~14 concurrent solves) — a pre-existing exposure the
-  reserve slightly widens. The PR1 parity test guards example↔container, not the code default.
-  Acceptable (every real config sets the value explicitly); noted for awareness, no action.
+- **Code-default exposure (reviewer nit) — RESOLVED (full-repo-scan 2026-07-09):** at
+  ratification, `blind_post_max_count` still defaulted to **12** in code while the deployed
+  TOMLs pinned 3, so a deployment that OMITTED the override would have prefetched
+  `min(12, grid) + reserve` (~14 concurrent solves). The scan fix batch aligned the code
+  default to **3** and pinned it in `test_config.py`
+  (`test_scheduler_default_blind_post_max_count_matches_shipped`), closing the exposure.
 
 ---
 
