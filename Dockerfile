@@ -1,4 +1,7 @@
-FROM python:3.12-slim
+# Digest-pinned (full-repo-scan security): a moved `3.12-slim` tag must not silently
+# change the base under a rebuild. Dependabot (docker ecosystem, .github/dependabot.yml)
+# PRs digest bumps so the pin tracks upstream security patches instead of rotting.
+FROM python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
 
 # Disable .pyc files and buffer flushing; uv link mode required in containers
 # (hardlinks don't work across overlay filesystem layers)
@@ -33,6 +36,13 @@ RUN uv sync --no-dev --frozen
 
 # Runtime config
 COPY config/container.toml ./config/container.toml
+
+# Drop root (full-repo-scan security): the bot needs only read+exec on /app (state is
+# in-process; PYTHONDONTWRITEBYTECODE avoids .pyc writes), so a dependency RCE or
+# container escape should not start from UID 0. Fixed non-zero UID keeps it explicit
+# for any future runAsNonRoot policy.
+RUN useradd --create-home --uid 10001 app
+USER app
 
 # Invoke teetime directly (venv is on PATH above) — matches how ACA Jobs
 # invoke it via command: ['teetime']. Drop "uv run" to keep parity.
