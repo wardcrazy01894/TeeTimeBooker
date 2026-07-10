@@ -96,6 +96,46 @@ async def test_2captcha_raises_on_error_response() -> None:
         )
 
 
+@respx.mock
+async def test_2captcha_poll_http_error_does_not_leak_api_key() -> None:
+    """SECURITY (full-repo-scan 2026-07-09 H1): the result poll carries the API key as a
+    URL QUERY PARAM. A non-2xx from res.php must raise an error whose message does NOT
+    embed the request URL (httpx.HTTPStatusError does — `... for url '...res.php?key=
+    <REAL_KEY>&...'`), because that message propagates to the `exc_info=True` booking-run
+    log and lands in Log Analytics in cleartext. The status code must survive for
+    diagnosis."""
+    respx.post(_SUBMIT_URL).mock(
+        return_value=httpx.Response(200, json={"status": 1, "request": "task-99"})
+    )
+    respx.get(_RESULT_URL).mock(return_value=httpx.Response(500))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await get_foreup_captcha_token_2captcha(
+            api_key="fakekeyfakekeyfakekeyfakekey",
+            page_url=_PAGE_URL,
+            poll_interval_s=0.0,
+        )
+    assert "fakekeyfakekeyfakekeyfakekey" not in str(excinfo.value)
+    assert "500" in str(excinfo.value)  # actionable: status preserved
+
+
+@respx.mock
+async def test_2captcha_submit_http_error_does_not_leak_api_key() -> None:
+    """Same guard for the SUBMIT leg. The key travels in the POST body there (not the
+    URL), so this pins the current-safe behavior against a refactor that moves it into
+    the URL or lets an unsanitized HTTPStatusError escape."""
+    respx.post(_SUBMIT_URL).mock(return_value=httpx.Response(503))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await get_foreup_captcha_token_2captcha(
+            api_key="fakekeyfakekeyfakekeyfakekey",
+            page_url=_PAGE_URL,
+            poll_interval_s=0.0,
+        )
+    assert "fakekeyfakekeyfakekeyfakekey" not in str(excinfo.value)
+    assert "503" in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # resolve_invisible_site_key — drift protection against ForeUP key rotation
 # ---------------------------------------------------------------------------

@@ -160,6 +160,16 @@ _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 # survive for debugging — same masking-over-leaking trade-off as the value guard (a 13-digit
 # epoch-millis int could be over-masked; log timestamps as ISO-8601 to avoid it).
 _PAN_TEXT_RE = re.compile(r"(?<!\d)\d(?:[ -]?\d){12,18}(?!\d)")
+# A credential passed as a URL QUERY PARAM (e.g. 2captcha's `res.php?key=<API_KEY>&…`)
+# can be reflected into a logged exception message — httpx.HTTPStatusError embeds the
+# full request URL. NAME-gated to credential-shaped param names only (the `\b` keeps
+# `googlekey=`/`sitekey=` and other *key-suffixed params out), with an 8-char value
+# floor so trivial non-secret values survive. full-repo-scan 2026-07-09 security H1
+# belt-and-suspenders (the primary fix is not raising URL-bearing errors at all).
+_URL_CRED_PARAM_RE = re.compile(
+    r"(?i)\b(key|api_?key|access_token|auth_token|token|secret|password|client_secret)"
+    r"=([^&\s'\"<>]{8,})"
+)
 
 
 def _mask_pan_match(m: re.Match[str]) -> str:
@@ -169,7 +179,8 @@ def _mask_pan_match(m: re.Match[str]) -> str:
 
 def redact_text(text: str) -> str:
     """Scrub account-holder PII (email, separator-formatted phone), reflected session
-    credentials (JWTs, ``Bearer`` tokens), AND Luhn-valid PANs from free text.
+    credentials (JWTs, ``Bearer`` tokens, credential-named URL query params), AND
+    Luhn-valid PANs from free text.
 
     For logging arbitrary upstream response bodies, which may echo account-holder PII OR
     request context — including auth tokens or (on a payment decline) a raw card number —
@@ -181,5 +192,6 @@ def redact_text(text: str) -> str:
     """
     text = _BEARER_RE.sub("Bearer <redacted-token>", text)
     text = _JWT_RE.sub("<redacted-token>", text)
+    text = _URL_CRED_PARAM_RE.sub(r"\1=<redacted-key>", text)
     text = _PAN_TEXT_RE.sub(_mask_pan_match, text)
     return _PHONE_RE.sub("<redacted-phone>", _EMAIL_RE.sub("<redacted-email>", text))
