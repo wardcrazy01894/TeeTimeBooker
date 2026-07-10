@@ -642,6 +642,28 @@ A PR that introduces a new CLI flag, env var, or milestone task with no
 corresponding doc update is incomplete. Not every PR touches every doc —
 the rule is to check and update the ones that are now stale.
 
+### Change→docs map (which docs a given KIND of change makes stale)
+
+The table above says when each DOC changes; this map inverts it — start from what
+your PR changes and it lists every doc site that claim lives in. The repeated
+full-repo-scan finding is a claim updated in most-but-not-all of its homes, so when
+a row names several sites, grep and update ALL of them in the same PR.
+
+| Change | Doc sites to update (all of them) |
+|--------|-----------------------------------|
+| Prod infra tag bump / deploy | README.md status (§top + IaC section), CLAUDE.md Status paras, PLAN.md (scope note + §16 M6.T3 row). Mechanically enforced: `tests/test_docs_consistency.py` fails CI if the three docs name different "latest infra tag" versions |
+| New/changed config key or default | `core/config.py` field comment, `config/example.toml` + `container.toml` + `local.toml`, README config walkthrough, `tests/test_container_config_parity.py` (add the parity/default pin), CLAUDE.md invariant bullet if load-bearing |
+| Orchestrator/watcher behavior change | CLAUDE.md invariant bullets, PLAN.md §9/§9.1/§12, the owning plan doc's status header (and a supersession banner on any plan it retires) |
+| New CLI flag or env var | README, AZURE_PLAN §7.3 env inventory + `compute.bicep`/`keyvault.bicep` if deployed, CLAUDE.md common commands |
+| Adapter capability / course quirk | `src/teetime/courses/CLAUDE.md` (per-course section), CLAUDE.md capability bullet |
+| ACA job/cron/timeout change | `compute.bicep` comments, CLAUDE.md + README schedule claims, AZURE_PLAN §5, killswitch job-name coupling (`killswitch.bicep` + its parity test) |
+| New CI validation job | CLAUDE.md "Required CI checks" list + branch protection (same PR — see below) |
+| Milestone/feature done or cut | PLAN.md §16 row, README status/roadmap, CLAUDE.md Status, BACKLOG.md if it retires an item |
+
+When a sweep fixes a stale claim, ask "can a cheap test pin this?" — the
+tag-agreement check in `tests/test_docs_consistency.py` exists because the same
+claim went stale twice; add sibling checks there when a new claim class recurs.
+
 ## Required CI checks
 
 Any NEW CI validation job added to `ci.yml` (a job that runs on PRs and should

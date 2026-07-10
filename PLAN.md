@@ -1,6 +1,6 @@
 # TeeTimeBooker — v0 Plan
 
-> **Scope of v0:** a Python bot that books one or more tee times at **Mangrove Bay Golf Course** (St. Petersburg, FL) at the moment its 7-day booking window opens (6:00 AM America/New_York). No frontend. No third-party booking sites that don't actually take the booking. (Historical scope note: the ForeUP adapter is now fully implemented and **LIVE in prod** — `dryRun=false`, latest infra tag `infra/v2.7.0` — see §16 M6; the original "no real bookings from these stubs until M2/M5" caveat is superseded.)
+> **Scope of v0:** a Python bot that books one or more tee times at **Mangrove Bay Golf Course** (St. Petersburg, FL) at the moment its 7-day booking window opens (6:00 AM America/New_York). No frontend. No third-party booking sites that don't actually take the booking. (Historical scope note: the ForeUP adapter is now fully implemented and **LIVE in prod** — `dryRun=false`, latest infra tag `infra/v2.8.0` — see §16 M6; the original "no real bookings from these stubs until M2/M5" caveat is superseded.)
 
 This plan is structured for parallel execution. Milestones are sequential; tasks within a milestone are tagged with explicit dependencies, so an "army of agents" can pick up anything green.
 
@@ -332,8 +332,8 @@ blind-capable primary pre-solves `min(blind_post_max_count, len(synthesize_blind
 + scheduler.blind_post_fallback_token_reserve` tokens — the burst portion gives each blind POST a
 pooled token at T0 and the reserve (default 2) tokens REMAIN pooled so the 0-booked fresh-search
 fallback books with a pooled token, not a ~75 s inline solve. Everything else uses the fixed
-`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (code default 12, ge=0; 0
-disables blind fan-out — **but the shipped configs set 3**) is decoupled from
+`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (default 3, matching the
+shipped configs; ge=0, 0 disables blind fan-out) is decoupled from
 `captcha_prefetch_count` and lives in `SchedulerConfig`.
 
 State-machine note (§9.1): each blind POST is an independent entry into the POST/result phase.
@@ -586,8 +586,8 @@ What we still DO NOT:
 **Blind-POST burst at T0 (Mangrove Bay; BLIND_POST_PLAN.md).** The one deliberate
 departure from the 250 ms spacing rule is the 06:00:00 drop on the race path. To beat
 the search→book round-trip on the most contested slots of the week, the booking
-`Orchestrator` fires up to `scheduler.blind_post_max_count` (code default 12, but the shipped
-configs set **3**) book POSTs **concurrently** for the in-window morning grid synthesized from a
+`Orchestrator` fires up to `scheduler.blind_post_max_count` (default **3**, matching the shipped
+configs) book POSTs **concurrently** for the in-window morning grid synthesized from a
 frozen template (no search dependency). If zero POSTs book, a single FRESH search runs as the
 grid-drift fallback — STRICTLY AFTER the re-guard, not concurrently (the original hedge was
 dropped; RESEARCH_FALLBACK_PLAN.md §2 Q1).
@@ -750,7 +750,7 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 |-------|---------------------------------------------------|------------------|------------------------------------------------------|--------------------------------------|-------------|
 | M6.T1 | Real-timing booker wiring + DST gate + watcher enable (PRs 1–6). **DONE** (the Sunday-only schedule + `target_weekday` anchor were later SUPERSEDED by the multi-day re-arch — daily crons + booking-day gate + per-day windows). | all stubs done | `run --wait` busy-waits to 06:00:00 ET (`core/dst_gate.py`, `bookingReplicaTimeout=1200`); watcher enabled. Full suite green. | `__main__.py`, `core/dst_gate.py`, `core/booking_day_gate.py`, `compute.bicep`, configs | M5.* |
 | M6.T2 | First production dry-run against Mangrove Bay     | M6.T1            | dry-run log proof (AZURE_PLAN §10.4): `race: busy-wait complete` + watcher `Watch check`/`DRY_RUN`; one clean dev dry-run Sunday | runbook §10.4 | M6.T1 |
-| M6.T3 | First live booking (prod cutover §10.5)           | M6.T2 green      | **Prod DEPLOYED** (jobs live, `dryRun=false`, secrets set, watcher + auto-upgrade on; latest infra tag `infra/v2.7.0` — observability + redaction hardening, no booking-change; `v2.6.0` = infra-only shared-ACR consolidation; runtime features shipped at `infra/v2.5.0`, 2026-06-22 — multi-day/per-day + cutoff + skip-days + race-prewarm + MB blind-POST all LIVE; first cutover was `infra/v2.1.0`, 2026-06-10). A real booking race ran **2026-06-07** (fired at T0 but lost on CAPTCHA latency → fixed in #67/#68). | runbook §10.5 | M6.T2 |
+| M6.T3 | First live booking (prod cutover §10.5)           | M6.T2 green      | **Prod DEPLOYED** (jobs live, `dryRun=false`, secrets set, watcher + auto-upgrade on; latest infra tag `infra/v2.8.0`, 2026-06-29 — the blind-POST fallback rework (cap 3 + fallback token reserve + post-reguard fresh search, hedge dropped) + scan hardening, a booking-behavior change; `v2.7.0` = observability + redaction hardening, no booking-change; `v2.6.0` = infra-only shared-ACR consolidation; runtime features shipped at `infra/v2.5.0`, 2026-06-22 — multi-day/per-day + cutoff + skip-days + race-prewarm + MB blind-POST all LIVE; first cutover was `infra/v2.1.0`, 2026-06-10). A real booking race ran **2026-06-07** (fired at T0 but lost on CAPTCHA latency → fixed in #67/#68). | runbook §10.5 | M6.T2 |
 
 **Parallel-execution map (post M1):**
 ```
