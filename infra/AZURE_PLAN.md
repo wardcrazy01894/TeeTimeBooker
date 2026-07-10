@@ -243,7 +243,8 @@ bot's busy-wait handles the gap. With a 10-minute window and ~60 s worst-case
 cold-start, the bot has ~9 minutes of busy-wait buffer, which is sufficient.
 
 **Mandatory image hygiene:**
-- Use a slim base image (`python:3.12-slim`, not `python:3.12`). Target < 300 MB
+- Use a slim base image (`python:3.14-slim`, not the full `python` tag — 3.14 since
+  2026-07-10, digest-pinned in the Dockerfile). Target < 300 MB
   compressed. This keeps pull time under 10 seconds from ACR in the same
   region (same Azure backbone, no internet egress).
 - Pin ACR to East US 2 (same region as the ACA environment) to eliminate
