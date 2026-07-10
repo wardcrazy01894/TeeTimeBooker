@@ -15,7 +15,8 @@ MERGED — the orchestrator blind path is
 live in code (gate + blind burst + keep-best/cancel-extras + reguard + prefetch scaling;
 `core/orchestrator.py`). **Superseded by `RESEARCH_FALLBACK_PLAN.md` (merged):** the concurrent
 hedge search was DROPPED — the 0-booked path now fires a FRESH search after the re-guard — and
-`blind_post_max_count` was lowered to **3** in the shipped configs (code default still 12) with a
+`blind_post_max_count` was lowered to **3** in the shipped configs (the code default was later
+aligned to 3 as well, full-repo-scan 2026-07-09 #172) with a
 new `blind_post_fallback_token_reserve` (default 2). The watcher >1-reservation crash-net
 reconcile backstop is in place (`core/watch_orchestrator.py`), and the docs (PLAN §12 etiquette
 paragraph + README + the opt-in `tests/test_foreup_canary.py` template-drift canary) are landed.

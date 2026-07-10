@@ -332,8 +332,8 @@ blind-capable primary pre-solves `min(blind_post_max_count, len(synthesize_blind
 + scheduler.blind_post_fallback_token_reserve` tokens — the burst portion gives each blind POST a
 pooled token at T0 and the reserve (default 2) tokens REMAIN pooled so the 0-booked fresh-search
 fallback books with a pooled token, not a ~75 s inline solve. Everything else uses the fixed
-`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (code default 12, ge=0; 0
-disables blind fan-out — **but the shipped configs set 3**) is decoupled from
+`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (default 3, matching the
+shipped configs; ge=0, 0 disables blind fan-out) is decoupled from
 `captcha_prefetch_count` and lives in `SchedulerConfig`.
 
 State-machine note (§9.1): each blind POST is an independent entry into the POST/result phase.
@@ -586,8 +586,8 @@ What we still DO NOT:
 **Blind-POST burst at T0 (Mangrove Bay; BLIND_POST_PLAN.md).** The one deliberate
 departure from the 250 ms spacing rule is the 06:00:00 drop on the race path. To beat
 the search→book round-trip on the most contested slots of the week, the booking
-`Orchestrator` fires up to `scheduler.blind_post_max_count` (code default 12, but the shipped
-configs set **3**) book POSTs **concurrently** for the in-window morning grid synthesized from a
+`Orchestrator` fires up to `scheduler.blind_post_max_count` (default **3**, matching the shipped
+configs) book POSTs **concurrently** for the in-window morning grid synthesized from a
 frozen template (no search dependency). If zero POSTs book, a single FRESH search runs as the
 grid-drift fallback — STRICTLY AFTER the re-guard, not concurrently (the original hedge was
 dropped; RESEARCH_FALLBACK_PLAN.md §2 Q1).
