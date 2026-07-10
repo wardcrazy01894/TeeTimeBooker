@@ -267,7 +267,10 @@ class WatchOrchestrator:
                     # and the next 10-min run retries. (The _check_course path swallows this via
                     # its search-loop handler; the Gate-3 short-circuit needs its own — without it
                     # a lock race would crash an otherwise-healthy watch run.)
-                    log.debug(
+                    # INFO, not DEBUG: the CLIs run at INFO and a deferred act leaves no
+                    # other trace — at DEBUG a "did nothing because the booker held the
+                    # lock" cycle was invisible in prod (full-repo-scan 2026-07-09 obs).
+                    log.info(
                         "watch: request_lock held by another run during Gate-3 act for %s — "
                         "deferring",
                         request.request_id,
@@ -526,7 +529,9 @@ class WatchOrchestrator:
                             exc,
                         )
         except ConcurrentRunError:
-            log.debug(
+            # INFO, not DEBUG: a deferred reconcile returns `matching` unchanged and the
+            # cycle otherwise logs nothing — see the Gate-3 defer comment.
+            log.info(
                 "watch: request_lock held by another run during reconcile for %s — deferring",
                 request.request_id,
             )

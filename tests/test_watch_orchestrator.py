@@ -1377,15 +1377,22 @@ async def test_watch_no_reconcile_when_policy_disabled() -> None:
     assert {r.confirmation_code for r in remaining} == {"res-0900", "res-0945"}
 
 
-async def test_watch_reconcile_cancel_error_does_not_crash() -> None:
+async def test_watch_reconcile_cancel_error_does_not_crash(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A CancelError while cancelling a duplicate is caught (logged CRITICAL) and the
     loop CONTINUES to the next extra — check_once never raises, and the kept reservation
     is never cancelled. The stranded extra stays live for the next run to retry.
 
     Guards the partial-failure branch (watch_orchestrator._reconcile_duplicate_reservations
-    try/except CancelError INSIDE the per-extra loop). With every cancel raising, the
+    try/except INSIDE the per-extra loop). With every cancel raising, the
     keeper survives and BOTH extras are still attempted (count == 2 proves the loop did
-    not abort on the first failure)."""
+    not abort on the first failure).
+
+    ALSO pins the CRITICAL log (full-repo-scan 2026-07-09 observability M3): this line is
+    the operator's ONLY cue that the crash-net itself failed and a duplicate needs manual
+    cleanup — the highest-value log in the reconcile path. It must be CRITICAL and must
+    NAME each failed reservation id, or the operator can't act on it."""
     adapter = FakeAdapter(course_id=COURSE_ID)
     adapter.set_existing_reservations(
         [
@@ -1399,7 +1406,8 @@ async def test_watch_reconcile_cancel_error_does_not_crash() -> None:
     watch, _, _ = _build(adapter, policy=OneBookingPolicyConfig(enabled=True))
 
     # Must NOT propagate the CancelError.
-    result = await watch.check_once(_request(), TARGET_DATE)
+    with caplog.at_level(logging.CRITICAL, logger="teetime.core.watch_orchestrator"):
+        result = await watch.check_once(_request(), TARGET_DATE)
 
     assert result is None
     # Both extras attempted despite the first raising → the loop continued.
@@ -1407,6 +1415,15 @@ async def test_watch_reconcile_cancel_error_does_not_crash() -> None:
     # Every cancel failed, so all three remain — crucially the keeper was never lost.
     remaining = await adapter.list_reservations()
     assert {r.confirmation_code for r in remaining} == {"res-0900", "res-0945", "res-1015"}
+    criticals = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "CRITICAL" and "failed to cancel duplicate" in r.getMessage()
+    ]
+    assert len(criticals) == 2  # one per failed extra
+    assert any("res-0900" in m for m in criticals)  # each names its reservation id
+    assert any("res-1015" in m for m in criticals)
+    assert all("backend refused cancel" in m for m in criticals)  # carries the reason
 
 
 async def test_watch_reconcile_transport_error_on_cancel_does_not_crash() -> None:
@@ -1461,10 +1478,16 @@ async def test_watch_reconcile_rate_limit_on_cancel_aborts_run() -> None:
     assert adapter.cancel_call_count == 1
 
 
-async def test_watch_reconcile_defers_when_lock_contended() -> None:
+async def test_watch_reconcile_defers_when_lock_contended(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """If the request_lock is already held by another run, reconcile catches
     ConcurrentRunError and returns the reservations UNCHANGED (no cancels) — it lets the
-    other run reconcile rather than racing it. Guards the ConcurrentRunError defer branch."""
+    other run reconcile rather than racing it. Guards the ConcurrentRunError defer branch.
+
+    ALSO pins the defer log at INFO (full-repo-scan 2026-07-09 observability Low): the
+    CLIs run at INFO, and a deferred cycle returns None → the CLI logs nothing — at DEBUG
+    the watch run that did nothing because the booker held the lock left NO prod trace."""
     adapter = FakeAdapter(course_id=COURSE_ID)
     adapter.set_existing_reservations(
         [
@@ -1479,13 +1502,16 @@ async def test_watch_reconcile_defers_when_lock_contended() -> None:
 
     # Simulate a concurrent run already holding the advisory lock for this request.
     async with store.request_lock(req.request_id):
-        result = await watch.check_once(req, TARGET_DATE)
+        with caplog.at_level(logging.INFO, logger="teetime.core.watch_orchestrator"):
+            result = await watch.check_once(req, TARGET_DATE)
 
     assert result is None
     # Lock contended → reconcile deferred → nothing cancelled, both reservations live.
     assert adapter.cancel_call_count == 0
     remaining = await adapter.list_reservations()
     assert {r.confirmation_code for r in remaining} == {"res-0900", "res-0945"}
+    # The defer is visible at INFO (the prod log level) — not buried at DEBUG.
+    assert any(r.levelno == logging.INFO and "deferring" in r.getMessage() for r in caplog.records)
 
 
 async def test_watch_reconciles_duplicates_when_store_has_booked_terminal() -> None:
