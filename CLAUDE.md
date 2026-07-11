@@ -587,6 +587,26 @@ in `core/` — never directly. This is the cut line for parallel work.
   of truth across runs. Concurrent-run serialization is handled by ACA Job /
   GH Actions `concurrency:` groups. In-process advisory locks serialise writes
   within a single run.
+- **Email OTP (MB books require a six-digit emailed code from 2026-07-15) — mailbox
+  side ONLY so far.** `core/otp.py` holds the `OtpSource` Protocol plus
+  `ImapOtpSource` (polls the dedicated Gmail inbox that the course's OTP mail is
+  forwarded to; fresh IMAP connection per poll, checks Spam too, Clock-injected,
+  never logs the code value) and `FakeOtpSource` — mirroring `clock.py`'s
+  Protocol+real+fake layout. `fetch_code(sent_after=..., timeout_s=...)` scopes the
+  search to the CURRENT attempt so a stale code from an earlier attempt is never
+  returned — minus a `freshness_grace_s` (default 60 s) skew allowance, because the
+  mail server's Date header comes from ITS clock and rejecting a live code as stale
+  is the fatal direction at the 06:00 drop. A transient blip on any single poll
+  (connect/TLS/login) consumes that poll, never the whole window; the socket is
+  bounded by `connect_timeout_s` (a hung connect runs in a thread the deadline
+  can't interrupt). It is NOT yet wired into any adapter/orchestrator/config — the
+  ForeUP book-flow integration (challenge detect → fetch → verify POST) lands in a
+  follow-up PR once the live challenge's API shape has been observed. **Open design
+  constraint for that wiring:** `fetch_code` has no per-attempt correlation token,
+  so CONCURRENT book attempts sharing one mailbox (today's blind-POST burst is 3)
+  could steal each other's codes if the challenge fires per-selection — the wiring
+  plan must either serialize OTP-requiring books (likely, given MB's 1-online-
+  reservation/day limit) or extend the Protocol.
 
 ## Per-course specifics → `src/teetime/courses/CLAUDE.md`
 
