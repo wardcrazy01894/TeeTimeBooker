@@ -23,7 +23,7 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from .clock import Clock
 
@@ -56,6 +56,14 @@ class OtpSource(Protocol):
 # timestamps) never match. Format pinned by the MB announcement; revisit after
 # the first live challenge is observed.
 _CODE_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+
+# IMAP SINCE takes dd-Mon-yyyy with ENGLISH month abbreviations; strftime's %b
+# is locale-sensitive (fr_FR → "juil."), so the table is hardcoded.
+_IMAP_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _imap_date(dt: datetime) -> str:
+    return f"{dt.day:02d}-{_IMAP_MONTHS[dt.month - 1]}-{dt.year}"
 
 
 def extract_otp_code(text: str) -> str | None:
@@ -105,6 +113,22 @@ class ImapOtpSource:
     persistent connection would add reconnect handling for no gain. Spam is
     checked by default: a first-ever sender + forwarded mail is exactly the
     profile spam filters mangle, and a missed code costs the booking.
+
+    Resilience contract: a transient failure on ANY single poll (connect, TLS,
+    login, a dropped socket) consumes that poll and the loop keeps going until
+    `timeout_s` — one blip must not abort the OTP window. The socket itself is
+    bounded by `connect_timeout_s` because a hung connect runs in a thread that
+    `fetch_code`'s deadline cannot interrupt. Known risk (accepted, watch after
+    the 07-15 cutover): fresh LOGINs every `poll_interval_s` could trip Gmail
+    rate limiting on a long window; expected real windows are short (mail
+    forwards in ~10 s), and a throttled poll is retried like any other blip.
+
+    Freshness: messages must be dated after `sent_after` MINUS
+    `freshness_grace_s`. The grace absorbs mail-server clock skew (their Date
+    header vs our clock) — without it a live code from a slightly-behind server
+    would be silently rejected as stale, the fatal direction at the 06:00 drop.
+    A prior attempt's code is minutes old (expired/consumed), so a small grace
+    does not reopen the stale-code hole.
     """
 
     def __init__(
@@ -117,6 +141,8 @@ class ImapOtpSource:
         port: int = 993,
         sender_filter: str | None = "foreupsoftware.com",
         poll_interval_s: float = 2.0,
+        connect_timeout_s: float = 15.0,
+        freshness_grace_s: float = 60.0,
         mailboxes: tuple[str, ...] = ("INBOX", "[Gmail]/Spam"),
         _imap_factory: Callable[[], _ImapClient] | None = None,
     ) -> None:
@@ -125,19 +151,28 @@ class ImapOtpSource:
         self._clock = clock
         self._sender_filter = sender_filter
         self._poll_interval_s = poll_interval_s
+        self._freshness_grace_s = freshness_grace_s
         self._mailboxes = mailboxes
         self._imap_factory: Callable[[], _ImapClient] = _imap_factory or (
-            lambda: imaplib.IMAP4_SSL(host, port)
+            lambda: imaplib.IMAP4_SSL(host, port, timeout=connect_timeout_s)
         )
 
     async def fetch_code(self, *, sent_after: datetime, timeout_s: float) -> str:
         if sent_after.tzinfo is None:
             raise ValueError("sent_after must be tz-aware")
         deadline = self._clock.now_utc() + timedelta(seconds=timeout_s)
+        newer_than = sent_after - timedelta(seconds=self._freshness_grace_s)
         polls = 0
         while True:
             polls += 1
-            code = await asyncio.to_thread(self._poll_once, sent_after)
+            try:
+                code = await asyncio.to_thread(self._poll_once, newer_than)
+            except (imaplib.IMAP4.error, OSError) as exc:
+                # One blip consumes one poll, never the whole OTP window. A
+                # PERSISTENT failure (bad app password, network down) surfaces
+                # as OtpTimeoutError with these warnings as the diagnosis trail.
+                code = None
+                _log.warning("otp: poll %d failed transiently (%s); retrying", polls, exc)
             if code is not None:
                 _log.info("otp: code found on poll %d", polls)
                 return code
@@ -150,7 +185,7 @@ class ImapOtpSource:
 
     # ------------------------------------------------------------ sync leg
 
-    def _poll_once(self, sent_after: datetime) -> str | None:
+    def _poll_once(self, newer_than: datetime) -> str | None:
         """One connect-search-extract pass. Returns the newest fresh code, or None."""
         client = self._imap_factory()
         try:
@@ -161,7 +196,7 @@ class ImapOtpSource:
                 if typ != "OK":
                     _log.debug("otp: mailbox %s not selectable, skipping", mailbox)
                     continue
-                for msg_date, text in self._fresh_messages(client, sent_after):
+                for msg_date, text in self._fresh_messages(client, newer_than):
                     code = extract_otp_code(text)
                     if code is not None and (best is None or msg_date > best[0]):
                         best = (msg_date, code)
@@ -173,10 +208,11 @@ class ImapOtpSource:
                 _log.debug("otp: imap logout failed", exc_info=True)
 
     def _fresh_messages(
-        self, client: _ImapClient, sent_after: datetime
+        self, client: _ImapClient, newer_than: datetime
     ) -> list[tuple[datetime, str]]:
-        """(date, searchable-text) for messages in the SELECTED mailbox newer than sent_after."""
-        criteria = [f"SINCE {sent_after.strftime('%d-%b-%Y')}"]  # day granularity
+        """(date, searchable-text) for messages in the SELECTED mailbox newer than `newer_than`
+        (already grace-adjusted by the caller)."""
+        criteria = [f"SINCE {_imap_date(newer_than)}"]  # day granularity
         if self._sender_filter:
             criteria.append(f'FROM "{self._sender_filter}"')
         typ, data = client.search(None, *criteria)
@@ -186,7 +222,7 @@ class ImapOtpSource:
         for mid in data[0].split():
             parsed = self._parse_message(client, mid.decode())
             # Date-header freshness is the precise filter; SINCE only prunes by day.
-            if parsed is not None and parsed[0] > sent_after:
+            if parsed is not None and parsed[0] > newer_than:
                 out.append(parsed)
         return out
 
@@ -204,25 +240,29 @@ class ImapOtpSource:
         )
         if raw is None:
             return None
-        msg = email.message_from_bytes(bytes(raw), policy=email.policy.default)
+        # policy=default always yields EmailMessage at runtime; typeshed says Message.
+        msg = cast(
+            "email.message.EmailMessage",
+            email.message_from_bytes(bytes(raw), policy=email.policy.default),
+        )
         date_header = msg["Date"]
         if not date_header:
             return None
         try:
             msg_date = email.utils.parsedate_to_datetime(str(date_header))
-        except ValueError:
-            return None
+        except Exception:
+            return None  # unparseable Date header — cannot establish freshness
         if msg_date.tzinfo is None:
             return None  # can't establish freshness — treat as stale
         return (msg_date, self._searchable_text(msg))
 
     @staticmethod
-    def _searchable_text(msg: email.message.Message) -> str:
+    def _searchable_text(msg: email.message.EmailMessage) -> str:
         """Subject + body text. HTML bodies are tag-stripped — the OTP mail's
         format is unknown until first observed, and an HTML-only mail must not
         hide the code."""
         parts = [str(msg["Subject"] or "")]
-        body = msg.get_body(preferencelist=("plain", "html")) if hasattr(msg, "get_body") else None
+        body = msg.get_body(preferencelist=("plain", "html"))
         if body is not None:
             try:
                 content = str(body.get_content())

@@ -8,6 +8,7 @@ once the live challenge shape is known.
 
 from __future__ import annotations
 
+import imaplib
 import logging
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
@@ -21,6 +22,7 @@ from teetime.core.otp import (
     OtpError,
     OtpSource,
     OtpTimeoutError,
+    _imap_date,
     extract_otp_code,
 )
 
@@ -167,9 +169,11 @@ async def test_fake_source_raises_timeout_when_exhausted() -> None:
         await fake.fetch_code(sent_after=T0, timeout_s=5.0)
 
 
-def test_fake_source_records_calls() -> None:
+async def test_fake_source_records_calls() -> None:
     fake = FakeOtpSource(codes=["111111"])
     assert fake.calls == []
+    await fake.fetch_code(sent_after=T0, timeout_s=5.0)
+    assert fake.calls == [(T0, 5.0)]
 
 
 # ---------------------------------------------------------------- imap source
@@ -288,3 +292,129 @@ async def test_code_is_never_logged(caplog: pytest.LogCaptureFixture) -> None:
         code = await src.fetch_code(sent_after=T0 - timedelta(seconds=1), timeout_s=60.0)
     assert code == "654321"
     assert "654321" not in caplog.text
+
+
+# ------------------------------------------------------- resilience & skew
+
+
+async def test_transient_connect_error_is_retried_not_fatal() -> None:
+    # A blip on poll N must consume ONE poll, not abort the 5-minute window.
+    clock = FakeClock(start=T0)
+    good = _FakeImapClient({"INBOX": [_rfc822(sent_at=T0 + timedelta(seconds=1))]})
+    attempts = {"n": 0}
+
+    def flaky_factory() -> _FakeImapClient:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OSError("connect timed out")
+        return good
+
+    src = ImapOtpSource(
+        email_address="bot@example.com",
+        app_password="app-pw",
+        clock=clock,
+        sender_filter=None,
+        poll_interval_s=2.0,
+        mailboxes=("INBOX",),
+        _imap_factory=flaky_factory,
+    )
+    code = await src.fetch_code(sent_after=T0 - timedelta(seconds=1), timeout_s=60.0)
+    assert code == "654321"
+    assert attempts["n"] == 2
+
+
+async def test_transient_login_error_is_retried_not_fatal() -> None:
+    # imaplib.IMAP4.login raises IMAP4.error on a rejected login (unlike
+    # search/fetch, which return a status string) — must not escape fetch_code.
+    clock = FakeClock(start=T0)
+    attempts = {"n": 0}
+
+    class _RejectingClient(_FakeImapClient):
+        def login(self, user: str, password: str) -> tuple[str, list[bytes]]:
+            raise imaplib.IMAP4.error("temporarily rejected")
+
+    good = _FakeImapClient({"INBOX": [_rfc822(sent_at=T0 + timedelta(seconds=1))]})
+
+    def factory() -> _FakeImapClient:
+        attempts["n"] += 1
+        return _RejectingClient({"INBOX": []}) if attempts["n"] == 1 else good
+
+    src = ImapOtpSource(
+        email_address="bot@example.com",
+        app_password="app-pw",
+        clock=clock,
+        sender_filter=None,
+        poll_interval_s=2.0,
+        mailboxes=("INBOX",),
+        _imap_factory=factory,
+    )
+    code = await src.fetch_code(sent_after=T0 - timedelta(seconds=1), timeout_s=60.0)
+    assert code == "654321"
+
+
+async def test_persistent_connect_failure_becomes_timeout() -> None:
+    clock = FakeClock(start=T0)
+
+    def dead_factory() -> _FakeImapClient:
+        raise OSError("network down")
+
+    src = ImapOtpSource(
+        email_address="bot@example.com",
+        app_password="app-pw",
+        clock=clock,
+        sender_filter=None,
+        poll_interval_s=2.0,
+        mailboxes=("INBOX",),
+        _imap_factory=dead_factory,
+    )
+    with pytest.raises(OtpTimeoutError):
+        await src.fetch_code(sent_after=T0, timeout_s=10.0)
+    assert clock.now_utc() >= T0 + timedelta(seconds=10)
+
+
+async def test_code_dated_slightly_before_sent_after_is_accepted() -> None:
+    # The mail server's Date header comes from ITS clock. If it runs a little
+    # behind ours, a LIVE code must not be rejected as stale (grace window).
+    clock = FakeClock(start=T0)
+    client = _FakeImapClient({"INBOX": [_rfc822(sent_at=T0 - timedelta(seconds=30))]})
+    src = _source(client, clock)
+    code = await src.fetch_code(sent_after=T0, timeout_s=60.0)
+    assert code == "654321"
+
+
+async def test_grace_window_does_not_admit_minutes_old_mail() -> None:
+    clock = FakeClock(start=T0)
+    client = _FakeImapClient({"INBOX": [_rfc822(sent_at=T0 - timedelta(minutes=5))]})
+    src = _source(client, clock)
+    with pytest.raises(OtpTimeoutError):
+        await src.fetch_code(sent_after=T0, timeout_s=10.0)
+
+
+async def test_default_factory_sets_socket_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A hung TCP/TLS connect runs in a thread fetch_code cannot interrupt — the
+    # default factory must bound it with an explicit socket timeout.
+    captured: dict[str, object] = {}
+
+    def fake_ctor(host: str, port: int, timeout: float | None = None) -> _FakeImapClient:
+        captured["host"] = host
+        captured["port"] = port
+        captured["timeout"] = timeout
+        return _FakeImapClient({"INBOX": [_rfc822(sent_at=T0)]})
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", fake_ctor)
+    src = ImapOtpSource(
+        email_address="bot@example.com",
+        app_password="app-pw",
+        clock=FakeClock(start=T0),
+        sender_filter=None,
+    )
+    code = await src.fetch_code(sent_after=T0 - timedelta(seconds=1), timeout_s=30.0)
+    assert code == "654321"
+    assert captured["host"] == "imap.gmail.com"
+    assert captured["timeout"] == 15.0
+
+
+def test_imap_since_date_is_locale_independent() -> None:
+    # %b is locale-sensitive (fr_FR → "juil."); the SINCE date must never be.
+    assert _imap_date(datetime(2026, 7, 11, tzinfo=UTC)) == "11-Jul-2026"
+    assert _imap_date(datetime(2026, 12, 3, tzinfo=UTC)) == "03-Dec-2026"
