@@ -587,6 +587,16 @@ in `core/` — never directly. This is the cut line for parallel work.
   of truth across runs. Concurrent-run serialization is handled by ACA Job /
   GH Actions `concurrency:` groups. In-process advisory locks serialise writes
   within a single run.
+- **Email OTP (MB books require a six-digit emailed code from 2026-07-15) — mailbox
+  side ONLY so far.** `core/otp.py` holds the `OtpSource` Protocol plus
+  `ImapOtpSource` (polls the dedicated Gmail inbox that the course's OTP mail is
+  forwarded to; fresh IMAP connection per poll, checks Spam too, Clock-injected,
+  never logs the code value) and `FakeOtpSource` — mirroring `clock.py`'s
+  Protocol+real+fake layout. `fetch_code(sent_after=..., timeout_s=...)` scopes the
+  search to the CURRENT attempt so a stale code from an earlier attempt is never
+  returned. It is NOT yet wired into any adapter/orchestrator/config — the ForeUP
+  book-flow integration (challenge detect → fetch → verify POST) lands in a
+  follow-up PR once the live challenge's API shape has been observed.
 
 ## Per-course specifics → `src/teetime/courses/CLAUDE.md`
 
