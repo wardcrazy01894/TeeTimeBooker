@@ -23,7 +23,7 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from .clock import Clock
 
@@ -43,7 +43,8 @@ class OtpSource(Protocol):
     """Fetch the one-time code the course emails during a booking attempt."""
 
     async def fetch_code(self, *, sent_after: datetime, timeout_s: float) -> str:
-        """Newest code from a message received STRICTLY after `sent_after` (tz-aware).
+        """Newest code from a message received STRICTLY after `sent_after` (tz-aware UTC;
+        pass `clock.now_utc()` readings — a non-UTC tz shifts the coarse SINCE day boundary).
 
         Polls until found or `timeout_s` elapses, then raises OtpTimeoutError.
         `sent_after` scopes the search to THIS attempt's code — a stale code from
@@ -122,6 +123,10 @@ class ImapOtpSource:
     the 07-15 cutover): fresh LOGINs every `poll_interval_s` could trip Gmail
     rate limiting on a long window; expected real windows are short (mail
     forwards in ~10 s), and a throttled poll is retried like any other blip.
+    Corollary: a PERMANENTLY wrong app password also retries every poll for the
+    full window before surfacing as OtpTimeoutError — a misconfigured deployment
+    compounds the login-rate exposure rather than failing fast (accepted; the
+    per-poll warnings are the diagnosis trail).
 
     Freshness: messages must be dated after `sent_after` MINUS
     `freshness_grace_s`. The grace absorbs mail-server clock skew (their Date
@@ -240,11 +245,9 @@ class ImapOtpSource:
         )
         if raw is None:
             return None
-        # policy=default always yields EmailMessage at runtime; typeshed says Message.
-        msg = cast(
-            "email.message.EmailMessage",
-            email.message_from_bytes(bytes(raw), policy=email.policy.default),
-        )
+        # policy=default makes message_from_bytes yield EmailMessage (typeshed
+        # overload infers this — no cast needed).
+        msg = email.message_from_bytes(bytes(raw), policy=email.policy.default)
         date_header = msg["Date"]
         if not date_header:
             return None
