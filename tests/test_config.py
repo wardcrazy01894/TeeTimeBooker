@@ -175,12 +175,14 @@ def test_scheduler_default_fallback_token_reserve() -> None:
 
 
 def test_scheduler_default_blind_post_max_count_matches_shipped() -> None:
-    """The in-code default must MATCH the shipped configs (3, the top-3 nearest-midpoint
-    cap from RESEARCH_FALLBACK_PLAN / #157). It was left at the superseded all-in-window
-    12 when #157 lowered only the config files — so a config that merely OMITTED the key
-    silently inherited a 12-way concurrent blind burst nobody intends anymore.
-    full-repo-scan 2026-07-09 (flagged independently by two reviewers)."""
-    assert SchedulerConfig().blind_post_max_count == 3
+    """The in-code default must MATCH the shipped configs (1 — burst-of-one, operator
+    directive 2026-07-15). ForeUP's "1 online reservation per day" rule 400-rejects every
+    sibling POST once the first lands (observed live 2026-07-11), so a burst >1 buys
+    nothing: the winner is first-processed, not best-ranked, and the extras are wasted
+    bot-loud traffic. One blind POST for the nearest-midpoint slot wins the race; misses
+    fall through to the sequential center-out fallback. (History: default 12 → 3 in #157/
+    full-repo-scan 2026-07-09 → 1 here.)"""
+    assert SchedulerConfig().blind_post_max_count == 1
 
 
 def test_fallback_token_reserve_rejects_negative() -> None:

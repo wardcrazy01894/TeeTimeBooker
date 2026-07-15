@@ -83,11 +83,12 @@ captcha_prefetch_count = 3
 # to this many concurrent book POSTs for the top-N ranked in-window grid slots at T0, keeps the
 # best, cancels the rest. The CAPTCHA prefetch scales to min(this, in-window grid count). 0 disables
 # blind fan-out (single-POST race path). Bounded further by the pooled-token count at fire time.
-# Set to 3 (was 12 = the full 08:45-10:00 grid): in the 2026-06-27/28 live drops every surplus POST
-# past the first success was rejected by ForeUP's "1 online reservation per day" rule, so the wider
-# fan-out added 2captcha cost + T0 footprint without improving the catch rate. 3 fires the 3 grid
-# slots closest to the window midpoint (the highest-ranked candidates).
-blind_post_max_count = 3
+# Set to 1 — burst-of-one (operator directive 2026-07-15; was 3, before that 12 = the full grid):
+# ForeUP's "1 online reservation per day" rule 400-rejects every surplus POST once the first lands
+# (live 2026-06-27/28 + 2026-07-11), so a burst >1 makes the winner first-processed rather than
+# best-ranked and adds 2captcha cost + T0 footprint for nothing. 1 fires the single grid slot
+# closest to the window midpoint; a miss falls to the sequential center-out fallback.
+blind_post_max_count = 1
 # Blind-POST 0-booked fallback reserve (RESEARCH_FALLBACK_PLAN.md §2 Q3): EXTRA CAPTCHA tokens
 # pre-solved beyond the blind burst so the post-reguard FRESH search books with a fresh POOLED
 # token instead of a ~75s inline solve. The 3 blind POSTs pop their tokens; these 2 REMAIN
