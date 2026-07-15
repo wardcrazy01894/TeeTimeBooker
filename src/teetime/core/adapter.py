@@ -47,6 +47,21 @@ class CaptchaError(AdapterError):
     """A captcha challenge was returned. v0 stops here and notifies the user."""
 
 
+class OtpChallengeError(CaptchaError):
+    """The platform demanded an emailed one-time booking code to complete the booking
+    (Mangrove Bay email-OTP, announced 2026-07-15).
+
+    The challenge is UI-only today — the 2026-07-15 live recon confirmed the direct
+    API book POST is unchallenged — so this error firing means ForeUP EXTENDED
+    enforcement to the API path. It subclasses CaptchaError deliberately: every
+    operator-loud path fires for free (the booking run() does not catch it → clean
+    non-zero exit; the watcher notify+re-raises), and it can never be misread as a
+    benign SlotGone → NO_INVENTORY. The fetch-code-and-verify wiring (core/otp.py
+    OtpSource) is deliberately NOT attached until the challenge's API shape has been
+    observed live — this error IS the observation signal.
+    """
+
+
 class RateLimitError(AdapterError):
     """We were throttled. Includes optional retry-after seconds."""
 

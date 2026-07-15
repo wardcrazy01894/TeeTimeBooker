@@ -54,6 +54,7 @@ from ...core.adapter import (
     CaptchaError,
     CourseAdapter,
     InventoryNotPublishedError,
+    OtpChallengeError,
     RateLimitError,
     SlotGoneError,
 )
@@ -87,6 +88,20 @@ _HTTP_NOT_FOUND = 404
 # and book. Unlike a 5xx/timeout (the §9 UNCERTAIN case), a 4xx rejection is
 # unambiguous that NO reservation was created, so it is safe to try the next slot.
 _HTTP_BOOK_REJECTED = 400
+# MB email-OTP challenge markers (announced 2026-07-15; see _guard_otp_challenge).
+# Matched case-insensitively against the ForeUP `msg` field. The API challenge's
+# real wording is unobserved (enforcement is UI-only per the 2026-07-15 live recon),
+# so these cover the plausible phrasings from the observed challenge EMAIL
+# ("one-time use booking code", "your booking code is") while staying tight enough
+# that no known ForeUP rejection matches.
+_OTP_CHALLENGE_MARKERS = (
+    "booking code",
+    "one-time code",
+    "one time code",
+    "verification code",
+    "code has been sent",
+    "code was sent",
+)
 
 
 class ForeUpAdapter(CourseAdapter):
@@ -271,6 +286,38 @@ class ForeUpAdapter(CourseAdapter):
             data = {}
         msg = str(data.get("msg", "")) if isinstance(data, dict) else ""
         raise CaptchaError(msg or "browser challenge (openNewWindow) required")
+
+    def _guard_otp_challenge(self, r: httpx.Response) -> None:
+        """Raise OtpChallengeError if the response demands an emailed booking code.
+
+        MB email-OTP (2026-07-15): enforcement is UI-only today (the live recon
+        confirmed the direct API book POST is unchallenged), so this guard is the
+        OBSERVATION SIGNAL for ForeUP extending it to the API — an operator-loud
+        raise (OtpChallengeError subclasses CaptchaError) instead of the silent
+        misclassification a challenge 400 would otherwise get (SlotGone → every
+        candidate "gone" → a clean NO_INVENTORY that looks like an empty teesheet).
+
+        The challenge's API wording is unobserved, so this matches best-effort
+        markers in the ForeUP `msg` field (mirroring _is_captcha_challenge's shape).
+        Kept tight: no known ForeUP rejection matches ("Time not available.",
+        "...1 online reservation per day.", captcha challenges), and the full
+        status+body WARNING in book() remains the diagnosis trail for any
+        challenge phrasing these markers miss.
+        """
+        if "application/json" not in r.headers.get("content-type", ""):
+            return
+        try:
+            data: object = r.json()
+        except ValueError:
+            return
+        if not isinstance(data, dict):
+            return
+        msg = str(data.get("msg", "")).lower()
+        if msg and any(marker in msg for marker in _OTP_CHALLENGE_MARKERS):
+            raise OtpChallengeError(
+                f"ForeUP demanded an emailed booking code (email-OTP) on the book POST: "
+                f"{redact_text(msg[:300])}"
+            )
 
     async def authenticate(self, creds: CourseCredentials) -> None:
         """Warm up PHPSESSID, then attempt username/password login.
@@ -678,6 +725,12 @@ class ForeUpAdapter(CourseAdapter):
         # A captcha/browser challenge can come back as a 400; classify it as such
         # (CaptchaError) BEFORE the generic 400 → SlotGone mapping below.
         self._guard_captcha(r)
+        # Likewise an email-OTP challenge (if ForeUP ever extends the 2026-07-15
+        # UI-only gate to the API path) must classify as OtpChallengeError BEFORE
+        # the 400 → SlotGone mapping — a challenge misread as SlotGone cascades
+        # into try-next-slot → NO_INVENTORY, silently masking the real problem.
+        # Checked on any status (ForeUP sometimes rides errors on HTTP 200 bodies).
+        self._guard_otp_challenge(r)
         if r.status_code == _HTTP_BOOK_REJECTED:
             # 400 = ForeUP definitively rejected this booking; no reservation was
             # created (typically the slot was claimed between search and book). Raise
