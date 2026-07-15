@@ -606,11 +606,22 @@ in `core/` — never directly. This is the cut line for parallel work.
   critical path — the only wired piece is **detection**:
   `ForeUpAdapter._guard_otp_challenge` (called in `book()` after `_guard_captcha`,
   BEFORE the 400→SlotGone mapping) raises `OtpChallengeError` — a **CaptchaError
-  subclass**, so every operator-loud path fires for free (booking run() doesn't
-  catch it → non-zero exit; watcher notify+re-raises) — when a book response's
-  `msg` matches the challenge markers (`_OTP_CHALLENGE_MARKERS`, best-effort: the
-  API challenge's wording is unobserved). Without it a challenge 400 would misread
-  as SlotGone → try-next-slot → a clean NO_INVENTORY masking the real problem.
+  subclass**, so the CaptchaError operator-loud paths fire for free (booking run()
+  doesn't catch it → non-zero exit; the watcher's check_once notify+re-raises) —
+  when a book response's `msg` matches the challenge markers
+  (`_OTP_CHALLENGE_MARKERS`, best-effort: the API challenge's wording is
+  unobserved; a captcha-marker match wins if a body somehow matches both, since
+  `_guard_captcha` runs first — test-pinned). Without it a challenge 400 would
+  misread as SlotGone → try-next-slot → a clean NO_INVENTORY masking the real
+  problem. Two scoped carve-outs inherit CaptchaError's pre-existing softer
+  handling: (a) the UpgradeOrchestrator's rebook-after-cancel logs-and-continues on
+  any book() failure — an OTP challenge there is a WARNING and the week's slot can
+  be lost (the accepted upgrade-loss risk); (b) **documented residual (accepted):**
+  a challenge on a blind-burst POST is dropped like any non-SlotGone error, and if
+  the post-reguard fresh search then finds ZERO slots the run degrades to a generic
+  NO_INVENTORY (still non-zero exit) with the challenge surviving only as a
+  per-slot WARNING — in the common case the fresh search finds slots and the
+  sequential book re-raises the challenge loudly.
   The fetch→verify wiring lands only if/when ForeUP extends enforcement to the
   API (OtpChallengeError firing is the observation signal); it will need a UI HAR
   trace for the verify endpoint. Recon extras: a UI pending hold shows in

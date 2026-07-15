@@ -312,6 +312,10 @@ class ForeUpAdapter(CourseAdapter):
             return
         if not isinstance(data, dict):
             return
+        # Runs on ANY status (like _guard_captcha; ForeUP sometimes rides errors on
+        # HTTP 200). Safe today because MB success bodies are the flat TTID dict with
+        # no `msg` field — if ForeUP's SUCCESS envelope ever grows a `msg`, add a
+        # `success is False` check here before matching.
         msg = str(data.get("msg", "")).lower()
         if msg and any(marker in msg for marker in _OTP_CHALLENGE_MARKERS):
             raise OtpChallengeError(
