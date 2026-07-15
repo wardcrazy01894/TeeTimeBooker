@@ -21,6 +21,7 @@ from teetime.core.adapter import (
     CaptchaError,
     CourseAdapter,
     InventoryNotPublishedError,
+    OtpChallengeError,
     RateLimitError,
     ReservationCacheRefreshable,
     SlotGoneError,
@@ -842,6 +843,113 @@ async def test_book_400_raises_slot_gone_so_orchestrator_tries_next() -> None:
     prod failure: a 400 killed the job and the 5 backup slots were never attempted)."""
     respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
         return_value=httpx.Response(400, json={"msg": "That time is no longer available."})
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError):
+            await adapter.book(slot, _request())
+
+
+def test_otp_challenge_error_is_operator_loud() -> None:
+    """Contract pin: OtpChallengeError subclasses CaptchaError, so every existing
+    operator-loud path fires for free — the booking run() does NOT catch it (clean
+    non-zero exit, like a broken CAPTCHA pipeline) and the watcher notify+re-raises
+    it. It must never be treatable as a benign try-next-slot signal."""
+    assert issubclass(OtpChallengeError, CaptchaError)
+
+
+@respx.mock
+async def test_book_otp_challenge_raises_otp_error_not_slot_gone() -> None:
+    """MB email-OTP (announced 2026-07-15): the challenge is UI-only today — the live
+    recon confirmed the direct API book POST is unchallenged — but if ForeUP ever
+    extends enforcement to the API, the rejection must surface as OtpChallengeError
+    (operator action: wire in the OtpSource), NOT SlotGoneError. SlotGone cascades
+    into try-next-slot → every candidate "gone" → a clean NO_INVENTORY terminal,
+    silently reporting "no tee times" on every drop while the real problem is the
+    OTP gate."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "success": False,
+                "msg": "Please enter the booking code sent to your email to complete your reservation.",
+            },
+        )
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(OtpChallengeError):
+            await adapter.book(slot, _request())
+
+
+@respx.mock
+async def test_book_body_matching_captcha_and_otp_markers_classifies_captcha() -> None:
+    """Ordering pin: _guard_captcha runs BEFORE _guard_otp_challenge in book(), so a
+    body that somehow matches BOTH marker sets classifies as the plain CaptchaError
+    (correct: the captcha wall must be cleared regardless of any OTP wording, and
+    OtpChallengeError subclasses CaptchaError so operator handling is equivalent)."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "success": False,
+                "msg": "Captcha required before we can send your booking code.",
+            },
+        )
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(CaptchaError) as excinfo:
+            await adapter.book(slot, _request())
+        assert not isinstance(excinfo.value, OtpChallengeError)
+
+
+@respx.mock
+async def test_book_400_one_per_day_still_slot_gone_not_otp() -> None:
+    """No false positive: the known burst-sibling rejection ("1 online reservation per
+    day", observed live 2026-07-11) must stay SlotGoneError — only code-challenge
+    wording trips the OTP guard, otherwise a routine rejection would crash the run."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "success": False,
+                "msg": "You are only allowed to have 1 online reservation per day.",
+            },
+        )
     )
     slot = TeeTimeSlot(
         course_id=CID,
