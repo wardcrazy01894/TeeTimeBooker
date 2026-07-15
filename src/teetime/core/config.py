@@ -188,14 +188,15 @@ class SchedulerConfig(BaseModel):
     # and cancels the rest. DECOUPLED from captcha_prefetch_count (the single-POST race
     # prefetch depth): the CAPTCHA prefetch SCALES to min(blind_post_max_count, in-window
     # grid count) when the primary is blind-capable. The actual burst N is further bounded by
-    # the pooled-token count. `0` DISABLES blind fan-out (single-POST race path). Default 3 —
-    # the top 3 slots nearest the window midpoint (the shipped configs also set it explicitly);
-    # the surplus POSTs past the first success bounce on ForeUP's "1 reservation/day" rule
-    # (see config/example.toml, RESEARCH_FALLBACK_PLAN). The superseded all-in-window default
-    # of 12 was retired (#157 lowered the configs; the code default is now aligned so an
-    # OMITTED key can no longer silently inherit a 12-way burst — full-repo-scan 2026-07-09).
+    # the pooled-token count. `0` DISABLES blind fan-out (single-POST race path). Default 1 —
+    # burst-of-one (operator directive 2026-07-15): ForeUP's "1 online reservation per day"
+    # rule 400-rejects every sibling POST once the first lands (observed live 2026-07-11), so
+    # a burst >1 makes the winner first-processed rather than best-ranked and the extras are
+    # wasted bot-loud traffic. One blind POST fires for the nearest-midpoint grid slot; a miss
+    # falls through to the sequential center-out fallback (which books with pooled reserve
+    # tokens). (History: 12 all-in-window → 3 in #157/full-repo-scan 2026-07-09 → 1.)
     # Ignored off the race path and for non-capable or non-primary courses.
-    blind_post_max_count: int = Field(default=3, ge=0)
+    blind_post_max_count: int = Field(default=1, ge=0)
     # Blind-POST 0-booked fallback reserve (RESEARCH_FALLBACK_PLAN §2 Q3). EXTRA CAPTCHA
     # tokens to pre-solve BEYOND the blind burst so the post-reguard FRESH search's book()
     # pops a fresh POOLED token instead of a ~75s inline solve. The burst size is unchanged
