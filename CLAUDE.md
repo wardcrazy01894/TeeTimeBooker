@@ -339,7 +339,9 @@ in `core/` — never directly. This is the cut line for parallel work.
   not persisted to disk or any external store).
 - **`cancel_reservation` is on the `CourseAdapter` Protocol** (breaking — all
   adapters must implement it). Raises `CancelError` on failure. Returns normally
-  on 404 (already-cancelled is the desired post-condition). See `core/adapter.py`.
+  on 404 (already-cancelled is the desired post-condition) — and, for ForeUP, also
+  on the 400 "We can't find that teetime" variant the platform actually uses for a
+  missing/expired reservation (observed live 2026-07-15). See `core/adapter.py`.
 - **Blind-POST is an ADAPTER CAPABILITY, never a config flag — gated by an explicit
   `AdapterCapabilities` record (`core/adapter.py`, BLIND_POST_PLAN.md).** Every adapter
   exposes `capabilities: AdapterCapabilities` (frozen dataclass); the orchestrator gate is

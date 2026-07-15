@@ -962,7 +962,10 @@ cancellation should raise `CancelError` with a clear message.
 
 **cancel_reservation() idempotency:** A 404 from the cancellation endpoint means the booking
 is already gone — the desired post-condition is satisfied, so 404 MUST NOT raise `CancelError`.
-Any other 4xx or 5xx raises `CancelError` because the booking's status is uncertain.
+ForeUP ALSO signals a missing/expired reservation as a 400 with a "We can't find that
+teetime..." msg (observed live 2026-07-15) — the ForeUP adapter treats that variant
+identically (return normally). Any other 4xx or 5xx raises `CancelError` because the
+booking's status is uncertain.
 
 **"Our" vs "manual" booking detection (Option A — LOCKED IN):** `ForeUpAdapter.book()` stamps
 `"TTB:" + raw_foreup_id` into `BookingResult.confirmation_code`. This is the value stored

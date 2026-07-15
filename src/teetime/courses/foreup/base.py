@@ -24,6 +24,9 @@ Endpoints confirmed via page-source analysis and community reverse-engineering:
 
     DELETE /index.php/api/booking/users/reservations/<id>
         Cancels a reservation. 200 → success. 404 → already cancelled (idempotent).
+        ALSO observed (live 2026-07-15): a missing/expired reservation can come back
+        as 400 {"success":false,"msg":"We can't find that teetime, ..."} — treated
+        as already-cancelled too (see _is_cancel_target_missing).
 
 Anti-bot etiquette:
     - Honest User-Agent
@@ -275,6 +278,34 @@ class ForeUpAdapter(CourseAdapter):
             return False
         msg = str(data.get("msg", ""))
         return "captcha" in msg.lower() or bool(data.get("openNewWindow"))
+
+    @staticmethod
+    def _is_cancel_target_missing(r: httpx.Response) -> bool:
+        """True iff a cancel rejection says the reservation doesn't exist.
+
+        Matched against the live-observed body (2026-07-15): HTTP 400 +
+        {"success": false, "msg": "We can't find that teetime, refresh the page and
+        try again, or contact the course."}. Kept to the distinctive phrase so any
+        OTHER 400 (a real cancel failure — booking still live) keeps raising
+        CancelError.
+
+        Documented residual (accepted): a MALFORMED/WRONG id (e.g. a TTB:-prefix
+        regression) would produce the identical "can't find" message and be silently
+        treated as success while the real booking stays live. Bounded at every call
+        site: the upgrade path's subsequent book() is rejected by ForeUP's
+        1-reservation/day rule and aborts cleanly (original booking + terminal kept),
+        and a stranded blind-POST duplicate self-heals via the ≤10-min watcher
+        reconcile, which sources ids from a fresh list_reservations() snapshot.
+        """
+        if "application/json" not in r.headers.get("content-type", ""):
+            return False
+        try:
+            data: object = r.json()
+        except ValueError:
+            return False
+        if not isinstance(data, dict):
+            return False
+        return "can't find that teetime" in str(data.get("msg", "")).lower()
 
     def _guard_captcha(self, r: httpx.Response) -> None:
         """Raise CaptchaError on any ForeUP captcha/browser-challenge signal."""
@@ -849,7 +880,9 @@ class ForeUpAdapter(CourseAdapter):
 
         Behaviour contract:
         - If the endpoint returns 404 (already cancelled), this method MUST
-          return normally (idempotent post-condition satisfied).
+          return normally (idempotent post-condition satisfied). ForeUP ALSO
+          signals a missing reservation as 400 + "We can't find that teetime..."
+          (live 2026-07-15) — treated identically.
         - If the endpoint returns any other 4xx or 5xx, raise CancelError so
           the caller knows the booking is still live.
         - The confirmation_code passed here may contain the TTB: prefix (it comes
@@ -890,6 +923,19 @@ class ForeUpAdapter(CourseAdapter):
         if r.status_code == _HTTP_NOT_FOUND:
             # Already cancelled — the desired post-condition is satisfied.
             _log.info("ForeUP: reservation %s already cancelled (404), treating as success", raw_id)
+            return
+        if r.status_code == _HTTP_BOOK_REJECTED and self._is_cancel_target_missing(r):
+            # ForeUP ALSO signals "reservation doesn't exist" as a 400 with a
+            # "We can't find that teetime..." msg — NOT the 404 the contract names
+            # (observed live 2026-07-15 cancelling an already-expired UI hold). Same
+            # idempotent post-condition: the reservation is gone, so return normally
+            # rather than raising CancelError on a double-cancel (watcher reconcile
+            # retry, upgrade race).
+            _log.info(
+                "ForeUP: reservation %s not found on cancel (400 can't-find), "
+                "treating as already cancelled",
+                raw_id,
+            )
             return
         if r.status_code == _HTTP_RATE_LIMIT:
             raise RateLimitError(
