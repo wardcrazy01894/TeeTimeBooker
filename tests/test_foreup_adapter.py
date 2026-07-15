@@ -1219,6 +1219,46 @@ async def test_cancel_reservation_non404_error_raises_cancel_error() -> None:
 
 
 @respx.mock
+async def test_cancel_reservation_400_cant_find_is_idempotent() -> None:
+    """ForeUP signals "reservation doesn't exist" on cancel as a 400 with
+    "We can't find that teetime...", NOT the 404 the idempotent-cancel contract keys
+    on (observed live 2026-07-15 cancelling an already-expired UI hold). The
+    already-cancelled post-condition is satisfied, so this must return normally —
+    otherwise a double-cancel (watcher reconcile retry, upgrade race) raises
+    CancelError for a booking that is already gone."""
+    respx.delete(CANCEL_URL).mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "success": False,
+                "msg": (
+                    "We can't find that teetime, refresh the page and try again, "
+                    "or contact the course."
+                ),
+            },
+        )
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        await adapter.cancel_reservation(CANCEL_RESERVATION_ID)  # must not raise
+
+
+@respx.mock
+async def test_cancel_reservation_400_other_msg_still_raises_cancel_error() -> None:
+    """A 400 whose msg is NOT the can't-find signal keeps raising CancelError — the
+    booking may still be live and the caller must know the cancel failed."""
+    respx.delete(CANCEL_URL).mock(
+        return_value=httpx.Response(
+            400, json={"success": False, "msg": "Something else went wrong."}
+        )
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with pytest.raises(CancelError):
+            await adapter.cancel_reservation(CANCEL_RESERVATION_ID)
+
+
+@respx.mock
 async def test_cancel_reservation_strips_ttb_prefix() -> None:
     """TTB:-prefixed confirmation_code is stripped; raw id is used in the DELETE path."""
     respx.delete(CANCEL_URL).mock(return_value=httpx.Response(200, json={"success": True}))
