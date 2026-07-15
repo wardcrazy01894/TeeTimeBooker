@@ -14,7 +14,9 @@
 >    `_should_blind_post`). Non-blind courses are byte-for-byte unchanged.
 > 3. Add a **configurable token RESERVE** so the fallback book fires with a fresh *pooled*
 >    token, not a ~75 s inline solve.
-> 4. `blind_post_max_count = 3` is already merged; unchanged.
+> 4. `blind_post_max_count = 3` is already merged; unchanged. *(Superseded 2026-07-15:
+>    lowered again to **1** — burst-of-one — since ForeUP's "1 online reservation per day"
+>    rule 400-rejects surplus POSTs; the fallback + reserve design here is unchanged.)*
 
 ---
 
