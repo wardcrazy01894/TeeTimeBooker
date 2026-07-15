@@ -91,7 +91,7 @@ captcha_prefetch_count = 3
 blind_post_max_count = 1
 # Blind-POST 0-booked fallback reserve (RESEARCH_FALLBACK_PLAN.md §2 Q3): EXTRA CAPTCHA tokens
 # pre-solved beyond the blind burst so the post-reguard FRESH search books with a fresh POOLED
-# token instead of a ~75s inline solve. The 3 blind POSTs pop their tokens; these 2 REMAIN
+# token instead of a ~75s inline solve. The blind POST(s) pop their tokens; these 2 REMAIN
 # pooled for the fallback. Paid pre-T0 on every drop (incl. the happy path where they go
 # unused). 0 = no reserve.
 blind_post_fallback_token_reserve = 2
