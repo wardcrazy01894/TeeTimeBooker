@@ -35,7 +35,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.9.0`).
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.10.0`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -57,9 +57,11 @@ reservation PER day:
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
-**LIVE in PROD** (latest infra tag `infra/v2.9.0` = `main`@`a67eccd`, deployed 2026-07-10 — the
-**2026-07-09 full-repo-scan fix batch + python 3.14 base** (booking-behavior + security changes,
-see the DEPLOYED paragraph below). Prior tag `infra/v2.8.0` = `main`@`21b24cf`, deployed
+**LIVE in PROD** (latest infra tag `infra/v2.10.0` = `main`@`fb2a133`, deployed 2026-07-15 — the
+**email-OTP response batch** (booking-behavior change, see the DEPLOYED paragraph below).
+Prior tag `infra/v2.9.0` = `main`@`a67eccd`, deployed 2026-07-10 — the
+**2026-07-09 full-repo-scan fix batch + python 3.14 base** (booking-behavior + security changes).
+Before that, `infra/v2.8.0` = `main`@`21b24cf`, deployed
 2026-06-29 — the **blind-POST fallback rework + scan hardening** (a booking-behavior change): the
 booking jobs run `blind_post_max_count=3` + `blind_post_fallback_token_reserve=2`, the concurrent
 hedge search is dropped, and the 0-booked path fires a FRESH search strictly after the re-guard
@@ -90,6 +92,20 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
 
+**DEPLOYED at `infra/v2.10.0` (2026-07-15, `main`@`fb2a133`):** the email-OTP response batch
+(#177/#178/#179), shipped the same day MB's email-OTP gate went live. Booking-behavior: the
+blind burst is **burst-of-one** (`blind_post_max_count=1`, default + all shipped configs — ForeUP's
+"1 online reservation per day" rule 400-rejects surplus POSTs, so a wider burst made the winner
+first-processed rather than best-ranked; a miss falls to the sequential center-out fallback with
+the 2 pooled reserve tokens), and a cancel-DELETE 400 "We can't find that teetime" is treated as
+already-cancelled (ForeUP uses it, not 404, for a missing/expired reservation — observed live).
+OTP posture: the 2026-07-15 live recon showed the email-OTP gate is **UI-only** (the bot's direct
+API book POST books unchallenged, HTTP 200 + instant confirmation), so the OtpSource stays off
+the critical path; `_guard_otp_challenge` → `OtpChallengeError` (CaptchaError subclass) is the
+loud observation signal if ForeUP ever extends enforcement to the API. All three prod jobs
+verified on the `teetime:fb2a133` image. First drop on this image: Sat 2026-07-18 05:50 ET
+(books 7/25) — the first OTP-era drop.
+
 **DEPLOYED at `infra/v2.9.0` (2026-07-10):** the 2026-07-09 full-repo-scan fix batch + the
 python 3.14 base. Booking-behavior: a SURPLUS-cancel failure (429/captcha/transport blip while
 cancelling a blind-POST extra) can no longer discard the kept booking — `_cancel_extras` catches
@@ -104,8 +120,9 @@ WARNING + reconcile CRITICAL are test-pinned, and lock-defer logs are visible at
 Config/docs: `blind_post_max_count` code default aligned to **3**, the `tests/
 test_docs_consistency.py` tag-agreement CI guard + the CLAUDE.md change→docs map exist (#172).
 The prod jobs were rebuilt + redeployed on the `infra/v2.9.0` image (`teetime:a67eccd`, verified
-live on all three jobs); first real booking exercise on this image (and on CPython 3.14) is the
-next wanted-day drop (Sat/Sun 06:00 ET).
+live on all three jobs); its first real booking exercise (and CPython 3.14's) was the 2026-07-11
+drop — booked Sat 7/18 09:30 (3rd-ranked; the two blind-burst siblings were 400-rejected by the
+1-reservation/day rule, the observation that motivated v2.10.0's burst-of-one).
 
 **Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
 `registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
