@@ -187,8 +187,8 @@ class ForeUpAdapter(CourseAdapter):
         # pre-T0 prepare_book prefetch is UNbounded by this (it calls the provider directly,
         # not _solve_captcha_inline) — that concurrency is off the critical path and intended.
         # Default 6: a balance — high enough not to over-serialise a real all-stale burst
-        # (prepare_book fires up to blind_post_max_count concurrent solves pre-T0 — default 1
-        # since the 2026-07-15 burst-of-one change, so an all-stale burst re-solves in ONE
+        # (prepare_book fires up to blind_post_max_count concurrent solves pre-T0 — default 3
+        # since the 2026-07-18 revert of burst-of-one, so an all-stale burst re-solves in ONE
         # wave under this bound, well within replicaTimeout=1200s even for an operator
         # who raises the cap severalfold) yet still a guardrail against a pathological runaway.
         self._captcha_solve_sem = asyncio.Semaphore(max(1, max_concurrent_captcha_solves))

@@ -16,7 +16,10 @@
 >    token, not a ~75 s inline solve.
 > 4. `blind_post_max_count = 3` is already merged; unchanged. *(Superseded 2026-07-15:
 >    lowered again to **1** — burst-of-one — since ForeUP's "1 online reservation per day"
->    rule 400-rejects surplus POSTs; the fallback + reserve design here is unchanged.)*
+>    rule 400-rejects surplus POSTs; the fallback + reserve design here is unchanged. Restored
+>    to **3** on 2026-07-18: burst-of-one lost the single-slot T0 race with nothing else in
+>    flight (the 2026-07-18 miss), so the top-3 concurrent hedge was reinstated — cancel-extras
+>    handles the 1/day-rule surplus.)*
 
 ---
 

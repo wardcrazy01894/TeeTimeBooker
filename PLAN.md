@@ -332,9 +332,12 @@ blind-capable primary pre-solves `min(blind_post_max_count, len(synthesize_blind
 + scheduler.blind_post_fallback_token_reserve` tokens — the burst portion gives each blind POST a
 pooled token at T0 and the reserve (default 2) tokens REMAIN pooled so the 0-booked fresh-search
 fallback books with a pooled token, not a ~75 s inline solve. Everything else uses the fixed
-`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (default 1, matching the
-shipped configs — burst-of-one, 2026-07-15; ge=0, 0 disables blind fan-out) is decoupled from
-`captcha_prefetch_count` and lives in `SchedulerConfig`.
+`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (default 3, matching the
+shipped configs — the top-3 nearest-midpoint slots fire concurrently to hedge the T0 slot-race;
+ForeUP's 1/day rule 400-rejects the surplus once the first lands, but cancel-extras keeps only the
+best, so the extra POSTs are the accepted cost of the hedge; 2026-07-18 revert of the 2026-07-15
+burst-of-one; ge=0, 0 disables blind fan-out) is decoupled from `captcha_prefetch_count` and lives
+in `SchedulerConfig`.
 
 State-machine note (§9.1): each blind POST is an independent entry into the POST/result phase.
 A 4xx → `SlotGoneError` (drop, try the rest); a 2xx → BOOKED (kept or cancelled by `_keep_best`/
@@ -586,10 +589,13 @@ What we still DO NOT:
 **Blind-POST burst at T0 (Mangrove Bay; BLIND_POST_PLAN.md).** The one deliberate
 departure from the 250 ms spacing rule is the 06:00:00 drop on the race path. To beat
 the search→book round-trip on the most contested slots of the week, the booking
-`Orchestrator` fires up to `scheduler.blind_post_max_count` (default **1**, matching the shipped
-configs — burst-of-one since 2026-07-15: ForeUP's "1 online reservation per day" rule 400-rejects
-surplus POSTs once the first lands, observed live 2026-06-27/28 + 2026-07-11, so a wider burst
-made the winner first-processed rather than best-ranked) book POSTs **concurrently** for the
+`Orchestrator` fires up to `scheduler.blind_post_max_count` (default **3**, matching the shipped
+configs — the top-3 nearest-midpoint slots go out **concurrently** to hedge the T0 slot-race;
+2026-07-18 revert of the 2026-07-15 burst-of-one, whose single in-flight POST lost the slot-race
+with nothing else in flight and caused the 2026-07-18 miss. ForeUP's "1 online reservation per
+day" rule 400-rejects the surplus POSTs once the first lands, observed live 2026-06-27/28 +
+2026-07-11, but cancel-extras keeps only the best, so the extra POSTs are the accepted cost of the
+hedge) book POSTs **concurrently** for the
 in-window morning grid synthesized from a frozen template (no search dependency). If zero POSTs book, a single FRESH search runs as the
 grid-drift fallback — STRICTLY AFTER the re-guard, not concurrently (the original hedge was
 dropped; RESEARCH_FALLBACK_PLAN.md §2 Q1).
