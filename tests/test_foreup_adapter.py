@@ -1023,6 +1023,74 @@ async def test_book_logs_response_body_on_error(caplog: pytest.LogCaptureFixture
 
 
 @respx.mock
+async def test_book_logs_server_date_header_on_rejection(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Early-arrival diagnostic (2026-07-18 miss): the booking job fires early_arrival_ms
+    (500 ms) BEFORE T0 to offset network latency. If the POST ARRIVES before the 06:00 ET
+    window opens, ForeUP rejects with 400 "Time not available." — indistinguishable from a
+    genuine slot-race loss by body alone. Logging ForeUP's Date response header (its server
+    clock) disambiguates: a 400 stamped 05:59:59 = pre-open rejection; 06:00:00 = race loss.
+    The header value must reach the logs on the rejection path."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={"msg": "Time not available."},
+            headers={"Date": "Sat, 25 Jul 2026 05:59:59 GMT"},
+        )
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with caplog.at_level("INFO"), pytest.raises(SlotGoneError):
+            await adapter.book(slot, _request())
+    assert "05:59:59" in caplog.text
+
+
+@respx.mock
+async def test_book_logs_server_date_header_on_success(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The server Date header is logged on the WINNING book POST too, so a booked drop's
+    server clock can be compared against a rejected sibling's (see the early-arrival
+    diagnostic above)."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "CONF-42"},
+            headers={"Date": "Sat, 25 Jul 2026 06:00:00 GMT"},
+        )
+    )
+    slot = TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with caplog.at_level("INFO"):
+            result = await adapter.book(slot, _request())
+    assert result.outcome == BookingOutcome.BOOKED
+    assert "06:00:00" in caplog.text
+
+
+@respx.mock
 async def test_book_includes_captchaid_when_provider_given() -> None:
     """book() must include captchaid in the POST body when captcha_provider is set."""
     captcha_token = "test-captcha-token-xyz"
