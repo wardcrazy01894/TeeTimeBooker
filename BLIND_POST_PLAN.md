@@ -19,7 +19,10 @@ hedge search was DROPPED — the 0-booked path now fires a FRESH search after th
 aligned to 3 as well, full-repo-scan 2026-07-09 #172) with a
 new `blind_post_fallback_token_reserve` (default 2), and then to **1** — burst-of-one — on
 2026-07-15 (operator directive after the OTP recon; ForeUP's "1 online reservation per day"
-rule 400-rejects surplus POSTs once the first lands, so the extras bought nothing). The watcher >1-reservation crash-net
+rule 400-rejects surplus POSTs once the first lands, so the extras bought nothing), then back to
+**3** again (2026-07-18): burst-of-one lost the single-slot race with nothing in flight (the
+2026-07-18 miss), so the top-3 concurrent hedge was restored; surplus POSTs bounce on the 1/day
+rule but cancel-extras keeps the best. The watcher >1-reservation crash-net
 reconcile backstop is in place (`core/watch_orchestrator.py`), and the docs (PLAN §12 etiquette
 paragraph + README + the opt-in `tests/test_foreup_canary.py` template-drift canary) are landed.
 Real effect is prod-only (the gate requires the `--wait` race path + `not dry_run`); it went live

@@ -97,7 +97,9 @@ No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation)
 blind burst is **burst-of-one** (`blind_post_max_count=1`, default + all shipped configs — ForeUP's
 "1 online reservation per day" rule 400-rejects surplus POSTs, so a wider burst made the winner
 first-processed rather than best-ranked; a miss falls to the sequential center-out fallback with
-the 2 pooled reserve tokens), and a cancel-DELETE 400 "We can't find that teetime" is treated as
+the 2 pooled reserve tokens) — (Pending the next deploy, `main` has reverted the burst to **3** —
+operator directive 2026-07-18 — after burst-of-one's single-slot race loss caused the 2026-07-18
+Sat 7/25 miss; cancel-extras handles the 1/day-rule surplus.) — and a cancel-DELETE 400 "We can't find that teetime" is treated as
 already-cancelled (ForeUP uses it, not 404, for a missing/expired reservation — observed live).
 OTP posture: the 2026-07-15 live recon showed the email-OTP gate is **UI-only** (the bot's direct
 API book POST books unchallenged, HTTP 200 + instant confirmation), so the OtpSource stays off
@@ -648,9 +650,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   server-side if the code is never entered, and does NOT count toward the
   1-online-reservation/day limit. **Open design constraint for the eventual
   wiring:** `fetch_code` has no per-attempt correlation token, so CONCURRENT book
-  attempts sharing one mailbox could steal each other's codes — moot at the current
-  burst-of-one, but the wiring plan must serialize OTP-requiring books or extend
-  the Protocol if the burst ever widens.
+  attempts sharing one mailbox could steal each other's codes — moot while OTP
+  enforcement stays UI-only (off the book critical path), but note the burst is back
+  to 3 as of 2026-07-18, so the concurrent-code-stealing risk is live the moment OTP
+  enforcement reaches the API; the wiring plan must serialize OTP-requiring books or
+  extend the Protocol before then.
 
 ## Per-course specifics → `src/teetime/courses/CLAUDE.md`
 
