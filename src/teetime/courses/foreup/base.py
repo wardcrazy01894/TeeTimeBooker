@@ -743,9 +743,10 @@ class ForeUpAdapter(CourseAdapter):
         # ForeUP rejects with 400 "Time not available." — byte-identical to a genuine
         # slot-race loss. ForeUP's Date response header is its own server clock at the
         # moment it processed this POST: a 400 stamped 05:59:59 = pre-open rejection;
-        # 06:00:00 = the slot was genuinely claimed first. Logged on EVERY book POST
-        # (success + failure) so a booked drop's server time can be diffed against a
-        # rejected sibling's. Pair with the orchestrator's "race: busy-wait complete;
+        # 06:00:00 = the slot was genuinely claimed first. Logged once per book() call on
+        # the FINAL POST (after any MF1 re-POST), success or failure, so a booked drop's
+        # server time can be diffed against a rejected sibling's. Pair with the
+        # orchestrator's "race: busy-wait complete;
         # firing at ..." line (our NTP-corrected send time) to bracket the round-trip.
         _log.info(
             "ForeUP: book POST for slot %s returned HTTP %d (server Date: %s)",
