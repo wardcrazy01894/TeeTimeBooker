@@ -22,20 +22,30 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # If a doc legitimately stops carrying the claim, remove it here in the same PR.
 _TAG_CLAIM_DOCS = ("README.md", "CLAUDE.md", "PLAN.md")
 _TAG_CLAIM_RE = re.compile(r"latest (?:prod )?infra tag\s*`?(infra/v\d+\.\d+\.\d+)`?")
+# Sibling guard (2026-07-18 review of the v2.11.0 bump): the M6 roadmap row used a
+# DIFFERENT phrasing — "current prod `infra/vX.Y.Z`" — that _TAG_CLAIM_RE missed, so it
+# silently drifted 3 tags behind (said v2.8.0 while prod was v2.11.0). Any "current [prod]
+# [infra tag] `infra/vX`" claim names the deployed tag too, so it must AGREE with the
+# "latest infra tag" claims. This regex need not match anything (it's a forward tripwire for
+# reintroduced phrasing); when it DOES match, the version is folded into the agreement check.
+_CURRENT_TAG_RE = re.compile(r"current (?:prod )?(?:infra tag\s*)?`?(infra/v\d+\.\d+\.\d+)`?")
 
 
 def test_latest_infra_tag_claims_agree_across_docs() -> None:
-    """Every 'latest infra tag' claim in README/CLAUDE/PLAN must name the SAME version."""
+    """Every 'latest'/'current' prod infra-tag claim in README/CLAUDE/PLAN names the SAME version."""
     versions_by_doc: dict[str, set[str]] = {}
     for doc in _TAG_CLAIM_DOCS:
         text = (REPO_ROOT / doc).read_text(encoding="utf-8")
-        found = set(_TAG_CLAIM_RE.findall(text))
-        # A doc with ZERO claims means the phrasing drifted and this guard went vacuous —
+        # "latest infra tag" claims must exist (a doc that lost them means the phrasing drifted);
+        # "current prod `infra/vX`" claims are optional but, when present, must agree too.
+        latest = set(_TAG_CLAIM_RE.findall(text))
+        current = set(_CURRENT_TAG_RE.findall(text))
+        # A doc with ZERO 'latest' claims means the phrasing drifted and this guard went vacuous —
         # fail loudly so the regex (or the doc list) is updated in the same PR.
-        assert found, (
+        assert latest, (
             f"{doc}: no 'latest infra tag' claim found — update _TAG_CLAIM_RE or _TAG_CLAIM_DOCS"
         )
-        versions_by_doc[doc] = found
+        versions_by_doc[doc] = latest | current
 
     distinct = set().union(*versions_by_doc.values())
     assert len(distinct) == 1, (
