@@ -35,7 +35,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.10.0`).
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.11.0`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -57,7 +57,9 @@ reservation PER day:
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
-**LIVE in PROD** (latest infra tag `infra/v2.10.0` = `main`@`fb2a133`, deployed 2026-07-15 — the
+**LIVE in PROD** (latest infra tag `infra/v2.11.0` = `main`@`cdf5618`, deployed 2026-07-18 — the
+burst-3 revert (#181, restoring the concurrent T0 slot-race hedge) + server-`Date` early-arrival
+logging (#182); prior tag `infra/v2.10.0` = `main`@`fb2a133`, deployed 2026-07-15 — the
 **email-OTP response batch** (booking-behavior change, see the DEPLOYED paragraph below).
 Prior tag `infra/v2.9.0` = `main`@`a67eccd`, deployed 2026-07-10 — the
 **2026-07-09 full-repo-scan fix batch + python 3.14 base** (booking-behavior + security changes).
@@ -92,14 +94,27 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
 
+**DEPLOYED at `infra/v2.11.0` (2026-07-18, `main`@`cdf5618`):** the T0-hedge restore + early-arrival
+diagnostic. Booking-behavior: the blind burst is reverted to **3** (`blind_post_max_count=3`, default
++ all shipped configs) — burst-of-one (v2.10.0) bet the whole drop on the single nearest-midpoint slot
+and lost that race with nothing else in flight (the 2026-07-18 Sat 7/25 miss, terminal `no_inventory`);
+the top-3 concurrent POSTs restore the slot-race hedge, and ForeUP's 1/day rule 400-rejects the surplus
+once the first lands (`_cancel_extras` keeps the best, proven live 2026-07-11 which booked the 3rd-ranked
+sibling). Observability: `ForeUpAdapter.book()` logs ForeUP's server `Date` response header on every
+book POST — the server clock at processing time disambiguates a **pre-open rejection** (the 500 ms
+`early_arrival_ms` fire landing before the 06:00 ET open → 400 stamped 05:59:59) from a **genuine
+slot-race loss** (06:00:00), which are byte-identical by body (the 2026-07-18 miss couldn't tell them
+apart). All three prod jobs verified on the `teetime:cdf5618` image. First exercise: the Sun 2026-07-19
+05:50 ET drop (books 7/26) — the first burst-3 + Date-log drop.
+
 **DEPLOYED at `infra/v2.10.0` (2026-07-15, `main`@`fb2a133`):** the email-OTP response batch
 (#177/#178/#179), shipped the same day MB's email-OTP gate went live. Booking-behavior: the
 blind burst is **burst-of-one** (`blind_post_max_count=1`, default + all shipped configs — ForeUP's
 "1 online reservation per day" rule 400-rejects surplus POSTs, so a wider burst made the winner
 first-processed rather than best-ranked; a miss falls to the sequential center-out fallback with
-the 2 pooled reserve tokens) — (Pending the next deploy, `main` has reverted the burst to **3** —
-operator directive 2026-07-18 — after burst-of-one's single-slot race loss caused the 2026-07-18
-Sat 7/25 miss; cancel-extras handles the 1/day-rule surplus.) — and a cancel-DELETE 400 "We can't find that teetime" is treated as
+the 2 pooled reserve tokens; **superseded 2026-07-18 by `infra/v2.11.0` — burst reverted to 3** after
+burst-of-one's single-slot race loss caused the 2026-07-18 Sat 7/25 miss, see the v2.11.0 paragraph
+above) — and a cancel-DELETE 400 "We can't find that teetime" is treated as
 already-cancelled (ForeUP uses it, not 404, for a missing/expired reservation — observed live).
 OTP posture: the 2026-07-15 live recon showed the email-OTP gate is **UI-only** (the bot's direct
 API book POST books unchallenged, HTTP 200 + instant confirmation), so the OtpSource stays off
