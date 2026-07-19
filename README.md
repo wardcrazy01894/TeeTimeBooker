@@ -248,7 +248,7 @@ All subsystems are `Protocol`-typed — orchestrators wire them together; nothin
 | M4 | Email notifications | Dropped — golf course sends confirmations directly; `ConsoleNotifier` (stdout) is sufficient |
 | M5 | ForeUP adapter — live dry-run confirmed | Done |
 | Spike S3 | TeeItUp adapter — live booking + cancel confirmed (Sydney Marovitz) | Done |
-| M6 | End-to-end + prod cutover | Done — prod deployed (`dryRun=false`). A real booking race ran 2026-06-07 (lost on CAPTCHA latency → fixed in #67/#68). Superseded by the multi-day re-arch (Sat+Sun), first live `infra/v2.1.0` (2026-06-10); current prod `infra/v2.8.0` (2026-06-29, blind-POST fallback rework: cap 3 + token reserve + post-reguard fresh search, dropping the hedge; + scan hardening; `v2.7.0` = observability + redaction hardening; `v2.6.0` = shared-ACR consolidation; runtime features at `infra/v2.5.0`, 2026-06-22, race-prewarm + MB blind-POST) |
+| M6 | End-to-end + prod cutover | Done — prod deployed (`dryRun=false`; the current infra tag is in the **Status** line at the top of this README — authoritative, single source). A real booking race ran 2026-06-07 (lost on CAPTCHA latency → fixed in #67/#68). Superseded by the multi-day re-arch (Sat+Sun), first live `infra/v2.1.0` (2026-06-10). |
 | M-feature-3 | Prefer slot closest to the window midpoint (midpoint-distance sort) | Done |
 | M-feature-1 | Cancellation watch job — poll every 10 min, book on cancellation | Done |
 | M-feature-2 | One-booking policy: auto-upgrade to higher-priority slot (cancel-before-book + CAPTCHA pre-fetch) | Done |
