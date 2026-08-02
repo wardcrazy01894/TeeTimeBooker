@@ -556,15 +556,16 @@ class ForeUpAdapter(CourseAdapter):
                     sample_keys,
                 )
             matched = results[before:]
-            # Gated on `offered` so an EMPTY teesheet stays quiet: every pre-T0 poll and every
-            # watcher cycle on an unpublished date legitimately returns [], and warning there
-            # would drown the signal this WARNING exists to carry.
-            if not matched and offered:
-                _log_zero_match_diagnostics(target_date, offered, rejected, request)
             _log.info("ForeUP: %d slot(s) match filters for %s", len(matched), target_date)
             # Log the matched (in-window) tee times — not just the count — so a real 06:00
             # drop can be diffed against the blind-POST derived grid to detect grid drift
             # (BLIND_POST_PLAN.md PR2 retroactive validation). Times only → PII-free.
+            # AFTER the two lines above, so the explanation follows the statement it explains
+            # when read in a log tail. Gated on `offered` so an EMPTY teesheet stays quiet:
+            # a date the course has not published yet legitimately returns [], on every
+            # watcher cycle, and diagnosing that would drown the signal.
+            if not matched and offered:
+                _log_zero_match_diagnostics(target_date, offered, rejected, request)
             _log.info(
                 "ForeUP: matched tee times for %s: %s",
                 target_date,
@@ -1019,8 +1020,19 @@ def _log_zero_match_diagnostics(
     live ForeUP API. This logs WHY (the per-filter tally) and WHAT was on offer (the span of
     parsed tee times) next to the window we asked for, so the next occurrence is diagnosable
     from Log Analytics alone. Times + counts only → PII-free.
+
+    LEVEL: INFO when every rejection is `out-of-window`, WARNING otherwise. A sold-out or
+    blocked morning is the ROUTINE outcome here — Mangrove Bay mornings sell out and the
+    watcher searches ~300x/day, so at WARNING this would emit hundreds of identical lines a
+    day and bury the `dropped N/M unparseable slot(s)` schema-break canary, the only other
+    WARNING `search()` emits. Diagnostic VALUE is unaffected: the neighbouring `got N raw
+    slot(s)` / `matched tee times: []` lines are already INFO and the jobs run at INFO, so
+    the line that was missing on 2026-08-01 is present either way. A rejection on any other
+    leg means the REQUEST is probably misconfigured, which is genuinely actionable → WARNING.
     """
-    _log.warning(
+    non_window = sum(v for r, v in rejected.items() if r != "out-of-window")
+    _log.log(
+        logging.WARNING if non_window else logging.INFO,
         "ForeUP: 0/%d slot(s) matched filters for %s — rejections: %s; "
         "available tee times %s-%s; requested window(s) %s; holes=%d players=%d",
         len(offered),

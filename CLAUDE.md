@@ -252,10 +252,16 @@ in `core/` — never directly. This is the cut line for parallel work.
   ForeUP API to establish which it was. `search()` now tallies each rejected slot by reason
   (`_rejection_reason`: `out-of-window` / `wrong-holes` / `insufficient-spots` / `over-price`,
   first-match-wins so the counts PARTITION the rejects) and, when inventory existed but
-  nothing matched, `_log_zero_match_diagnostics` emits one WARNING with the tally, the span of
+  nothing matched, `_log_zero_match_diagnostics` emits ONE line with the tally, the span of
   tee times actually on offer, and the requested window/holes/party-size. Times + counts only
-  → PII-free. **Gated on a non-empty parsed list**: an empty teesheet is the normal pre-T0 and
-  unpublished-date case, and warning there would drown the signal.
+  → PII-free. **Level is split deliberately:** INFO when every rejection is `out-of-window`
+  (a sold-out/blocked window is the ROUTINE outcome — the watcher searches ~300x/day, and at
+  WARNING this would bury the `dropped N/M unparseable slot(s)` schema-break canary, the only
+  other WARNING `search()` emits); WARNING when any other leg fires, since that implies the
+  REQUEST is misconfigured and is actionable. Diagnostic value is level-independent — the
+  neighbouring lines are already INFO and the jobs run at INFO. **Gated on a non-empty parsed
+  list**: an unpublished date legitimately returns [], on every watcher cycle, and diagnosing
+  that would drown the signal.
 - **A book-POST 4xx is a try-next-slot signal, not a crash — and slot exhaustion is
   graceful, not a crash either.** `ForeUpAdapter.book()` maps both `409` and `400` to
   `SlotGoneError`: a 4xx rejection means ForeUP definitively created NO reservation (the
