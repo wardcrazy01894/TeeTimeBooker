@@ -13,6 +13,7 @@ layer can import it without depending on each other.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 
@@ -141,7 +142,21 @@ def redact_payload(payload: Mapping[str, object]) -> dict[str, object]:
 # Analytics. Deliberately conservative: emails, and phone numbers that carry separators.
 # A BARE digit run is NOT masked, so numeric confirmation ids / HTTP status codes survive
 # for debugging (the whole reason the error body is logged).
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+# Segment lengths are BOUNDED. Unbounded `+` quantifiers backtrack quadratically on a long
+# unbroken word-char run — measured ~0.8 s at 20k chars, and cleanly quadratic from there (a
+# minute or more at 200k). That barely mattered while nearly every caller clamped its input
+# (`r.text[:300]` and friends — every ForeUP site does; `teeitup/base.py`'s GNSVC decline
+# `Message` does not, and never did), but `RedactingLogFilter` now feeds this arbitrary log
+# records that nobody vetted for length. Bounds: 64 = the RFC 5321
+# local-part maximum; 255 is deliberately over-generous for the domain segments (a DNS LABEL is
+# <=63 octets per RFC 1035, 255 is the whole-name limit) — being loose here costs nothing and
+# avoids clipping unusual-but-real hostnames. Scope, stated honestly: only RFC-INVALID shapes
+# change, and a >64-char local part degrades to a PARTIAL match (a prefix stays visible) rather
+# than no match. `tests/test_redact_payload.py` pins both directions with EXACT-output asserts
+# (a substring check would pass on a partial match, leaking a 40+ char prefix) plus a ReDoS
+# ceiling whose payload MUST keep a long unbroken word-char run — without one the unbounded
+# pattern passes the pin in ~20 ms and the guard is worthless.
+_EMAIL_RE = re.compile(r"[\w.+-]{1,64}@[\w-]{1,255}\.[\w.-]{1,255}")
 _PHONE_RE = re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b")
 # A reflected session credential is the one thing in an error body more dangerous than PII.
 # Both patterns are HIGH-CONFIDENCE so they cannot swallow numeric ids / status codes:
@@ -195,3 +210,90 @@ def redact_text(text: str) -> str:
     text = _URL_CRED_PARAM_RE.sub(r"\1=<redacted-key>", text)
     text = _PAN_TEXT_RE.sub(_mask_pan_match, text)
     return _PHONE_RE.sub("<redacted-phone>", _EMAIL_RE.sub("<redacted-email>", text))
+
+
+class RedactingLogFilter(logging.Filter):
+    """Route a log record's rendered message, traceback, and stack info through `redact_text`.
+
+    `redact_text` only runs where a call site remembers to call it, which covers our own
+    adapter code and nothing else. Third-party loggers bypass it: httpx logs each request at
+    INFO, so the 2captcha result-poll URL — `res.php?key=<API_KEY>&…` — reached prod stdout
+    (and Log Analytics) in plaintext — 71 such lines in the 2026-08-01 prod run, and it
+    scales with CAPTCHA solve time (one poll line every ~5s per pooled token).
+
+    Placement matters: `logging.Filter`s attached to a LOGGER only see records created by
+    that logger, NOT records propagating up from children (`httpx`, `httpcore`, …). Only a
+    filter on the root logger's HANDLERS sees every record that is actually emitted — hence
+    `install_log_redaction` wires handlers, not loggers.
+
+    Covered: `record.msg` + `%`-args (resolved eagerly via `getMessage()`, because the secret
+    usually lives in an ARG — httpx passes the URL as `%s` — not in the format string),
+    `exc_info` tracebacks (pre-rendered into `record.exc_text`, which `Formatter.format`
+    reuses instead of recomputing), and `stack_info`.
+
+    NOT covered — a traceback printed by Python's default excepthook rather than by logging.
+    `__main__._run` does `log.error(..., exc_info=True)` and then re-raises; click propagates,
+    and the interpreter prints the same traceback to stderr a SECOND time without passing
+    through logging at all. This filter cannot see that path. Keeping credentials out of
+    exception messages in the first place (as #167 did for the 2captcha poll error) remains
+    the primary defence; this filter is depth, not a substitute.
+
+    Never drops a record (always returns True) and never raises `Exception`: one thrown from
+    `filter()` propagates to the `log.…()` call site — `logging` only guards `emit()` with
+    `handleError` — and at T0 that would take down the booking run. (A `BaseException` from a
+    pathological `msg.__str__` would still escape; that is not worth defending against.)
+
+    CAVEAT: pre-populating `exc_text` OVERRIDES a custom formatter's `formatException` —
+    `Formatter.format` reuses a non-empty `exc_text` instead of calling it. Inert today (the
+    entrypoints use plain `basicConfig(format=…)`), but a future structured/JSON formatter
+    would silently get the default traceback rendering instead of its own.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            # Idempotent: redact_text over already-redacted text is a no-op (every
+            # replacement token contains '<'/'>', which the patterns' value classes
+            # exclude), so a record fanned out to several filtered handlers survives
+            # repeated passes unchanged.
+            record.msg = redact_text(record.getMessage())
+            record.args = ()
+            if record.exc_info and not record.exc_text:
+                record.exc_text = _FALLBACK_FORMATTER.formatException(record.exc_info)
+            if record.exc_text:
+                record.exc_text = redact_text(record.exc_text)
+            if record.stack_info:
+                record.stack_info = redact_text(record.stack_info)
+        except Exception:
+            # Most likely a %-arity mismatch in getMessage(). Formatting will fail again in
+            # the handler, and `Handler.handleError` dumps "Message: %r / Arguments: %s" to
+            # stderr — which would print the raw args we were trying to scrub. So scrub what
+            # we safely can (the un-formatted msg) and drop the args entirely.
+            try:
+                record.msg = redact_text(str(record.msg))
+                record.args = ()
+            except Exception:
+                pass
+        return True
+
+
+# Module-level so an exception record doesn't allocate a Formatter per emit.
+_FALLBACK_FORMATTER = logging.Formatter()
+
+
+def install_log_redaction() -> None:
+    """Attach a `RedactingLogFilter` to every root-logger handler, idempotently.
+
+    Call once per entrypoint AFTER `logging.basicConfig` — basicConfig is what CREATES the
+    handler, so installing first attaches to nothing and silently leaves the leak open.
+    `test_install_before_basicconfig_is_inert` pins that MECHANISM; the entrypoints' actual
+    ordering is pinned by source position (`test_every_logging_entrypoint_installs_the_filter_
+    after_basicconfig`), because under pytest the root logger already has handlers and the
+    wrong order would still appear to work.
+
+    Re-invocation is safe: a handler that already carries the filter is skipped, so the
+    filter never stacks. Handlers added AFTER this call are not covered — every entrypoint
+    configures logging once at startup, so that does not arise today.
+    """
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, RedactingLogFilter) for f in handler.filters):
+            handler.addFilter(RedactingLogFilter())

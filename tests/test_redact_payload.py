@@ -9,7 +9,16 @@ boundary (`InMemoryStore.append_attempt`) applies it — see test_in_memory_stor
 
 from __future__ import annotations
 
-from teetime.core.redaction import redact_payload, redact_text
+import time
+
+from teetime.core.redaction import (
+    _BEARER_RE,
+    _EMAIL_RE,
+    _PAN_TEXT_RE,
+    _PHONE_RE,
+    redact_payload,
+    redact_text,
+)
 
 
 def test_redact_text_masks_email_and_phone() -> None:
@@ -343,3 +352,77 @@ def test_redacts_every_live_card_field() -> None:
     # The raw sentinel must appear nowhere in the redacted output's values.
     assert "SECRET-4111111111111111" not in repr(out)
     assert out["ReservationStatusID"] == 3  # control preserved
+
+
+# --- _EMAIL_RE bounds (ReDoS guard) ---------------------------------------
+# `_EMAIL_RE`'s segments are length-bounded because `RedactingLogFilter` feeds `redact_text`
+# arbitrary log records. NEARLY every other caller clamps its input (`r.text[:300]` and
+# friends — every ForeUP site does; teeitup/base.py's GNSVC decline `Message` does not, and
+# never did), so the unbounded `+` quantifiers' quadratic backtracking was mostly latent
+# before; with the filter installed, one long unbroken word-char run in a third-party log
+# line could stall the T0 drop.
+# These pin BOTH directions: the bound must stay (perf) and must not tighten (real addresses
+# must still be redacted).
+
+
+def test_redact_text_masks_long_but_valid_addresses() -> None:
+    """The bound must not be tightened to the point of missing real addresses.
+
+    64 chars is the RFC 5321 local-part maximum, and multi-label subdomains are ordinary.
+
+    Asserts EXACT output, not `addr not in out`. A too-tight bound produces a PARTIAL match —
+    `aaaa…aa<redacted-email>` — which satisfies both "the full address is absent" and
+    "<redacted-email> is present" while leaking 40+ characters of a real address into the log.
+    Substring assertions cannot see that; equality can.
+    """
+    local = "a" * 60  # long, but inside the 64-char RFC local-part limit
+    addr = f"{local}@mail.corp.example.co.uk"
+    out = redact_text(f"holder={addr} status=400")
+    assert out == "holder=<redacted-email> status=400", f"partial or missed match: {out}"
+
+
+def test_redact_text_masks_plus_and_dotted_locals() -> None:
+    """Plus-addressing and dotted locals are the shapes this project actually uses.
+
+    Exact-output assertions, for the partial-match reason in the test above.
+    """
+    for addr in ("alanc3939+claude@gmail.com", "first.last@sub.example.org", "a_b-c@e-x.test"):
+        out = redact_text(f"contact: {addr}")
+        assert out == "contact: <redacted-email>", f"partial or missed match for {addr}: {out}"
+
+
+def test_redact_text_is_not_quadratic_on_a_long_word_run() -> None:
+    """Perf pin: a long unbroken word-char run must not blow up the T0 booking run.
+
+    The LONG UNBROKEN RUN is the load-bearing part. An earlier version of this test used only
+    `("a"*50 + "1"*50 + "Bearer ")*1000`, which looks varied but caps the longest word-char run
+    at 106 chars — far too short to trigger quadratic backtracking. That made the pin VACUOUS:
+    the fully unbounded pattern passed it in 20 ms. Measured on the real thing: bounded 41 ms
+    vs unbounded 15,360 ms, so the 1 s ceiling sits ~24x above a passing run and ~15x below a
+    regressed one — wide enough that a loaded CI runner cannot flake it. (Do not read 375x
+    anywhere here: that is failure/pass, NOT the detection margin. The number that governs how
+    far the ceiling can safely be relaxed is the ~15x gap to failure.)
+    """
+    # Mixed prefix + a long unbroken tail. The TAIL pins _EMAIL_RE (today's only
+    # backtracking-prone pattern); the PREFIX makes this degrade into a general redact_text
+    # pin if a different pattern ever becomes superlinear.
+    #
+    # The prefix's shapes are load-bearing and easy to get subtly wrong — an earlier version
+    # used `"a"*50 + "1"*50 + "Bearer "`, which armed NOTHING: `\bBearer` needs a word
+    # boundary and was preceded by a digit, and _PAN_TEXT_RE's `(?!\d)` tail rejects a
+    # 50-digit run. So the arming is asserted below rather than assumed.
+    unit = " 4111111111111111 Bearer abcdefgh12345678 x@y.test 727-555-0142 " + "a" * 40
+    payload = unit * 1_000 + "a" * 100_000
+    for name, pattern in (
+        ("_EMAIL_RE", _EMAIL_RE),
+        ("_PAN_TEXT_RE", _PAN_TEXT_RE),
+        ("_BEARER_RE", _BEARER_RE),
+        ("_PHONE_RE", _PHONE_RE),
+    ):
+        assert pattern.search(unit), (
+            f"{name} is not armed by the payload — pin is narrower than it claims"
+        )
+    start = time.perf_counter()
+    redact_text(payload)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"redact_text took {elapsed:.2f}s on a {len(payload)}-char run"

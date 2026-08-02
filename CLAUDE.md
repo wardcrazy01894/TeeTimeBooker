@@ -238,6 +238,36 @@ in `core/` — never directly. This is the cut line for parallel work.
   `core.redaction.redact_payload`, which `BookingStore.append_attempt` applies at the
   store boundary on every `attempt_log` write (PLAN.md §10.1) — so no caller can leak
   card data by forgetting to scrub. The card POST uses `follow_redirects=False`.
+- **Log redaction is a HANDLER filter, not a call-site discipline.** `redact_text` only runs
+  where our own code remembers to call it, so THIRD-PARTY loggers bypassed it entirely: httpx
+  logs every request at INFO, and the 2captcha result-poll URL carries the API key as
+  `res.php?key=<API_KEY>&…` — observed live in prod Log Analytics, 71 such lines in one run
+  (2026-08-01). `core.redaction.RedactingLogFilter` + `install_log_redaction()` close that:
+  every entrypoint calls `install_log_redaction()` immediately after its
+  `logging.basicConfig(...)`, attaching the filter to the ROOT LOGGER'S HANDLERS. **Placement
+  is load-bearing** — a `logging.Filter` on a *logger* only sees records created by that
+  logger, NOT records propagating up from children (`httpx`, `httpcore`, …), so a
+  root-*logger* filter would silently miss exactly the records that leak. The filter resolves
+  `%`-args eagerly (the secret is usually IN an arg, not the format string), clears
+  `record.args`, also scrubs `exc_info` tracebacks (pre-rendered into `record.exc_text`) and
+  `stack_info`, is idempotent across multi-handler fan-out, and never drops a record nor
+  raises `Exception` (one from `filter()` propagates to the `log.…()` CALL SITE — logging only
+  guards `emit()` — and at T0 that would kill the booking run; a `BaseException` from a
+  pathological `msg.__str__` still escapes, deliberately undefended). **Ordering is load-bearing
+  too:** `basicConfig` CREATES the handler, so installing first attaches to nothing and
+  leaves the leak open. `tests/test_log_redaction.py` pins the ORDER by source position (a
+  functional test cannot: under pytest the root logger already has handlers, so the wrong
+  order still attaches and `basicConfig` no-ops) and separately pins, through a real CLI
+  entrypoint, that the wiring EXISTS at all.
+  **Known gap (accepted):** a traceback printed by Python's default excepthook never passes
+  through logging, so the filter cannot see it (`_run` logs `exc_info=True` then re-raises;
+  the interpreter prints it again to stderr). Keeping credentials out of exception messages
+  at the source stays the primary defence — this filter is depth, not a replacement.
+  **Testing note:** `install_log_redaction()` attaches to EVERY root handler, including
+  pytest's session-scoped `LogCaptureHandler`, so `tests/conftest.py` carries an autouse
+  fixture restoring handler filters after each test. Without it the first test to touch a CLI
+  entrypoint silently redacts `caplog` for the rest of the session — and a future
+  `assert secret not in caplog.text` would pass VACUOUSLY.
 - **Double-booking defense is layered.** Live pre-book `list_reservations`
   check, single-attempt-per-slot rule, in-process advisory lock, ACA Job
   concurrency (`parallelism=1`, one execution per job). There is no durable cross-run idempotency
