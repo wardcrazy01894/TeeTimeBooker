@@ -360,21 +360,26 @@ def test_redact_text_masks_long_but_valid_addresses() -> None:
     """The bound must not be tightened to the point of missing real addresses.
 
     64 chars is the RFC 5321 local-part maximum, and multi-label subdomains are ordinary.
+
+    Asserts EXACT output, not `addr not in out`. A too-tight bound produces a PARTIAL match —
+    `aaaa…aa<redacted-email>` — which satisfies both "the full address is absent" and
+    "<redacted-email> is present" while leaking 40+ characters of a real address into the log.
+    Substring assertions cannot see that; equality can.
     """
     local = "a" * 60  # long, but inside the 64-char RFC local-part limit
     addr = f"{local}@mail.corp.example.co.uk"
     out = redact_text(f"holder={addr} status=400")
-    assert addr not in out, f"long-but-valid address survived: {out}"
-    assert "<redacted-email>" in out
-    assert "status=400" in out  # non-PII context still intact
+    assert out == "holder=<redacted-email> status=400", f"partial or missed match: {out}"
 
 
 def test_redact_text_masks_plus_and_dotted_locals() -> None:
-    """Plus-addressing and dotted locals are the shapes this project actually uses."""
+    """Plus-addressing and dotted locals are the shapes this project actually uses.
+
+    Exact-output assertions, for the partial-match reason in the test above.
+    """
     for addr in ("alanc3939+claude@gmail.com", "first.last@sub.example.org", "a_b-c@e-x.test"):
         out = redact_text(f"contact: {addr}")
-        assert addr not in out, f"{addr} survived redaction: {out}"
-        assert "<redacted-email>" in out
+        assert out == "contact: <redacted-email>", f"partial or missed match for {addr}: {out}"
 
 
 def test_redact_text_is_not_quadratic_on_a_long_word_run() -> None:
@@ -384,8 +389,12 @@ def test_redact_text_is_not_quadratic_on_a_long_word_run() -> None:
     bounded it is ~20 ms. The 1 s ceiling is deliberately loose so the test is not flaky on
     a loaded CI runner while still failing loudly if the bounds are ever removed.
     """
-    payload = "a" * 100_000
+    # Mixed payload rather than a pure "a" run: word chars drive _EMAIL_RE (the only
+    # superlinear pattern today, ~22ms of the ~23ms total), digits drive _PAN_TEXT_RE, and the
+    # literal "Bearer " arms _BEARER_RE — so this degrades into a general redact_text pin if a
+    # DIFFERENT pattern ever becomes the expensive one.
+    payload = ("a" * 50 + "1" * 50 + "Bearer ") * 1_000
     start = time.perf_counter()
     redact_text(payload)
     elapsed = time.perf_counter() - start
-    assert elapsed < 1.0, f"redact_text took {elapsed:.2f}s on a 100k-char run — bounds lost?"
+    assert elapsed < 1.0, f"redact_text took {elapsed:.2f}s on a {len(payload)}-char run"

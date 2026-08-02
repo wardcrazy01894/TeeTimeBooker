@@ -150,8 +150,9 @@ def redact_payload(payload: Mapping[str, object]) -> dict[str, object]:
 # <=63 octets per RFC 1035, 255 is the whole-name limit) — being loose here costs nothing and
 # avoids clipping unusual-but-real hostnames. Scope, stated honestly: only RFC-INVALID shapes
 # change, and a >64-char local part degrades to a PARTIAL match (a prefix stays visible) rather
-# than no match. `tests/test_redact_payload.py` pins both directions — real addresses still
-# masked, and the ReDoS ceiling.
+# than no match. `tests/test_redact_payload.py` pins both directions with EXACT-output asserts
+# (a substring check would pass on a partial match, leaking a 40+ char prefix) plus a ReDoS
+# ceiling.
 _EMAIL_RE = re.compile(r"[\w.+-]{1,64}@[\w-]{1,255}\.[\w.-]{1,255}")
 _PHONE_RE = re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b")
 # A reflected session credential is the one thing in an error body more dangerous than PII.

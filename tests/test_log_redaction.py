@@ -19,6 +19,7 @@ import io
 import logging
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -196,18 +197,26 @@ def test_every_logging_entrypoint_installs_the_filter_after_basicconfig() -> Non
     `basicConfig(`. Complemented by the functional test below, which proves the wiring works
     end-to-end through a real CLI entrypoint rather than by reading source.
     """
-    src = Path(__file__).resolve().parents[1] / "src" / "teetime" / "__main__.py"
-    text = src.read_text()
-    events = sorted(
-        [(m.start(), "config") for m in re.finditer(r"logging\.basicConfig\(", text)]
-        + [(m.start(), "install") for m in re.finditer(r"install_log_redaction\(\)", text)]
-    )
-    kinds = [kind for _, kind in events]
-    assert kinds.count("config") >= 3, "expected run / watch-disabled / watch to configure logging"
-    assert kinds == ["config", "install"] * kinds.count("config"), (
-        "every logging.basicConfig() in __main__.py must be immediately followed by "
-        f"install_log_redaction() (installing first attaches to nothing); saw {kinds}"
-    )
+    # Globbed, not hard-coded to __main__.py: a future entrypoint that configures logging
+    # from another module would otherwise escape this guard entirely.
+    pkg = Path(__file__).resolve().parents[1] / "src" / "teetime"
+    total_configs = 0
+    for src in sorted(pkg.rglob("*.py")):
+        text = src.read_text()
+        if "logging.basicConfig(" not in text:
+            continue
+        events = sorted(
+            [(m.start(), "config") for m in re.finditer(r"logging\.basicConfig\(", text)]
+            + [(m.start(), "install") for m in re.finditer(r"install_log_redaction\(\)", text)]
+        )
+        kinds = [kind for _, kind in events]
+        total_configs += kinds.count("config")
+        assert kinds == ["config", "install"] * kinds.count("config"), (
+            f"in {src.relative_to(pkg)}: every logging.basicConfig() must be immediately "
+            f"followed by install_log_redaction() (installing first attaches to nothing); "
+            f"saw {kinds}"
+        )
+    assert total_configs >= 3, "expected run / watch-disabled / watch to configure logging"
 
 
 def test_watch_entrypoint_installs_the_filter_on_a_real_handler(
@@ -279,17 +288,50 @@ def test_caplog_is_not_polluted_by_the_installs_above() -> None:
     assert not leaked, f"RedactingLogFilter leaked onto session handler(s): {leaked}"
 
 
-def test_orphan_handler_added_during_a_test_is_also_cleaned(request: pytest.FixtureRequest) -> None:
-    """Covers the conftest fixture's second branch: a handler added and never removed.
+@pytest.fixture(scope="module")
+def orphan_cleanup() -> Iterator[list[logging.Handler]]:
+    """Registry whose teardown removes handlers a test deliberately abandoned.
 
-    That branch had no coverage — no other test abandons a root handler — so a regression in
-    it (e.g. reverting to a string class-name compare that stops matching after a rename)
-    would have gone unnoticed. Registers a finalizer to remove the handler AFTER the autouse
-    fixture has run, so the fixture genuinely sees an orphan.
+    It must NOT add the handler itself: higher-scoped fixtures are set up BEFORE the
+    function-scoped autouse fixture, so a handler attached here would be captured in that
+    fixture's snapshot and take the restore path, never the orphan-strip branch. The test body
+    attaches it (after the snapshot); this only cleans up at MODULE teardown, i.e. after the
+    autouse fixture has had its chance to see the orphan.
+
+    Function-scoped `request.addfinalizer` cannot substitute: teardown finalizers are LIFO, so
+    one registered during the CALL phase runs BEFORE the autouse fixture's (registered during
+    SETUP), removing the handler before the branch can see it.
     """
+    handlers: list[logging.Handler] = []
+    yield handlers
+    root = logging.getLogger()
+    for handler in handlers:
+        root.removeHandler(handler)
+
+
+def test_orphan_handler_receives_the_filter(orphan_cleanup: list[logging.Handler]) -> None:
+    """Setup half of the orphan-branch check; the assertion is in the test below."""
     root = logging.getLogger()
     handler = logging.StreamHandler(io.StringIO())
-    root.addHandler(handler)
-    request.addfinalizer(lambda: root.removeHandler(handler))
+    root.addHandler(handler)  # AFTER the autouse snapshot -> a genuine orphan
+    orphan_cleanup.append(handler)
     install_log_redaction()
     assert any(isinstance(f, RedactingLogFilter) for f in handler.filters)
+
+
+def test_conftest_strips_the_filter_from_an_orphan_handler(
+    orphan_cleanup: list[logging.Handler],
+) -> None:
+    """Covers the conftest fixture's orphan-strip branch — previously UNCOVERED.
+
+    The test above left a `RedactingLogFilter` on a root handler the autouse fixture never
+    snapshotted. If that branch regressed (e.g. back to a string class-name compare that stops
+    matching after a rename), the filter would still be attached here and the leak would be
+    reopened for every later test. Relies on file collection order, like the caplog guard
+    above; shuffling collection would make it pass vacuously.
+    """
+    assert orphan_cleanup, "the previous test should have registered an orphan handler"
+    for handler in orphan_cleanup:
+        assert not any(isinstance(f, RedactingLogFilter) for f in handler.filters), (
+            "conftest did not strip the redaction filter from an orphaned root handler"
+        )
