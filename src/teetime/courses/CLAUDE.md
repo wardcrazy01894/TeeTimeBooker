@@ -62,15 +62,16 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
   (That same shape is expected LATER in the week from an ordinary sold-out morning — it is
   diagnostic only at T0, when inventory has just dropped and is very unlikely to have sold out
   already. Not impossible: the fresh fallback search runs seconds after T0, and a fully raced
-  morning would look the same, which is what makes the 2026-07-25 miss still unexplained.) Check the
+  morning would look the same, which is what makes the 2026-07-18 drop (target Sat 7/25) still unexplained.) Check the
   [events calendar](https://golfstpete.com/events/) before treating a Saturday miss as a
   tuning problem.
 - **`/times` server-filters on the `players` param.** Every returned slot already satisfies
   `available_spots >= players`, so the adapter's client-side spots filter is a backstop that
-  never fires in production. Verified live 2026-08-02: `players=4` returns a strict SUBSET of
-  `players=2` on the same date — only the four-spot slots, with every partially-booked slot
-  dropped. (Exact counts drift daily with bookings, so the subset relation is the durable form
-  of the claim.)
+  never fires in production. Verified live 2026-08-02: `players=4` returns a SUBSET of
+  `players=2` on the same date — every partially-booked slot is dropped, leaving only the
+  four-spot ones. (Exact counts drift daily with bookings, so the subset relation is the
+  durable form of the claim; on 2026-08-02 it was a STRICT subset, but on a date with no
+  partially-booked slots the two are simply equal.)
   Two consequences: (a) searching with the real party size HIDES partially-booked slots, so
   when smoke-testing "is anything left on this date" drop to `players=2` (and note `players=1`
   returns `[]` outright — `allowed_group_sizes` is 2-4); (b) an `insufficient-spots` rejection

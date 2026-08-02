@@ -45,7 +45,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 from functools import partial
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, get_args
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -983,10 +983,18 @@ class ForeUpAdapter(CourseAdapter):
 
 # Rejection reasons, in the order they are evaluated (and reported). Kept as an explicit
 # tuple so the WARNING's field order is stable across runs and greppable in Log Analytics.
-_REJECTION_REASONS = ("out-of-window", "wrong-holes", "insufficient-spots", "over-price")
+# ONE source of truth: the tuple is DERIVED from the type, so `_rejection_reason` cannot
+# return a reason the tally has no key for. That desync would be a `KeyError` propagating out
+# of `search()` — and `search()` runs on the T0 blind-POST 0-booked fallback, where an
+# uncaught error costs the week's booking. mypy also rejects a stray return value at the
+# source. Tuple order = evaluation order = the order reasons are reported.
+RejectionReason = Literal["out-of-window", "wrong-holes", "insufficient-spots", "over-price"]
+_REJECTION_REASONS: tuple[RejectionReason, ...] = get_args(RejectionReason)
 
 
-def _rejection_reason(slot: TeeTimeSlot, local_time: time, request: BookingRequest) -> str | None:
+def _rejection_reason(
+    slot: TeeTimeSlot, local_time: time, request: BookingRequest
+) -> RejectionReason | None:
     """Return why `slot` fails `request`'s filters, or None if it matches.
 
     Extracted from `search()` so each leg can be TALLIED by reason (the caller counts these
@@ -1009,7 +1017,10 @@ def _rejection_reason(slot: TeeTimeSlot, local_time: time, request: BookingReque
 
 
 def _log_zero_match_diagnostics(
-    target_date: date, offered: list[str], rejected: dict[str, int], request: BookingRequest
+    target_date: date,
+    offered: list[str],
+    rejected: dict[RejectionReason, int],
+    request: BookingRequest,
 ) -> None:
     """Explain a search that saw inventory but matched nothing.
 

@@ -440,8 +440,10 @@ async def test_search_filters_by_max_price() -> None:
 # mornings sell out, and the watcher searches ~300x/day — so it logs at INFO, where its
 # neighbouring `got N raw slot(s)` / `matched tee times: []` lines already live. A rejection
 # on any OTHER leg (price/holes/spots) implies a misconfiguration and logs at WARNING. This
-# keeps the `dropped N/M unparseable slot(s)` schema-break canary — the only other WARNING in
-# search() — from being buried under hundreds of routine sell-out lines.
+# keeps the `dropped N/M unparseable slot(s)` schema-break canary — the WARNING in search()
+# that most needs to stay visible — from being buried under hundreds of routine sell-out
+# lines. (It is not the ONLY other one: _send_with_retry also warns with op="search" on
+# retry exhaustion.)
 
 
 def _diag_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -485,8 +487,8 @@ async def test_search_sold_out_window_logs_at_info_not_warning(
 ) -> None:
     """A sold-out morning is routine (~300 searches/day), so it must not cry WARNING.
 
-    Otherwise it drowns the `dropped N/M unparseable slot(s)` schema-break canary, which is
-    the only other WARNING search() emits.
+    Otherwise it drowns the `dropped N/M unparseable slot(s)` schema-break canary — the
+    WARNING in search() that most needs to stay visible.
     """
     afternoon = [{**_RAW_SLOT, "time": "16:07:00"}]
     respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
@@ -553,9 +555,22 @@ async def test_out_of_window_wins_when_a_slot_fails_several_legs(
     the canary-burying noise the split exists to prevent. Reordering currently passes the whole
     suite, so pin it here.
     """
+    # ONE slot that busts ALL FOUR legs, so this kills every demotion of `out-of-window`,
+    # not just the over-price one. `wrong-holes` is the realistic future case: a ForeUP course
+    # returning 9-hole rows for an 18-hole request would make every afternoon sell-out a
+    # WARNING under a reorder.
     respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
         return_value=httpx.Response(
-            200, json=[{**_RAW_SLOT, "time": "16:07:00", "green_fee": "500.00"}]
+            200,
+            json=[
+                {
+                    **_RAW_SLOT,
+                    "time": "16:07:00",
+                    "green_fee": "500.00",
+                    "available_spots": 0,
+                    "holes": 9,
+                }
+            ],
         )
     )
     req = BookingRequest(
@@ -573,7 +588,8 @@ async def test_out_of_window_wins_when_a_slot_fails_several_legs(
     (rec,) = _diag_records(caplog)
     text = rec.getMessage()
     assert "out-of-window=1" in text, f"window leg must win: {text}"
-    assert "over-price" not in text, f"legs must partition, not double-count: {text}"
+    for loser in ("over-price", "wrong-holes", "insufficient-spots"):
+        assert loser not in text, f"legs must partition, not double-count ({loser}): {text}"
     assert rec.levelno == logging.INFO, "a multi-leg afternoon slot is still a routine sell-out"
 
 

@@ -257,9 +257,11 @@ in `core/` — never directly. This is the cut line for parallel work.
   tee times actually on offer, and the requested window/holes/party-size. Times + counts only
   → PII-free. **Level is split deliberately:** INFO when every rejection is `out-of-window`
   (a sold-out/blocked window is the ROUTINE outcome — the watcher searches ~300x/day, and at
-  WARNING this would bury the `dropped N/M unparseable slot(s)` schema-break canary, the only
-  other WARNING `search()` emits); WARNING when any other leg fires, since that implies the
-  REQUEST is misconfigured and is actionable. Diagnostic value is level-independent — the
+  WARNING this would bury the `dropped N/M unparseable slot(s)` schema-break canary — the
+  WARNING in `search()` that most needs to stay visible); WARNING when any other leg fires,
+  since for ForeUP those are all should-not-happen conditions (see the `_log_zero_match_
+  diagnostics` docstring — `insufficient-spots` is unreachable at MB, so it firing means the
+  platform changed its contract). Diagnostic value is level-independent — the
   neighbouring lines are already INFO and the jobs run at INFO. **Gated on a non-empty parsed
   list**: an unpublished date legitimately returns [], on every watcher cycle, and diagnosing
   that would drown the signal.
