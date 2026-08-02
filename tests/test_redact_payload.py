@@ -385,15 +385,18 @@ def test_redact_text_masks_plus_and_dotted_locals() -> None:
 def test_redact_text_is_not_quadratic_on_a_long_word_run() -> None:
     """Perf pin: a long unbroken word-char run must not blow up the T0 booking run.
 
-    With the previous unbounded pattern this input took ~15 s (and ~60 s at 200k chars);
-    bounded it is ~20 ms. The 1 s ceiling is deliberately loose so the test is not flaky on
-    a loaded CI runner while still failing loudly if the bounds are ever removed.
+    The LONG UNBROKEN RUN is the load-bearing part. An earlier version of this test used only
+    `("a"*50 + "1"*50 + "Bearer ")*1000`, which looks varied but caps the longest word-char run
+    at 106 chars — far too short to trigger quadratic backtracking. That made the pin VACUOUS:
+    the fully unbounded pattern passed it in 20 ms. Measured on the real thing: bounded 41 ms
+    vs unbounded 15,360 ms, so the 1 s ceiling sits 25x above pass and 375x below failure —
+    wide enough that a loaded CI runner cannot flake it.
     """
-    # Mixed payload rather than a pure "a" run: word chars drive _EMAIL_RE (the only
-    # superlinear pattern today, ~22ms of the ~23ms total), digits drive _PAN_TEXT_RE, and the
-    # literal "Bearer " arms _BEARER_RE — so this degrades into a general redact_text pin if a
-    # DIFFERENT pattern ever becomes the expensive one.
-    payload = ("a" * 50 + "1" * 50 + "Bearer ") * 1_000
+    # Mixed prefix + a long unbroken tail. The prefix keeps the other patterns exercised —
+    # digits drive _PAN_TEXT_RE, the literal "Bearer " arms _BEARER_RE — so this degrades into
+    # a general redact_text pin if a DIFFERENT pattern ever becomes superlinear; the tail is
+    # what actually pins _EMAIL_RE, today's only backtracking-prone pattern.
+    payload = ("a" * 50 + "1" * 50 + "Bearer ") * 1_000 + "a" * 100_000
     start = time.perf_counter()
     redact_text(payload)
     elapsed = time.perf_counter() - start

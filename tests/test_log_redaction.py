@@ -28,8 +28,10 @@ from click.testing import CliRunner
 from teetime.__main__ import cli
 from teetime.core.redaction import RedactingLogFilter, install_log_redaction
 
-# The exact shape httpx emits (lazy %-args, not a pre-formatted string) — the filter has to
-# resolve args, not just look at record.msg.
+# A STAND-IN for httpx's log call, simplified to 3 args. What matters — and what the filter
+# has to handle — is the lazy-%-args shape: the secret arrives in record.args, not in the
+# format string, so reading record.msg alone would miss it. (httpx 0.28's real format is
+# 'HTTP Request: %s %s "%s %d %s"'; the arity is irrelevant here.)
 _HTTPX_FMT = 'HTTP Request: %s %s "%s"'
 _POLL_URL = "https://2captcha.com/res.php?key=deadbeefdeadbeefdeadbeefdeadbeef&action=get&id=8342"
 # Synthetic stand-in, deliberately low-entropy: the REAL key must never enter the repo
@@ -207,7 +209,13 @@ def test_every_logging_entrypoint_installs_the_filter_after_basicconfig() -> Non
             continue
         events = sorted(
             [(m.start(), "config") for m in re.finditer(r"logging\.basicConfig\(", text)]
-            + [(m.start(), "install") for m in re.finditer(r"install_log_redaction\(\)", text)]
+            # `(?<!def )` so the DEFINITION in core/redaction.py is not counted as a call —
+            # otherwise a `logging.basicConfig(` appearing anywhere in that module's docstring
+            # would make the guard fail with a spurious ['install', 'config'].
+            + [
+                (m.start(), "install")
+                for m in re.finditer(r"(?<!def )install_log_redaction\(\)", text)
+            ]
         )
         kinds = [kind for _, kind in events]
         total_configs += kinds.count("config")
@@ -327,8 +335,9 @@ def test_conftest_strips_the_filter_from_an_orphan_handler(
     The test above left a `RedactingLogFilter` on a root handler the autouse fixture never
     snapshotted. If that branch regressed (e.g. back to a string class-name compare that stops
     matching after a rename), the filter would still be attached here and the leak would be
-    reopened for every later test. Relies on file collection order, like the caplog guard
-    above; shuffling collection would make it pass vacuously.
+    reopened for every later test. Depends on file collection order for the SETUP test to run
+    first — but it cannot pass vacuously if that order changes: the `assert orphan_cleanup`
+    guard below fails loudly when the setup test did not run (verified with `-k`).
     """
     assert orphan_cleanup, "the previous test should have registered an orphan handler"
     for handler in orphan_cleanup:
