@@ -443,6 +443,7 @@ async def test_search_filters_by_max_price() -> None:
 # keeps the `dropped N/M unparseable slot(s)` schema-break canary — the only other WARNING in
 # search() — from being buried under hundreds of routine sell-out lines.
 
+
 def _diag_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     """Records carrying the 0-match diagnostics line (matched by content, not substring luck)."""
     return [r for r in caplog.records if "matched filters" in r.getMessage()]
