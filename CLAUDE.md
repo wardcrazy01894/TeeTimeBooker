@@ -35,7 +35,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.11.0`).
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.12.0`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -57,7 +57,9 @@ reservation PER day:
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
-**LIVE in PROD** (latest infra tag `infra/v2.11.0` = `main`@`cdf5618`, deployed 2026-07-18 — the
+**LIVE in PROD** (latest infra tag `infra/v2.12.0` = `main`@`a7a1a6c`, deployed 2026-08-02 — the
+log-redaction filter + 0-match search diagnostics, security + observability with NO
+booking-behavior change; prior tag `infra/v2.11.0` = `main`@`cdf5618`, deployed 2026-07-18 — the
 burst-3 revert (#181, restoring the concurrent T0 slot-race hedge) + server-`Date` early-arrival
 logging (#182); prior tag `infra/v2.10.0` = `main`@`fb2a133`, deployed 2026-07-15 — the
 **email-OTP response batch** (booking-behavior change, see the DEPLOYED paragraph below).
@@ -93,6 +95,28 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 10-min cycle (placeholder-image / transient ACR 401) — it self-heals on the next fire.
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
+
+**DEPLOYED at `infra/v2.12.0` (2026-08-02, `main`@`a7a1a6c`):** the log-redaction filter +
+0-match search diagnostics. **No booking-behavior change** — nothing touches slot selection,
+burst size, timing, or any T0 decision path (same risk class as `infra/v2.7.0`).
+Security (#187): the 2captcha API key no longer reaches stdout / Log Analytics. httpx logs
+every request at INFO and the 2captcha result-poll URL carries the key as a query param — 71
+such lines in the 2026-08-01 prod run. `core.redaction.RedactingLogFilter` +
+`install_log_redaction()` attach to the root logger's HANDLERS (a logger-level filter does NOT
+see records propagating up from `httpx`) and scrub the rendered message, `%`-args, `exc_info`
+tracebacks and `stack_info`. The leaked key was **rotated** the same day (2026-08-02); both
+Key Vaults hold the new value and the local `.env` was updated. Known gap (accepted): a
+traceback printed by Python's default excepthook bypasses logging entirely.
+Observability (#188): a search that returns inventory but matches NOTHING now logs a
+per-filter rejection tally + the span of tee times actually on offer, against the requested
+window — which distinguishes a course-level block from a lost slot race. That ambiguity cost
+real diagnosis time after the 2026-08-01 miss, whose cause turned out to be Mangrove Bay's
+8 AM shotgun Anniversary Tournament on the 8/8 TARGET date (no public tee time before ~16:07).
+INFO when purely out-of-window (the routine sell-out), WARNING when any other leg fires.
+Also in this tag: Dependabot action bumps (setup-python v7, setup-uv v9, checkout 7.0.1),
+SHA-pins verified against upstream tags. All three prod jobs verified on the
+`teetime:a7a1a6c…` image with crons/timeouts/`dryRun=false` unchanged. First exercise: the
+Sat 2026-08-08 05:50 ET drop (books 8/15).
 
 **DEPLOYED at `infra/v2.11.0` (2026-07-18, `main`@`cdf5618`):** the T0-hedge restore + early-arrival
 diagnostic. Booking-behavior: the blind burst is reverted to **3** (`blind_post_max_count=3`, default
