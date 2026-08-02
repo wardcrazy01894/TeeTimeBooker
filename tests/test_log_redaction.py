@@ -1,4 +1,4 @@
-"""Tests for the redacting LOG FILTER — the last line of defence on stdout/stderr.
+"""Tests for the redacting LOG FILTER — defence-in-depth on stdout/stderr.
 
 `redact_text` is only reachable at explicit call sites in adapter code, so any log record
 emitted by a THIRD-PARTY logger bypasses it entirely. Observed live (prod, 2026-08-01): httpx
@@ -17,8 +17,14 @@ from __future__ import annotations
 
 import io
 import logging
+import re
+import sys
 from pathlib import Path
 
+import pytest
+from click.testing import CliRunner
+
+from teetime.__main__ import cli
 from teetime.core.redaction import RedactingLogFilter, install_log_redaction
 
 # The exact shape httpx emits (lazy %-args, not a pre-formatted string) — the filter has to
@@ -75,11 +81,51 @@ def test_filter_leaves_clean_records_untouched() -> None:
     assert rec.getMessage() == "ForeUP: got 27 raw slot(s) for 2026-08-08, filtering..."
 
 
-def test_filter_survives_malformed_args_without_dropping_the_record() -> None:
-    # A %-arity mismatch must not make the filter raise (a crash in a log filter at T0 would
-    # take down the booking run); the record is passed through unchanged.
-    rec = _record("two placeholders %s %s", "only-one")
+def test_filter_survives_malformed_args_and_still_scrubs_them() -> None:
+    """A %-arity mismatch must neither raise nor leak.
+
+    An exception from `filter()` propagates to the `log.…()` call site (logging only guards
+    `emit()` with `handleError`), which at T0 would take down the booking run. And on a
+    formatting failure `Handler.handleError` dumps "Message: %r / Arguments: %s" to stderr —
+    so leaving `args` intact would print the very secret we are scrubbing.
+    """
+    rec = _record(f"two placeholders %s %s -- {_POLL_URL}", "only-one")
     assert RedactingLogFilter().filter(rec) is True
+    assert rec.args == (), "args must be dropped so handleError cannot dump them raw"
+    assert _KEY not in str(rec.msg), f"key survived the malformed-args path: {rec.msg}"
+
+
+def test_filter_scrubs_exception_tracebacks() -> None:
+    """`exc_info` is a real leak path, not a theoretical one.
+
+    `__main__._run` logs `exc_error(..., exc_info=True)` on a failed run, and an httpx error
+    embeds the full request URL. The filter only rewrote `record.msg`; `Formatter.format`
+    appends `formatException(record.exc_info)` afterwards, which would be untouched.
+    """
+    try:
+        raise RuntimeError(f"poll failed for {_POLL_URL}")
+    except RuntimeError:
+        rec = logging.LogRecord(
+            name="teetime",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="run failed",
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+    RedactingLogFilter().filter(rec)
+    rendered = logging.Formatter("%(message)s").format(rec)
+    assert _KEY not in rendered, f"API key survived in the traceback: {rendered}"
+    assert "RuntimeError" in rendered, "the traceback itself must still be there"
+
+
+def test_filter_scrubs_stack_info() -> None:
+    rec = _record("boom")
+    rec.stack_info = f"Stack (most recent call last):\n  poll {_POLL_URL}"
+    RedactingLogFilter().filter(rec)
+    assert rec.stack_info is not None
+    assert _KEY not in rec.stack_info
 
 
 def test_install_wires_the_filter_onto_root_handlers() -> None:
@@ -116,19 +162,118 @@ def test_installed_filter_scrubs_an_httpx_record_end_to_end() -> None:
         root.removeHandler(handler)
 
 
-def test_every_logging_entrypoint_installs_the_filter() -> None:
-    """Wiring guard: each `basicConfig` call must be followed by `install_log_redaction`.
+def test_install_before_basicconfig_is_inert() -> None:
+    """WHY the ordering guard below checks order and not just presence.
 
-    The filter is worthless if an entrypoint forgets it, and the two booking/watch paths are
-    exactly where the 2captcha polling happens. Pinned as source structure because the real
-    entrypoints are `asyncio.run`-driven CLI coroutines that need live config + network.
+    `basicConfig` is what CREATES the root handler. Installing first attaches the filter to
+    nothing, and the leak stays wide open — while a naive presence check still passes.
+    """
+    root = logging.getLogger()
+    buf = io.StringIO()
+    saved = root.handlers[:]
+    root.handlers = []
+    prev_level = root.level
+    try:
+        install_log_redaction()  # no handlers yet -> attaches to nothing
+        logging.basicConfig(level=logging.INFO, stream=buf, format="%(message)s")
+        root.setLevel(logging.INFO)
+        logging.getLogger("httpx").info(_HTTPX_FMT, "GET", _POLL_URL, "HTTP/1.1 200 OK")
+        assert _KEY in buf.getvalue(), (
+            "expected the wrong-order wiring to leak — if this stops leaking, the ordering "
+            "guard below is testing nothing"
+        )
+    finally:
+        root.setLevel(prev_level)
+        root.handlers = saved
+
+
+def test_every_logging_entrypoint_installs_the_filter_after_basicconfig() -> None:
+    """Wiring guard: each `basicConfig` must be FOLLOWED by an `install_log_redaction`.
+
+    Presence alone is not enough — see the test above: install-then-basicConfig counts the
+    same but is completely inert. So this pairs them positionally: walking the source, every
+    `logging.basicConfig(` must be followed by an `install_log_redaction()` before the next
+    `basicConfig(`. Complemented by the functional test below, which proves the wiring works
+    end-to-end through a real CLI entrypoint rather than by reading source.
     """
     src = Path(__file__).resolve().parents[1] / "src" / "teetime" / "__main__.py"
     text = src.read_text()
-    configs = text.count("logging.basicConfig(")
-    installs = text.count("install_log_redaction()")
-    assert configs >= 3, "expected the run/watch-disabled/watch entrypoints to configure logging"
-    assert configs == installs, (
-        f"{configs} logging.basicConfig() call(s) but {installs} install_log_redaction() call(s) "
-        "in __main__.py — every entrypoint that configures logging must install the filter"
+    events = sorted(
+        [(m.start(), "config") for m in re.finditer(r"logging\.basicConfig\(", text)]
+        + [(m.start(), "install") for m in re.finditer(r"install_log_redaction\(\)", text)]
     )
+    kinds = [kind for _, kind in events]
+    assert kinds.count("config") >= 3, "expected run / watch-disabled / watch to configure logging"
+    assert kinds == ["config", "install"] * kinds.count("config"), (
+        "every logging.basicConfig() in __main__.py must be immediately followed by "
+        f"install_log_redaction() (installing first attaches to nothing); saw {kinds}"
+    )
+
+
+def test_watch_entrypoint_installs_the_filter_on_a_real_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Functional proof through a real CLI entrypoint, not a source-substring count.
+
+    Uses the watcher-disabled path: it runs `basicConfig` + `install_log_redaction` and exits
+    0 without touching the network, so it exercises the real wiring cheaply.
+    """
+    for k, v in {"MB_USERNAME": "u", "MB_PASSWORD": "p", "PLAYER1_EMAIL": "a@e.test"}.items():
+        monkeypatch.setenv(k, v)
+    cfg = tmp_path / "w.toml"
+    cfg.write_text(
+        """
+[[courses]]
+id = "foreup:mangrove_bay"
+adapter = "foreup.mangrove_bay"
+username_env = "MB_USERNAME"
+password_env = "MB_PASSWORD"
+
+[request]
+target_offsets = [7]
+holes = 18
+course_preferences = ["foreup:mangrove_bay"]
+
+[[request.players]]
+first_name = "A"
+last_name = "B"
+email_env = "PLAYER1_EMAIL"
+
+[[request.time_windows]]
+weekday = "saturday"
+earliest = "08:45:00"
+latest = "10:00:00"
+
+[scheduler]
+timezone = "America/New_York"
+fire_time = "06:00:00"
+
+[notifier]
+backend = "console"
+
+[watcher]
+enabled = false
+poll_interval_s = 600
+"""
+    )
+    result = CliRunner().invoke(cli, ["watch", "--config", str(cfg), "--dry-run", "true"])
+    assert result.exit_code == 0, result.output
+    handlers = logging.getLogger().handlers
+    assert handlers, "entrypoint should have configured a root handler"
+    assert any(any(isinstance(f, RedactingLogFilter) for f in h.filters) for h in handlers), (
+        "the watch entrypoint ran but no root handler carries a RedactingLogFilter"
+    )
+
+
+def test_caplog_is_not_polluted_by_the_installs_above() -> None:
+    """Regression guard for the autouse fixture in conftest.py.
+
+    `install_log_redaction()` attaches to EVERY root handler — including pytest's
+    session-scoped `LogCaptureHandler`. Without the fixture that restores handler filters,
+    the tests above would silently redact `caplog` for the remainder of the session, and a
+    future `assert secret not in caplog.text` test would pass VACUOUSLY. This test runs after
+    them in file order and asserts the capture handler came back clean.
+    """
+    root = logging.getLogger()
+    leaked = [h for h in root.handlers if any(isinstance(f, RedactingLogFilter) for f in h.filters)]
+    assert not leaked, f"RedactingLogFilter leaked onto session handler(s): {leaked}"

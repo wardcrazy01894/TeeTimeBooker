@@ -545,6 +545,22 @@ unit tests exercise it). The post-mortem reconciliation path that would have bee
 consumer (M2.T3) was **cut** (§9.1). The store-boundary redaction guard is kept regardless
 as non-bypassable defense-in-depth — any future caller's writes are redacted by default.
 
+**Second layer: the log filter.** `redact_payload` guards the *store* boundary and
+`redact_text` guards *our own* log/exception call sites — but neither covers a THIRD-PARTY
+logger. httpx logs every request at INFO, so the 2captcha result-poll URL
+(`res.php?key=<API_KEY>&…`) reached prod stdout, and Log Analytics, in plaintext ~120x per
+booking run (observed 2026-08-01). `core/redaction.py` therefore also provides
+`RedactingLogFilter` + `install_log_redaction()`, which every CLI entrypoint calls
+immediately after `logging.basicConfig(...)` to attach the filter to the root logger's
+HANDLERS (a filter on a *logger* does not see records propagating up from children like
+`httpx`). It scrubs the rendered message, `%`-args, `exc_info` tracebacks, and `stack_info`.
+
+**Known gap (accepted):** a traceback printed by Python's default excepthook never passes
+through logging, so the filter cannot see it — `__main__._run` logs with `exc_info=True` and
+then re-raises, and the interpreter prints the same traceback to stderr a second time. Keeping
+credentials out of exception messages at the source (as the 2captcha poll-error sanitization
+does) remains the primary defence; the filter is depth, not a replacement for it.
+
 ---
 
 ## 11. Testing strategy
