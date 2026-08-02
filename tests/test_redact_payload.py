@@ -11,7 +11,14 @@ from __future__ import annotations
 
 import time
 
-from teetime.core.redaction import redact_payload, redact_text
+from teetime.core.redaction import (
+    _BEARER_RE,
+    _EMAIL_RE,
+    _PAN_TEXT_RE,
+    _PHONE_RE,
+    redact_payload,
+    redact_text,
+)
 
 
 def test_redact_text_masks_email_and_phone() -> None:
@@ -392,11 +399,25 @@ def test_redact_text_is_not_quadratic_on_a_long_word_run() -> None:
     vs unbounded 15,360 ms, so the 1 s ceiling sits 25x above pass and 375x below failure —
     wide enough that a loaded CI runner cannot flake it.
     """
-    # Mixed prefix + a long unbroken tail. The prefix keeps the other patterns exercised —
-    # digits drive _PAN_TEXT_RE, the literal "Bearer " arms _BEARER_RE — so this degrades into
-    # a general redact_text pin if a DIFFERENT pattern ever becomes superlinear; the tail is
-    # what actually pins _EMAIL_RE, today's only backtracking-prone pattern.
-    payload = ("a" * 50 + "1" * 50 + "Bearer ") * 1_000 + "a" * 100_000
+    # Mixed prefix + a long unbroken tail. The TAIL pins _EMAIL_RE (today's only
+    # backtracking-prone pattern); the PREFIX makes this degrade into a general redact_text
+    # pin if a different pattern ever becomes superlinear.
+    #
+    # The prefix's shapes are load-bearing and easy to get subtly wrong — an earlier version
+    # used `"a"*50 + "1"*50 + "Bearer "`, which armed NOTHING: `\bBearer` needs a word
+    # boundary and was preceded by a digit, and _PAN_TEXT_RE's `(?!\d)` tail rejects a
+    # 50-digit run. So the arming is asserted below rather than assumed.
+    unit = " 4111111111111111 Bearer abcdefgh12345678 x@y.test 727-555-0142 " + "a" * 40
+    payload = unit * 1_000 + "a" * 100_000
+    for name, pattern in (
+        ("_EMAIL_RE", _EMAIL_RE),
+        ("_PAN_TEXT_RE", _PAN_TEXT_RE),
+        ("_BEARER_RE", _BEARER_RE),
+        ("_PHONE_RE", _PHONE_RE),
+    ):
+        assert pattern.search(unit), (
+            f"{name} is not armed by the payload — pin is narrower than it claims"
+        )
     start = time.perf_counter()
     redact_text(payload)
     elapsed = time.perf_counter() - start

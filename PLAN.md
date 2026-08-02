@@ -548,7 +548,7 @@ as non-bypassable defense-in-depth — any future caller's writes are redacted b
 **Second layer: the log filter.** `redact_payload` guards the *store* boundary and
 `redact_text` guards *our own* log/exception call sites — but neither covers a THIRD-PARTY
 logger. httpx logs every request at INFO, so the 2captcha result-poll URL
-(`res.php?key=<API_KEY>&…`) reached prod stdout, and Log Analytics, in plaintext ~120x per
+(`res.php?key=<API_KEY>&…`) reached prod stdout, and Log Analytics, in plaintext 71x in one
 booking run (observed 2026-08-01). `core/redaction.py` therefore also provides
 `RedactingLogFilter` + `install_log_redaction()`, which every CLI entrypoint calls
 immediately after `logging.basicConfig(...)` to attach the filter to the root logger's

@@ -3,7 +3,7 @@
 `redact_text` is only reachable at explicit call sites in adapter code, so any log record
 emitted by a THIRD-PARTY logger bypasses it entirely. Observed live (prod, 2026-08-01): httpx
 logs every request at INFO, including the 2captcha result-poll URL, so the API key landed in
-Log Analytics in plaintext ~120x per booking run:
+Log Analytics in plaintext — 71 such lines in the 2026-08-01 prod run:
 
     HTTP Request: GET https://2captcha.com/res.php?key=<API_KEY>&action=get&id=... "HTTP/1.1 200 OK"
 

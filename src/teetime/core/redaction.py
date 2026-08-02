@@ -216,7 +216,8 @@ class RedactingLogFilter(logging.Filter):
     `redact_text` only runs where a call site remembers to call it, which covers our own
     adapter code and nothing else. Third-party loggers bypass it: httpx logs each request at
     INFO, so the 2captcha result-poll URL — `res.php?key=<API_KEY>&…` — reached prod stdout
-    (and Log Analytics) in plaintext roughly 120x per booking run.
+    (and Log Analytics) in plaintext — 71 such lines in the 2026-08-01 prod run, and it
+    scales with CAPTCHA solve time (one poll line every ~5s per pooled token).
 
     Placement matters: `logging.Filter`s attached to a LOGGER only see records created by
     that logger, NOT records propagating up from children (`httpx`, `httpcore`, …). Only a

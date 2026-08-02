@@ -241,7 +241,7 @@ in `core/` — never directly. This is the cut line for parallel work.
 - **Log redaction is a HANDLER filter, not a call-site discipline.** `redact_text` only runs
   where our own code remembers to call it, so THIRD-PARTY loggers bypassed it entirely: httpx
   logs every request at INFO, and the 2captcha result-poll URL carries the API key as
-  `res.php?key=<API_KEY>&…` — observed live in prod Log Analytics ~120x per booking run
+  `res.php?key=<API_KEY>&…` — observed live in prod Log Analytics, 71 such lines in one run
   (2026-08-01). `core.redaction.RedactingLogFilter` + `install_log_redaction()` close that:
   every entrypoint calls `install_log_redaction()` immediately after its
   `logging.basicConfig(...)`, attaching the filter to the ROOT LOGGER'S HANDLERS. **Placement
