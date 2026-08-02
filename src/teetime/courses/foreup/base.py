@@ -42,10 +42,10 @@ import asyncio
 import collections
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from decimal import Decimal, InvalidOperation
 from functools import partial
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, get_args
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -521,6 +521,11 @@ class ForeUpAdapter(CourseAdapter):
             before = len(results)
             dropped = 0
             sample_keys: list[str] | None = None
+            # Per-filter rejection tally + the times actually on offer. Only rendered when
+            # NOTHING matched (see `_log_zero_match_diagnostics`) — a 0-match search is
+            # otherwise indistinguishable from a filter bug in the logs.
+            rejected = dict.fromkeys(_REJECTION_REASONS, 0)
+            offered: list[str] = []
             for raw in raw_list:
                 try:
                     slot = _parse_slot(raw, target_date, self.course_id, tz)
@@ -536,16 +541,10 @@ class ForeUpAdapter(CourseAdapter):
                         sample_keys = sorted(raw)
                     continue
                 local_time = slot.tee_time.astimezone(tz).time()
-                if not any(w.earliest <= local_time <= w.latest for w in request.time_windows):
-                    continue
-                if slot.holes != request.holes:
-                    continue
-                if slot.available_spots < len(request.players):
-                    continue
-                if (
-                    request.max_price_per_player is not None
-                    and slot.price_per_player > request.max_price_per_player
-                ):
+                offered.append(local_time.strftime("%H:%M"))
+                reason = _rejection_reason(slot, local_time, request)
+                if reason is not None:
+                    rejected[reason] += 1
                     continue
                 results.append(slot)
             if dropped:
@@ -566,6 +565,12 @@ class ForeUpAdapter(CourseAdapter):
                 target_date,
                 [s.tee_time.astimezone(tz).strftime("%H:%M") for s in matched],
             )
+            # LAST, so the explanation follows the two statements it explains in a log tail.
+            # Gated on `offered` so an EMPTY teesheet stays quiet: a date the course has not
+            # published yet legitimately returns [] on every watcher cycle, and diagnosing
+            # that would drown the signal.
+            if not matched and offered:
+                _log_zero_match_diagnostics(target_date, offered, rejected, request)
 
         return results
 
@@ -972,6 +977,97 @@ class ForeUpAdapter(CourseAdapter):
         if self._client is not None and self._owns_client:
             await self._client.aclose()
         self._client = None
+
+
+# --- Search filtering ------------------------------------------------------
+
+# Rejection reasons, in the order they are evaluated (and reported). Kept as an explicit
+# tuple so the WARNING's field order is stable across runs and greppable in Log Analytics.
+# ONE source of truth: the tuple is DERIVED from the type, so `_rejection_reason` cannot
+# return a reason the tally has no key for. That desync would be a `KeyError` propagating out
+# of `search()` — and `search()` runs on the T0 blind-POST 0-booked fallback, where an
+# uncaught error costs the week's booking. mypy also rejects a stray return value at the
+# source. Tuple order = evaluation order = the order reasons are reported.
+RejectionReason = Literal["out-of-window", "wrong-holes", "insufficient-spots", "over-price"]
+_REJECTION_REASONS: tuple[RejectionReason, ...] = get_args(RejectionReason)
+
+
+def _rejection_reason(
+    slot: TeeTimeSlot, local_time: time, request: BookingRequest
+) -> RejectionReason | None:
+    """Return why `slot` fails `request`'s filters, or None if it matches.
+
+    Extracted from `search()` so each leg can be TALLIED by reason (the caller counts these
+    to explain a 0-match search) — and to keep `search()` under the complexity ceiling.
+    Evaluation order is first-match-wins, so a slot failing several legs is attributed to
+    the first: the counts partition the rejected slots, they don't double-count.
+    """
+    if not any(w.earliest <= local_time <= w.latest for w in request.time_windows):
+        return "out-of-window"
+    if slot.holes != request.holes:
+        return "wrong-holes"
+    if slot.available_spots < len(request.players):
+        return "insufficient-spots"
+    if (
+        request.max_price_per_player is not None
+        and slot.price_per_player > request.max_price_per_player
+    ):
+        return "over-price"
+    return None
+
+
+def _log_zero_match_diagnostics(
+    target_date: date,
+    offered: list[str],
+    rejected: dict[RejectionReason, int],
+    request: BookingRequest,
+) -> None:
+    """Explain a search that saw inventory but matched nothing.
+
+    A 0-match search on a NON-empty teesheet is ambiguous in the logs: the window may be
+    genuinely blocked or sold out, or a filter (window / holes / party size / price) may be
+    misconfigured. `got 27 raw slot(s) ... 0 slot(s) match filters` cannot tell them apart —
+    after the 2026-08-01 Mangrove Bay miss, answering it required a hand-rolled call to the
+    live ForeUP API. This logs WHY (the per-filter tally) and WHAT was on offer (the span of
+    parsed tee times) next to the window we asked for, so the next occurrence is diagnosable
+    from Log Analytics alone. Times + counts only → PII-free.
+
+    LEVEL: INFO when every rejection is `out-of-window`, WARNING otherwise. A sold-out or
+    blocked morning is the ROUTINE outcome here — Mangrove Bay mornings sell out and the
+    watcher searches ~300x/day, so at WARNING this would emit hundreds of identical lines a
+    day and bury the `dropped N/M unparseable slot(s)` schema-break canary (the WARNING in
+    `search()` that most needs to stay visible). Diagnostic VALUE is unaffected: the
+    neighbouring `got N raw slot(s)` / `matched tee times: []` lines are already INFO and the
+    jobs run at INFO, so the line that was missing on 2026-08-01 is present either way.
+
+    Every OTHER leg is a should-not-happen for ForeUP, hence WARNING:
+      - `wrong-holes` / `over-price` — the REQUEST disagrees with the teesheet (config error).
+      - `insufficient-spots` — unreachable AT MANGROVE BAY: `/times` server-filters on the
+        `players` query param there, so every returned slot already satisfies
+        `available_spots >= players` (verified live 2026-08-02 against schedule_id 2149 —
+        `players=4` returned a SUBSET of `players=2` — only the four-spot slots; strict on
+        that date, but merely equal on a date with no partially-booked slots). The
+        client-side leg is a backstop, so it firing means that contract changed — worth being
+        loud about. CAVEAT: this file is the shared ForeUP base. The observation is
+        MB-specific; `players` looks like an API-level query param rather than a course
+        setting, so it probably generalises, but a future ForeUP course that does NOT filter
+        this way would emit a WARNING on every 0-match search (~288/day) and re-create the
+        burial problem the split exists to avoid. Re-check it when onboarding one.
+    """
+    non_window = sum(v for r, v in rejected.items() if r != "out-of-window")
+    _log.log(
+        logging.WARNING if non_window else logging.INFO,
+        "ForeUP: 0/%d slot(s) matched filters for %s — rejections: %s; "
+        "available tee times %s-%s; requested window(s) %s; holes=%d players=%d",
+        len(offered),
+        target_date,
+        ", ".join(f"{r}={rejected[r]}" for r in _REJECTION_REASONS if rejected[r]),
+        min(offered),
+        max(offered),
+        ", ".join(f"{w.earliest:%H:%M}-{w.latest:%H:%M}" for w in request.time_windows),
+        request.holes,
+        len(request.players),
+    )
 
 
 # --- Free functions for parsing raw ForeUP JSON ---------------------------

@@ -7,6 +7,7 @@ aclose, and the two parse helpers. No real network traffic.
 from __future__ import annotations
 
 import json as stdlib_json
+import logging
 from datetime import date, datetime, time
 from decimal import Decimal
 from uuid import uuid4
@@ -426,6 +427,260 @@ async def test_search_filters_by_max_price() -> None:
         adapter = _adapter(client)
         slots = await adapter.search(req)
     assert slots == []
+
+
+# --- 0-match search diagnostics -------------------------------------------
+# When a search returns inventory but NOTHING matches, the old logs said only
+# "got 27 raw slot(s) ... 0 slot(s) match filters" — which cannot distinguish a genuinely
+# blocked/sold-out window from a filter bug (a wrong window, a price ceiling that excludes
+# everything, a holes mismatch). That ambiguity cost real diagnosis time after the
+# 2026-08-01 miss: answering it required hitting the live ForeUP API by hand.
+#
+# LEVEL SPLIT (deliberate): a purely out-of-window miss is the ROUTINE case — Mangrove Bay
+# mornings sell out, and the watcher searches ~300x/day — so it logs at INFO, where its
+# neighbouring `got N raw slot(s)` / `matched tee times: []` lines already live. A rejection
+# on any OTHER leg (price/holes/spots) implies a misconfiguration and logs at WARNING. This
+# keeps the `dropped N/M unparseable slot(s)` schema-break canary — the WARNING in search()
+# that most needs to stay visible — from being buried under hundreds of routine sell-out
+# lines. (It is not the ONLY other one: _send_with_retry also warns with op="search" on
+# retry exhaustion.)
+
+
+def _diag_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Records carrying the 0-match diagnostics line (matched by content, not substring luck)."""
+    return [r for r in caplog.records if "matched filters" in r.getMessage()]
+
+
+@respx.mock
+async def test_search_zero_match_logs_out_of_window_breakdown_and_span(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The 2026-08-01 shape: inventory exists, but all of it sits outside the window.
+
+    The log alone must show WHY (out-of-window) and WHAT was on offer (16:07-17:45), so a
+    course-level block is distinguishable from a broken filter without touching the live API.
+    """
+    afternoon = [
+        {**_RAW_SLOT, "time": t, "teesheet_id": i}
+        for i, t in enumerate(["16:07:00", "16:52:00", "17:45:00"])
+    ]
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=afternoon)
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level(logging.INFO):
+            slots = await adapter.search(_request())  # window 09:00-10:30
+    assert slots == []
+    (rec,) = _diag_records(caplog)
+    text = rec.getMessage()
+    assert "out-of-window=3" in text, f"missing rejection breakdown: {text}"
+    # The span of what WAS available — the single most diagnostic fact.
+    assert "16:07" in text and "17:45" in text, f"missing available-time span: {text}"
+    # And the window we were looking for, so the two can be compared at a glance.
+    assert "09:00" in text and "10:30" in text, f"missing requested window: {text}"
+
+
+@respx.mock
+async def test_search_sold_out_window_logs_at_info_not_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A sold-out morning is routine (~300 searches/day), so it must not cry WARNING.
+
+    Otherwise it drowns the `dropped N/M unparseable slot(s)` schema-break canary — the
+    WARNING in search() that most needs to stay visible.
+    """
+    afternoon = [{**_RAW_SLOT, "time": "16:07:00"}]
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=afternoon)
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level(logging.INFO):
+            await adapter.search(_request())
+    (rec,) = _diag_records(caplog)
+    assert rec.levelno == logging.INFO, f"sold-out window should be INFO, got {rec.levelname}"
+    # Scoped to the adapter logger: a third-party deprecation routed through logging must not
+    # make this fail for an unrelated reason.
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING and r.name == rec.name]
+
+
+@respx.mock
+async def test_search_zero_match_breaks_down_price_and_spots_and_holes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Each filter leg is counted separately, so a config error names itself.
+
+    A non-window rejection means the request itself is likely misconfigured — that IS
+    actionable, so it escalates to WARNING.
+    """
+    in_window = "09:30:00"
+    raws = [
+        {**_RAW_SLOT, "teesheet_id": 1, "time": in_window, "green_fee": "500.00"},
+        {**_RAW_SLOT, "teesheet_id": 2, "time": in_window, "available_spots": 0},
+        {**_RAW_SLOT, "teesheet_id": 3, "time": in_window, "holes": 9},
+    ]
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(return_value=httpx.Response(200, json=raws))
+    req = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(TARGET_DATE,),
+        time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
+        players=(Player(first_name="A", last_name="L", email="a@x.test"),),
+        course_preferences=(CID,),
+        max_price_per_player=Decimal("55.00"),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level(logging.INFO):
+            slots = await adapter.search(req)
+    assert slots == []
+    (rec,) = _diag_records(caplog)
+    text = rec.getMessage()
+    assert rec.levelno == logging.WARNING, f"filter-bug shape should be WARNING: {text}"
+    assert "over-price=1" in text, text
+    assert "insufficient-spots=1" in text, text
+    assert "wrong-holes=1" in text, text
+
+
+@respx.mock
+async def test_out_of_window_wins_when_a_slot_fails_several_legs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """First-match-wins ORDER is load-bearing for the level split, not cosmetic.
+
+    An afternoon slot typically fails `out-of-window` AND (depending on the price ceiling)
+    `over-price`. Because `out-of-window` is evaluated first it is the only leg counted, and
+    the routine sell-out stays INFO. If the legs were ever reordered, every afternoon-only
+    sell-out would be attributed to `over-price` and escalate to WARNING — re-creating exactly
+    the canary-burying noise the split exists to prevent. Reordering currently passes the whole
+    suite, so pin it here.
+    """
+    # ONE slot that busts ALL FOUR legs, so this kills every demotion of `out-of-window`,
+    # not just the over-price one. `wrong-holes` is the realistic future case: a ForeUP course
+    # returning 9-hole rows for an 18-hole request would make every afternoon sell-out a
+    # WARNING under a reorder.
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    **_RAW_SLOT,
+                    "time": "16:07:00",
+                    "green_fee": "500.00",
+                    "available_spots": 0,
+                    "holes": 9,
+                }
+            ],
+        )
+    )
+    req = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(TARGET_DATE,),
+        time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
+        players=(Player(first_name="A", last_name="L", email="a@x.test"),),
+        course_preferences=(CID,),
+        max_price_per_player=Decimal("55.00"),  # the slot ALSO busts this
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level(logging.INFO):
+            await adapter.search(req)
+    (rec,) = _diag_records(caplog)
+    text = rec.getMessage()
+    assert "out-of-window=1" in text, f"window leg must win: {text}"
+    for loser in ("over-price", "wrong-holes", "insufficient-spots"):
+        assert loser not in text, f"legs must partition, not double-count ({loser}): {text}"
+    assert rec.levelno == logging.INFO, "a multi-leg afternoon slot is still a routine sell-out"
+
+
+@respx.mock
+async def test_search_diagnostics_are_scoped_per_target_date(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The tally must reset per date — it lives inside the target_dates loop.
+
+    A refactor hoisting `rejected`/`offered` above the loop would silently mis-report every
+    date after the first (carrying date 1's counts and times into date 2's line), and nothing
+    else in the suite would notice. Date 1 matches, date 2 does not.
+    """
+    d1, d2 = date(2026, 5, 13), date(2026, 5, 14)
+    responses = [
+        httpx.Response(200, json=[_RAW_SLOT]),  # 09:30 — matches
+        httpx.Response(200, json=[{**_RAW_SLOT, "time": "16:07:00"}]),  # out of window
+    ]
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(side_effect=responses)
+    req = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(d1, d2),
+        time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
+        players=(Player(first_name="A", last_name="L", email="a@x.test"),),
+        course_preferences=(CID,),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level(logging.INFO):
+            slots = await adapter.search(req)
+    assert len(slots) == 1  # only date 1 matched
+    (rec,) = _diag_records(caplog)  # exactly one diagnostics line, for date 2 only
+    text = rec.getMessage()
+    assert str(d2) in text and str(d1) not in text, f"diagnostics named the wrong date: {text}"
+    assert "0/1" in text, f"date-1 slots leaked into date-2's denominator: {text}"
+    assert "16:07" in text and "09:30" not in text, f"date-1 times leaked: {text}"
+
+
+@respx.mock
+async def test_search_all_unparseable_does_not_crash_or_diagnose(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`offered` is empty when every slot fails to parse — min()/max() must never run.
+
+    If that guard ever broke, `min()` on an empty list would raise ValueError out of
+    `search()`; on the T0 blind-POST 0-booked fallback that loses the week's booking.
+    """
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[{"nope": 1}, {"nope": 2}])
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level(logging.INFO):
+            slots = await adapter.search(_request())
+    assert slots == []
+    assert not _diag_records(caplog), "no inventory parsed — nothing to diagnose"
+    assert any("dropped 2/2 unparseable" in r.getMessage() for r in caplog.records)
+
+
+@respx.mock
+async def test_search_does_not_diagnose_when_something_matched(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No noise on the happy path — the watcher runs this every 10 minutes, all year."""
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[_RAW_SLOT])
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level(logging.INFO):
+            slots = await adapter.search(_request())
+    assert len(slots) == 1
+    assert not _diag_records(caplog)
+
+
+@respx.mock
+async def test_search_does_not_diagnose_when_course_returned_no_inventory(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An empty teesheet needs no breakdown — and an unpublished date legitimately returns [].
+
+    Diagnosing here would fire on every watcher cycle for a date the course has not opened
+    yet, drowning the signal this line exists to carry.
+    """
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(return_value=httpx.Response(200, json=[]))
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level(logging.INFO):
+            slots = await adapter.search(_request())
+    assert slots == []
+    assert not _diag_records(caplog)
 
 
 @respx.mock
