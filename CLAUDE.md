@@ -250,9 +250,10 @@ in `core/` — never directly. This is the cut line for parallel work.
   root-*logger* filter would silently miss exactly the records that leak. The filter resolves
   `%`-args eagerly (the secret is usually IN an arg, not the format string), clears
   `record.args`, also scrubs `exc_info` tracebacks (pre-rendered into `record.exc_text`) and
-  `stack_info`, is idempotent across multi-handler fan-out, and never raises or drops a
-  record (an exception from `filter()` propagates to the `log.…()` CALL SITE — logging only
-  guards `emit()` — and at T0 that would kill the booking run). **Ordering is load-bearing
+  `stack_info`, is idempotent across multi-handler fan-out, and never drops a record nor
+  raises `Exception` (one from `filter()` propagates to the `log.…()` CALL SITE — logging only
+  guards `emit()` — and at T0 that would kill the booking run; a `BaseException` from a
+  pathological `msg.__str__` still escapes, deliberately undefended). **Ordering is load-bearing
   too:** `basicConfig` CREATES the handler, so installing first attaches to nothing and
   leaves the leak open. `tests/test_log_redaction.py` pins the ORDER by source position (a
   functional test cannot: under pytest the root logger already has handlers, so the wrong
