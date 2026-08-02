@@ -277,3 +277,19 @@ def test_caplog_is_not_polluted_by_the_installs_above() -> None:
     root = logging.getLogger()
     leaked = [h for h in root.handlers if any(isinstance(f, RedactingLogFilter) for f in h.filters)]
     assert not leaked, f"RedactingLogFilter leaked onto session handler(s): {leaked}"
+
+
+def test_orphan_handler_added_during_a_test_is_also_cleaned(request: pytest.FixtureRequest) -> None:
+    """Covers the conftest fixture's second branch: a handler added and never removed.
+
+    That branch had no coverage — no other test abandons a root handler — so a regression in
+    it (e.g. reverting to a string class-name compare that stops matching after a rename)
+    would have gone unnoticed. Registers a finalizer to remove the handler AFTER the autouse
+    fixture has run, so the fixture genuinely sees an orphan.
+    """
+    root = logging.getLogger()
+    handler = logging.StreamHandler(io.StringIO())
+    root.addHandler(handler)
+    request.addfinalizer(lambda: root.removeHandler(handler))
+    install_log_redaction()
+    assert any(isinstance(f, RedactingLogFilter) for f in handler.filters)

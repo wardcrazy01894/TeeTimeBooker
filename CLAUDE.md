@@ -254,8 +254,10 @@ in `core/` — never directly. This is the cut line for parallel work.
   record (an exception from `filter()` propagates to the `log.…()` CALL SITE — logging only
   guards `emit()` — and at T0 that would kill the booking run). **Ordering is load-bearing
   too:** `basicConfig` CREATES the handler, so installing first attaches to nothing and
-  leaves the leak open; `tests/test_log_redaction.py` pins the order both by source position
-  and functionally through a real CLI entrypoint.
+  leaves the leak open. `tests/test_log_redaction.py` pins the ORDER by source position (a
+  functional test cannot: under pytest the root logger already has handlers, so the wrong
+  order still attaches and `basicConfig` no-ops) and separately pins, through a real CLI
+  entrypoint, that the wiring EXISTS at all.
   **Known gap (accepted):** a traceback printed by Python's default excepthook never passes
   through logging, so the filter cannot see it (`_run` logs `exc_info=True` then re-raises;
   the interpreter prints it again to stderr). Keeping credentials out of exception messages

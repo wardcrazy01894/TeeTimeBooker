@@ -9,6 +9,8 @@ boundary (`InMemoryStore.append_attempt`) applies it — see test_in_memory_stor
 
 from __future__ import annotations
 
+import time
+
 from teetime.core.redaction import redact_payload, redact_text
 
 
@@ -343,3 +345,47 @@ def test_redacts_every_live_card_field() -> None:
     # The raw sentinel must appear nowhere in the redacted output's values.
     assert "SECRET-4111111111111111" not in repr(out)
     assert out["ReservationStatusID"] == 3  # control preserved
+
+
+# --- _EMAIL_RE bounds (ReDoS guard) ---------------------------------------
+# `_EMAIL_RE`'s segments are length-bounded because `RedactingLogFilter` feeds `redact_text`
+# arbitrary log records. Every OTHER caller clamps its input (`r.text[:300]` and friends), so
+# the unbounded `+` quantifiers' quadratic backtracking never mattered before; with the filter
+# installed, one long unbroken word-char run in a third-party log line could stall the T0 drop.
+# These pin BOTH directions: the bound must stay (perf) and must not tighten (real addresses
+# must still be redacted).
+
+
+def test_redact_text_masks_long_but_valid_addresses() -> None:
+    """The bound must not be tightened to the point of missing real addresses.
+
+    64 chars is the RFC 5321 local-part maximum, and multi-label subdomains are ordinary.
+    """
+    local = "a" * 60  # long, but inside the 64-char RFC local-part limit
+    addr = f"{local}@mail.corp.example.co.uk"
+    out = redact_text(f"holder={addr} status=400")
+    assert addr not in out, f"long-but-valid address survived: {out}"
+    assert "<redacted-email>" in out
+    assert "status=400" in out  # non-PII context still intact
+
+
+def test_redact_text_masks_plus_and_dotted_locals() -> None:
+    """Plus-addressing and dotted locals are the shapes this project actually uses."""
+    for addr in ("alanc3939+claude@gmail.com", "first.last@sub.example.org", "a_b-c@e-x.test"):
+        out = redact_text(f"contact: {addr}")
+        assert addr not in out, f"{addr} survived redaction: {out}"
+        assert "<redacted-email>" in out
+
+
+def test_redact_text_is_not_quadratic_on_a_long_word_run() -> None:
+    """Perf pin: a long unbroken word-char run must not blow up the T0 booking run.
+
+    With the previous unbounded pattern this input took ~15 s (and ~60 s at 200k chars);
+    bounded it is ~20 ms. The 1 s ceiling is deliberately loose so the test is not flaky on
+    a loaded CI runner while still failing loudly if the bounds are ever removed.
+    """
+    payload = "a" * 100_000
+    start = time.perf_counter()
+    redact_text(payload)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"redact_text took {elapsed:.2f}s on a 100k-char run — bounds lost?"

@@ -142,12 +142,16 @@ def redact_payload(payload: Mapping[str, object]) -> dict[str, object]:
 # Analytics. Deliberately conservative: emails, and phone numbers that carry separators.
 # A BARE digit run is NOT masked, so numeric confirmation ids / HTTP status codes survive
 # for debugging (the whole reason the error body is logged).
-# Segment lengths are BOUNDED (RFC 5321: local part <=64, domain labels <=255). Unbounded
-# `+` quantifiers backtrack quadratically on a long unbroken word-char run — measured 150 ms
-# at 10k chars and ~58 s at 200k. That never mattered while every caller clamped its input
-# (`r.text[:300]` and friends), but `RedactingLogFilter` now feeds this arbitrary log records
-# that nobody vetted for length. The bounds cap the work without narrowing real matches:
-# an address whose local part exceeds 64 chars is already RFC-invalid.
+# Segment lengths are BOUNDED. Unbounded `+` quantifiers backtrack quadratically on a long
+# unbroken word-char run — measured ~0.8 s at 20k chars and ~58 s at 200k. That never mattered
+# while every caller clamped its input (`r.text[:300]` and friends), but `RedactingLogFilter`
+# now feeds this arbitrary log records that nobody vetted for length. Bounds: 64 = the RFC 5321
+# local-part maximum; 255 is deliberately over-generous for the domain segments (a DNS LABEL is
+# <=63 octets per RFC 1035, 255 is the whole-name limit) — being loose here costs nothing and
+# avoids clipping unusual-but-real hostnames. Scope, stated honestly: only RFC-INVALID shapes
+# change, and a >64-char local part degrades to a PARTIAL match (a prefix stays visible) rather
+# than no match. `tests/test_redact_payload.py` pins both directions — real addresses still
+# masked, and the ReDoS ceiling.
 _EMAIL_RE = re.compile(r"[\w.+-]{1,64}@[\w-]{1,255}\.[\w.-]{1,255}")
 _PHONE_RE = re.compile(r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b")
 # A reflected session credential is the one thing in an error body more dangerous than PII.
@@ -229,9 +233,15 @@ class RedactingLogFilter(logging.Filter):
     exception messages in the first place (as #167 did for the 2captcha poll error) remains
     the primary defence; this filter is depth, not a substitute.
 
-    Never drops a record (always returns True) and never raises: an exception thrown from
+    Never drops a record (always returns True) and never raises `Exception`: one thrown from
     `filter()` propagates to the `log.…()` call site — `logging` only guards `emit()` with
-    `handleError` — and at T0 that would take down the booking run.
+    `handleError` — and at T0 that would take down the booking run. (A `BaseException` from a
+    pathological `msg.__str__` would still escape; that is not worth defending against.)
+
+    CAVEAT: pre-populating `exc_text` OVERRIDES a custom formatter's `formatException` —
+    `Formatter.format` reuses a non-empty `exc_text` instead of calling it. Inert today (the
+    entrypoints use plain `basicConfig(format=…)`), but a future structured/JSON formatter
+    would silently get the default traceback rendering instead of its own.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -270,7 +280,10 @@ def install_log_redaction() -> None:
 
     Call once per entrypoint AFTER `logging.basicConfig` — basicConfig is what CREATES the
     handler, so installing first attaches to nothing and silently leaves the leak open.
-    `tests/test_log_redaction.py` pins that ordering at both the source and behavioural level.
+    `test_install_before_basicconfig_is_inert` pins that MECHANISM; the entrypoints' actual
+    ordering is pinned by source position (`test_every_logging_entrypoint_installs_the_filter_
+    after_basicconfig`), because under pytest the root logger already has handlers and the
+    wrong order would still appear to work.
 
     Re-invocation is safe: a handler that already carries the filter is skipped, so the
     filter never stacks. Handlers added AFTER this call are not covered — every entrypoint
