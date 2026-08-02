@@ -33,8 +33,10 @@ def _restore_root_log_filters() -> Iterator[None]:
 
     LIMIT: being function-scoped, this cannot contain an install performed in a MODULE- or
     SESSION-scoped fixture's setup/teardown — that runs outside the window. No such fixture
-    exists today (the non-function-scoped ones in this suite only read bicep text), but a
-    future one calling a CLI entrypoint would need its own guard.
+    exists today: of the module-scoped fixtures in this suite, all but one only read bicep
+    text, and the exception — `orphan_cleanup` in test_log_redaction.py — only REMOVES
+    handlers at teardown and never installs the filter. A future one calling a CLI entrypoint
+    would need its own guard.
     """
     root = logging.getLogger()
     saved = [(h, list(h.filters)) for h in root.handlers]

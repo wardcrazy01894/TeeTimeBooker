@@ -143,9 +143,11 @@ def redact_payload(payload: Mapping[str, object]) -> dict[str, object]:
 # A BARE digit run is NOT masked, so numeric confirmation ids / HTTP status codes survive
 # for debugging (the whole reason the error body is logged).
 # Segment lengths are BOUNDED. Unbounded `+` quantifiers backtrack quadratically on a long
-# unbroken word-char run — measured ~0.8 s at 20k chars and ~58 s at 200k. That never mattered
-# while every caller clamped its input (`r.text[:300]` and friends), but `RedactingLogFilter`
-# now feeds this arbitrary log records that nobody vetted for length. Bounds: 64 = the RFC 5321
+# unbroken word-char run — measured ~0.8 s at 20k chars, and cleanly quadratic from there (a
+# minute or more at 200k). That barely mattered while nearly every caller clamped its input
+# (`r.text[:300]` and friends — every ForeUP site does; `teeitup/base.py`'s GNSVC decline
+# `Message` does not, and never did), but `RedactingLogFilter` now feeds this arbitrary log
+# records that nobody vetted for length. Bounds: 64 = the RFC 5321
 # local-part maximum; 255 is deliberately over-generous for the domain segments (a DNS LABEL is
 # <=63 octets per RFC 1035, 255 is the whole-name limit) — being loose here costs nothing and
 # avoids clipping unusual-but-real hostnames. Scope, stated honestly: only RFC-INVALID shapes

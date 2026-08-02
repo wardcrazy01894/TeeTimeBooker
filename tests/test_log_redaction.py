@@ -101,8 +101,8 @@ def test_filter_survives_malformed_args_and_still_scrubs_them() -> None:
 def test_filter_scrubs_exception_tracebacks() -> None:
     """`exc_info` is a real leak path, not a theoretical one.
 
-    `__main__._run` logs `exc_error(..., exc_info=True)` on a failed run, and an httpx error
-    embeds the full request URL. The filter only rewrote `record.msg`; `Formatter.format`
+    `__main__._run` calls `log.error(..., exc_info=True)` on a failed run (__main__.py:323),
+    and an httpx error embeds the full request URL. The filter only rewrote `record.msg`; `Formatter.format`
     appends `formatException(record.exc_info)` afterwards, which would be untouched.
     """
     try:
@@ -335,8 +335,8 @@ def test_conftest_strips_the_filter_from_an_orphan_handler(
     The test above left a `RedactingLogFilter` on a root handler the autouse fixture never
     snapshotted. If that branch regressed (e.g. back to a string class-name compare that stops
     matching after a rename), the filter would still be attached here and the leak would be
-    reopened for every later test. Depends on file collection order for the SETUP test to run
-    first — but it cannot pass vacuously if that order changes: the `assert orphan_cleanup`
+    reopened for every later test. Depends on DEFINITION order within this module for the
+    SETUP test to run first — but it cannot pass vacuously if that order changes: the `assert orphan_cleanup`
     guard below fails loudly when the setup test did not run (verified with `-k`).
     """
     assert orphan_cleanup, "the previous test should have registered an orphan handler"

@@ -396,8 +396,10 @@ def test_redact_text_is_not_quadratic_on_a_long_word_run() -> None:
     `("a"*50 + "1"*50 + "Bearer ")*1000`, which looks varied but caps the longest word-char run
     at 106 chars — far too short to trigger quadratic backtracking. That made the pin VACUOUS:
     the fully unbounded pattern passed it in 20 ms. Measured on the real thing: bounded 41 ms
-    vs unbounded 15,360 ms, so the 1 s ceiling sits 25x above pass and 375x below failure —
-    wide enough that a loaded CI runner cannot flake it.
+    vs unbounded 15,360 ms, so the 1 s ceiling sits ~24x above a passing run and ~15x below a
+    regressed one — wide enough that a loaded CI runner cannot flake it. (Do not read 375x
+    anywhere here: that is failure/pass, NOT the detection margin. The number that governs how
+    far the ceiling can safely be relaxed is the ~15x gap to failure.)
     """
     # Mixed prefix + a long unbroken tail. The TAIL pins _EMAIL_RE (today's only
     # backtracking-prone pattern); the PREFIX makes this degrade into a general redact_text
