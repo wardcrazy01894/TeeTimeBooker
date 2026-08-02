@@ -245,6 +245,17 @@ in `core/` — never directly. This is the cut line for parallel work.
   has the full flow; §9.1 has the explicit state machine that M2.T1
   implements. `list_reservations` is on the `CourseAdapter` Protocol from
   M0 — it is NOT optional.
+- **A 0-match search on a NON-empty teesheet logs WHY, at WARNING.** `got 27 raw slot(s) …
+  0 slot(s) match filters` cannot distinguish a genuinely blocked/sold-out window from a
+  misconfigured filter — diagnosing the 2026-08-01 Mangrove Bay miss (the course ran an 8 AM
+  shotgun tournament, so nothing was bookable before ~16:00) required hand-calling the live
+  ForeUP API to establish which it was. `search()` now tallies each rejected slot by reason
+  (`_rejection_reason`: `out-of-window` / `wrong-holes` / `insufficient-spots` / `over-price`,
+  first-match-wins so the counts PARTITION the rejects) and, when inventory existed but
+  nothing matched, `_log_zero_match_diagnostics` emits one WARNING with the tally, the span of
+  tee times actually on offer, and the requested window/holes/party-size. Times + counts only
+  → PII-free. **Gated on a non-empty parsed list**: an empty teesheet is the normal pre-T0 and
+  unpublished-date case, and warning there would drown the signal.
 - **A book-POST 4xx is a try-next-slot signal, not a crash — and slot exhaustion is
   graceful, not a crash either.** `ForeUpAdapter.book()` maps both `409` and `400` to
   `SlotGoneError`: a 4xx rejection means ForeUP definitively created NO reservation (the

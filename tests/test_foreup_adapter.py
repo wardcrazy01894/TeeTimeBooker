@@ -428,6 +428,109 @@ async def test_search_filters_by_max_price() -> None:
     assert slots == []
 
 
+# --- 0-match search diagnostics -------------------------------------------
+# When a search returns inventory but NOTHING matches, the old logs said only
+# "got 27 raw slot(s) ... 0 slot(s) match filters" — which cannot distinguish a genuinely
+# blocked/sold-out window from a filter bug (a wrong window, a price ceiling that excludes
+# everything, a holes mismatch). That ambiguity cost real diagnosis time after the
+# 2026-08-01 miss: answering it required hitting the live ForeUP API by hand. These pin a
+# WARNING carrying the per-filter rejection breakdown + the span of times actually on offer.
+
+
+@respx.mock
+async def test_search_zero_match_logs_out_of_window_breakdown_and_span(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The 2026-08-01 shape: inventory exists, but all of it sits outside the window.
+
+    The log alone must show WHY (out-of-window) and WHAT was on offer (16:07-17:45), so a
+    course-level block is distinguishable from a broken filter without touching the live API.
+    """
+    afternoon = [
+        {**_RAW_SLOT, "time": t, "teesheet_id": i}
+        for i, t in enumerate(["16:07:00", "16:52:00", "17:45:00"])
+    ]
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=afternoon)
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level("WARNING"):
+            slots = await adapter.search(_request())  # window 09:00-10:30
+    assert slots == []
+    text = caplog.text
+    assert "out-of-window=3" in text, f"missing rejection breakdown: {text}"
+    # The span of what WAS available — the single most diagnostic fact.
+    assert "16:07" in text and "17:45" in text, f"missing available-time span: {text}"
+    # And the window we were looking for, so the two can be compared at a glance.
+    assert "09:00" in text and "10:30" in text, f"missing requested window: {text}"
+
+
+@respx.mock
+async def test_search_zero_match_breaks_down_price_and_spots_and_holes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Each filter leg is counted separately, so a config error names itself."""
+    in_window = "09:30:00"
+    raws = [
+        {**_RAW_SLOT, "teesheet_id": 1, "time": in_window, "green_fee": "500.00"},
+        {**_RAW_SLOT, "teesheet_id": 2, "time": in_window, "available_spots": 0},
+        {**_RAW_SLOT, "teesheet_id": 3, "time": in_window, "holes": 9},
+    ]
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(return_value=httpx.Response(200, json=raws))
+    req = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(TARGET_DATE,),
+        time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
+        players=(Player(first_name="A", last_name="L", email="a@x.test"),),
+        course_preferences=(CID,),
+        max_price_per_player=Decimal("55.00"),
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level("WARNING"):
+            slots = await adapter.search(req)
+    assert slots == []
+    text = caplog.text
+    assert "over-price=1" in text, text
+    assert "insufficient-spots=1" in text, text
+    assert "wrong-holes=1" in text, text
+
+
+@respx.mock
+async def test_search_does_not_warn_when_something_matched(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No noise on the happy path — the watcher runs this every 10 minutes, all year."""
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[_RAW_SLOT])
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level("WARNING"):
+            slots = await adapter.search(_request())
+    assert len(slots) == 1
+    assert "rejections" not in caplog.text
+
+
+@respx.mock
+async def test_search_does_not_warn_when_course_returned_no_inventory(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An empty teesheet needs no breakdown — and pre-T0 polls legitimately return [].
+
+    Warning here would fire on every pre-drop poll and every watcher cycle for an
+    unpublished date, drowning the signal this WARNING exists to carry.
+    """
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(return_value=httpx.Response(200, json=[]))
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level("WARNING"):
+            slots = await adapter.search(_request())
+    assert slots == []
+    assert "rejections" not in caplog.text
+
+
 @respx.mock
 async def test_search_rate_limited_raises() -> None:
     respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
