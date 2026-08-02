@@ -248,7 +248,7 @@ in `core/` — never directly. This is the cut line for parallel work.
 - **A 0-match search on a NON-empty teesheet logs WHY (INFO when purely out-of-window,
   WARNING otherwise).** `got 27 raw slot(s) …
   0 slot(s) match filters` cannot distinguish a genuinely blocked/sold-out window from a
-  misconfigured filter — diagnosing the 2026-08-01 Mangrove Bay miss (the course ran an 8 AM
+  misconfigured filter — diagnosing the 2026-08-01 Mangrove Bay miss (target Sat 8/8; the course ran an 8 AM
   shotgun tournament, so nothing was bookable before ~16:00) required hand-calling the live
   ForeUP API to establish which it was. `search()` now tallies each rejected slot by reason
   (`_rejection_reason`: `out-of-window` / `wrong-holes` / `insufficient-spots` / `over-price`,

@@ -1045,7 +1045,8 @@ def _log_zero_match_diagnostics(
       - `insufficient-spots` — unreachable AT MANGROVE BAY: `/times` server-filters on the
         `players` query param there, so every returned slot already satisfies
         `available_spots >= players` (verified live 2026-08-02 against schedule_id 2149 —
-        `players=4` returns a strict SUBSET of `players=2`, only the four-spot slots). The
+        `players=4` returned a SUBSET of `players=2` — only the four-spot slots; strict on
+        that date, but merely equal on a date with no partially-booked slots). The
         client-side leg is a backstop, so it firing means that contract changed — worth being
         loud about. CAVEAT: this file is the shared ForeUP base. The observation is
         MB-specific; `players` looks like an API-level query param rather than a course
