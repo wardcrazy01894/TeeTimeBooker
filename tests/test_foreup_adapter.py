@@ -500,11 +500,7 @@ async def test_search_sold_out_window_logs_at_info_not_warning(
     assert rec.levelno == logging.INFO, f"sold-out window should be INFO, got {rec.levelname}"
     # Scoped to the adapter logger: a third-party deprecation routed through logging must not
     # make this fail for an unrelated reason.
-    assert not [
-        r
-        for r in caplog.records
-        if r.levelno >= logging.WARNING and r.name == "teetime.courses.foreup.base"
-    ]
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING and r.name == rec.name]
 
 
 @respx.mock
@@ -542,6 +538,43 @@ async def test_search_zero_match_breaks_down_price_and_spots_and_holes(
     assert "over-price=1" in text, text
     assert "insufficient-spots=1" in text, text
     assert "wrong-holes=1" in text, text
+
+
+@respx.mock
+async def test_out_of_window_wins_when_a_slot_fails_several_legs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """First-match-wins ORDER is load-bearing for the level split, not cosmetic.
+
+    An afternoon slot typically fails `out-of-window` AND (depending on the price ceiling)
+    `over-price`. Because `out-of-window` is evaluated first it is the only leg counted, and
+    the routine sell-out stays INFO. If the legs were ever reordered, every afternoon-only
+    sell-out would be attributed to `over-price` and escalate to WARNING — re-creating exactly
+    the canary-burying noise the split exists to prevent. Reordering currently passes the whole
+    suite, so pin it here.
+    """
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(
+            200, json=[{**_RAW_SLOT, "time": "16:07:00", "green_fee": "500.00"}]
+        )
+    )
+    req = BookingRequest(
+        request_id=RequestId(uuid4()),
+        target_dates=(TARGET_DATE,),
+        time_windows=(TimeWindow(earliest=time(9, 0), latest=time(10, 30)),),
+        players=(Player(first_name="A", last_name="L", email="a@x.test"),),
+        course_preferences=(CID,),
+        max_price_per_player=Decimal("55.00"),  # the slot ALSO busts this
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        with caplog.at_level(logging.INFO):
+            await adapter.search(req)
+    (rec,) = _diag_records(caplog)
+    text = rec.getMessage()
+    assert "out-of-window=1" in text, f"window leg must win: {text}"
+    assert "over-price" not in text, f"legs must partition, not double-count: {text}"
+    assert rec.levelno == logging.INFO, "a multi-leg afternoon slot is still a routine sell-out"
 
 
 @respx.mock

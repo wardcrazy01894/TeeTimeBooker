@@ -1024,19 +1024,23 @@ def _log_zero_match_diagnostics(
     LEVEL: INFO when every rejection is `out-of-window`, WARNING otherwise. A sold-out or
     blocked morning is the ROUTINE outcome here — Mangrove Bay mornings sell out and the
     watcher searches ~300x/day, so at WARNING this would emit hundreds of identical lines a
-    day and bury the `dropped N/M unparseable slot(s)` schema-break canary, the only other
-    WARNING `search()` emits. Diagnostic VALUE is unaffected: the neighbouring `got N raw
-    slot(s)` / `matched tee times: []` lines are already INFO and the jobs run at INFO, so
-    the line that was missing on 2026-08-01 is present either way.
+    day and bury the `dropped N/M unparseable slot(s)` schema-break canary (the WARNING in
+    `search()` that most needs to stay visible). Diagnostic VALUE is unaffected: the
+    neighbouring `got N raw slot(s)` / `matched tee times: []` lines are already INFO and the
+    jobs run at INFO, so the line that was missing on 2026-08-01 is present either way.
 
     Every OTHER leg is a should-not-happen for ForeUP, hence WARNING:
       - `wrong-holes` / `over-price` — the REQUEST disagrees with the teesheet (config error).
-      - `insufficient-spots` — UNREACHABLE in production: ForeUP `/times` server-filters on
-        the `players` query param, so every returned slot already satisfies
-        `available_spots >= players` (verified live 2026-08-02: the 8/3 sheet returns 41
-        slots at `players=2`, five of them 2-spot, but only the 36 four-spot slots at
-        `players=4`). The client-side leg is a backstop, so it firing means ForeUP changed
-        that contract — which is exactly the kind of thing that should be loud.
+      - `insufficient-spots` — unreachable AT MANGROVE BAY: `/times` server-filters on the
+        `players` query param there, so every returned slot already satisfies
+        `available_spots >= players` (verified live 2026-08-02 against schedule_id 2149 —
+        `players=4` returns a strict SUBSET of `players=2`, only the four-spot slots). The
+        client-side leg is a backstop, so it firing means that contract changed — worth being
+        loud about. CAVEAT: this file is the shared ForeUP base. The observation is
+        MB-specific; `players` looks like an API-level query param rather than a course
+        setting, so it probably generalises, but a future ForeUP course that does NOT filter
+        this way would emit a WARNING on every 0-match search (~288/day) and re-create the
+        burial problem the split exists to avoid. Re-check it when onboarding one.
     """
     non_window = sum(v for r, v in rejected.items() if r != "out-of-window")
     _log.log(

@@ -60,13 +60,17 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
   diagnostics line (root CLAUDE.md) is the fast discriminator **at the 06:00 drop**:
   `out-of-window=N` plus an available span starting in the afternoon means blocked, not raced.
   (That same shape is expected LATER in the week from an ordinary sold-out morning — it is
-  diagnostic only at T0, when inventory has just dropped and cannot yet have sold out.) Check the
+  diagnostic only at T0, when inventory has just dropped and is very unlikely to have sold out
+  already. Not impossible: the fresh fallback search runs seconds after T0, and a fully raced
+  morning would look the same, which is what makes the 2026-07-25 miss still unexplained.) Check the
   [events calendar](https://golfstpete.com/events/) before treating a Saturday miss as a
   tuning problem.
 - **`/times` server-filters on the `players` param.** Every returned slot already satisfies
   `available_spots >= players`, so the adapter's client-side spots filter is a backstop that
-  never fires in production. Verified live 2026-08-02: the 8/3 sheet returns **41** slots at
-  `players=2` (five of them 2-spot) but only the **36** four-spot slots at `players=4`.
+  never fires in production. Verified live 2026-08-02: `players=4` returns a strict SUBSET of
+  `players=2` on the same date — only the four-spot slots, with every partially-booked slot
+  dropped. (Exact counts drift daily with bookings, so the subset relation is the durable form
+  of the claim.)
   Two consequences: (a) searching with the real party size HIDES partially-booked slots, so
   when smoke-testing "is anything left on this date" drop to `players=2` (and note `players=1`
   returns `[]` outright — `allowed_group_sizes` is 2-4); (b) an `insufficient-spots` rejection
