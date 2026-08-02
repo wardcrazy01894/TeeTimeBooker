@@ -356,9 +356,11 @@ def test_redacts_every_live_card_field() -> None:
 
 # --- _EMAIL_RE bounds (ReDoS guard) ---------------------------------------
 # `_EMAIL_RE`'s segments are length-bounded because `RedactingLogFilter` feeds `redact_text`
-# arbitrary log records. Every OTHER caller clamps its input (`r.text[:300]` and friends), so
-# the unbounded `+` quantifiers' quadratic backtracking never mattered before; with the filter
-# installed, one long unbroken word-char run in a third-party log line could stall the T0 drop.
+# arbitrary log records. NEARLY every other caller clamps its input (`r.text[:300]` and
+# friends — every ForeUP site does; teeitup/base.py's GNSVC decline `Message` does not, and
+# never did), so the unbounded `+` quantifiers' quadratic backtracking was mostly latent
+# before; with the filter installed, one long unbroken word-char run in a third-party log
+# line could stall the T0 drop.
 # These pin BOTH directions: the bound must stay (perf) and must not tighten (real addresses
 # must still be redacted).
 

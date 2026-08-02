@@ -289,7 +289,8 @@ def test_caplog_is_not_polluted_by_the_installs_above() -> None:
     session-scoped `LogCaptureHandler`. Without the fixture that restores handler filters,
     the tests above would silently redact `caplog` for the remainder of the session, and a
     future `assert secret not in caplog.text` test would pass VACUOUSLY. This test runs after
-    them in file order and asserts the capture handler came back clean.
+    them in definition order within this module and asserts the capture handler came back
+    clean.
     """
     root = logging.getLogger()
     leaked = [h for h in root.handlers if any(isinstance(f, RedactingLogFilter) for f in h.filters)]
