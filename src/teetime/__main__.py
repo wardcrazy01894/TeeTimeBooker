@@ -41,6 +41,7 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
+from .core.redaction import install_log_redaction
 from .core.target_date import (
     next_occurrences_within_horizon,
     weekday_from_name,
@@ -200,6 +201,7 @@ async def _run(cfg: AppConfig, *, dry_run: bool, wait: bool, use_fake_adapter: b
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
+    install_log_redaction()
     log = logging.getLogger(__name__)
 
     # One-shot NTP offset for the T0 race. Gated on `wait` (NOT dry_run) so the dev
@@ -373,6 +375,7 @@ def watch_cmd(
     if not cfg.watcher.enabled:
         # Q2 (resolved): warning log + clean exit when watcher is disabled.
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+        install_log_redaction()
         log = logging.getLogger(__name__)
         log.warning(
             "Watch job is disabled in config (watcher.enabled = false). Set to true to activate."
@@ -399,6 +402,7 @@ async def _watch(
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
+    install_log_redaction()
     log = logging.getLogger(__name__)
 
     request = _build_request(cfg, dry_run=dry_run)

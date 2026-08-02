@@ -13,6 +13,7 @@ layer can import it without depending on each other.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 
@@ -195,3 +196,49 @@ def redact_text(text: str) -> str:
     text = _URL_CRED_PARAM_RE.sub(r"\1=<redacted-key>", text)
     text = _PAN_TEXT_RE.sub(_mask_pan_match, text)
     return _PHONE_RE.sub("<redacted-phone>", _EMAIL_RE.sub("<redacted-email>", text))
+
+
+class RedactingLogFilter(logging.Filter):
+    """Route EVERY log record's rendered message through `redact_text`.
+
+    `redact_text` only runs where a call site remembers to call it, which covers our own
+    adapter code and nothing else. Third-party loggers bypass it: httpx logs each request at
+    INFO, so the 2captcha result-poll URL — `res.php?key=<API_KEY>&…` — reached prod stdout
+    (and Log Analytics) in plaintext roughly 120x per booking run. Installing this as a
+    HANDLER filter is what closes that gap for good, including for any future dependency
+    that logs a credential-bearing URL.
+
+    Placement matters: `logging.Filter`s attached to a LOGGER only see records created by
+    that logger, NOT records propagating up from children (`httpx`, `httpcore`, …). Only a
+    filter on the root logger's HANDLERS sees every record that is actually emitted — hence
+    `install_log_redaction` wires handlers, not loggers.
+
+    The filter never drops a record (always returns True); it rewrites in place. It resolves
+    `%`-args eagerly (`getMessage()`) and clears `record.args`, because the secret usually
+    lives in an ARG (httpx passes the URL as `%s`), not in the format string.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            rendered = record.getMessage()
+        except Exception:
+            # Already-broken formatting; leave the record alone rather than raise inside a
+            # log call (a filter exception at T0 would take down the booking run).
+            return True
+        # Idempotent: redact_text over already-redacted text is a no-op, so a record fanned
+        # out to several handlers (each carrying this filter) survives repeated passes.
+        record.msg = redact_text(rendered)
+        record.args = ()
+        return True
+
+
+def install_log_redaction() -> None:
+    """Attach a `RedactingLogFilter` to every root-logger handler, idempotently.
+
+    Call once per entrypoint AFTER `logging.basicConfig` (which is what creates the handler).
+    Re-invocation is safe: a handler that already carries the filter is skipped, so the
+    filter never stacks.
+    """
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, RedactingLogFilter) for f in handler.filters):
+            handler.addFilter(RedactingLogFilter())

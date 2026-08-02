@@ -238,6 +238,20 @@ in `core/` — never directly. This is the cut line for parallel work.
   `core.redaction.redact_payload`, which `BookingStore.append_attempt` applies at the
   store boundary on every `attempt_log` write (PLAN.md §10.1) — so no caller can leak
   card data by forgetting to scrub. The card POST uses `follow_redirects=False`.
+- **Log redaction is a HANDLER filter, not a call-site discipline.** `redact_text` only runs
+  where our own code remembers to call it, so THIRD-PARTY loggers bypassed it entirely: httpx
+  logs every request at INFO, and the 2captcha result-poll URL carries the API key as
+  `res.php?key=<API_KEY>&…` — observed live in prod Log Analytics ~120x per booking run
+  (2026-08-01). `core.redaction.RedactingLogFilter` + `install_log_redaction()` close that:
+  every entrypoint calls `install_log_redaction()` immediately after its
+  `logging.basicConfig(...)`, attaching the filter to the ROOT LOGGER'S HANDLERS. **Placement
+  is load-bearing** — a `logging.Filter` on a *logger* only sees records created by that
+  logger, NOT records propagating up from children (`httpx`, `httpcore`, …), so a
+  root-*logger* filter would silently miss exactly the records that leak. The filter resolves
+  `%`-args eagerly (the secret is usually IN an arg, not the format string), clears
+  `record.args`, is idempotent across multi-handler fan-out, and never raises or drops a
+  record (a filter exception at T0 would kill the booking run).
+  `tests/test_log_redaction.py` pins the behaviour AND the basicConfig↔install pairing.
 - **Double-booking defense is layered.** Live pre-book `list_reservations`
   check, single-attempt-per-slot rule, in-process advisory lock, ACA Job
   concurrency (`parallelism=1`, one execution per job). There is no durable cross-run idempotency
