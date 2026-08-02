@@ -560,17 +560,17 @@ class ForeUpAdapter(CourseAdapter):
             # Log the matched (in-window) tee times — not just the count — so a real 06:00
             # drop can be diffed against the blind-POST derived grid to detect grid drift
             # (BLIND_POST_PLAN.md PR2 retroactive validation). Times only → PII-free.
-            # AFTER the two lines above, so the explanation follows the statement it explains
-            # when read in a log tail. Gated on `offered` so an EMPTY teesheet stays quiet:
-            # a date the course has not published yet legitimately returns [], on every
-            # watcher cycle, and diagnosing that would drown the signal.
-            if not matched and offered:
-                _log_zero_match_diagnostics(target_date, offered, rejected, request)
             _log.info(
                 "ForeUP: matched tee times for %s: %s",
                 target_date,
                 [s.tee_time.astimezone(tz).strftime("%H:%M") for s in matched],
             )
+            # LAST, so the explanation follows the two statements it explains in a log tail.
+            # Gated on `offered` so an EMPTY teesheet stays quiet: a date the course has not
+            # published yet legitimately returns [] on every watcher cycle, and diagnosing
+            # that would drown the signal.
+            if not matched and offered:
+                _log_zero_match_diagnostics(target_date, offered, rejected, request)
 
         return results
 
@@ -1027,8 +1027,16 @@ def _log_zero_match_diagnostics(
     day and bury the `dropped N/M unparseable slot(s)` schema-break canary, the only other
     WARNING `search()` emits. Diagnostic VALUE is unaffected: the neighbouring `got N raw
     slot(s)` / `matched tee times: []` lines are already INFO and the jobs run at INFO, so
-    the line that was missing on 2026-08-01 is present either way. A rejection on any other
-    leg means the REQUEST is probably misconfigured, which is genuinely actionable → WARNING.
+    the line that was missing on 2026-08-01 is present either way.
+
+    Every OTHER leg is a should-not-happen for ForeUP, hence WARNING:
+      - `wrong-holes` / `over-price` — the REQUEST disagrees with the teesheet (config error).
+      - `insufficient-spots` — UNREACHABLE in production: ForeUP `/times` server-filters on
+        the `players` query param, so every returned slot already satisfies
+        `available_spots >= players` (verified live 2026-08-02: the 8/3 sheet returns 41
+        slots at `players=2`, five of them 2-spot, but only the 36 four-spot slots at
+        `players=4`). The client-side leg is a backstop, so it firing means ForeUP changed
+        that contract — which is exactly the kind of thing that should be loud.
     """
     non_window = sum(v for r, v in rejected.items() if r != "out-of-window")
     _log.log(

@@ -443,9 +443,6 @@ async def test_search_filters_by_max_price() -> None:
 # keeps the `dropped N/M unparseable slot(s)` schema-break canary — the only other WARNING in
 # search() — from being buried under hundreds of routine sell-out lines.
 
-_DIAG = "teetime.courses.foreup.base"
-
-
 def _diag_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     """Records carrying the 0-match diagnostics line (matched by content, not substring luck)."""
     return [r for r in caplog.records if "matched filters" in r.getMessage()]
@@ -500,7 +497,13 @@ async def test_search_sold_out_window_logs_at_info_not_warning(
             await adapter.search(_request())
     (rec,) = _diag_records(caplog)
     assert rec.levelno == logging.INFO, f"sold-out window should be INFO, got {rec.levelname}"
-    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    # Scoped to the adapter logger: a third-party deprecation routed through logging must not
+    # make this fail for an unrelated reason.
+    assert not [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name == "teetime.courses.foreup.base"
+    ]
 
 
 @respx.mock
