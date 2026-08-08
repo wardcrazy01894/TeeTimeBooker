@@ -9,13 +9,14 @@ license = { text = "Proprietary" }
 
 # Runtime deps. Pinned loosely; lock via uv.lock once `uv sync` is run.
 dependencies = [
-    "httpx>=0.27",          # async-capable HTTP client; cleaner than requests
-    "pydantic>=2.7",        # config + payload validation
-    "click>=8.1",           # CLI
+    "httpx>=0.28.1",        # async-capable HTTP client; cleaner than requests
+    "pydantic>=2.13.4",     # config + payload validation
+    "click>=8.4.2",         # CLI
     # NOT imported directly — idna is transitive via httpx/anyio. Kept here ONLY as a
     # security floor so the resolver can never pick idna<3.15 (CVE-2026-45409, a ReDoS
-    # fixed in 3.15). The lock already resolves 3.17, so this is a guard, not load-bearing.
-    "idna>=3.15",
+    # fixed in 3.15). Floor now tracks the locked version (3.18); the CVE boundary is
+    # still 3.15, so this stays a guard rather than a load-bearing requirement.
+    "idna>=3.18",
     "ntplib>=0.4",          # best-effort NTP clock-offset for the 6 AM race (RealClock)
 ]
 
@@ -32,12 +33,12 @@ dependencies = [
 # what README/CLAUDE.md already claimed it did.
 [dependency-groups]
 dev = [
-    "pytest>=8",
-    "pytest-asyncio>=0.23",
-    "respx>=0.21",          # httpx mock for unit tests
-    "ruff>=0.5",
-    "mypy>=2.0",            # 2.x strict defaults verified clean against this codebase
-    "pip-audit>=2.10",      # dependency vulnerability scanning (CVE check)
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "respx>=0.23.1",        # httpx mock for unit tests
+    "ruff>=0.16.2",         # 0.16 promoted PLR0917 to stable + formats md — see [tool.ruff]
+    "mypy>=2.3.0",          # 2.x strict defaults verified clean against this codebase
+    "pip-audit>=2.10.1",    # dependency vulnerability scanning (CVE check)
 ]
 # Removed (unused): vcrpy (cassettes were never recorded — the live-API drift canary in
 # tests/test_foreup_canary.py replaced them); freezegun (the injectable FakeClock is used
@@ -62,11 +63,29 @@ packages = ["src/teetime"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# ruff 0.16 began formatting python code blocks INSIDE Markdown. Our plan docs quote
+# FRAGMENTS (bare ctor params, partial class bodies), which ruff parses as standalone
+# statements and rewrites incorrectly — it turned
+#     booking_cutoff: BookingCutoffConfig | None = None,   # PR2
+# into
+#     booking_cutoff: BookingCutoffConfig | None = (None,)  # PR2
+# i.e. a TUPLE, silently corrupting 8 ratified design docs. These are prose, not source;
+# nothing imports them and no test executes them. Excluded so the formatter cannot rewrite
+# documentation. Remove only if the snippets are ever made independently valid.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF", "PL", "ANN"]
 ignore = [
     "PLR0913", # too many arguments
+    # Positional-arity sibling of PLR0913, newly STABLE in ruff 0.16 (it was preview-only
+    # before, which is why this appears with the 0.15 -> 0.16 bump and not from new code).
+    # It fires on the orchestrator collaborator-injection constructors (Orchestrator,
+    # WatchOrchestrator, UpgradeOrchestrator) — the same design PLR0913 is already ignored
+    # for. Suppressing one arity rule while honouring its sibling would be incoherent.
+    # Making those signatures keyword-only would satisfy it and is arguably better, but it
+    # is a cross-cutting refactor of core call sites, not dependency-bump scope.
+    "PLR0917", # too many POSITIONAL arguments
 ]
 
 [tool.ruff.lint.per-file-ignores]
