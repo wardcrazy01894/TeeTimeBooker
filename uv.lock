@@ -829,7 +829,7 @@ dependencies = [
     { name = "pydantic" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "mypy" },
     { name = "pip-audit" },
@@ -844,16 +844,19 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "idna", specifier = ">=3.15" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "ntplib", specifier = ">=0.4" },
-    { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.10" },
     { name = "pydantic", specifier = ">=2.7" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=2.0" },
+    { name = "pip-audit", specifier = ">=2.10" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "respx", specifier = ">=0.21" },
+    { name = "ruff", specifier = ">=0.5" },
+]
 
 [[package]]
 name = "tomli"
