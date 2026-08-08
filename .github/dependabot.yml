@@ -9,8 +9,11 @@
 # support is GA). pip-audit stays: it catches a CVE the day it lands, whereas the weekly
 # version-update cadence would not.
 #
-# minor/patch are GROUPED into one PR to keep lockfile churn to a single weekly review; majors
-# come as their own PRs since they deserve individual scrutiny.
+# minor/patch are GROUPED to keep lockfile churn reviewable, but SPLIT production vs development
+# so a runtime bump (httpx/pydantic — the live booking HTTP path) never rides in the same PR as
+# dev tooling (pytest/ruff/mypy) and silently inherits its "just tooling" reading. This repo
+# labels every prod tag "booking-behavior change" or not; the split preserves that signal.
+# Majors come as their own PRs since they deserve individual scrutiny.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -26,7 +29,15 @@ updates:
     schedule:
       interval: weekly
     groups:
-      python-minor-patch:
+      python-runtime:
+        dependency-type: production
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      python-dev:
+        dependency-type: development
         patterns:
           - "*"
         update-types:
