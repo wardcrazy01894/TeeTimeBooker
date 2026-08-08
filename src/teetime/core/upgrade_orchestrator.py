@@ -352,7 +352,12 @@ class UpgradeOrchestrator:
             )
 
         return await self._cancel_and_book_slot(
-            adapter, candidates[0], request, target_date, current_booking, priority_slot
+            adapter,
+            candidates[0],
+            request,
+            target_date=target_date,
+            current_booking=current_booking,
+            priority_slot=priority_slot,
         )
 
     async def _cancel_and_book_slot(
@@ -360,6 +365,7 @@ class UpgradeOrchestrator:
         adapter: CourseAdapter,
         best: TeeTimeSlot,
         request: BookingRequest,
+        *,
         target_date: date,
         current_booking: BookingResult,
         priority_slot: PrioritySlot,
@@ -424,7 +430,12 @@ class UpgradeOrchestrator:
 
         # Cancel succeeded and book succeeded → persist and notify.
         return await self._persist_upgrade(
-            request, target_date, current_booking, new_result, priority_slot, cancel_failed=False
+            request,
+            target_date,
+            current_booking=current_booking,
+            new_result=new_result,
+            priority_slot=priority_slot,
+            cancel_failed=False,
         )
 
     async def _cancel_old_booking(self, current_booking: BookingResult) -> bool:
@@ -457,6 +468,10 @@ class UpgradeOrchestrator:
         self,
         request: BookingRequest,
         target_date: date,
+        *,
+        # KEYWORD-ONLY deliberately: current_booking and new_result are BOTH BookingResult,
+        # so a positional transposition here would type-check clean and silently persist the
+        # OLD booking as the upgrade result. mypy cannot catch it; the `*` can.
         current_booking: BookingResult,
         new_result: BookingResult,
         priority_slot: PrioritySlot,

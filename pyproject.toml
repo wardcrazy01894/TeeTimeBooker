@@ -78,18 +78,26 @@ extend-exclude = ["*.md"]
 select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF", "PL", "ANN"]
 ignore = [
     "PLR0913", # too many arguments
-    # Positional-arity sibling of PLR0913, newly STABLE in ruff 0.16 (it was preview-only
-    # before, which is why this appears with the 0.15 -> 0.16 bump and not from new code).
-    # It fires on the orchestrator collaborator-injection constructors (Orchestrator,
-    # WatchOrchestrator, UpgradeOrchestrator) — the same design PLR0913 is already ignored
-    # for. Suppressing one arity rule while honouring its sibling would be incoherent.
-    # Making those signatures keyword-only would satisfy it and is arguably better, but it
-    # is a cross-cutting refactor of core call sites, not dependency-bump scope.
-    "PLR0917", # too many POSITIONAL arguments
+    # PLR0917 (too many POSITIONAL arguments) went STABLE in ruff 0.16 — it was preview-only
+    # before, which is why it surfaced with the 0.15 -> 0.16 bump and not from new code.
+    # It is deliberately NOT ignored globally: unlike PLR0913 it guards against argument
+    # TRANSPOSITION, which mypy cannot catch when adjacent params share a type, and in a
+    # booking system a transposed argument can mis-book. It is relaxed per-file below, only
+    # where the flagged signature is a collaborator-injection ctor of all-distinct types.
+    # The two genuinely risky production sites were fixed instead of suppressed: both
+    # UpgradeOrchestrator._cancel_and_book_slot and ._persist_upgrade are now keyword-only
+    # past their leading args (the latter takes TWO BookingResult params).
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN", "PLR2004", "E501"]
+# Test date-builders take (year, month, day, hour, minute, second) — all int, so PLR0917 is
+# correct that they are transposable, but a transposed date fails its own assertion loudly.
+"tests/**" = ["ANN", "PLR2004", "E501", "PLR0917"]
+# Collaborator-injection ctors (Orchestrator/WatchOrchestrator/UpgradeOrchestrator.__init__):
+# every param is a distinct injected type, so a transposition fails mypy, not silently.
+"src/teetime/core/orchestrator.py" = ["PLR0917"]
+"src/teetime/core/watch_orchestrator.py" = ["PLR0917"]
+"src/teetime/core/upgrade_orchestrator.py" = ["PLR0917"]
 # book() is an 11-step sequential payment flow; its branch/statement count is by design.
 "src/teetime/courses/teeitup/base.py" = ["PLR0912", "PLR0915"]
 
