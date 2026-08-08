@@ -19,7 +19,18 @@ dependencies = [
     "ntplib>=0.4",          # best-effort NTP clock-offset for the 6 AM race (RealClock)
 ]
 
-[project.optional-dependencies]
+# Dev deps are a PEP 735 dependency-group, NOT a `[project.optional-dependencies]` extra.
+# The distinction is load-bearing in two places:
+#   1. Dependabot classifies an EXTRA as `dependency-type: production`, so the prod/dev
+#      group split in .github/dependabot.yml silently collapsed — PR #193 put pytest, ruff,
+#      mypy and pip-audit in the "python-runtime" group alongside click/idna. A group is
+#      classified `development`, which makes that split actually work.
+#   2. `uv sync --no-dev` (both Dockerfile stages) only excludes GROUPS. With an extra it
+#      was decorative — the image stayed lean because extras are opt-in, not because
+#      --no-dev did anything. Now it is the real mechanism keeping dev tooling out of prod.
+# Consequence: a bare `uv sync` NOW installs dev deps (groups are on by default), which is
+# what README/CLAUDE.md already claimed it did.
+[dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
