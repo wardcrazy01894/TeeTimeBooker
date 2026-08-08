@@ -2,8 +2,15 @@
 # every GitHub Action is SHA-pinned and the Docker base image is digest-pinned, so
 # WITHOUT automated bumps those pins would silently fall behind upstream security
 # patches. Dependabot opens normal PRs — CI + the usual review/merge flow apply.
-# Python deps are deliberately NOT managed here: uv.lock freshness is enforced by
-# `uv lock --locked` in CI and bumped manually (pip-audit gates known vulns).
+# Python deps ARE managed here as of 2026-08-08 (previously excluded on the rationale that
+# `uv lock --locked` + pip-audit sufficed). Those two gate CORRECTNESS and KNOWN VULNS, but
+# neither proposes routine bumps — so app deps (httpx, click, …) drifted until someone bumped
+# them by hand. `package-ecosystem: uv` reads pyproject.toml + uv.lock natively (Dependabot uv
+# support is GA). pip-audit stays: it catches a CVE the day it lands, whereas the weekly
+# version-update cadence would not.
+#
+# minor/patch are GROUPED into one PR to keep lockfile churn to a single weekly review; majors
+# come as their own PRs since they deserve individual scrutiny.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -14,3 +21,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
