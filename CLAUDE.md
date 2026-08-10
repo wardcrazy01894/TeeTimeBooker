@@ -35,7 +35,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.12.0`).
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.13.0`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -57,7 +57,9 @@ reservation PER day:
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
-**LIVE in PROD** (latest infra tag `infra/v2.12.0` = `main`@`a7a1a6c`, deployed 2026-08-02 — the
+**LIVE in PROD** (latest infra tag `infra/v2.13.0` = `main`@`de90316`, deployed 2026-08-09 — the
+dependency + toolchain refresh, NO booking-behavior change; prior tag `infra/v2.12.0` =
+`main`@`a7a1a6c`, deployed 2026-08-02 — the
 log-redaction filter + 0-match search diagnostics, security + observability with NO
 booking-behavior change; prior tag `infra/v2.11.0` = `main`@`cdf5618`, deployed 2026-07-18 — the
 burst-3 revert (#181, restoring the concurrent T0 slot-race hedge) + server-`Date` early-arrival
@@ -95,6 +97,44 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 10-min cycle (placeholder-image / transient ACR 401) — it self-heals on the next fire.
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
+
+**DEPLOYED at `infra/v2.13.0` (2026-08-09, `main`@`de90316`):** the dependency + toolchain
+refresh. **No booking-behavior change** — nothing touches slot selection, burst size, timing,
+or any T0 decision path (same risk class as `infra/v2.7.0`/`v2.12.0`).
+Runtime deps IN the image: `click` 8.3.3→8.4.2, `idna` 3.17→3.18 (`httpx` 0.28.1 and
+`pydantic` 2.13.4 were already current). Dev toolchain — NOT in the image, `uv sync --no-dev`
+excludes it: `ruff` 0.15.15→0.16.2, `mypy` 2.1.0→2.3.0, `pytest` 9.0.3→9.1.1, `pytest-asyncio`
+1.3.0→1.4.0, `pip-audit` 2.10.0→2.10.1. Floors in `pyproject.toml` were raised to match; they
+had drifted badly (`ruff>=0.5` against a locked 0.15.15), advertising support for untested
+versions.
+**One application-code change, behavior-preserving (#197):** `UpgradeOrchestrator.
+_persist_upgrade` and `._cancel_and_book_slot` are now KEYWORD-ONLY past their leading args.
+`_persist_upgrade` takes `current_booking` AND `new_result`, **both `BookingResult`** — a
+positional transposition type-checked clean and would have silently persisted the OLD booking
+as the upgrade result. mypy cannot catch same-typed adjacent params; the `*` can. Surfaced by
+ruff 0.16 promoting `PLR0917` to stable. Verified argument-by-argument at both call sites and
+covered by `test_upgrade_deletes_then_reinserts_terminal_under_lock`, which fails on a swap.
+`PLR0917` is deliberately NOT ignored globally — only per-file for the three orchestrator
+collaborator-injection ctors (all-distinct types, so mypy catches a swap) and `tests/**`
+date-builders; it stays live everywhere else, verified non-vacuous.
+**Two ruff-0.16 config consequences:** (1) `PLR0917` as above; (2) ruff 0.16 began formatting
+python code blocks INSIDE Markdown, and our plan docs quote FRAGMENTS (bare ctor params) which
+it parses as standalone statements and rewrites WRONGLY — turning `x: T | None = None,` into
+`x: T | None = (None,)`, a TUPLE. Unnoticed, `ruff format .` would have silently corrupted 8
+ratified design docs into describing something other than what shipped. Markdown is now
+excluded (`extend-exclude = ["*.md"]` in `[tool.ruff]`).
+**Supporting CI/config changes, no image effect:** Dependabot now manages Python via the `uv`
+ecosystem (#192) with a WORKING prod/dev split — the first attempt silently collapsed because
+dev deps were a `[project.optional-dependencies]` extra, which Dependabot classifies as
+production, so #193 put pytest/ruff/mypy in the "python-runtime" group; #195 moved them to a
+PEP 735 `[dependency-groups]`, which ALSO made the Dockerfile's `uv sync --no-dev` load-bearing
+(it excludes GROUPS, not extras — previously the image stayed lean only because extras are
+opt-in). `pip` 26.1.1→26.1.2 (#191) let the `PYSEC-2026-196` pip-audit suppression be retired
+(#194), so the CVE gate runs unsuppressed. Dependabot alerts + security updates are ENABLED.
+Verification: ruff clean, ruff format clean, mypy strict clean, 731 tests, pip-audit clean
+unsuppressed, `uv lock --locked` passes, docker build + smoke green, dev deploy green on this
+commit, three adversarial review rounds all APPROVE. Deployed while holding Sat 8/15 09:22 and
+Sun 8/16 09:22; first exercise is the Sat 2026-08-15 05:50 ET drop (books 8/22).
 
 **DEPLOYED at `infra/v2.12.0` (2026-08-02, `main`@`a7a1a6c`):** the log-redaction filter +
 0-match search diagnostics. **No booking-behavior change** — nothing touches slot selection,
