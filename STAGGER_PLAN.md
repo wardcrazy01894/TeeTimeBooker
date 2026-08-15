@@ -4,8 +4,9 @@
 `dryRun=false`, all three jobs verified on the new image with crons/timeouts unchanged).
 Shipped in PR #199: 749 tests green, two adversarial review rounds (BLOCK → APPROVE).
 First exercise: the Sun 2026-08-16 05:50 ET drop (books 8/23) — expected to demonstrate
-non-regression only, since both unexplained 0/3 misses were SATURDAYS and every Sunday in
-the retention window booked cleanly. The first real diagnostic reading is the Sat
+non-regression only, since both 0/3 misses fell on SATURDAYS — 2026-08-01 explained by the
+Anniversary Tournament block, 2026-08-15 unexplained — and every Sunday in the retention
+window booked cleanly. The first real diagnostic reading is the Sat
 2026-08-22 drop (books 8/29).
 **Scope:** booking-behavior change, race path only (`--wait` + blind-capable primary).
 **Motivates:** the 2026-08-15 miss (target Sat 2026-08-22) and the still-unexplained

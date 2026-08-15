@@ -98,6 +98,49 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
 
+**DEPLOYED at `infra/v2.14.0` (2026-08-15, `main`@`e6a8abb`):** the **T0 blind-POST stagger**
+(STAGGER_PLAN.md, #199). **BOOKING-BEHAVIOR CHANGE**, race path only (`--wait` + blind-capable
+primary) — the first since `infra/v2.11.0`.
+The T0 blind burst no longer fires all N POSTs at one instant: each sleeps to its own offset
+from `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)` ms relative to T0), paired
+positionally with the RANK-ordered slots, so the burst SPANS ForeUP's release boundary instead
+of point-sampling it. **Why:** every drop in the Log Analytics retention window came back 3/3
+or 0/3, NEVER mixed — a shape a genuine slot race cannot produce, since our POSTs land within
+~100 ms of the open and nobody books three specific tee times in 100 ms. A burst arriving
+before the release flip gets the SAME `400 {"success":false,"msg":"Time not available."}` a
+claimed slot returns, and the server `Date` header's 1-second resolution (added in
+`infra/v2.11.0` for exactly this question) cannot separate them. Staggering is both a HEDGE
+(one POST is always SENT no earlier than T0, so a wipeout can't take the burst as a unit) and
+a DIAGNOSTIC (outcomes become ordered by offset). Motivated by the 2026-08-15 miss (target Sat
+8/22) and the still-unexplained 2026-07-18 miss.
+**Non-regression is the binding constraint and is pinned mechanically:** `stagger[0] ==
+-early_arrival_ms`, so the rank-0 (nearest-midpoint) slot fires at EXACTLY its pre-stagger
+instant and every drop already won is unchanged — only the surplus POSTs move, and those are
+already 400'd by the 1/day rule when rank-0 wins. `tests/test_container_config_parity.py`
+asserts both `stagger[0] == -early_arrival_ms` and `min(stagger) == -early_arrival_ms`
+(operator directive 2026-08-15: nothing may be scheduled EARLIER than today's fire instant).
+The tail offset is `0` — SENT at 06:00:00.000, carried past the open by network latency on
+ARRIVAL — chosen over `+250` to give up the least ground in a genuine race.
+**Three supporting changes:** (1) the burst RE-RANKS with `rank_slots_for_request` before
+pairing offsets — ranked order had been only an adapter convention the simultaneous burst
+never depended on, and is now a safety property, since a worse slot POSTing first would let
+the 1/day rule reject the better one; (2) a `field_validator` rejects a DESCENDING offset list
+(`(-500, 0, -250)` passes every parity assertion while doing exactly that); (3) the per-POST
+diagnostic reports the **MEASURED** send offset, not the planned one — on a run starting past
+T0 every delay is non-positive and all POSTs go out simultaneously, so logging the planned
+ladder would show instants that never happened and an operator reading a 0/N would wrongly
+conclude "unordered ⇒ not the boundary". Known limitation (accepted, BACKLOG.md): offsets
+correlate with slot rank, so the offset→outcome signal is confounded — a control POST (same
+slot at two offsets) and CAPTCHA-token recycling are deferred.
+Verification: 749 tests, ruff + ruff format + mypy strict clean, TWO adversarial review rounds
+(BLOCK → APPROVE), dev deploy green on this commit. All three prod jobs verified live on
+`teetime:e6a8abbe72d4846099864e5d032720ad3017470a` with crons + timeouts + `dryRun=false`
+UNCHANGED from the v2.13.0 baseline: `teetime-job-prod-edt` `50 9 * * *` / 1200 s,
+`teetime-job-prod-est` `50 10 * * *` / 1200 s, `teetime-watch-job-prod` `*/10 * * * *` /
+300 s. First exercise: the Sun 2026-08-16 05:50 ET drop (books 8/23) — a non-regression check
+only, since both 0/3 misses (one explained, one not) fell on SATURDAYS and every Sunday in the
+retention window booked cleanly. First real diagnostic reading: the Sat 2026-08-22 drop.
+
 **DEPLOYED at `infra/v2.13.0` (2026-08-09, `main`@`de90316`):** the dependency + toolchain
 refresh. **No booking-behavior change** — nothing touches slot selection, burst size, timing,
 or any T0 decision path (same risk class as `infra/v2.7.0`/`v2.12.0`).
