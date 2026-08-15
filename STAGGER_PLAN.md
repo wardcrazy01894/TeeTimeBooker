@@ -1,7 +1,13 @@
 # STAGGER_PLAN.md — stagger the T0 blind-POST burst across the open boundary
 
-**Status:** IMPLEMENTED (PR #199) — 749 tests green; adversarially reviewed (1 BLOCK round,
-all must-fix + should-fix items addressed). Not yet deployed to prod.
+**Status:** LIVE IN PROD — `infra/v2.14.0`, deployed 2026-08-15 (`main`@`e6a8abb`,
+`dryRun=false`, all three jobs verified on the new image with crons/timeouts unchanged).
+Shipped in PR #199: 749 tests green, two adversarial review rounds (BLOCK → APPROVE).
+First exercise: the Sun 2026-08-16 05:50 ET drop (books 8/23) — expected to demonstrate
+non-regression only, since both 0/3 misses fell on SATURDAYS — 2026-08-01 explained by the
+Anniversary Tournament block, 2026-08-15 unexplained — and every Sunday in the retention
+window booked cleanly. The first real diagnostic reading is the Sat
+2026-08-22 drop (books 8/29).
 **Scope:** booking-behavior change, race path only (`--wait` + blind-capable primary).
 **Motivates:** the 2026-08-15 miss (target Sat 2026-08-22) and the still-unexplained
 2026-07-18 miss (target Sat 2026-07-25).

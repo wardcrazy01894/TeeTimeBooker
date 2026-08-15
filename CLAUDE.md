@@ -35,7 +35,7 @@ fully implemented; live booking + cancel confirmed against Sydney Marovitz
 **M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
 `core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
 the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.13.0`).
+AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.14.0` (2026-08-15) — **the T0 blind-POST stagger** (STAGGER_PLAN.md, #199), a **booking-behavior change** on the race path: the blind burst no longer fires all three POSTs at one instant but staggers each to its own offset from `scheduler.blind_post_stagger_ms` (default `[-500, -250, 0]` ms relative to T0), paired positionally with the rank-ordered slots. Motivation: every drop in the log retention window came back 3/3 or 0/3, never mixed — a shape a genuine slot race cannot produce, since our POSTs land within ~100 ms of the open — while a burst landing before ForeUP's release flip gets the same `400 "Time not available."` a claimed slot does, an ambiguity the 1-second server `Date` header cannot resolve. Staggering is both a hedge (one POST is always SENT no earlier than T0) and a diagnostic (outcomes become ordered by offset). **Non-regression is pinned:** `stagger[0] == -early_arrival_ms`, so the rank-0 nearest-midpoint slot fires at exactly the instant it did before and every drop already won is unchanged; only the surplus POSTs move. Also: the burst re-ranks before pairing offsets (ranked order had been only an adapter convention, now a safety property, since a worse slot POSTing first would let ForeUP's 1-per-day rule reject the better one); a monotonicity validator rejects a descending offset list; and the per-POST diagnostic reports the **measured** send offset, not the planned one, so a late-landing cron cannot make the log claim a ladder that never happened. Two adversarial review rounds (BLOCK → APPROVE), 749 tests green; prior `infra/v2.13.0`).
 
 **Multi-day re-architecture is DONE in code** (MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
 ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
@@ -57,7 +57,7 @@ reservation PER day:
 - Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
   multi-slot fallback (#67).
 
-**LIVE in PROD** (latest infra tag `infra/v2.13.0` = `main`@`de90316`, deployed 2026-08-09 — the
+**LIVE in PROD** (latest infra tag `infra/v2.14.0` (2026-08-15) — **the T0 blind-POST stagger** (STAGGER_PLAN.md, #199), a **booking-behavior change** on the race path: the blind burst no longer fires all three POSTs at one instant but staggers each to its own offset from `scheduler.blind_post_stagger_ms` (default `[-500, -250, 0]` ms relative to T0), paired positionally with the rank-ordered slots. Motivation: every drop in the log retention window came back 3/3 or 0/3, never mixed — a shape a genuine slot race cannot produce, since our POSTs land within ~100 ms of the open — while a burst landing before ForeUP's release flip gets the same `400 "Time not available."` a claimed slot does, an ambiguity the 1-second server `Date` header cannot resolve. Staggering is both a hedge (one POST is always SENT no earlier than T0) and a diagnostic (outcomes become ordered by offset). **Non-regression is pinned:** `stagger[0] == -early_arrival_ms`, so the rank-0 nearest-midpoint slot fires at exactly the instant it did before and every drop already won is unchanged; only the surplus POSTs move. Also: the burst re-ranks before pairing offsets (ranked order had been only an adapter convention, now a safety property, since a worse slot POSTing first would let ForeUP's 1-per-day rule reject the better one); a monotonicity validator rejects a descending offset list; and the per-POST diagnostic reports the **measured** send offset, not the planned one, so a late-landing cron cannot make the log claim a ladder that never happened. Two adversarial review rounds (BLOCK → APPROVE), 749 tests green; prior `infra/v2.13.0` = `main`@`de90316`, deployed 2026-08-09 — the
 dependency + toolchain refresh, NO booking-behavior change; prior tag `infra/v2.12.0` =
 `main`@`a7a1a6c`, deployed 2026-08-02 — the
 log-redaction filter + 0-match search diagnostics, security + observability with NO
@@ -97,6 +97,49 @@ is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lo
 10-min cycle (placeholder-image / transient ACR 401) — it self-heals on the next fire.
 No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
 **cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
+
+**DEPLOYED at `infra/v2.14.0` (2026-08-15, `main`@`e6a8abb`):** the **T0 blind-POST stagger**
+(STAGGER_PLAN.md, #199). **BOOKING-BEHAVIOR CHANGE**, race path only (`--wait` + blind-capable
+primary) — the first since `infra/v2.11.0`.
+The T0 blind burst no longer fires all N POSTs at one instant: each sleeps to its own offset
+from `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)` ms relative to T0), paired
+positionally with the RANK-ordered slots, so the burst SPANS ForeUP's release boundary instead
+of point-sampling it. **Why:** every drop in the Log Analytics retention window came back 3/3
+or 0/3, NEVER mixed — a shape a genuine slot race cannot produce, since our POSTs land within
+~100 ms of the open and nobody books three specific tee times in 100 ms. A burst arriving
+before the release flip gets the SAME `400 {"success":false,"msg":"Time not available."}` a
+claimed slot returns, and the server `Date` header's 1-second resolution (added in
+`infra/v2.11.0` for exactly this question) cannot separate them. Staggering is both a HEDGE
+(one POST is always SENT no earlier than T0, so a wipeout can't take the burst as a unit) and
+a DIAGNOSTIC (outcomes become ordered by offset). Motivated by the 2026-08-15 miss (target Sat
+8/22) and the still-unexplained 2026-07-18 miss.
+**Non-regression is the binding constraint and is pinned mechanically:** `stagger[0] ==
+-early_arrival_ms`, so the rank-0 (nearest-midpoint) slot fires at EXACTLY its pre-stagger
+instant and every drop already won is unchanged — only the surplus POSTs move, and those are
+already 400'd by the 1/day rule when rank-0 wins. `tests/test_container_config_parity.py`
+asserts both `stagger[0] == -early_arrival_ms` and `min(stagger) == -early_arrival_ms`
+(operator directive 2026-08-15: nothing may be scheduled EARLIER than today's fire instant).
+The tail offset is `0` — SENT at 06:00:00.000, carried past the open by network latency on
+ARRIVAL — chosen over `+250` to give up the least ground in a genuine race.
+**Three supporting changes:** (1) the burst RE-RANKS with `rank_slots_for_request` before
+pairing offsets — ranked order had been only an adapter convention the simultaneous burst
+never depended on, and is now a safety property, since a worse slot POSTing first would let
+the 1/day rule reject the better one; (2) a `field_validator` rejects a DESCENDING offset list
+(`(-500, 0, -250)` passes every parity assertion while doing exactly that); (3) the per-POST
+diagnostic reports the **MEASURED** send offset, not the planned one — on a run starting past
+T0 every delay is non-positive and all POSTs go out simultaneously, so logging the planned
+ladder would show instants that never happened and an operator reading a 0/N would wrongly
+conclude "unordered ⇒ not the boundary". Known limitation (accepted, BACKLOG.md): offsets
+correlate with slot rank, so the offset→outcome signal is confounded — a control POST (same
+slot at two offsets) and CAPTCHA-token recycling are deferred.
+Verification: 749 tests, ruff + ruff format + mypy strict clean, TWO adversarial review rounds
+(BLOCK → APPROVE), dev deploy green on this commit. All three prod jobs verified live on
+`teetime:e6a8abbe72d4846099864e5d032720ad3017470a` with crons + timeouts + `dryRun=false`
+UNCHANGED from the v2.13.0 baseline: `teetime-job-prod-edt` `50 9 * * *` / 1200 s,
+`teetime-job-prod-est` `50 10 * * *` / 1200 s, `teetime-watch-job-prod` `*/10 * * * *` /
+300 s. First exercise: the Sun 2026-08-16 05:50 ET drop (books 8/23) — a non-regression check
+only, since both 0/3 misses (one explained, one not) fell on SATURDAYS and every Sunday in the
+retention window booked cleanly. First real diagnostic reading: the Sat 2026-08-22 drop.
 
 **DEPLOYED at `infra/v2.13.0` (2026-08-09, `main`@`de90316`):** the dependency + toolchain
 refresh. **No booking-behavior change** — nothing touches slot selection, burst size, timing,
