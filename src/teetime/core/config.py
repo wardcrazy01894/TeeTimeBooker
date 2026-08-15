@@ -10,9 +10,10 @@ import os
 import tomllib
 from datetime import date, time
 from decimal import Decimal
+from itertools import pairwise
 from pathlib import Path
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import CartPreference, WatchConfig
 from .skip_dates import parse_skip_dates
@@ -239,6 +240,29 @@ class SchedulerConfig(BaseModel):
     # every config and test helper for no behavioural gain — the fire path already
     # self-clamps by computing a non-positive, no-sleep delay.)
     blind_post_stagger_ms: tuple[int, ...] = (-500, -250, 0)
+
+    @field_validator("blind_post_stagger_ms")
+    @classmethod
+    def _stagger_must_ascend(cls, v: tuple[int, ...]) -> tuple[int, ...]:
+        """Offsets must be NON-DECREASING — the §2.2 safety argument depends on it.
+
+        Offsets pair positionally with RANK-ordered slots, so a non-monotonic list fires a
+        WORSE-ranked slot before a better one. ForeUP's "1 online reservation per day" rule
+        then 400-rejects the better sibling that POSTs later, and we keep the worse tee time
+        — silently, since `_keep_best` can only rank what actually booked.
+
+        `[-500, 0, -250]` passes every parity assertion (`stagger[0] == -early_arrival_ms`,
+        `min == -early_arrival_ms`, `max >= 0`) while doing exactly that, so the parity test
+        cannot catch it. This is a WITHIN-field check, so it carries none of the cross-field
+        coupling that made a validator the wrong tool for the `early_arrival_ms` floor.
+        """
+        if any(b < a for a, b in pairwise(v)):
+            raise ValueError(
+                f"blind_post_stagger_ms must be non-decreasing, got {v}: offsets pair with "
+                "RANK-ordered slots, so a descending offset POSTs a worse slot first and "
+                "ForeUP's 1-reservation-per-day rule then rejects the better one"
+            )
+        return v
 
 
 class NotifierConfig(BaseModel):

@@ -18,12 +18,14 @@ unchanged (STAGGER_PLAN §2.1).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from teetime.core.clock import Clock, FakeClock
 from teetime.core.config import SchedulerConfig
@@ -139,6 +141,29 @@ def test_stagger_default_spans_the_t0_boundary() -> None:
 
 def test_stagger_empty_tuple_is_the_legacy_escape_hatch() -> None:
     assert SchedulerConfig(blind_post_stagger_ms=()).blind_post_stagger_ms == ()
+
+
+def test_stagger_rejects_a_descending_offset() -> None:
+    """Offsets pair with RANK-ordered slots, so a descending list POSTs a WORSE slot before
+    a better one — ForeUP's 1-reservation-per-day rule then rejects the better sibling and
+    we silently keep the worse tee time (`_keep_best` can only rank what booked).
+
+    `(-500, 0, -250)` is the dangerous shape precisely because it satisfies every
+    config-parity assertion: `stagger[0] == -early_arrival_ms`, `min == -early_arrival_ms`,
+    `max >= 0`. Only a monotonicity check catches it.
+    """
+    with pytest.raises(ValidationError, match="non-decreasing"):
+        SchedulerConfig(blind_post_stagger_ms=(-500, 0, -250))
+
+
+def test_stagger_allows_equal_adjacent_offsets() -> None:
+    """Non-DECREASING, not strictly increasing: repeated offsets are how the tail degrades
+    to simultaneous firing when there are more slots than configured offsets."""
+    assert SchedulerConfig(blind_post_stagger_ms=(-500, 0, 0)).blind_post_stagger_ms == (
+        -500,
+        0,
+        0,
+    )
 
 
 def test_offset_before_the_wakeup_is_clamped_to_it(
@@ -269,3 +294,72 @@ async def test_burst_books_best_slot_and_fires_in_rank_order() -> None:
     assert result.slot.slot_id == "s-0815"
     assert fa.book_call_count == 3
     assert fa.book_slot_ids[0] == "s-0815"  # best slot POSTs first
+
+
+class BurstRecordingClock:
+    """Frozen clock that records sleeps PER CONCURRENT TASK.
+
+    ``asyncio.current_task()`` keys the recording, so three concurrent burst tasks cannot
+    smear into one list the way a shared counter would. Time never advances, so each task's
+    delay is computed from one reading — deterministic regardless of scheduling order.
+    """
+
+    def __init__(self, *, start: datetime) -> None:
+        self._now = start.astimezone(UTC)
+        self.by_task: dict[object, list[float]] = {}
+
+    def now_utc(self) -> datetime:
+        return self._now
+
+    async def sleep(self, seconds: float) -> None:
+        self.by_task.setdefault(asyncio.current_task(), []).append(seconds)
+
+
+async def test_burst_wires_each_offset_to_its_own_post() -> None:
+    """The COMPOSITION of _stagger_offsets_for + _fire_blind_post inside _blind_post_course.
+
+    Both are well covered in isolation, but nothing pinned the wiring between them: the
+    burst would still book, count 3 POSTs, and POST the best slot first if it passed
+    ``offsets[0]`` to all three tasks (i.e. no stagger at all) or if the offset↔slot zip
+    were transposed. This asserts the three tasks sleep 0 / 250 / 500 ms — the shipped
+    ``(-500, -250, 0)`` ladder measured from the busy-wait wakeup at T0-500ms.
+    """
+    t0 = datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC)
+    clock = BurstRecordingClock(start=t0 - timedelta(milliseconds=500))
+    orch, fa, cid = _build(clock=clock)
+    fa.set_blind_slots([_slot(cid, 8, 0), _slot(cid, 8, 15), _slot(cid, 8, 30)])
+
+    await orch._blind_post_course(fa, cid, _request(course_ids=(cid,)))
+
+    # One entry per task that slept; the rank-0 POST fires immediately so it never sleeps.
+    slept = sorted(s for sleeps in clock.by_task.values() for s in sleeps)
+    assert slept == [pytest.approx(0.25), pytest.approx(0.5)]
+    assert fa.book_slot_ids == ["s-0815", "s-0800", "s-0830"]  # rank order: 08:15 midpoint
+
+
+async def test_burst_diagnostic_reports_the_measured_send_offset(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A LATE-STARTING run must not claim POSTs went out on the planned ladder.
+
+    If the cron lands past T0 every delay is non-positive and all three POSTs go out
+    SIMULTANEOUSLY. Logging the planned offsets would show outcomes spread across three
+    instants that never happened — an operator reading a 0/3 would conclude "unordered, so
+    not the boundary" and aim next week's fix at the wrong thing. The line must report the
+    MEASURED send offset, with the planned one alongside so the late start is visible.
+    """
+    t0 = datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC)
+    clock = BurstRecordingClock(start=t0 + timedelta(seconds=3))
+    orch, fa, cid = _build(clock=clock)
+    fa.set_blind_slots([_slot(cid, 8, 0), _slot(cid, 8, 15), _slot(cid, 8, 30)])
+
+    with caplog.at_level(logging.INFO):
+        await orch._blind_post_course(fa, cid, _request(course_ids=(cid,)))
+
+    assert not clock.by_task, "a run starting past T0 must not sleep at all"
+    # All three actually went out at T0+3000ms; none of the planned offsets happened.
+    assert caplog.text.count("sent +3000ms") == 3
+    assert "sent -500ms" not in caplog.text
+    assert "sent -250ms" not in caplog.text
+    # The planned ladder is still reported alongside, so the late start is diagnosable.
+    assert "(planned -500ms)" in caplog.text

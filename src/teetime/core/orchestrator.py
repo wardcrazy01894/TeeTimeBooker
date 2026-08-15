@@ -396,9 +396,23 @@ class Orchestrator:
         # instead of point-sampling it.
         t0 = self._compute_t0()
         offsets = self._stagger_offsets_for(len(fire))
+        # Filled in by each task at its SEND instant; the diagnostic below reports these
+        # MEASURED offsets, never the planned ones (see _fire_blind_post's docstring — on a
+        # late-landing run every POST goes out at once and the planned ladder is a lie).
+        sent_offsets_ms: list[int | None] = [None] * len(fire)
         blind_tasks = [
-            asyncio.create_task(self._fire_blind_post(adapter, s, request, offset_ms=off, t0=t0))
-            for s, off in zip(fire, offsets, strict=True)
+            asyncio.create_task(
+                self._fire_blind_post(
+                    adapter,
+                    s,
+                    request,
+                    offset_ms=off,
+                    t0=t0,
+                    sent_offsets_ms=sent_offsets_ms,
+                    index=i,
+                )
+            )
+            for i, (s, off) in enumerate(zip(fire, offsets, strict=True))
         ]
         log.info(
             "course %s: blind-POST firing %d book POST(s), staggered at T0 offsets %s ms",
@@ -424,16 +438,22 @@ class Orchestrator:
         pending_base_exc: BaseException | None = None
         # blind_results is in the same order as `fire` (gather preserves task order),
         # so each result pairs with the slot whose POST produced it.
-        for slot, off, r in zip(fire, offsets, blind_results, strict=True):
+        for slot, off, sent, r in zip(fire, offsets, sent_offsets_ms, blind_results, strict=True):
             # THE diagnostic line (STAGGER_PLAN §3.3). Pairing each POST's T0 offset with
             # its outcome is what distinguishes a pre-open rejection (a CLEAN CUTOFF —
             # everything at or before some offset gone, everything after booked) from a
             # genuine slot race (outcomes unordered w.r.t. offset). ForeUP returns the same
             # 400 body for both, and the server `Date` header's 1-second resolution cannot
             # separate them, so this ordering is the only available signal.
+            #
+            # Reports the MEASURED send offset. `sent` is None only if the task never reached
+            # its send (an exception raised in the sleep itself) — then say so rather than
+            # substitute the planned value, which would assert a send that never happened.
+            # `planned` is carried alongside so sleep jitter and late starts are both visible.
             log.info(
-                "course %s: blind-POST offset %+dms slot %s → %s",
+                "course %s: blind-POST sent %s (planned %+dms) slot %s → %s",
                 course_id,
+                f"{sent:+d}ms" if sent is not None else "NEVER",
                 off,
                 slot.slot_id,
                 _blind_outcome_label(r),
@@ -875,15 +895,35 @@ class Orchestrator:
         *,
         offset_ms: int,
         t0: datetime,
+        sent_offsets_ms: list[int | None] | None = None,
+        index: int = 0,
     ) -> BookingResult:
         """Sleep until `t0 + offset_ms`, then issue this slot's blind book POST.
 
         A non-positive delay fires IMMEDIATELY — a cron that lands past an offset must
         never wait. The sleep goes through the injected Clock, so `FakeClock` drives it.
+
+        Records the ACTUAL send offset (ms from T0, measured immediately before the POST)
+        into ``sent_offsets_ms[index]``. That measurement — not the planned offset — is what
+        the per-POST diagnostic reports, for two reasons:
+
+        1. **A late-starting run makes the planned offset a LIE.** If the cron lands past T0
+           (documented reality: a mid-deploy fire, or a run starting past `T0 - lead`), every
+           delay is non-positive and all N POSTs go out SIMULTANEOUSLY. Logging the planned
+           ladder would show outcomes spread across three offsets that never happened, and an
+           operator reading a 0/N would conclude "unordered ⇒ not the boundary" — the exact
+           wrong call, with the next week's fix aimed at the wrong thing.
+        2. It absorbs `Clock.sleep` scheduling jitter, so any blurring of the ladder is
+           self-documenting rather than assumed absent.
         """
         delay = ((t0 + timedelta(milliseconds=offset_ms)) - self._clock.now_utc()).total_seconds()
         if delay > 0:
             await self._clock.sleep(delay)
+        if sent_offsets_ms is not None:
+            # Measured at the send instant, AFTER any sleep. Distinct indices, single-threaded
+            # event loop → no interleaving hazard between the concurrent burst tasks.
+            sent = (self._clock.now_utc() - t0).total_seconds() * 1000.0
+            sent_offsets_ms[index] = round(sent)
         return await adapter.book(slot, request)
 
     # --- search loop ---------------------------------------------------

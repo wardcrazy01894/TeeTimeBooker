@@ -1,6 +1,7 @@
 # STAGGER_PLAN.md — stagger the T0 blind-POST burst across the open boundary
 
-**Status:** proposed (not yet ratified).
+**Status:** IMPLEMENTED (PR #199) — 749 tests green; adversarially reviewed (1 BLOCK round,
+all must-fix + should-fix items addressed). Not yet deployed to prod.
 **Scope:** booking-behavior change, race path only (`--wait` + blind-capable primary).
 **Motivates:** the 2026-08-15 miss (target Sat 2026-08-22) and the still-unexplained
 2026-07-18 miss (target Sat 2026-07-25).
@@ -86,7 +87,9 @@ The rank-0 (best, nearest-midpoint) slot keeps **today's exact timing**. The def
 entry is `−500`, identical to the current `early_arrival_ms=500` fire instant. On every drop
 we currently win, POST0 fires at the same instant against the same slot and still wins. The
 staggering only changes what the *other two* POSTs do — and today those are pure surplus
-that get 400'd by the 1/day rule anyway.
+that get 400'd by the 1/day rule anyway **when rank-0 wins**. When rank-0 loses they are the
+fallback, and they now fire 250 ms / 500 ms later than today; see the first row of §6, which
+is the honest cost of this change.
 
 Worst case under (A): we lose the rank-0 slot to a pre-open rejection but POST1/POST2 catch
 the flip, so we book 09:15 or 09:30 instead of 09:22. That is strictly better than today's
@@ -125,6 +128,12 @@ blind_post_stagger_ms: tuple[int, ...] = (-500, -250, 0)
   than silently dropping POSTs).
 - **Empty tuple → legacy behaviour**: every POST fires immediately on busy-wait completion.
   This is the escape hatch; it is exactly today's code path.
+- **Offsets must be NON-DECREASING** (`field_validator`). §2.2's safety argument requires the
+  best-ranked slot to POST first; `(-500, 0, -250)` would fire rank-2 before rank-1 and let
+  the 1/day rule reject the better slot. That shape passes every config-parity assertion
+  (`stagger[0] == -early_arrival_ms`, `min == -early_arrival_ms`, `max >= 0`), so only a
+  monotonicity check catches it. This is a WITHIN-field check, so it carries none of the
+  cross-field coupling that made a validator the wrong tool for the clamp below.
 - **Offsets earlier than `-early_arrival_ms` are CLAMPED to it, with a WARNING** naming both
   the raw and effective values. We cannot fire before the busy-wait wakes us.
 
@@ -166,13 +175,21 @@ the *earliest possible* burst offset rather than *the* burst offset.
 offset to the orchestrator's per-POST accounting so the log line reads the boundary directly:
 
 ```
-course foreup:mangrove_bay: blind-POST firing 3 POST(s) staggered at T0 offsets [-500, -250, +250] ms
-course foreup:mangrove_bay: blind-POST offset -500ms slot 202607220922 → gone
-course foreup:mangrove_bay: blind-POST offset -250ms slot 202607220915 → gone
-course foreup:mangrove_bay: blind-POST offset +250ms slot 202607220930 → BOOKED
+course foreup:mangrove_bay: blind-POST firing 3 book POST(s), staggered at T0 offsets [-500, -250, 0] ms
+course foreup:mangrove_bay: blind-POST sent -500ms (planned -500ms) slot 202607220922 → gone
+course foreup:mangrove_bay: blind-POST sent -250ms (planned -250ms) slot 202607220915 → gone
+course foreup:mangrove_bay: blind-POST sent +0ms (planned +0ms) slot 202607220930 → BOOKED
 ```
 
 That third line is the finding. One drop with this shipped resolves (A) vs (B).
+
+**`sent` is MEASURED at the send instant, not copied from the plan** (adversarial review,
+must-fix 1). On a run that STARTS past an offset — a late-landing cron, a mid-deploy fire —
+every delay is non-positive and all N POSTs go out simultaneously. Reporting the planned
+ladder there would show outcomes spread across three instants that never happened, and an
+operator reading a 0/N would conclude "unordered ⇒ not the boundary" and aim the next fix at
+the wrong thing. `planned` rides alongside so a late start and any `Clock.sleep` jitter are
+both visible. `tests/test_blind_post_stagger.py` pins this with a clock 3 s past T0.
 
 ## 4. What this plan does NOT do
 
@@ -192,17 +209,21 @@ That third line is the finding. One drop with this shipped resolves (A) vs (B).
 The burst is still `blind_post_max_count = 3` POSTs, each popping one pooled token, with
 `blind_post_fallback_token_reserve = 2` left for the post-reguard fallback — 5 pre-solved
 concurrently in the 120 s lead, exactly as today. No new CAPTCHA cost, no new rate-limit
-exposure. The staggered POSTs hold their tokens ~750 ms longer, far inside the ~120 s
-reCAPTCHA freshness window.
+exposure. The staggered POSTs hold their tokens ~500 ms longer (the shipped tail offset is `0`).
+That is NOT "far inside" the freshness budget — `config.py` documents token age at T0 as
+`lead − solve_time <= 120 s <= reCAPTCHA validity`, i.e. already AT the boundary, not
+comfortably within it. +500 ms is still safe, and a genuinely stale pop is covered by the
+MF1 inline re-solve, but the margin should not be overstated.
 
 ## 6. Risks
 
 | Risk | Assessment |
 |---|---|
-| Rank-0 slot lost to a pre-open rejection | Only on days we currently lose everything. Net strictly better. |
-| A later POST books a worse slot while the best was merely slow | `_keep_best` re-ranks whatever booked; the 1/day rule can only reject worse siblings (§2.2). |
-| Stagger delays push the burst past the replica timeout | Max added latency 750 ms against `bookingReplicaTimeout=1200 s`. Negligible. |
-| Hypothesis (A) is wrong | Then the diagnostic says so on the first 0/3 drop, at zero cost — the offsets' outcomes will be unordered. |
+| **POST1/POST2 fire 250 ms / 500 ms LATER than today** | **The real cost, and it is not zero.** §2.1 calls them "pure surplus that get 400'd by the 1/day rule anyway" — true only when rank-0 WINS. On exactly the drops this change targets (rank-0 lost) they are the fallback, and under hypothesis (B)/genuine-race a delay strictly reduces their chances in a market this plan itself says vaporises within seconds. Accepted: the delay only matters in the branch where the *hedge* is what saves us, and a hedge that fires at the same instant as the thing it is hedging is not a hedge. Chosen tail offset `0` (not `+250`) to minimise this. |
+| Rank-0 slot lost to a pre-open rejection | Only on days we currently lose everything, so no drop we win today is affected. Net positive — but see the row above; "strictly better" overstates it for the race branch. |
+| A later POST books a worse slot while the best was merely slow | `_keep_best` re-ranks whatever booked; the 1/day rule can only reject worse siblings (§2.2), enforced by the monotonicity validator + the burst re-rank. |
+| Stagger delays push the burst past the replica timeout | Max added latency 500 ms against `bookingReplicaTimeout=1200 s`. Negligible. |
+| Hypothesis (A) is wrong | Then the diagnostic says so on the first 0/3 drop — the offsets' outcomes will be unordered. Not quite "zero cost": see the first row, and the rank/offset confound in §4. |
 
 ## 7. Test plan (TDD, red first)
 
@@ -234,6 +255,10 @@ the burst-integration test, which asserts outcomes and ordering rather than timi
 ## 8. Docs to update (change→docs map)
 
 - `CLAUDE.md` — blind-POST invariant bullet (burst is staggered, not simultaneous).
+- `PLAN.md` — §6 blind-net description AND **§12 (ToS/etiquette)**, which described the burst
+  as "a handful of requests at a single instant". It is a ~500 ms-wide fan-out now; the
+  etiquette claim must describe the real request pattern.
+- `BLIND_POST_PLAN.md` — supersession banner on its "fire N POSTs CONCURRENTLY" mechanism.
 - `config/example.toml`, `config/container.toml`, `config/local.toml` — new key + comment.
 - `src/teetime/core/config.py` — field comment.
 - `tests/test_container_config_parity.py` — parity/default pin.
