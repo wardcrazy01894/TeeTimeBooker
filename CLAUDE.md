@@ -510,7 +510,7 @@ in `core/` — never directly. This is the cut line for parallel work.
   for those "has the method" *is* the capability, so they can't desync the way a flag could
   and are deliberately NOT folded into `AdapterCapabilities`.)
 - **The T0 blind burst is STAGGERED across the release boundary, not simultaneous
-  (STAGGER_PLAN.md).** `scheduler.blind_post_stagger_ms` (default `(-500, -250, 250)`) gives
+  (STAGGER_PLAN.md).** `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)`) gives
   each POST its own fire offset in ms relative to T0, paired positionally with the RANKED
   slots; `_fire_blind_post` sleeps to `T0 + offset` (a non-positive delay fires immediately,
   so a late-landing cron never waits). **Why:** every drop in the log retention window came
@@ -520,7 +520,10 @@ in `core/` — never directly. This is the cut line for parallel work.
   available."}` a claimed slot returns; the server `Date` header's 1-second resolution
   (added in `infra/v2.11.0` for exactly this) cannot separate them. Staggering makes the
   outcome ORDERED BY OFFSET — a clean cutoff is a pre-open rejection, an unordered one is a
-  real race — and guarantees one POST lands strictly after T0. `_blind_outcome_label` +
+  real race — and guarantees one POST is SENT no earlier than T0 (the shipped tail offset
+  is `0`: sent at 06:00:00.000 and carried past the open by network latency on arrival,
+  the tightest post-open probe available. **Nothing is ever scheduled earlier than
+  `stagger[0]`** — operator directive 2026-08-15, pinned by the parity test). `_blind_outcome_label` +
   the per-POST `blind-POST offset %+dms slot %s → %s` INFO line are that diagnostic; it is
   the whole point of the feature, so **don't drop it when touching the burst loop**.
   **Two load-bearing details:** (1) `stagger[0] == -early_arrival_ms`, so the rank-0 slot

@@ -66,14 +66,15 @@ the whole burst at one instant.
 today:     ─────────┬─────────────────  all 3 POSTs @ T0−500ms
                   T0−500
 
-proposed:  ─────────┬────┬────┬────────  POST0 @ T0−500 (unchanged)
-                  T0−500 │   T0+250      POST1 @ T0−250
-                       T0−250            POST2 @ T0+250
+proposed:  ─────────┬────┬────┬────────  POST0 @ T0−500 (unchanged: 09:22, rank-0)
+                  T0−500 │    T0          POST1 @ T0−250 (09:15)
+                       T0−250             POST2 @ T0     (09:30)
 ```
 
 This is simultaneously:
 
-- **A hedge.** At least one POST is guaranteed to land strictly after T0. Under (A) the
+- **A hedge.** At least one POST is guaranteed to be SENT no earlier than T0 — and, given
+  ~50-150 ms of network latency, to ARRIVE after it. Under (A) the
   burst can no longer be wiped out as a unit.
 - **A diagnostic.** The outcome pattern is now *ordered by offset*. A clean cutoff —
   everything at or before offset X fails, everything after succeeds — is (A). Outcomes
@@ -114,7 +115,7 @@ scripted list unranked, which is exactly the divergence worth defending against.
 New `SchedulerConfig` field:
 
 ```python
-blind_post_stagger_ms: tuple[int, ...] = (-500, -250, 250)
+blind_post_stagger_ms: tuple[int, ...] = (-500, -250, 0)
 ```
 
 - Per-POST fire offsets in **milliseconds relative to T0** (negative = before T0), paired
@@ -207,13 +208,14 @@ reCAPTCHA freshness window.
 
 All in `tests/test_blind_post_stagger.py` unless noted. **Status: implemented, 745 green.**
 
-1. Default `(-500, -250, 250)` keeps the rank-0 POST at `-early_arrival_ms` and puts at
+1. Default `(-500, -250, 0)` keeps the rank-0 POST at `-early_arrival_ms` and puts at
    least one POST after T0. Parity-pinned across the committed configs, plus a mechanical
    pin that `stagger[0] == -early_arrival_ms` (`tests/test_container_config_parity.py`).
 2. An offset `< -early_arrival_ms` is clamped to the wakeup and WARNs; offsets within it
    are neither clamped nor warned.
 3. Burst applies per-slot delays: a POST for `T0+250 ms` issued at the wakeup (`T0−500 ms`)
-   sleeps exactly 750 ms (`RecordingClock` asserts the requested delay).
+   sleeps exactly 750 ms (`RecordingClock` asserts the requested delay). The shipped tail
+   offset is `0`, so its real delay is 500 ms.
 4. Slots beyond the offset list reuse the last offset; fewer slots take the leading ones.
 5. Empty tuple → no sleeps, legacy simultaneous behaviour.
 6. A POST whose target instant has already passed fires immediately (no negative sleep);

@@ -10,7 +10,7 @@ flip: if it lands before the flip, every POST gets the same
 
 Staggering makes the outcome pattern ORDERED BY OFFSET, so one drop distinguishes a
 pre-open boundary rejection (clean cutoff) from a real race (unordered) — and guarantees
-at least one POST lands strictly after T0.
+at least one POST is sent no earlier than T0.
 
 The rank-0 (best) slot keeps today's exact fire instant, so a drop we currently win is
 unchanged (STAGGER_PLAN §2.1).
@@ -95,7 +95,7 @@ def _slot(cid: CourseId, hour: int, minute: int) -> TeeTimeSlot:
 def _build(
     *,
     clock: Clock,
-    stagger: tuple[int, ...] = (-500, -250, 250),
+    stagger: tuple[int, ...] = (-500, -250, 0),
     early_arrival_ms: int = 500,
 ) -> tuple[Orchestrator, FakeAdapter, CourseId]:
     cid = CourseId("fake:mb")
@@ -122,12 +122,19 @@ def _build(
 
 
 def test_stagger_default_spans_the_t0_boundary() -> None:
-    """The default keeps the rank-0 POST at today's instant (-early_arrival_ms) and puts
-    at least one POST strictly AFTER T0 — the hedge that makes a 0/3 wipeout impossible
-    under the boundary hypothesis."""
+    """The default keeps the rank-0 POST at today's instant (-early_arrival_ms) and SENDS
+    at least one POST no earlier than T0 — the hedge that makes a 0/3 wipeout impossible
+    under the boundary hypothesis.
+
+    `>= 0`, not `> 0`: the shipped tail offset is exactly 0, i.e. sent AT 06:00:00.000.
+    Network latency (~50-150 ms) carries it across the boundary on ARRIVAL, which is what
+    actually matters — so 0 is the tightest possible post-open probe, losing the least
+    ground in a genuine race. Nothing may be scheduled EARLIER than the rank-0 offset.
+    """
     sched = SchedulerConfig()
     assert sched.blind_post_stagger_ms[0] == -sched.early_arrival_ms
-    assert max(sched.blind_post_stagger_ms) > 0
+    assert min(sched.blind_post_stagger_ms) == -sched.early_arrival_ms
+    assert max(sched.blind_post_stagger_ms) >= 0
 
 
 def test_stagger_empty_tuple_is_the_legacy_escape_hatch() -> None:
@@ -169,14 +176,14 @@ def test_offsets_within_the_wakeup_are_not_clamped_or_warned(
 
 def test_offsets_pair_positionally_with_ranked_slots() -> None:
     orch, _, _ = _build(clock=FakeClock(start=datetime(2026, 5, 13, tzinfo=UTC)))
-    assert orch._stagger_offsets_for(3) == [-500, -250, 250]
+    assert orch._stagger_offsets_for(3) == [-500, -250, 0]
 
 
 def test_surplus_slots_reuse_the_last_offset() -> None:
     """A widened blind_post_max_count must not silently drop POSTs — the tail degrades to
     today's simultaneous behaviour instead."""
     orch, _, _ = _build(clock=FakeClock(start=datetime(2026, 5, 13, tzinfo=UTC)))
-    assert orch._stagger_offsets_for(5) == [-500, -250, 250, 250, 250]
+    assert orch._stagger_offsets_for(5) == [-500, -250, 0, 0, 0]
 
 
 def test_fewer_slots_than_offsets_takes_the_leading_offsets() -> None:

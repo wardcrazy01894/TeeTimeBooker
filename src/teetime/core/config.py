@@ -218,7 +218,9 @@ class SchedulerConfig(BaseModel):
     # available."}` a claimed slot returns, and the server `Date` header's 1-second
     # resolution cannot separate the two. Staggering makes the outcome pattern ORDERED BY
     # OFFSET (a clean cutoff = pre-open rejection; unordered = a real race), and guarantees
-    # at least one POST lands strictly AFTER T0.
+    # at least one POST is SENT no earlier than T0 (the shipped tail offset is 0 —
+    # sent at 06:00:00.000, carried past the open by network latency on arrival, so it is
+    # the tightest post-open probe available and loses the least ground in a real race).
     #
     # The FIRST entry is -early_arrival_ms, so the rank-0 (best, nearest-midpoint) slot
     # keeps TODAY'S EXACT fire instant and a drop we currently win is unchanged
@@ -236,7 +238,7 @@ class SchedulerConfig(BaseModel):
     # (Validating it here instead would couple this field to `early_arrival_ms` across
     # every config and test helper for no behavioural gain — the fire path already
     # self-clamps by computing a non-positive, no-sleep delay.)
-    blind_post_stagger_ms: tuple[int, ...] = (-500, -250, 250)
+    blind_post_stagger_ms: tuple[int, ...] = (-500, -250, 0)
 
 
 class NotifierConfig(BaseModel):

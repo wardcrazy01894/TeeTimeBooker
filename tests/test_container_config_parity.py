@@ -247,9 +247,16 @@ def test_blind_stagger_keeps_the_best_slot_at_todays_fire_instant() -> None:
         f"({-container['early_arrival_ms']}) so the best-ranked slot keeps today's fire "
         "instant (STAGGER_PLAN §2.1)."
     )
-    assert max(stagger) > 0, (
-        "blind_post_stagger_ms must put at least one POST strictly AFTER T0 — that is the "
-        "hedge that makes a 0/3 wipeout impossible under the boundary hypothesis."
+    assert min(stagger) == -container["early_arrival_ms"], (
+        f"blind_post_stagger_ms {stagger} schedules a POST EARLIER than the rank-0 offset "
+        f"({-container['early_arrival_ms']} ms). Operator directive 2026-08-15: nothing "
+        "moves earlier than today's fire instant."
+    )
+    assert max(stagger) >= 0, (
+        "blind_post_stagger_ms must SEND at least one POST no earlier than T0 — that is "
+        "the hedge that makes a 0/3 wipeout impossible under the boundary hypothesis. "
+        "(0 = sent at 06:00:00.000; network latency carries it past the open on arrival, "
+        "so it is the tightest post-open probe available.)"
     )
 
 
