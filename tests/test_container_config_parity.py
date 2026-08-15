@@ -209,6 +209,57 @@ def test_container_and_example_blind_fallback_reserve_match() -> None:
     )
 
 
+def test_container_and_example_blind_stagger_match() -> None:
+    """The blind-POST T0 stagger must agree across the committed configs.
+
+    ``blind_post_stagger_ms`` (STAGGER_PLAN.md) decides WHEN each POST in the T0 burst
+    fires relative to the release boundary — the single most race-critical timing knob we
+    have, and the one that makes a miss diagnosable at all. A silent drift would mean prod
+    straddles the boundary differently than reviewed, and would invalidate the
+    offset→outcome correlation the whole feature exists to produce.
+    ``config/local.toml`` is gitignored (absent in CI), so we anchor to ``example.toml``.
+    """
+    example = _load(_EXAMPLE_TOML).get("scheduler", {})
+    container = _load(_CONTAINER_TOML).get("scheduler", {})
+    assert example.get("blind_post_stagger_ms") is not None, (
+        "example.toml [scheduler] is missing blind_post_stagger_ms — pin the blind-POST T0 "
+        "stagger explicitly (STAGGER_PLAN.md §3.1)."
+    )
+    assert example.get("blind_post_stagger_ms") == container.get("blind_post_stagger_ms"), (
+        "blind_post_stagger_ms drift between example.toml and container.toml — keep the "
+        "blind-POST T0 stagger in sync (STAGGER_PLAN.md §3.1)."
+    )
+
+
+def test_blind_stagger_keeps_the_best_slot_at_todays_fire_instant() -> None:
+    """The shipped stagger's FIRST offset must equal ``-early_arrival_ms``.
+
+    That is the non-regression guarantee (STAGGER_PLAN §2.1): the rank-0 (best,
+    nearest-midpoint) slot fires at exactly the instant it does today, so every drop we
+    currently win is unaffected and only the surplus POSTs move. Pinned mechanically
+    because a well-meaning tweak to either key alone would silently break it.
+    """
+    container = _load(_CONTAINER_TOML).get("scheduler", {})
+    stagger = container.get("blind_post_stagger_ms")
+    assert stagger, "container.toml [scheduler] is missing blind_post_stagger_ms"
+    assert stagger[0] == -container["early_arrival_ms"], (
+        f"blind_post_stagger_ms[0] ({stagger[0]}) must equal -early_arrival_ms "
+        f"({-container['early_arrival_ms']}) so the best-ranked slot keeps today's fire "
+        "instant (STAGGER_PLAN §2.1)."
+    )
+    assert min(stagger) == -container["early_arrival_ms"], (
+        f"blind_post_stagger_ms {stagger} schedules a POST EARLIER than the rank-0 offset "
+        f"({-container['early_arrival_ms']} ms). Operator directive 2026-08-15: nothing "
+        "moves earlier than today's fire instant."
+    )
+    assert max(stagger) >= 0, (
+        "blind_post_stagger_ms must SEND at least one POST no earlier than T0 — that is "
+        "the hedge that makes a 0/3 wipeout impossible under the boundary hypothesis. "
+        "(0 = sent at 06:00:00.000; network latency carries it past the open on arrival, "
+        "so it is the tightest post-open probe available.)"
+    )
+
+
 def test_container_and_example_party_size_match() -> None:
     """The committed reference config and the Azure container must agree on size.
 

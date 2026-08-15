@@ -10,9 +10,10 @@ import os
 import tomllib
 from datetime import date, time
 from decimal import Decimal
+from itertools import pairwise
 from pathlib import Path
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import CartPreference, WatchConfig
 from .skip_dates import parse_skip_dates
@@ -207,6 +208,61 @@ class SchedulerConfig(BaseModel):
     # concurrent batch, so the reserve is "present," not "fresher"). Race-critical pool
     # depth → parity-checked across the committed configs. `0` = no reserve (off).
     blind_post_fallback_token_reserve: int = Field(default=2, ge=0)
+    # Per-POST fire offsets in MILLISECONDS relative to T0 (negative = before T0), paired
+    # positionally with the RANKED blind slots: blind_slots[i] fires at T0 + [i]
+    # (STAGGER_PLAN.md). Replaces firing the whole burst at one instant.
+    #
+    # Why: every blind-POST drop in the retention window came back 3/3 or 0/3, never mixed
+    # — a shape a genuine slot race cannot produce, since our POSTs land within ~100 ms of
+    # the window opening. A single simultaneous burst is a POINT SAMPLE of ForeUP's release
+    # flip; arriving before it returns the SAME `400 {"success":false,"msg":"Time not
+    # available."}` a claimed slot returns, and the server `Date` header's 1-second
+    # resolution cannot separate the two. Staggering makes the outcome pattern ORDERED BY
+    # OFFSET (a clean cutoff = pre-open rejection; unordered = a real race), and guarantees
+    # at least one POST is SENT no earlier than T0 (the shipped tail offset is 0 —
+    # sent at 06:00:00.000, carried past the open by network latency on arrival, so it is
+    # the tightest post-open probe available and loses the least ground in a real race).
+    #
+    # The FIRST entry is -early_arrival_ms, so the rank-0 (best, nearest-midpoint) slot
+    # keeps TODAY'S EXACT fire instant and a drop we currently win is unchanged
+    # (STAGGER_PLAN §2.1). Offsets ascend with rank, so ForeUP's "1 online reservation per
+    # day" rule can only ever reject a WORSE sibling (§2.2).
+    #
+    # Surplus slots beyond the list reuse the LAST offset (a widened blind_post_max_count
+    # degrades to simultaneous for the tail rather than silently dropping POSTs).
+    # `()` = legacy behaviour: every POST fires on busy-wait completion.
+    #
+    # An offset earlier than `-early_arrival_ms` cannot be honoured — the busy-wait has not
+    # woken us. That is NOT a config error: it is CLAMPED to the wakeup instant by
+    # `Orchestrator._stagger_offsets_for`, which logs the clamp and reports the EFFECTIVE
+    # offsets in the diagnostic line, so the offset→outcome correlation stays truthful.
+    # (Validating it here instead would couple this field to `early_arrival_ms` across
+    # every config and test helper for no behavioural gain — the fire path already
+    # self-clamps by computing a non-positive, no-sleep delay.)
+    blind_post_stagger_ms: tuple[int, ...] = (-500, -250, 0)
+
+    @field_validator("blind_post_stagger_ms")
+    @classmethod
+    def _stagger_must_ascend(cls, v: tuple[int, ...]) -> tuple[int, ...]:
+        """Offsets must be NON-DECREASING — the §2.2 safety argument depends on it.
+
+        Offsets pair positionally with RANK-ordered slots, so a non-monotonic list fires a
+        WORSE-ranked slot before a better one. ForeUP's "1 online reservation per day" rule
+        then 400-rejects the better sibling that POSTs later, and we keep the worse tee time
+        — silently, since `_keep_best` can only rank what actually booked.
+
+        `[-500, 0, -250]` passes every parity assertion (`stagger[0] == -early_arrival_ms`,
+        `min == -early_arrival_ms`, `max >= 0`) while doing exactly that, so the parity test
+        cannot catch it. This is a WITHIN-field check, so it carries none of the cross-field
+        coupling that made a validator the wrong tool for the `early_arrival_ms` floor.
+        """
+        if any(b < a for a, b in pairwise(v)):
+            raise ValueError(
+                f"blind_post_stagger_ms must be non-decreasing, got {v}: offsets pair with "
+                "RANK-ordered slots, so a descending offset POSTs a worse slot first and "
+                "ForeUP's 1-reservation-per-day rule then rejects the better one"
+            )
+        return v
 
 
 class NotifierConfig(BaseModel):

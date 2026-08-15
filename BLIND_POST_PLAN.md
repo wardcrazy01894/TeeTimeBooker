@@ -1,5 +1,17 @@
 # BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
 
+> **BURST TIMING SUPERSEDED (`STAGGER_PLAN.md`, PR #199):** this doc describes the burst as
+> N POSTs fired **CONCURRENTLY at one instant** (`T0 − early_arrival_ms`). They are now
+> **STAGGERED ACROSS T0** — each POST sleeps to its own offset from
+> `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)` ms), paired positionally with
+> the ranked slots. Motivation: every drop came back 3/3 or 0/3, never mixed, which a genuine
+> slot race cannot produce; a simultaneous burst point-samples ForeUP's release flip and, when
+> it lands pre-open, gets the same `400 "Time not available."` a claimed slot returns. The
+> rank-0 slot keeps this doc's original fire instant, so the burst's winning behaviour is
+> unchanged; `_keep_best` / `_cancel_extras` / re-guard / watcher reconcile are all untouched.
+> The burst also now RE-RANKS its slots before pairing offsets — ranked order was previously
+> only an adapter convention this doc relied on implicitly. See STAGGER_PLAN.md.
+
 > **GATE MECHANISM SUPERSEDED IN PART (#147, `infra/v2.6.0`):** this doc's "Mechanism" /
 > PR-table sections describe the gate as `runtime_checkable BlindPostCapable` + a
 > `supports_blind_post: bool` + `isinstance(adapter, BlindPostCapable) and adapter.supports_blind_post`.

@@ -38,6 +38,24 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   into the `Notifier` so a missed drop is visible, not buried. Same "no alert channel" caveat
   as above. (Full-repo-scan follow-up, deferred from PR #114.)
 
+- **Widen the Saturday/Sunday time window.** On the 2026-08-15 miss (target Sat 8/22), a
+  `07:37` slot was bookable at T0+6 s and was correctly rejected as out-of-window
+  (`08:45–10:00`). Every candidate the bot could reach that morning was outside the window
+  by 22 minutes. Widening to e.g. `07:30–10:00` costs nothing on days we win — ranking is
+  midpoint-distance based, so a 09:22-ish slot still wins whenever one exists — and only
+  matters when the prime band is gone. **Deliberately NOT bundled with STAGGER_PLAN**: it
+  changes which slots `synthesize_blind_slots` emits, which would confound the stagger's
+  offset→outcome diagnostic on its very first drops. Ship after the stagger has produced a
+  reading.
+
+- **Retry burst across a WIDER post-T0 window**, conditional on the stagger diagnostic
+  confirming the pre-open/flip-jitter hypothesis (STAGGER_PLAN §4). Today's stagger spans
+  ±500 ms; if the release flip turns out to jitter by seconds, the answer is repeated POSTs
+  at T0+0.5 s / +1 s / +2 s. That needs a bigger CAPTCHA pool — each `book()` pops a
+  single-use token — so it carries its own cost and rate-limit analysis. **Measure first:**
+  the hypothesis currently rests on two 0/3 drops, one of which (2026-08-01) is fully
+  explained by a whole-day tournament block.
+
 ---
 
 ## Frontend (single-user web UI)

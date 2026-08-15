@@ -306,7 +306,9 @@ path. So the watcher, local-demo, dry-run, a fallback course, a non-MB course, a
 `blind_post_max_count=0` all keep the sequential path.
 
 **Blind net (`_blind_post_course`)** — see `RESEARCH_FALLBACK_PLAN.md` for the ratified
-fallback design: fire the top-`N` ranked in-window synthesized POSTs CONCURRENTLY
+fallback design: fire the top-`N` ranked in-window synthesized POSTs concurrently but
+STAGGERED ACROSS T0 — each POST sleeps to its own `scheduler.blind_post_stagger_ms` offset
+before going out (default `(-500, -250, 0)` ms relative to T0; STAGGER_PLAN.md)
 (`N = min(len(synthesize_blind_slots(...)), captcha_pool_size())` — token-bounded). There is
 **NO concurrent hedge search** (the original hedge was dropped — RESEARCH_FALLBACK_PLAN §2 Q1).
 Then:
@@ -606,19 +608,23 @@ What we still DO NOT:
 departure from the 250 ms spacing rule is the 06:00:00 drop on the race path. To beat
 the search→book round-trip on the most contested slots of the week, the booking
 `Orchestrator` fires up to `scheduler.blind_post_max_count` (default **3**, matching the shipped
-configs — the top-3 nearest-midpoint slots go out **concurrently** to hedge the T0 slot-race;
+configs — the top-3 nearest-midpoint slots go out **staggered across T0** to hedge the slot-race
+AND to make a miss diagnosable (STAGGER_PLAN.md);
 2026-07-18 revert of the 2026-07-15 burst-of-one, whose single in-flight POST lost the slot-race
 with nothing else in flight and caused the 2026-07-18 miss. ForeUP's "1 online reservation per
 day" rule 400-rejects the surplus POSTs once the first lands, observed live 2026-06-27/28 +
 2026-07-11, but cancel-extras keeps only the best, so the extra POSTs are the accepted cost of the
-hedge) book POSTs **concurrently** for the
-in-window morning grid synthesized from a frozen template (no search dependency). If zero POSTs book, a single FRESH search runs as the
+hedge) book POSTs for the
+in-window morning grid synthesized from a frozen template (no search dependency), each at its
+own T0 offset. If zero POSTs book, a single FRESH search runs as the
 grid-drift fallback — STRICTLY AFTER the re-guard, not concurrently (the original hedge was
 dropped; RESEARCH_FALLBACK_PLAN.md §2 Q1).
 The burst is bounded three ways — it is gated to the `--wait` race path, only the PRIMARY
 blind-capable course, and `min(blind_post_max_count, captcha_pool_size())` (each POST needs
-a pre-solved CAPTCHA token) — so it is a one-time fan-out of a handful of requests at a
-single instant, not sustained hammering. Critically, **one booking per request still
+a pre-solved CAPTCHA token) — so it is a one-time fan-out of a handful of requests spread
+over a ~500 ms window (`blind_post_stagger_ms`, STAGGER_PLAN.md), not sustained hammering.
+The spread does not widen the footprint: it is the SAME handful of POSTs, deliberately
+de-synchronised rather than repeated, and no slot is ever POSTed twice. Critically, **one booking per request still
 holds**: the orchestrator keeps the best-ranked reservation and cancels every other one it
 created in the SAME run (`_cancel_extras`), and a fresh watch run reconciles any duplicate
 a crash left behind (keep-best, cancel-rest). This stays inside the "no bulk-book-and-cancel
