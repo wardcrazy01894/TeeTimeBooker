@@ -132,6 +132,20 @@ blind_post_fallback_token_reserve = 2          # blind-POST 0-booked fallback re
                                                # token, not a ~75s inline solve. The blind POSTs pop
                                                # their tokens; these REMAIN pooled for the fallback.
                                                # Paid pre-T0 every drop (incl. happy path). 0 = off.
+blind_post_stagger_ms   = [-500, -250, 250]    # blind-POST T0 stagger (STAGGER_PLAN.md): per-POST
+                                               # fire offsets in MILLISECONDS relative to T0, paired
+                                               # positionally with the RANKED blind slots, so the
+                                               # burst SPANS ForeUP's release boundary instead of
+                                               # point-sampling it. Makes the outcome pattern ordered
+                                               # by offset: a clean cutoff = pre-open rejection, an
+                                               # unordered one = a real race (the two are otherwise
+                                               # indistinguishable — same 400 body, 1-second Date).
+                                               # First entry = -early_arrival_ms so the rank-0 slot
+                                               # keeps today's exact instant; offsets ascend with
+                                               # rank so the "1 reservation/day" rule can only reject
+                                               # a WORSE sibling. Surplus slots reuse the last offset.
+                                               # [] = legacy simultaneous firing. Offsets earlier
+                                               # than -early_arrival_ms are clamped + logged.
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from

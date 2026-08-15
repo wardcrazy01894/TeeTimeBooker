@@ -207,6 +207,36 @@ class SchedulerConfig(BaseModel):
     # concurrent batch, so the reserve is "present," not "fresher"). Race-critical pool
     # depth → parity-checked across the committed configs. `0` = no reserve (off).
     blind_post_fallback_token_reserve: int = Field(default=2, ge=0)
+    # Per-POST fire offsets in MILLISECONDS relative to T0 (negative = before T0), paired
+    # positionally with the RANKED blind slots: blind_slots[i] fires at T0 + [i]
+    # (STAGGER_PLAN.md). Replaces firing the whole burst at one instant.
+    #
+    # Why: every blind-POST drop in the retention window came back 3/3 or 0/3, never mixed
+    # — a shape a genuine slot race cannot produce, since our POSTs land within ~100 ms of
+    # the window opening. A single simultaneous burst is a POINT SAMPLE of ForeUP's release
+    # flip; arriving before it returns the SAME `400 {"success":false,"msg":"Time not
+    # available."}` a claimed slot returns, and the server `Date` header's 1-second
+    # resolution cannot separate the two. Staggering makes the outcome pattern ORDERED BY
+    # OFFSET (a clean cutoff = pre-open rejection; unordered = a real race), and guarantees
+    # at least one POST lands strictly AFTER T0.
+    #
+    # The FIRST entry is -early_arrival_ms, so the rank-0 (best, nearest-midpoint) slot
+    # keeps TODAY'S EXACT fire instant and a drop we currently win is unchanged
+    # (STAGGER_PLAN §2.1). Offsets ascend with rank, so ForeUP's "1 online reservation per
+    # day" rule can only ever reject a WORSE sibling (§2.2).
+    #
+    # Surplus slots beyond the list reuse the LAST offset (a widened blind_post_max_count
+    # degrades to simultaneous for the tail rather than silently dropping POSTs).
+    # `()` = legacy behaviour: every POST fires on busy-wait completion.
+    #
+    # An offset earlier than `-early_arrival_ms` cannot be honoured — the busy-wait has not
+    # woken us. That is NOT a config error: it is CLAMPED to the wakeup instant by
+    # `Orchestrator._stagger_offsets_for`, which logs the clamp and reports the EFFECTIVE
+    # offsets in the diagnostic line, so the offset→outcome correlation stays truthful.
+    # (Validating it here instead would couple this field to `early_arrival_ms` across
+    # every config and test helper for no behavioural gain — the fire path already
+    # self-clamps by computing a non-positive, no-sleep delay.)
+    blind_post_stagger_ms: tuple[int, ...] = (-500, -250, 250)
 
 
 class NotifierConfig(BaseModel):

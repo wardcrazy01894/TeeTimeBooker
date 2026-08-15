@@ -62,6 +62,20 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def _blind_outcome_label(result: BookingResult | BaseException) -> str:
+    """Compact outcome tag for the per-POST blind-burst diagnostic line.
+
+    Deliberately coarse: the line exists to correlate T0 OFFSET with success/failure
+    (STAGGER_PLAN §3.3), and the detailed per-failure logging already happens below.
+    PII-free — slot ids and exception types only.
+    """
+    if isinstance(result, BookingResult):
+        return result.outcome.value.upper()
+    if isinstance(result, SlotGoneError):
+        return "gone"
+    return type(result).__name__
+
+
 class Orchestrator:
     """Runs one BookingRequest end-to-end. Single-use; build a new one per request."""
 
@@ -367,14 +381,30 @@ class Orchestrator:
         # blind_post_fallback_token_reserve tokens beyond N stay pooled for the fresh-search
         # fallback below (RESEARCH_FALLBACK_PLAN §2 Q3).
         n = min(len(blind_slots), capable.captcha_pool_size())
-        fire = blind_slots[:n]
+        # Re-rank before pairing offsets. `synthesize_blind_slots` is CONTRACTED to return
+        # ranked slots (Mangrove Bay ranks with this same `rank_slots_for_request`), so for
+        # the live adapter this is a no-op. It is applied anyway because the stagger's
+        # safety property depends on it: offsets ascend with position, so the BEST slot must
+        # fire FIRST or ForeUP's 1-reservation-per-day rule could reject the better sibling
+        # in favour of a worse one that happened to POST earlier (STAGGER_PLAN §2.2). That
+        # invariant is too important to leave resting on an adapter convention.
+        fire = rank_slots_for_request(blind_slots[:n], request)
 
-        # Launch ONLY the blind burst at T0 — no concurrent hedge search.
-        blind_tasks = [asyncio.create_task(adapter.book(s, request)) for s in fire]
+        # Launch ONLY the blind burst at T0 — no concurrent hedge search. The tasks are
+        # created simultaneously; each one then sleeps to its OWN offset relative to T0
+        # before POSTing (STAGGER_PLAN §3.2), so the burst spans the release boundary
+        # instead of point-sampling it.
+        t0 = self._compute_t0()
+        offsets = self._stagger_offsets_for(len(fire))
+        blind_tasks = [
+            asyncio.create_task(self._fire_blind_post(adapter, s, request, offset_ms=off, t0=t0))
+            for s, off in zip(fire, offsets, strict=True)
+        ]
         log.info(
-            "course %s: blind-POST firing %d concurrent book POST(s) at T0",
+            "course %s: blind-POST firing %d book POST(s), staggered at T0 offsets %s ms",
             course_id,
             len(fire),
+            offsets,
         )
 
         blind_results = await asyncio.gather(*blind_tasks, return_exceptions=True)
@@ -394,7 +424,20 @@ class Orchestrator:
         pending_base_exc: BaseException | None = None
         # blind_results is in the same order as `fire` (gather preserves task order),
         # so each result pairs with the slot whose POST produced it.
-        for slot, r in zip(fire, blind_results, strict=True):
+        for slot, off, r in zip(fire, offsets, blind_results, strict=True):
+            # THE diagnostic line (STAGGER_PLAN §3.3). Pairing each POST's T0 offset with
+            # its outcome is what distinguishes a pre-open rejection (a CLEAN CUTOFF —
+            # everything at or before some offset gone, everything after booked) from a
+            # genuine slot race (outcomes unordered w.r.t. offset). ForeUP returns the same
+            # 400 body for both, and the server `Date` header's 1-second resolution cannot
+            # separate them, so this ordering is the only available signal.
+            log.info(
+                "course %s: blind-POST offset %+dms slot %s → %s",
+                course_id,
+                off,
+                slot.slot_id,
+                _blind_outcome_label(r),
+            )
             if isinstance(r, BookingResult) and r.outcome == BookingOutcome.BOOKED:
                 booked.append(r)
             elif isinstance(r, SlotGoneError):
@@ -776,10 +819,11 @@ class Orchestrator:
 
     # --- timing ---------------------------------------------------------
 
-    def _compute_t0_minus_early(self) -> datetime:
-        """T0 = today (in scheduler.timezone) at scheduler.fire_time. Subtract
-        early_arrival_ms; that's the busy-wait target. Computed against the
-        injected clock so FakeClock-driven tests are deterministic."""
+    def _compute_t0(self) -> datetime:
+        """T0 = today (in scheduler.timezone) at scheduler.fire_time, as UTC.
+
+        Computed against the injected clock so FakeClock-driven tests are deterministic.
+        """
         tz = ZoneInfo(self._scheduler.timezone)
         local_now = self._clock.now_utc().astimezone(tz)
         target_local = datetime.combine(
@@ -787,8 +831,60 @@ class Orchestrator:
             self._scheduler.fire_time,
             tzinfo=tz,
         )
-        target_utc = target_local.astimezone(UTC)
-        return target_utc - timedelta(milliseconds=self._scheduler.early_arrival_ms)
+        return target_local.astimezone(UTC)
+
+    def _compute_t0_minus_early(self) -> datetime:
+        """The busy-wait target: T0 minus early_arrival_ms."""
+        return self._compute_t0() - timedelta(milliseconds=self._scheduler.early_arrival_ms)
+
+    def _stagger_offsets_for(self, count: int) -> list[int]:
+        """The per-POST fire offsets (ms relative to T0) for a burst of `count` slots,
+        paired positionally with the RANKED slots (STAGGER_PLAN §3.1).
+
+        Surplus slots beyond the configured list reuse the LAST offset, so widening
+        `blind_post_max_count` degrades the tail to simultaneous firing rather than
+        silently dropping POSTs. An empty config list means "fire everything on busy-wait
+        completion" — expressed as the wakeup offset itself so the caller has one uniform
+        code path and `_fire_blind_post` computes a non-positive (no-sleep) delay.
+        """
+        wakeup = -self._scheduler.early_arrival_ms
+        stagger = self._scheduler.blind_post_stagger_ms
+        if not stagger:
+            return [wakeup] * count
+        raw = [stagger[min(i, len(stagger) - 1)] for i in range(count)]
+        # Clamp to the busy-wait wakeup: an offset before it cannot be honoured (we are not
+        # awake), and `_fire_blind_post` would fire it immediately anyway. Clamping HERE —
+        # rather than letting the delay go non-positive silently — is what keeps the
+        # offset→outcome diagnostic honest, because these are the values that get logged.
+        effective = [max(off, wakeup) for off in raw]
+        if effective != raw:
+            log.warning(
+                "blind-POST stagger offsets %s ms precede the busy-wait wakeup (%d ms); "
+                "clamped to %s ms — raise scheduler.early_arrival_ms to honour them",
+                raw,
+                wakeup,
+                effective,
+            )
+        return effective
+
+    async def _fire_blind_post(
+        self,
+        adapter: CourseAdapter,
+        slot: TeeTimeSlot,
+        request: BookingRequest,
+        *,
+        offset_ms: int,
+        t0: datetime,
+    ) -> BookingResult:
+        """Sleep until `t0 + offset_ms`, then issue this slot's blind book POST.
+
+        A non-positive delay fires IMMEDIATELY — a cron that lands past an offset must
+        never wait. The sleep goes through the injected Clock, so `FakeClock` drives it.
+        """
+        delay = ((t0 + timedelta(milliseconds=offset_ms)) - self._clock.now_utc()).total_seconds()
+        if delay > 0:
+            await self._clock.sleep(delay)
+        return await adapter.book(slot, request)
 
     # --- search loop ---------------------------------------------------
 

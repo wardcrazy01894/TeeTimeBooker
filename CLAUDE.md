@@ -509,6 +509,33 @@ in `core/` — never directly. This is the cut line for parallel work.
   `AuthStateReportable` — remain HONEST `runtime_checkable` `isinstance` presence-checks:
   for those "has the method" *is* the capability, so they can't desync the way a flag could
   and are deliberately NOT folded into `AdapterCapabilities`.)
+- **The T0 blind burst is STAGGERED across the release boundary, not simultaneous
+  (STAGGER_PLAN.md).** `scheduler.blind_post_stagger_ms` (default `(-500, -250, 250)`) gives
+  each POST its own fire offset in ms relative to T0, paired positionally with the RANKED
+  slots; `_fire_blind_post` sleeps to `T0 + offset` (a non-positive delay fires immediately,
+  so a late-landing cron never waits). **Why:** every drop in the log retention window came
+  back 3/3 or 0/3, never mixed — a shape a genuine slot race cannot produce, since our POSTs
+  land within ~100 ms of the open. A single simultaneous burst POINT-SAMPLES ForeUP's release
+  flip, and arriving before it returns the SAME `400 {"success":false,"msg":"Time not
+  available."}` a claimed slot returns; the server `Date` header's 1-second resolution
+  (added in `infra/v2.11.0` for exactly this) cannot separate them. Staggering makes the
+  outcome ORDERED BY OFFSET — a clean cutoff is a pre-open rejection, an unordered one is a
+  real race — and guarantees one POST lands strictly after T0. `_blind_outcome_label` +
+  the per-POST `blind-POST offset %+dms slot %s → %s` INFO line are that diagnostic; it is
+  the whole point of the feature, so **don't drop it when touching the burst loop**.
+  **Two load-bearing details:** (1) `stagger[0] == -early_arrival_ms`, so the rank-0 slot
+  keeps its pre-stagger fire instant and drops we already win are unchanged — pinned by
+  `tests/test_container_config_parity.py`; (2) the burst RE-RANKS with
+  `rank_slots_for_request` before pairing offsets. Ranked order used to be only an adapter
+  convention (`synthesize_blind_slots` is contracted to return ranked; Mangrove Bay does),
+  which the simultaneous burst never depended on. Now it is a safety property: offsets
+  ascend with position, so the best slot must POST FIRST or ForeUP's 1-reservation-per-day
+  rule could reject the better sibling in favour of a worse one that fired earlier.
+  Offsets earlier than `-early_arrival_ms` are clamped to it and logged (NOT a config
+  error — the fire path already self-clamps, and validating it would couple this key to
+  `early_arrival_ms` across every config for no behavioural gain). `()` = legacy
+  simultaneous firing; `_local_demo_scheduler` sets it, since the no-wait demo path has no
+  T0 race to straddle.
 - **The orchestrator blind path fires at T0, RACE PATH ONLY (BLIND_POST_PLAN PR3).**
   `_run_course` consults `_should_blind_post(adapter, course_id, request)` after the layer-2
   pre-book guard and BEFORE the sequential search — a five-part gate, ALL required:
@@ -517,7 +544,7 @@ in `core/` — never directly. This is the cut line for parallel work.
   `adapter.capabilities.blind_post` flag) AND the course is the PRIMARY
   (first-preference) adapter. Any miss → the normal search-book loop. When it passes,
   `_blind_post_course` fires the top-`N` ranked in-window `synthesize_blind_slots` POSTs
-  CONCURRENTLY (`asyncio.create_task` + `gather(return_exceptions=True)`), where
+  **STAGGERED ACROSS T0** (`asyncio.create_task` + `gather(return_exceptions=True)`), where
   `N = min(len(blind_slots), captcha_pool_size())` (token-bounded). **There is NO concurrent
   hedge search** (RESEARCH_FALLBACK_PLAN §2 Q1): the happy path issues zero search GETs and the
   0-booked path issues exactly one FRESH search post-re-guard. Outcomes: (a) **≥1 BOOKED** →

@@ -96,6 +96,17 @@ blind_post_max_count = 3
 # pooled for the fallback. Paid pre-T0 on every drop (incl. the happy path where they go
 # unused). 0 = no reserve.
 blind_post_fallback_token_reserve = 2
+# Blind-POST T0 stagger (STAGGER_PLAN.md). Per-POST fire offsets in MILLISECONDS relative to T0,
+# paired positionally with the RANKED blind slots — so the burst SPANS ForeUP's release boundary
+# instead of point-sampling it at one instant. Every drop in the log retention window came back
+# 3/3 or 0/3, never mixed: a shape a real slot race cannot make (our POSTs land within ~100 ms of
+# the open), but exactly what a burst landing before the release flip looks like — ForeUP returns
+# the same 400 "Time not available." for both, and the server Date header's 1-second resolution
+# cannot separate them. First entry = -early_arrival_ms, so the rank-0 (best) slot keeps TODAY'S
+# exact fire instant and a drop we currently win is unchanged. Offsets ascend with rank, so the
+# "1 reservation/day" rule can only reject a WORSE sibling. Surplus slots reuse the last offset;
+# [] = legacy simultaneous firing. Offsets earlier than -early_arrival_ms are clamped + logged.
+blind_post_stagger_ms = [-500, -250, 250]
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from

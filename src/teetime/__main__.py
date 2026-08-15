@@ -643,6 +643,12 @@ def _local_demo_scheduler(base: SchedulerConfig) -> SchedulerConfig:
         early_arrival_ms=0,
         poll_interval_ms=10,
         max_poll_seconds=1,
+        # No T0 race on the local-demo path (T0 is "now" and early_arrival_ms is 0), so
+        # there is no release boundary to straddle — firing the burst simultaneously is
+        # both correct and the only thing the zero busy-wait window can honour. Stated
+        # explicitly rather than inherited: with early_arrival_ms=0 the default offsets
+        # would clamp to [0, 0, 250], adding a pointless 250 ms wait to a demo run.
+        blind_post_stagger_ms=(),
     )
 
 

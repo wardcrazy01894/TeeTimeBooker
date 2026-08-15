@@ -70,6 +70,10 @@ class FakeAdapter:
         # orchestrator tests can assert the race path requests N pooled tokens.
         self.last_prepare_count: int | None = None
         self.book_call_count: int = 0
+        # Slot ids in the ORDER book() was called, so a test can assert the staggered
+        # blind burst POSTs in rank order (STAGGER_PLAN §2.2) — book_call_count alone
+        # cannot distinguish "fired" from "fired in the right order".
+        self.book_slot_ids: list[SlotId] = []
         self.list_reservations_call_count: int = 0
         self.cancel_call_count: int = 0
         # Capability record mirroring a real adapter: blind_post reflects the ctor knob.
@@ -199,6 +203,7 @@ class FakeAdapter:
         request: BookingRequest,
     ) -> BookingResult:
         self.book_call_count += 1
+        self.book_slot_ids.append(slot.slot_id)
         side_effects = self._book_side_effects
         if side_effects:
             effect = side_effects.pop(0)
