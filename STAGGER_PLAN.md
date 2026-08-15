@@ -227,7 +227,7 @@ MF1 inline re-solve, but the margin should not be overstated.
 
 ## 7. Test plan (TDD, red first)
 
-All in `tests/test_blind_post_stagger.py` unless noted. **Status: implemented, 745 green.**
+All in `tests/test_blind_post_stagger.py` unless noted. **Status: implemented, 749 green.**
 
 1. Default `(-500, -250, 0)` keeps the rank-0 POST at `-early_arrival_ms` and puts at
    least one POST after T0. Parity-pinned across the committed configs, plus a mechanical

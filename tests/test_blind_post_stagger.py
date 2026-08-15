@@ -18,7 +18,6 @@ unchanged (STAGGER_PLAN §2.1).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -297,22 +296,25 @@ async def test_burst_books_best_slot_and_fires_in_rank_order() -> None:
 
 
 class BurstRecordingClock:
-    """Frozen clock that records sleeps PER CONCURRENT TASK.
+    """Frozen clock recording every sleep in CHRONOLOGICAL order.
 
-    ``asyncio.current_task()`` keys the recording, so three concurrent burst tasks cannot
-    smear into one list the way a shared counter would. Time never advances, so each task's
-    delay is computed from one reading — deterministic regardless of scheduling order.
+    Two properties make the recording deterministic: time never advances (so each task
+    computes its delay from one identical reading, unlike ``FakeClock`` whose additive
+    ``sleep`` would let three concurrent stagger sleeps interfere), and ``sleep`` yields
+    nothing, so each burst task runs to its POST before the next starts. The resulting list
+    is therefore in task-creation order, which is what lets the assertion detect a REVERSED
+    offset list — something a sorted multiset cannot.
     """
 
     def __init__(self, *, start: datetime) -> None:
         self._now = start.astimezone(UTC)
-        self.by_task: dict[object, list[float]] = {}
+        self.sleeps: list[float] = []
 
     def now_utc(self) -> datetime:
         return self._now
 
     async def sleep(self, seconds: float) -> None:
-        self.by_task.setdefault(asyncio.current_task(), []).append(seconds)
+        self.sleeps.append(seconds)
 
 
 async def test_burst_wires_each_offset_to_its_own_post() -> None:
@@ -331,9 +333,15 @@ async def test_burst_wires_each_offset_to_its_own_post() -> None:
 
     await orch._blind_post_course(fa, cid, _request(course_ids=(cid,)))
 
-    # One entry per task that slept; the rank-0 POST fires immediately so it never sleeps.
-    slept = sorted(s for sleeps in clock.by_task.values() for s in sleeps)
-    assert slept == [pytest.approx(0.25), pytest.approx(0.5)]
+    # Asserted PER TASK in creation order, not as a sorted multiset: a sorted comparison
+    # cannot detect a REVERSED offset list (which would POST the worst slot first and let
+    # the 1/day rule reject the best — the exact hazard §2.2 guards). The rank-0 POST fires
+    # immediately, so it records no sleep at all.
+    # CHRONOLOGICAL, not sorted: a sorted multiset cannot detect a REVERSED offset list
+    # (which yields the same {0.25, 0.5} while POSTing the WORST slot first, letting the
+    # 1/day rule reject the best — the exact hazard §2.2 guards). The rank-0 POST fires
+    # immediately, so only the two later POSTs sleep, in that order.
+    assert clock.sleeps == [pytest.approx(0.25), pytest.approx(0.5)]
     assert fa.book_slot_ids == ["s-0815", "s-0800", "s-0830"]  # rank order: 08:15 midpoint
 
 
@@ -356,7 +364,7 @@ async def test_burst_diagnostic_reports_the_measured_send_offset(
     with caplog.at_level(logging.INFO):
         await orch._blind_post_course(fa, cid, _request(course_ids=(cid,)))
 
-    assert not clock.by_task, "a run starting past T0 must not sleep at all"
+    assert clock.sleeps == [], "a run starting past T0 must not sleep at all"
     # All three actually went out at T0+3000ms; none of the planned offsets happened.
     assert caplog.text.count("sent +3000ms") == 3
     assert "sent -500ms" not in caplog.text

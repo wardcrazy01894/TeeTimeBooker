@@ -359,7 +359,9 @@ class Orchestrator:
         course_id: CourseId,
         request: BookingRequest,
     ) -> BookingResult:
-        """Fire the top-N ranked in-window blind book POSTs CONCURRENTLY at T0, keep the best
+        """Fire the top-N ranked in-window blind book POSTs at T0 — concurrently, but each
+        STAGGERED to its own `blind_post_stagger_ms` offset from T0 (STAGGER_PLAN.md) so the
+        burst spans ForeUP's release boundary instead of point-sampling it — keep the best
         that books and cancel the rest IN-RUN. If zero book, re-guard against a landed-but-
         uncertain POST, then fire a FRESH search (AFTER the re-guard) and fall back to the
         sequential search-book loop. See BLIND_POST_PLAN.md §6 + RESEARCH_FALLBACK_PLAN.
