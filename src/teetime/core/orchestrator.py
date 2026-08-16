@@ -80,6 +80,40 @@ def _blind_outcome_label(result: BookingResult | BaseException) -> str:
     return type(result).__name__
 
 
+def _rejection_summary(
+    gone_by_reason: Mapping[str, int], *, fired: int, any_booked: bool
+) -> tuple[int, str, str]:
+    """Build the (log level, reason breakdown, trailing clause) for the aggregate line.
+
+    Pure, so the three-way reading is unit-testable without driving a whole burst.
+
+    A sweep where NOTHING booked is always operator-worthy (WARNING), but the two ways it
+    happens need opposite readings:
+
+    * every reject ``daily_limit`` → a reservation for this date ALREADY EXISTED and this
+      burst did not make it (the pre-T0 layer-2 guard missed it, or a manual/re-run
+      booking). ``_reguard_before_fallback`` then short-circuits to ALREADY_BOOKED with NO
+      search, so claiming a fallback search here would assert something that never happens.
+    * anything else → the genuine "why no 6am booking" wipeout, which DOES fall back.
+
+    Breakdown is sorted count-desc then name, so the line is stable across runs.
+    """
+    breakdown = ", ".join(
+        f"{reason}={n}"
+        for reason, n in sorted(gone_by_reason.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    all_gone = sum(gone_by_reason.values()) == fired and not any_booked
+    if not all_gone:
+        return logging.INFO, breakdown, ""
+    if set(gone_by_reason) == {"daily_limit"}:
+        return (
+            logging.WARNING,
+            breakdown,
+            " — we already hold a reservation for this date (re-guard will confirm)",
+        )
+    return logging.WARNING, breakdown, " — TOTAL wipeout, falling back to a fresh search"
+
+
 class Orchestrator:
     """Runs one BookingRequest end-to-end. Single-use; build a new one per request."""
 
@@ -522,20 +556,17 @@ class Orchestrator:
             # rejection, which on 2026-08-16 reported two lost races that never happened (both
             # were "daily_limit" — ForeUP bouncing our own surplus POSTs after the rank-0 slot
             # had already booked). Only "unavailable" rejections are race/boundary evidence.
-            # Sorted by count desc, then name, so the line is stable across runs.
-            total_wipeout = gone == len(fire) and not booked
-            breakdown = ", ".join(
-                f"{reason}={n}"
-                for reason, n in sorted(gone_by_reason.items(), key=lambda kv: (-kv[1], kv[0]))
+            level, breakdown, suffix = _rejection_summary(
+                gone_by_reason, fired=len(fire), any_booked=bool(booked)
             )
             log.log(
-                logging.WARNING if total_wipeout else logging.INFO,
+                level,
                 "course %s: blind-POST %d of %d slot(s) rejected (%s)%s",
                 course_id,
                 gone,
                 len(fire),
                 breakdown,
-                " — TOTAL wipeout, falling back to a fresh search" if total_wipeout else "",
+                suffix,
             )
 
         if booked:

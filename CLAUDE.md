@@ -575,8 +575,12 @@ in `core/` — never directly. This is the cut line for parallel work.
   `ForeUpAdapter._classify_book_rejection` tags the raised `SlotGoneError`:
   `"unavailable"` (`"Time not available."` — the slot was not bookable: claimed first, OR our
   POST beat the release flip; the ONLY reason that bears on the pre-open-vs-race question),
-  `"daily_limit"` (`"...1 online reservation per day."` — ForeUP bouncing the surplus POSTs of a
-  burst WE ALREADY WON, carrying NO race information), `"conflict"` (409), `"unknown"` (the
+  `"daily_limit"` (`"...1 online reservation per day."` — if ANY sibling booked, ForeUP bouncing
+  the surplus POSTs of a burst WE ALREADY WON, carrying NO race information; if NOTHING booked it
+  means the opposite and is highly informative — a reservation for that date already existed which
+  this burst did not make, so `_rejection_summary` reports "we already hold a reservation" and
+  suppresses the misleading "TOTAL wipeout, falling back to a fresh search" text, since the
+  re-guard short-circuits to `ALREADY_BOOKED` with no search), `"conflict"` (ForeUP 409), `"unknown"` (the
   fail-soft default, so non-ForeUP adapters and unobserved wordings are never MISFILED under an
   observed reason). It is **diagnostic only** — every reason routes identically
   (`SlotGoneError` → try-next-slot), so this can never change booking behaviour. It surfaces in

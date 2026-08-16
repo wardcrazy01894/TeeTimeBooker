@@ -104,7 +104,15 @@ _BOOK_DAILY_LIMIT_MARKERS = ("reservation per day",)
 # "Time not available." — the slot was not bookable: claimed by someone else, OR our
 # POST landed before the 06:00 ET release flip. Byte-identical for both, which is what
 # the T0 stagger exists to disambiguate (STAGGER_PLAN §3.3).
-_BOOK_UNAVAILABLE_MARKERS = ("time not available", "no longer available")
+#
+# ONLY wordings actually OBSERVED from ForeUP belong here. A 35-day sweep of prod logs
+# (2026-08-16) found exactly two distinct book-rejection bodies — this one and the
+# daily-limit one above — so a speculative marker like "no longer available" is
+# deliberately absent: mapping an unobserved phrase onto an observed reason is how a
+# config/entitlement error ("that booking class is no longer available") would get read
+# as race evidence, the exact misdiagnosis this classification exists to prevent. An
+# unmatched body surfaces as `gone[unknown]`, which is visible and investigable.
+_BOOK_UNAVAILABLE_MARKERS = ("time not available",)
 # MB email-OTP challenge markers (announced 2026-07-15; see _guard_otp_challenge).
 # Matched case-insensitively against the ForeUP `msg` field. The API challenge's
 # real wording is unobserved (enforcement is UI-only per the 2026-07-15 live recon),

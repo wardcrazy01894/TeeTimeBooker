@@ -1292,6 +1292,43 @@ async def test_book_400_unrecognised_body_is_tagged_unknown() -> None:
 
 
 @respx.mock
+async def test_daily_limit_marker_wins_when_a_body_matches_both() -> None:
+    """Pins the precedence the classifier's ordering relies on: daily_limit is the more
+    specific and self-inflicted classification, so a body carrying both phrasings must not
+    be filed as race/boundary evidence."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "success": False,
+                "msg": "Time not available. You are only allowed 1 online reservation per day.",
+            },
+        )
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "daily_limit"
+
+
+@respx.mock
+async def test_book_400_non_json_body_is_tagged_unknown() -> None:
+    """Fail-soft parity with the sibling guards: an HTML error page (ForeUP has served these
+    under load) must not blow up the classifier or be guessed at."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(400, text="<html>Time not available.</html>")
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "unknown"
+
+
+@respx.mock
 async def test_book_409_is_tagged_conflict() -> None:
     """409 is its own rejection class and must not be conflated with either 400 body."""
     respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(

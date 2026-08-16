@@ -53,7 +53,9 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
   blind POST returns `400 {"success":false,"msg":"Time not available."}` with a server `Date`
   inside the open second (so not an early-arrival rejection) — i.e. every POST logs
   `→ gone[unavailable]`, never `gone[daily_limit]` (see the `SlotGoneError.reason` bullet in the
-  root CLAUDE.md; a `daily_limit` reject means a sibling POST WON and is not a miss at all) —
+  root CLAUDE.md; a `daily_limit` reject alongside a booked sibling means our own burst WON and is
+  not a miss at all, whereas an ALL-`daily_limit` burst means a reservation for that date already
+  existed) —
   and the post-reguard fresh search
   returns plenty of raw slots with 0 in-window; expect no morning slot to reappear on later
   watcher cycles either. **This is NOT a slot-race loss and no burst size fixes it** — a

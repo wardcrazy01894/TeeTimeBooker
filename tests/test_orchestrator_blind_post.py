@@ -561,6 +561,70 @@ async def test_aggregate_line_breaks_down_by_reason_not_claimed_pre_book(
     )
 
 
+async def test_all_daily_limit_wipeout_is_not_reported_as_a_lost_race(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """0 booked where EVERY reject is daily_limit is the opposite of a race wipeout: it means
+    a reservation for this date already existed and this burst did not make it (the pre-T0
+    layer-2 guard missed it, or a manual/re-run booking). The re-guard then short-circuits to
+    ALREADY_BOOKED WITHOUT any search — so the generic "falling back to a fresh search" text
+    asserts something that never happens. Same defect class this reason-split exists to fix."""
+    cid = CourseId("fake:mb")
+
+    class _LateRevealAdapter(FakeAdapter):
+        """The reservation is INVISIBLE to the pre-T0 layer-2 guard (else the run
+        short-circuits before the burst ever fires) and only surfaces on the re-guard's
+        forced refresh — the shape that produces an all-daily_limit burst in the first
+        place: something held the date that the pre-T0 snapshot did not show."""
+
+        def __init__(self) -> None:
+            super().__init__(course_id=cid, supports_blind_post=True)
+            self._logged_in = False
+            self._reveal = False
+
+        async def authenticate(self, creds: CourseCredentials) -> None:
+            if self._logged_in:
+                return
+            self._logged_in = True
+            await super().authenticate(creds)
+
+        async def refresh_reservations(self, creds: CourseCredentials) -> None:
+            self._logged_in = False
+            await self.authenticate(creds)
+            self._reveal = True
+
+        async def list_reservations(self) -> list[ExistingReservation]:
+            self.list_reservations_call_count += 1
+            if not self._reveal:
+                return []
+            return [
+                ExistingReservation(
+                    course_id=cid,
+                    confirmation_code="RAW-1",
+                    tee_time=datetime(2026, 5, 13, 8, 15, tzinfo=UTC),
+                    party_size=1,
+                )
+            ]
+
+    fa = _LateRevealAdapter()
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_book_side_effects(
+        [SlotGoneError("dup", "daily_limit"), SlotGoneError("dup", "daily_limit")]
+    )
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        await orch.run(_request(course_ids=(cid,)))
+
+    agg = [m for m in (r.getMessage() for r in caplog.records) if "slot(s) rejected" in m]
+    assert agg, "expected the aggregate rejection line"
+    assert "TOTAL wipeout" not in agg[0], (
+        "an all-daily_limit burst is a pre-existing reservation, not a lost race"
+    )
+    assert "already hold" in agg[0], agg[0]
+    assert fa.search_call_count == 0, "re-guard short-circuits; no fallback search fires"
+
+
 async def test_uncertain_blind_post_does_not_crash_run() -> None:
     """One blind task raises a non-SlotGone (uncertain 5xx/timeout-style) error: gather
     captures it, it is dropped, and a sibling booked POST is still kept."""

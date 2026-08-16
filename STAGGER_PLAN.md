@@ -3,11 +3,24 @@
 **Status:** LIVE IN PROD — `infra/v2.14.0`, deployed 2026-08-15 (`main`@`e6a8abb`,
 `dryRun=false`, all three jobs verified on the new image with crons/timeouts unchanged).
 Shipped in PR #199: 749 tests green, two adversarial review rounds (BLOCK → APPROVE).
-First exercise: the Sun 2026-08-16 05:50 ET drop (books 8/23) — expected to demonstrate
-non-regression only, since both 0/3 misses fell on SATURDAYS — 2026-08-01 explained by the
-Anniversary Tournament block, 2026-08-15 unexplained — and every Sunday in the retention
-window booked cleanly. The first real diagnostic reading is the Sat
-2026-08-22 drop (books 8/29).
+**First exercise — Sun 2026-08-16 05:50 ET (booked 8/23): PASSED, non-regression confirmed.**
+Booked the rank-0 nearest-midpoint slot (09:22, `TTB:TTID_081606000041qx5`). The stagger
+executed to spec — measured send offsets `-498 / -249 / +1 ms` against planned
+`-500 / -250 / 0`, busy-wait drift 0.7 ms, NTP offset 1.2 ms.
+Two results beyond non-regression:
+1. **The `-500 ms` POST returned HTTP 200**, so inventory was live at 05:59:59.5 — on a
+   SUNDAY, the pre-open-rejection hypothesis (A) does not hold. Saturdays remain open;
+   all three misses were Saturdays.
+2. **First non-uniform burst outcome in the retention window** (1 booked / 2 rejected,
+   where every prior drop was 3/3, 2/3 or 0/3). The two rejects were `daily_limit`, NOT
+   lost races: the 250 ms gaps let the rank-0 booking COMMIT before its siblings were
+   processed, so ForeUP's 1/day rule bounced them. Consequence: `cancelled 0 extra(s)` —
+   the first drop ever with no surplus reservation to clean up. The stagger incidentally
+   removed the duplicate-booking churn, without suppressing any POST.
+   This also exposed a diagnostic defect fixed in PR #201 — the aggregate line called
+   both rejects "claimed pre-book", reporting two lost races that never happened. See
+   §3.3 on the `gone[<reason>]` tag.
+The first real diagnostic reading is still the Sat 2026-08-22 drop (books 8/29).
 **Scope:** booking-behavior change, race path only (`--wait` + blind-capable primary).
 **Motivates:** the 2026-08-15 miss (target Sat 2026-08-22) and the still-unexplained
 2026-07-18 miss (target Sat 2026-07-25).

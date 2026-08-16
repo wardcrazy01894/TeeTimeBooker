@@ -93,12 +93,15 @@ class SlotGoneError(AdapterError):
       one that CARRIES race/boundary evidence: either someone claimed it first, or our
       POST arrived before the platform's release flip. Byte-identical bodies, which is
       exactly why the burst is staggered.
-    * ``"daily_limit"`` — rejected by ForeUP's "1 online reservation per day" rule. This
-      is the EXPECTED consequence of a SIBLING POST in our own burst having already won,
-      so it carries NO information about the race. Observed live 2026-08-16, where the
-      250 ms stagger let the rank-0 booking commit before the surplus POSTs were
-      processed (1 booked / 2 daily_limit — the first non-uniform burst outcome).
-    * ``"conflict"`` — HTTP 409.
+    * ``"daily_limit"`` — rejected by ForeUP's "1 online reservation per day" rule. If ANY
+      sibling booked, this is the EXPECTED consequence of our own burst winning and carries
+      NO information about the race: observed live 2026-08-16, where the 250 ms stagger let
+      the rank-0 booking commit before the surplus POSTs were processed (1 booked / 2
+      daily_limit — the first non-uniform burst outcome). If NOTHING booked, it means the
+      opposite and is highly informative: a reservation for that date already existed which
+      this burst did not make (see ``_rejection_summary`` in the orchestrator).
+    * ``"conflict"`` — HTTP 409, tagged by the ForeUP adapter only. Other adapters raise
+      1-arg and land on ``"unknown"``; nothing reads this value, so that is harmless.
     * ``"unknown"`` — an unrecognised body; the default, so non-ForeUP adapters and any
       future rejection wording stay correct rather than being misfiled under an observed
       reason.
