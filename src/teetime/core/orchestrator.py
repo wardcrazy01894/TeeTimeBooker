@@ -92,8 +92,13 @@ def _rejection_summary(
 
     * every reject ``daily_limit`` → a reservation for this date ALREADY EXISTED and this
       burst did not make it (the pre-T0 layer-2 guard missed it, or a manual/re-run
-      booking). ``_reguard_before_fallback`` then short-circuits to ALREADY_BOOKED with NO
-      search, so claiming a fallback search here would assert something that never happens.
+      booking). ``_reguard_before_fallback`` then USUALLY short-circuits to ALREADY_BOOKED
+      with NO search, so claiming a fallback search here would assert something that never
+      happens. CAVEAT: the re-guard matches on date AND party size, so a reservation with a
+      DIFFERENT party size (the likely shape of a manual booking — MB's minimum is 2 while
+      the config books 4) does not match and the fallback search DOES fire. Harmless — those
+      fallback books hit the same 1/day 400 and the run ends NO_INVENTORY — but it is why
+      this says "re-guard will confirm" rather than promising the outcome.
     * anything else → the genuine "why no 6am booking" wipeout, which DOES fall back.
 
     Breakdown is sorted count-desc then name, so the line is stable across runs.

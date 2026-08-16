@@ -580,16 +580,23 @@ in `core/` — never directly. This is the cut line for parallel work.
   means the opposite and is highly informative — a reservation for that date already existed which
   this burst did not make, so `_rejection_summary` reports "we already hold a reservation" and
   suppresses the misleading "TOTAL wipeout, falling back to a fresh search" text, since the
-  re-guard short-circuits to `ALREADY_BOOKED` with no search), `"conflict"` (ForeUP 409), `"unknown"` (the
+  re-guard then usually short-circuits to `ALREADY_BOOKED` with no search — "usually" because the
+  re-guard matches date AND party size, so a manual booking with a different party size still
+  falls through to the fallback search, which is harmless but is why the text says "re-guard will
+  confirm"), `"conflict"` (ForeUP 409), `"unknown"` (the
   fail-soft default, so non-ForeUP adapters and unobserved wordings are never MISFILED under an
   observed reason). It is **diagnostic only** — every reason routes identically
   (`SlotGoneError` → try-next-slot), so this can never change booking behaviour. It surfaces in
   `_blind_outcome_label` as `gone[<reason>]` and in the aggregate `blind-POST N of M slot(s)
   rejected (<reason>=<count>, …)` line. **Why it exists:** that aggregate line used to assert
   "claimed pre-book" for EVERY 4xx, so the 2026-08-16 drop (1 booked / 2 daily_limit) reported
-  two lost races that never happened. `daily_limit` is now the ROUTINE shape of a WON staggered
-  drop — the 250 ms gaps let the rank-0 booking commit before its siblings are processed, where
-  every pre-stagger drop instead booked 2–3 and cancelled extras. Keep the markers
+  two lost races that never happened. `daily_limit` alongside a booked sibling is an ORDINARY
+  shape for a WON drop — plausibly the 250 ms gaps letting the rank-0 booking commit before its
+  siblings are processed, though **the stagger is NOT established as the cause**: every OTHER
+  drop in the log retention window booked 2–3 and cancelled extras, but the pre-stagger
+  2026-07-11 drop produced the same 1-booked/2-`daily_limit` shape from a SIMULTANEOUS burst
+  (see the `infra/v2.9.0` paragraph above). Treat the 1/2 shape as uninformative about timing
+  until more drops land. Keep the markers
   (`_BOOK_DAILY_LIMIT_MARKERS` / `_BOOK_UNAVAILABLE_MARKERS`) matching the stable prose tail:
   the daily-limit body has been observed as both "make" and "have 1 online reservation per day".
   **Two load-bearing details:** (1) `stagger[0] == -early_arrival_ms`, so the rank-0 slot

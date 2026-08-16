@@ -11,12 +11,14 @@ Two results beyond non-regression:
 1. **The `-500 ms` POST returned HTTP 200**, so inventory was live at 05:59:59.5 — on a
    SUNDAY, the pre-open-rejection hypothesis (A) does not hold. Saturdays remain open;
    all three misses were Saturdays.
-2. **First non-uniform burst outcome in the retention window** (1 booked / 2 rejected,
-   where every prior drop was 3/3, 2/3 or 0/3). The two rejects were `daily_limit`, NOT
-   lost races: the 250 ms gaps let the rank-0 booking COMMIT before its siblings were
-   processed, so ForeUP's 1/day rule bounced them. Consequence: `cancelled 0 extra(s)` —
-   the first drop ever with no surplus reservation to clean up. The stagger incidentally
-   removed the duplicate-booking churn, without suppressing any POST.
+2. **First non-uniform burst outcome in the RETENTION WINDOW** (1 booked / 2 rejected,
+   where every other drop there was 3/3, 2/3 or 0/3). The two rejects were `daily_limit`,
+   NOT lost races — ForeUP's 1/day rule bounced them once the rank-0 booking committed.
+   Consequence: `cancelled 0 extra(s)`, no surplus reservation to clean up.
+   **Do NOT read this as a stagger effect.** The pre-stagger 2026-07-11 drop produced the
+   same 1-booked/2-`daily_limit` shape from a SIMULTANEOUS burst (CLAUDE.md, `infra/v2.9.0`),
+   so a simultaneous burst can serialize behind the 1/day counter too. n=1 either way — the
+   shape is uninformative about timing until more drops land.
    This also exposed a diagnostic defect fixed in PR #201 — the aggregate line called
    both rejects "claimed pre-book", reporting two lost races that never happened. See
    §3.3 on the `gone[<reason>]` tag.
@@ -209,10 +211,13 @@ weight and no machine-readable discriminator — only the `msg` prose differs:
 * `gone[unavailable]` (`"Time not available."`) — the slot was not bookable. This is the
   ONLY reason that bears on (A) vs (B).
 * `gone[daily_limit]` (`"...1 online reservation per day."`) — ForeUP bouncing the surplus
-  POSTs of a burst WE ALREADY WON. It says nothing about the race, and it is now the
-  ROUTINE shape of a successful staggered drop: the 250 ms gaps let the rank-0 booking
-  commit before the siblings are processed, so 2026-08-16 came back 1 booked / 2
-  daily_limit — where every pre-stagger drop booked 2–3 and cancelled extras.
+  POSTs of a burst WE ALREADY WON. It says nothing about the race. 2026-08-16 came back
+  1 booked / 2 daily_limit, plausibly because the 250 ms gaps let the rank-0 booking commit
+  before the siblings were processed — but **that causation is NOT established**: every
+  other drop in the retention window booked 2–3 and cancelled extras, yet the pre-stagger
+  2026-07-11 drop produced the SAME 1/2 shape from a simultaneous burst. A simultaneous
+  burst can evidently also serialize behind ForeUP's 1/day counter, so the 1/2 shape is
+  uninformative about timing on its own.
 
 Before the split, both logged as `gone` and the aggregate line called all of them
 "claimed pre-book", i.e. reported lost races that never happened.

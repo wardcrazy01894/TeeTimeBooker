@@ -97,7 +97,9 @@ class SlotGoneError(AdapterError):
       sibling booked, this is the EXPECTED consequence of our own burst winning and carries
       NO information about the race: observed live 2026-08-16, where the 250 ms stagger let
       the rank-0 booking commit before the surplus POSTs were processed (1 booked / 2
-      daily_limit — the first non-uniform burst outcome). If NOTHING booked, it means the
+      daily_limit — the first non-uniform outcome in the LOG RETENTION WINDOW, though the
+      pre-stagger 2026-07-11 drop produced the same 1/2 shape, so the stagger is not
+      established as its cause). If NOTHING booked, it means the
       opposite and is highly informative: a reservation for that date already existed which
       this burst did not make (see ``_rejection_summary`` in the orchestrator).
     * ``"conflict"`` — HTTP 409, tagged by the ForeUP adapter only. Other adapters raise

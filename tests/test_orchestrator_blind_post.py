@@ -49,7 +49,7 @@ from teetime.core.models import (
     TeeTimeSlot,
     TimeWindow,
 )
-from teetime.core.orchestrator import Orchestrator
+from teetime.core.orchestrator import Orchestrator, _rejection_summary
 from teetime.core.slot_utils import rank_slots_for_request
 from teetime.dev.fake_adapter import FakeAdapter
 from teetime.notifications.notifier import NoopNotifier
@@ -559,6 +559,28 @@ async def test_aggregate_line_breaks_down_by_reason_not_claimed_pre_book(
     assert "claimed pre-book" not in agg[0], (
         "a daily_limit reject is self-inflicted, not a slot claimed by someone else"
     )
+
+
+def test_rejection_summary_readings() -> None:
+    """Direct unit cases for the pure summary helper — the three readings without driving a
+    whole burst (which is the justification for extracting it)."""
+    # Partial rejection: something booked → INFO, no trailing clause.
+    assert _rejection_summary({"unavailable": 1}, fired=3, any_booked=True) == (
+        logging.INFO,
+        "unavailable=1",
+        "",
+    )
+    # Everything rejected, mixed reasons → the genuine race wipeout.
+    level, breakdown, suffix = _rejection_summary(
+        {"unavailable": 2, "daily_limit": 1}, fired=3, any_booked=False
+    )
+    assert level == logging.WARNING
+    assert breakdown == "unavailable=2, daily_limit=1"  # count desc, then name
+    assert "TOTAL wipeout" in suffix
+    # Everything rejected, ALL daily_limit → a pre-existing reservation, NOT a race loss.
+    level, _, suffix = _rejection_summary({"daily_limit": 3}, fired=3, any_booked=False)
+    assert level == logging.WARNING
+    assert "already hold" in suffix and "wipeout" not in suffix
 
 
 async def test_all_daily_limit_wipeout_is_not_reported_as_a_lost_race(
