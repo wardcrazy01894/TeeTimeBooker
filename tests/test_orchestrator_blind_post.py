@@ -49,7 +49,7 @@ from teetime.core.models import (
     TeeTimeSlot,
     TimeWindow,
 )
-from teetime.core.orchestrator import Orchestrator
+from teetime.core.orchestrator import Orchestrator, _rejection_summary
 from teetime.core.slot_utils import rank_slots_for_request
 from teetime.dev.fake_adapter import FakeAdapter
 from teetime.notifications.notifier import NoopNotifier
@@ -504,9 +504,147 @@ async def test_blind_post_logs_slot_gone_count(
         result = await orch.run(_request(course_ids=(cid,)))
 
     assert result.outcome == BookingOutcome.NO_INVENTORY
-    assert any("slot-gone" in r.getMessage() and "2" in r.getMessage() for r in caplog.records), (
-        "expected an aggregate slot-gone count line from _blind_post_course"
+    assert any("2 of 2 slot(s) rejected" in r.getMessage() for r in caplog.records), (
+        "expected an aggregate rejection count line from _blind_post_course"
     )
+
+
+async def test_per_post_diagnostic_names_the_rejection_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The stagger's whole value is reading offset→outcome (STAGGER_PLAN §3.3), and a bare
+    "gone" collapses two rejections with OPPOSITE meaning: "unavailable" is race/boundary
+    evidence, "daily_limit" is just our own winning sibling bouncing the surplus. Observed
+    live 2026-08-16 (1 booked / 2 daily_limit)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 15), _bslot(cid, 8, 0)])
+    fa.set_book_side_effects([BookingOutcome.BOOKED, SlotGoneError("surplus", "daily_limit")])
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert any("→ gone[daily_limit]" in r.getMessage() for r in caplog.records), (
+        "per-POST diagnostic must name the rejection reason, not a bare 'gone'"
+    )
+
+
+async def test_aggregate_line_breaks_down_by_reason_not_claimed_pre_book(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The aggregate line asserted "claimed pre-book" for EVERY 4xx. On 2026-08-16 that
+    reported two lost races that never happened — both rejects were ForeUP bouncing our own
+    surplus POSTs under the 1/day rule. It must report the reason breakdown instead."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 15), _bslot(cid, 8, 0), _bslot(cid, 8, 30)])
+    fa.set_book_side_effects(
+        [
+            BookingOutcome.BOOKED,
+            SlotGoneError("surplus", "daily_limit"),
+            SlotGoneError("lost", "unavailable"),
+        ]
+    )
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    agg = [r.getMessage() for r in caplog.records if "2 of 3 slot(s)" in r.getMessage()]
+    assert agg, "expected the aggregate rejection line"
+    assert "daily_limit=1" in agg[0] and "unavailable=1" in agg[0], agg[0]
+    assert "claimed pre-book" not in agg[0], (
+        "a daily_limit reject is self-inflicted, not a slot claimed by someone else"
+    )
+
+
+def test_rejection_summary_readings() -> None:
+    """Direct unit cases for the pure summary helper — the three readings without driving a
+    whole burst (which is the justification for extracting it)."""
+    # Partial rejection: something booked → INFO, no trailing clause.
+    assert _rejection_summary({"unavailable": 1}, fired=3, any_booked=True) == (
+        logging.INFO,
+        "unavailable=1",
+        "",
+    )
+    # Everything rejected, mixed reasons → the genuine race wipeout.
+    level, breakdown, suffix = _rejection_summary(
+        {"unavailable": 2, "daily_limit": 1}, fired=3, any_booked=False
+    )
+    assert level == logging.WARNING
+    assert breakdown == "unavailable=2, daily_limit=1"  # count desc, then name
+    assert "TOTAL wipeout" in suffix
+    # Everything rejected, ALL daily_limit → a pre-existing reservation, NOT a race loss.
+    level, _, suffix = _rejection_summary({"daily_limit": 3}, fired=3, any_booked=False)
+    assert level == logging.WARNING
+    assert "already hold" in suffix and "wipeout" not in suffix
+
+
+async def test_all_daily_limit_wipeout_is_not_reported_as_a_lost_race(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """0 booked where EVERY reject is daily_limit is the opposite of a race wipeout: it means
+    a reservation for this date already existed and this burst did not make it (the pre-T0
+    layer-2 guard missed it, or a manual/re-run booking). The re-guard then short-circuits to
+    ALREADY_BOOKED WITHOUT any search — so the generic "falling back to a fresh search" text
+    asserts something that never happens. Same defect class this reason-split exists to fix."""
+    cid = CourseId("fake:mb")
+
+    class _LateRevealAdapter(FakeAdapter):
+        """The reservation is INVISIBLE to the pre-T0 layer-2 guard (else the run
+        short-circuits before the burst ever fires) and only surfaces on the re-guard's
+        forced refresh — the shape that produces an all-daily_limit burst in the first
+        place: something held the date that the pre-T0 snapshot did not show."""
+
+        def __init__(self) -> None:
+            super().__init__(course_id=cid, supports_blind_post=True)
+            self._logged_in = False
+            self._reveal = False
+
+        async def authenticate(self, creds: CourseCredentials) -> None:
+            if self._logged_in:
+                return
+            self._logged_in = True
+            await super().authenticate(creds)
+
+        async def refresh_reservations(self, creds: CourseCredentials) -> None:
+            self._logged_in = False
+            await self.authenticate(creds)
+            self._reveal = True
+
+        async def list_reservations(self) -> list[ExistingReservation]:
+            self.list_reservations_call_count += 1
+            if not self._reveal:
+                return []
+            return [
+                ExistingReservation(
+                    course_id=cid,
+                    confirmation_code="RAW-1",
+                    tee_time=datetime(2026, 5, 13, 8, 15, tzinfo=UTC),
+                    party_size=1,
+                )
+            ]
+
+    fa = _LateRevealAdapter()
+    fa.set_blind_slots([_bslot(cid, 8, 0), _bslot(cid, 8, 15)])
+    fa.set_book_side_effects(
+        [SlotGoneError("dup", "daily_limit"), SlotGoneError("dup", "daily_limit")]
+    )
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        await orch.run(_request(course_ids=(cid,)))
+
+    agg = [m for m in (r.getMessage() for r in caplog.records) if "slot(s) rejected" in m]
+    assert agg, "expected the aggregate rejection line"
+    assert "TOTAL wipeout" not in agg[0], (
+        "an all-daily_limit burst is a pre-existing reservation, not a lost race"
+    )
+    assert "already hold" in agg[0], agg[0]
+    assert fa.search_call_count == 0, "re-guard short-circuits; no fallback search fires"
 
 
 async def test_uncertain_blind_post_does_not_crash_run() -> None:
@@ -887,7 +1025,7 @@ async def test_total_blind_wipeout_logs_warning(
     wipeout = [
         r.getMessage()
         for r in caplog.records
-        if r.levelname == "WARNING" and "slot-gone" in r.getMessage()
+        if r.levelname == "WARNING" and "slot(s) rejected" in r.getMessage()
     ]
     assert wipeout, "expected a WARNING line for a total blind wipeout"
     assert any("wipeout" in m.lower() for m in wipeout)

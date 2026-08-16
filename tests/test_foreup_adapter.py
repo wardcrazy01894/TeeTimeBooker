@@ -122,6 +122,20 @@ def _request(*, dry_run: bool = False) -> BookingRequest:
     )
 
 
+def _gone_slot() -> TeeTimeSlot:
+    """A plain in-window slot for the book()-rejection classification tests."""
+    return TeeTimeSlot(
+        course_id=CID,
+        slot_id=SlotId("99001"),
+        tee_time=datetime(2026, 5, 13, 8, 0, tzinfo=ET),
+        holes=18,
+        available_spots=4,
+        price_per_player=Decimal("45.00"),
+        cart_included=False,
+        raw=dict(_RAW_SLOT),
+    )
+
+
 # --- Protocol structural check -------------------------------------------
 
 
@@ -1221,6 +1235,111 @@ async def test_book_400_one_per_day_still_slot_gone_not_otp() -> None:
         adapter._logged_in = True
         with pytest.raises(SlotGoneError):
             await adapter.book(slot, _request())
+
+
+@respx.mock
+async def test_book_400_daily_limit_is_tagged_daily_limit() -> None:
+    """ForeUP returns a 400 for BOTH "someone else took it" and "you already hold a
+    reservation today", and the two carry opposite diagnostic meaning: the first is
+    race/boundary evidence, the second is the EXPECTED consequence of our own blind-burst
+    winner and carries no race information at all. `reason` separates them so the stagger's
+    offset→outcome reading (STAGGER_PLAN §3.3) is not polluted by self-inflicted rejects.
+    Body wording observed live 2026-08-16."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "success": False,
+                "msg": "You are only allowed to make 1 online reservation per day.",
+            },
+        )
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "daily_limit"
+
+
+@respx.mock
+async def test_book_400_time_not_available_is_tagged_unavailable() -> None:
+    """The race/pre-open rejection body — the one that DOES carry boundary evidence."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(400, json={"success": False, "msg": "Time not available."})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "unavailable"
+
+
+@respx.mock
+async def test_book_400_unrecognised_body_is_tagged_unknown() -> None:
+    """Fail-soft: an unfamiliar 400 body still maps to SlotGoneError (try-next-slot is
+    unchanged) but must NOT be silently filed under a reason we did not actually observe."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(400, json={"success": False, "msg": "Nope."})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "unknown"
+
+
+@respx.mock
+async def test_daily_limit_marker_wins_when_a_body_matches_both() -> None:
+    """Pins the precedence the classifier's ordering relies on: daily_limit is the more
+    specific and self-inflicted classification, so a body carrying both phrasings must not
+    be filed as race/boundary evidence."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "success": False,
+                "msg": "Time not available. You are only allowed 1 online reservation per day.",
+            },
+        )
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "daily_limit"
+
+
+@respx.mock
+async def test_book_400_non_json_body_is_tagged_unknown() -> None:
+    """Fail-soft parity with the sibling guards: an HTML error page (ForeUP has served these
+    under load) must not blow up the classifier or be guessed at."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(400, text="<html>Time not available.</html>")
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "unknown"
+
+
+@respx.mock
+async def test_book_409_is_tagged_conflict() -> None:
+    """409 is its own rejection class and must not be conflated with either 400 body."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(409, json={"msg": "conflict"})
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "conflict"
 
 
 @respx.mock

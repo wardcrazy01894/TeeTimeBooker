@@ -60,6 +60,7 @@ from ...core.adapter import (
     OtpChallengeError,
     RateLimitError,
     SlotGoneError,
+    SlotGoneReason,
 )
 from ...core.models import (
     MANAGED_BOOKING_TAG,
@@ -91,6 +92,27 @@ _HTTP_NOT_FOUND = 404
 # and book. Unlike a 5xx/timeout (the §9 UNCERTAIN case), a 4xx rejection is
 # unambiguous that NO reservation was created, so it is safe to try the next slot.
 _HTTP_BOOK_REJECTED = 400
+# ForeUP reuses that one 400 for rejections with OPPOSITE diagnostic meaning, with no
+# machine-readable discriminator — only the `msg` prose differs. Matched
+# case-insensitively; anything unmatched stays SlotGoneReason "unknown" rather than
+# being misfiled. See SlotGoneError for why the split matters to the staggered burst.
+#
+# "You are only allowed to make 1 online reservation per day." — the surplus POSTs of
+# our OWN burst once a sibling has won (observed live 2026-07-11 and 2026-08-16). The
+# wording has appeared as both "make" and "have", so match the stable tail.
+_BOOK_DAILY_LIMIT_MARKERS = ("reservation per day",)
+# "Time not available." — the slot was not bookable: claimed by someone else, OR our
+# POST landed before the 06:00 ET release flip. Byte-identical for both, which is what
+# the T0 stagger exists to disambiguate (STAGGER_PLAN §3.3).
+#
+# ONLY wordings actually OBSERVED from ForeUP belong here. A 35-day sweep of prod logs
+# (2026-08-16) found exactly two distinct book-rejection bodies — this one and the
+# daily-limit one above — so a speculative marker like "no longer available" is
+# deliberately absent: mapping an unobserved phrase onto an observed reason is how a
+# config/entitlement error ("that booking class is no longer available") would get read
+# as race evidence, the exact misdiagnosis this classification exists to prevent. An
+# unmatched body surfaces as `gone[unknown]`, which is visible and investigable.
+_BOOK_UNAVAILABLE_MARKERS = ("time not available",)
 # MB email-OTP challenge markers (announced 2026-07-15; see _guard_otp_challenge).
 # Matched case-insensitively against the ForeUP `msg` field. The API challenge's
 # real wording is unobserved (enforcement is UI-only per the 2026-07-15 live recon),
@@ -278,6 +300,35 @@ class ForeUpAdapter(CourseAdapter):
             return False
         msg = str(data.get("msg", ""))
         return "captcha" in msg.lower() or bool(data.get("openNewWindow"))
+
+    @staticmethod
+    def _classify_book_rejection(r: httpx.Response) -> SlotGoneReason:
+        """Classify a definitively-rejected book POST by its `msg` prose.
+
+        DIAGNOSTIC ONLY — every return value routes identically (SlotGoneError →
+        try-next-slot). It exists so the staggered blind burst's offset→outcome line can
+        distinguish a rejection that carries race/boundary evidence ("unavailable") from
+        one we caused ourselves by already winning ("daily_limit"). Reading the 2026-08-16
+        drop, the aggregate line called two self-inflicted daily-limit rejects "claimed
+        pre-book", i.e. reported a lost race that never happened.
+
+        Fail-soft: an unparseable/unfamiliar body yields "unknown" — never a guess at one
+        of the observed reasons.
+        """
+        if "application/json" not in r.headers.get("content-type", ""):
+            return "unknown"
+        try:
+            data: object = r.json()
+        except ValueError:
+            return "unknown"
+        if not isinstance(data, dict):
+            return "unknown"
+        msg = str(data.get("msg", "")).lower()
+        if any(marker in msg for marker in _BOOK_DAILY_LIMIT_MARKERS):
+            return "daily_limit"
+        if any(marker in msg for marker in _BOOK_UNAVAILABLE_MARKERS):
+            return "unavailable"
+        return "unknown"
 
     @staticmethod
     def _is_cancel_target_missing(r: httpx.Response) -> bool:
@@ -778,7 +829,7 @@ class ForeUpAdapter(CourseAdapter):
                 redact_text(r.text[:500]),
             )
         if r.status_code == _HTTP_SLOT_GONE:
-            raise SlotGoneError(f"Slot gone (409): {redact_text(r.text[:300])}")
+            raise SlotGoneError(f"Slot gone (409): {redact_text(r.text[:300])}", "conflict")
         # A captcha/browser challenge can come back as a 400; classify it as such
         # (CaptchaError) BEFORE the generic 400 → SlotGone mapping below.
         self._guard_captcha(r)
@@ -794,7 +845,10 @@ class ForeUpAdapter(CourseAdapter):
             # SlotGoneError so the orchestrator's candidate loop tries the next-ranked
             # slot instead of crashing. NOT the §9 UNCERTAIN case (a 4xx is unambiguous
             # that nothing was booked). See PLAN §9.
-            raise SlotGoneError(f"Slot unbookable (HTTP 400): {redact_text(r.text[:300])}")
+            raise SlotGoneError(
+                f"Slot unbookable (HTTP 400): {redact_text(r.text[:300])}",
+                self._classify_book_rejection(r),
+            )
         if r.status_code == _HTTP_RATE_LIMIT:
             # 429 on the booking POST: the platform throttled us BEFORE creating a
             # reservation (rejected pre-processing, so nothing was booked — distinct from the

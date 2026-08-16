@@ -3,11 +3,26 @@
 **Status:** LIVE IN PROD — `infra/v2.14.0`, deployed 2026-08-15 (`main`@`e6a8abb`,
 `dryRun=false`, all three jobs verified on the new image with crons/timeouts unchanged).
 Shipped in PR #199: 749 tests green, two adversarial review rounds (BLOCK → APPROVE).
-First exercise: the Sun 2026-08-16 05:50 ET drop (books 8/23) — expected to demonstrate
-non-regression only, since both 0/3 misses fell on SATURDAYS — 2026-08-01 explained by the
-Anniversary Tournament block, 2026-08-15 unexplained — and every Sunday in the retention
-window booked cleanly. The first real diagnostic reading is the Sat
-2026-08-22 drop (books 8/29).
+**First exercise — Sun 2026-08-16 05:50 ET (booked 8/23): PASSED, non-regression confirmed.**
+Booked the rank-0 nearest-midpoint slot (09:22, `TTB:TTID_081606000041qx5`). The stagger
+executed to spec — measured send offsets `-498 / -249 / +1 ms` against planned
+`-500 / -250 / 0`, busy-wait drift 0.7 ms, NTP offset 1.2 ms.
+Two results beyond non-regression:
+1. **The `-500 ms` POST returned HTTP 200**, so inventory was live at 05:59:59.5 — on a
+   SUNDAY, the pre-open-rejection hypothesis (A) does not hold. Saturdays remain open;
+   all three misses were Saturdays.
+2. **First non-uniform burst outcome in the RETENTION WINDOW** (1 booked / 2 rejected,
+   where every other drop there was 3/3, 2/3 or 0/3). The two rejects were `daily_limit`,
+   NOT lost races — ForeUP's 1/day rule bounced them once the rank-0 booking committed.
+   Consequence: `cancelled 0 extra(s)`, no surplus reservation to clean up.
+   **Do NOT read this as a stagger effect.** The pre-stagger 2026-07-11 drop produced the
+   same 1-booked/2-`daily_limit` shape from a SIMULTANEOUS burst (CLAUDE.md, `infra/v2.9.0`),
+   so a simultaneous burst can serialize behind the 1/day counter too. n=1 either way — the
+   shape is uninformative about timing until more drops land.
+   This also exposed a diagnostic defect fixed in PR #201 — the aggregate line called
+   both rejects "claimed pre-book", reporting two lost races that never happened. See
+   §3.3 on the `gone[<reason>]` tag.
+The first real diagnostic reading is still the Sat 2026-08-22 drop (books 8/29).
 **Scope:** booking-behavior change, race path only (`--wait` + blind-capable primary).
 **Motivates:** the 2026-08-15 miss (target Sat 2026-08-22) and the still-unexplained
 2026-07-18 miss (target Sat 2026-07-25).
@@ -182,12 +197,30 @@ offset to the orchestrator's per-POST accounting so the log line reads the bound
 
 ```
 course foreup:mangrove_bay: blind-POST firing 3 book POST(s), staggered at T0 offsets [-500, -250, 0] ms
-course foreup:mangrove_bay: blind-POST sent -500ms (planned -500ms) slot 202607220922 → gone
-course foreup:mangrove_bay: blind-POST sent -250ms (planned -250ms) slot 202607220915 → gone
+course foreup:mangrove_bay: blind-POST sent -500ms (planned -500ms) slot 202607220922 → gone[unavailable]
+course foreup:mangrove_bay: blind-POST sent -250ms (planned -250ms) slot 202607220915 → gone[unavailable]
 course foreup:mangrove_bay: blind-POST sent +0ms (planned +0ms) slot 202607220930 → BOOKED
 ```
 
 That third line is the finding. One drop with this shipped resolves (A) vs (B).
+
+**The `[reason]` tag is load-bearing to that reading** (added post-ship, after the
+2026-08-16 drop). ForeUP returns HTTP 400 for two rejections with OPPOSITE evidential
+weight and no machine-readable discriminator — only the `msg` prose differs:
+
+* `gone[unavailable]` (`"Time not available."`) — the slot was not bookable. This is the
+  ONLY reason that bears on (A) vs (B).
+* `gone[daily_limit]` (`"...1 online reservation per day."`) — ForeUP bouncing the surplus
+  POSTs of a burst WE ALREADY WON. It says nothing about the race. 2026-08-16 came back
+  1 booked / 2 daily_limit, plausibly because the 250 ms gaps let the rank-0 booking commit
+  before the siblings were processed — but **that causation is NOT established**: every
+  other drop in the retention window booked 2–3 and cancelled extras, yet the pre-stagger
+  2026-07-11 drop produced the SAME 1/2 shape from a simultaneous burst. A simultaneous
+  burst can evidently also serialize behind ForeUP's 1/day counter, so the 1/2 shape is
+  uninformative about timing on its own.
+
+Before the split, both logged as `gone` and the aggregate line called all of them
+"claimed pre-book", i.e. reported lost races that never happened.
 
 **`sent` is MEASURED at the send instant, not copied from the plan** (adversarial review,
 must-fix 1). On a run that STARTS past an offset — a late-landing cron, a mid-deploy fire —
