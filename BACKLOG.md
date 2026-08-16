@@ -56,6 +56,17 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   the hypothesis currently rests on two 0/3 drops, one of which (2026-08-01) is fully
   explained by a whole-day tournament block.
 
+- **Pin whether ForeUP's "1 online reservation per day" is scoped to the PLAY date or the
+  CALENDAR day the booking is made.** Surfaced by the adversarial review of #201 and currently
+  UNPINNED — the multi-day design implies play-date scoping and nothing observed contradicts it,
+  but no evidence discriminates the two (every drop books a different play date on a different
+  calendar day, so the two hypotheses predict identical outcomes). It matters because
+  `_rejection_summary` now reports an all-`daily_limit` burst as "we already hold a reservation
+  for **this date**": under calendar-day scoping that wording would be wrong, since a Sunday
+  burst could be bounced by Saturday's reservation made the previous morning. Cheap-ish
+  experiment: from a dev/manual session, attempt a second booking for a DIFFERENT play date on a
+  day we already booked, and read which body comes back.
+
 ---
 
 ## Frontend (single-user web UI)
