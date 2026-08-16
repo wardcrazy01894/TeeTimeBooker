@@ -504,8 +504,60 @@ async def test_blind_post_logs_slot_gone_count(
         result = await orch.run(_request(course_ids=(cid,)))
 
     assert result.outcome == BookingOutcome.NO_INVENTORY
-    assert any("slot-gone" in r.getMessage() and "2" in r.getMessage() for r in caplog.records), (
-        "expected an aggregate slot-gone count line from _blind_post_course"
+    assert any("2 of 2 slot(s) rejected" in r.getMessage() for r in caplog.records), (
+        "expected an aggregate rejection count line from _blind_post_course"
+    )
+
+
+async def test_per_post_diagnostic_names_the_rejection_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The stagger's whole value is reading offset→outcome (STAGGER_PLAN §3.3), and a bare
+    "gone" collapses two rejections with OPPOSITE meaning: "unavailable" is race/boundary
+    evidence, "daily_limit" is just our own winning sibling bouncing the surplus. Observed
+    live 2026-08-16 (1 booked / 2 daily_limit)."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 15), _bslot(cid, 8, 0)])
+    fa.set_book_side_effects([BookingOutcome.BOOKED, SlotGoneError("surplus", "daily_limit")])
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    assert any("→ gone[daily_limit]" in r.getMessage() for r in caplog.records), (
+        "per-POST diagnostic must name the rejection reason, not a bare 'gone'"
+    )
+
+
+async def test_aggregate_line_breaks_down_by_reason_not_claimed_pre_book(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The aggregate line asserted "claimed pre-book" for EVERY 4xx. On 2026-08-16 that
+    reported two lost races that never happened — both rejects were ForeUP bouncing our own
+    surplus POSTs under the 1/day rule. It must report the reason breakdown instead."""
+    cid = CourseId("fake:mb")
+    fa = FakeAdapter(course_id=cid, supports_blind_post=True)
+    fa.set_blind_slots([_bslot(cid, 8, 15), _bslot(cid, 8, 0), _bslot(cid, 8, 30)])
+    fa.set_book_side_effects(
+        [
+            BookingOutcome.BOOKED,
+            SlotGoneError("surplus", "daily_limit"),
+            SlotGoneError("lost", "unavailable"),
+        ]
+    )
+
+    orch, _, _ = _build({cid: fa})
+    with caplog.at_level(logging.INFO, logger="teetime.core.orchestrator"):
+        result = await orch.run(_request(course_ids=(cid,)))
+
+    assert result.outcome == BookingOutcome.BOOKED
+    agg = [r.getMessage() for r in caplog.records if "2 of 3 slot(s)" in r.getMessage()]
+    assert agg, "expected the aggregate rejection line"
+    assert "daily_limit=1" in agg[0] and "unavailable=1" in agg[0], agg[0]
+    assert "claimed pre-book" not in agg[0], (
+        "a daily_limit reject is self-inflicted, not a slot claimed by someone else"
     )
 
 
@@ -887,7 +939,7 @@ async def test_total_blind_wipeout_logs_warning(
     wipeout = [
         r.getMessage()
         for r in caplog.records
-        if r.levelname == "WARNING" and "slot-gone" in r.getMessage()
+        if r.levelname == "WARNING" and "slot(s) rejected" in r.getMessage()
     ]
     assert wipeout, "expected a WARNING line for a total blind wipeout"
     assert any("wipeout" in m.lower() for m in wipeout)

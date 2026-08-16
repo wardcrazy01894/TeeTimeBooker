@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from .models import (
     BookingRequest,
@@ -23,6 +23,10 @@ from .models import (
     ExistingReservation,
     TeeTimeSlot,
 )
+
+# Why a booking POST was definitively rejected. See SlotGoneError for what each means
+# and why the distinction is load-bearing for reading a staggered blind burst.
+SlotGoneReason = Literal["unavailable", "daily_limit", "conflict", "unknown"]
 
 
 class AdapterError(Exception):
@@ -78,7 +82,34 @@ class RateLimitError(AdapterError):
 
 
 class SlotGoneError(AdapterError):
-    """Slot was visible at search() but disappeared by book() — race lost."""
+    """Slot was visible at search() but disappeared by book() — race lost.
+
+    ``reason`` classifies WHY the platform rejected the booking. It is DIAGNOSTIC ONLY —
+    every reason means the same thing to control flow (no reservation was created; try
+    the next-ranked slot) — but the values carry opposite evidential weight when reading
+    a staggered blind burst (STAGGER_PLAN §3.3):
+
+    * ``"unavailable"`` — the slot was not bookable ("Time not available."). This is the
+      one that CARRIES race/boundary evidence: either someone claimed it first, or our
+      POST arrived before the platform's release flip. Byte-identical bodies, which is
+      exactly why the burst is staggered.
+    * ``"daily_limit"`` — rejected by ForeUP's "1 online reservation per day" rule. This
+      is the EXPECTED consequence of a SIBLING POST in our own burst having already won,
+      so it carries NO information about the race. Observed live 2026-08-16, where the
+      250 ms stagger let the rank-0 booking commit before the surplus POSTs were
+      processed (1 booked / 2 daily_limit — the first non-uniform burst outcome).
+    * ``"conflict"`` — HTTP 409.
+    * ``"unknown"`` — an unrecognised body; the default, so non-ForeUP adapters and any
+      future rejection wording stay correct rather than being misfiled under an observed
+      reason.
+
+    Collapsing these under one "claimed pre-book" label made a burst that we ourselves
+    invalidated read as lost races, which is the opposite conclusion.
+    """
+
+    def __init__(self, message: str, reason: SlotGoneReason = "unknown") -> None:
+        super().__init__(message)
+        self.reason: SlotGoneReason = reason
 
 
 class CancelError(AdapterError):

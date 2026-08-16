@@ -182,12 +182,27 @@ offset to the orchestrator's per-POST accounting so the log line reads the bound
 
 ```
 course foreup:mangrove_bay: blind-POST firing 3 book POST(s), staggered at T0 offsets [-500, -250, 0] ms
-course foreup:mangrove_bay: blind-POST sent -500ms (planned -500ms) slot 202607220922 → gone
-course foreup:mangrove_bay: blind-POST sent -250ms (planned -250ms) slot 202607220915 → gone
+course foreup:mangrove_bay: blind-POST sent -500ms (planned -500ms) slot 202607220922 → gone[unavailable]
+course foreup:mangrove_bay: blind-POST sent -250ms (planned -250ms) slot 202607220915 → gone[unavailable]
 course foreup:mangrove_bay: blind-POST sent +0ms (planned +0ms) slot 202607220930 → BOOKED
 ```
 
 That third line is the finding. One drop with this shipped resolves (A) vs (B).
+
+**The `[reason]` tag is load-bearing to that reading** (added post-ship, after the
+2026-08-16 drop). ForeUP returns HTTP 400 for two rejections with OPPOSITE evidential
+weight and no machine-readable discriminator — only the `msg` prose differs:
+
+* `gone[unavailable]` (`"Time not available."`) — the slot was not bookable. This is the
+  ONLY reason that bears on (A) vs (B).
+* `gone[daily_limit]` (`"...1 online reservation per day."`) — ForeUP bouncing the surplus
+  POSTs of a burst WE ALREADY WON. It says nothing about the race, and it is now the
+  ROUTINE shape of a successful staggered drop: the 250 ms gaps let the rank-0 booking
+  commit before the siblings are processed, so 2026-08-16 came back 1 booked / 2
+  daily_limit — where every pre-stagger drop booked 2–3 and cancelled extras.
+
+Before the split, both logged as `gone` and the aggregate line called all of them
+"claimed pre-book", i.e. reported lost races that never happened.
 
 **`sent` is MEASURED at the send instant, not copied from the plan** (adversarial review,
 must-fix 1). On a run that STARTS past an offset — a late-landing cron, a mid-deploy fire —

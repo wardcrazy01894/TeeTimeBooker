@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
@@ -65,14 +66,17 @@ log = logging.getLogger(__name__)
 def _blind_outcome_label(result: BookingResult | BaseException) -> str:
     """Compact outcome tag for the per-POST blind-burst diagnostic line.
 
-    Deliberately coarse: the line exists to correlate T0 OFFSET with success/failure
-    (STAGGER_PLAN §3.3), and the detailed per-failure logging already happens below.
-    PII-free — slot ids and exception types only.
+    Coarse, but a SlotGone carries its `reason` (see SlotGoneError): "unavailable" is
+    race/boundary evidence, while "daily_limit" is ForeUP bouncing the surplus POSTs of a
+    burst we ALREADY won and says nothing about the race. Collapsing them hid that
+    distinction on 2026-08-16, when a 1-booked/2-daily_limit burst read as two lost races.
+    The detailed per-failure logging still happens below. PII-free — slot ids, exception
+    types and a fixed reason vocabulary only.
     """
     if isinstance(result, BookingResult):
         return result.outcome.value.upper()
     if isinstance(result, SlotGoneError):
-        return "gone"
+        return f"gone[{result.reason}]"
     return type(result).__name__
 
 
@@ -426,6 +430,10 @@ class Orchestrator:
         blind_results = await asyncio.gather(*blind_tasks, return_exceptions=True)
         booked: list[BookingResult] = []
         gone = 0  # SlotGoneError count — logged in aggregate so a total wipeout is diagnosable
+        # Rejections split by SlotGoneError.reason. The count alone is not diagnosable: a
+        # "daily_limit" reject is the EXPECTED bounce of our own surplus POST once a sibling
+        # won, whereas "unavailable" is the one that carries race/boundary evidence.
+        gone_by_reason: Counter[str] = Counter()
         # A BaseException surfacing in gather's RESULTS — a CHILD book() task raising
         # asyncio.CancelledError, or any other BaseException subclass — is CAPTURED here, not
         # re-raised mid-loop: a booked SIBLING later in `fire` must be secured first, or it would
@@ -463,7 +471,8 @@ class Orchestrator:
             if isinstance(r, BookingResult) and r.outcome == BookingOutcome.BOOKED:
                 booked.append(r)
             elif isinstance(r, SlotGoneError):
-                gone += 1  # slot claimed between synthesize and book — drop
+                gone += 1  # definitively rejected, nothing booked — drop
+                gone_by_reason[r.reason] += 1
                 continue
             elif isinstance(r, BookingResult):  # pragma: no cover - defensive (#e2)
                 # Non-BOOKED BookingResult: unreachable today (a live-mode book() returns BOOKED
@@ -505,16 +514,27 @@ class Orchestrator:
 
         if gone:
             # Aggregate, not per-slot: at a competitive drop many/all blind POSTs can lose the
-            # race. One line tells an operator how many of the N fired came back slot-gone. A
+            # race. One line tells an operator how many of the N fired were rejected AND WHY. A
             # TOTAL wipeout (every fired POST gone AND nothing booked) is the prime "why no 6am
             # booking" signal, so escalate it to WARNING — distinct from a partial loss (INFO).
+            #
+            # The breakdown is the point: this line used to assert "claimed pre-book" for every
+            # rejection, which on 2026-08-16 reported two lost races that never happened (both
+            # were "daily_limit" — ForeUP bouncing our own surplus POSTs after the rank-0 slot
+            # had already booked). Only "unavailable" rejections are race/boundary evidence.
+            # Sorted by count desc, then name, so the line is stable across runs.
             total_wipeout = gone == len(fire) and not booked
+            breakdown = ", ".join(
+                f"{reason}={n}"
+                for reason, n in sorted(gone_by_reason.items(), key=lambda kv: (-kv[1], kv[0]))
+            )
             log.log(
                 logging.WARNING if total_wipeout else logging.INFO,
-                "course %s: blind-POST %d of %d slot(s) came back slot-gone (claimed pre-book)%s",
+                "course %s: blind-POST %d of %d slot(s) rejected (%s)%s",
                 course_id,
                 gone,
                 len(fire),
+                breakdown,
                 " — TOTAL wipeout, falling back to a fresh search" if total_wipeout else "",
             )
 

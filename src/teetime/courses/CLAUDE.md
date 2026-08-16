@@ -51,7 +51,10 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
   NO public tee time exists for most of that day: on 2026-08-08 the teesheet was non-empty but
   started at **16:07** — nothing earlier at ANY party size. Signature at the 06:00 drop: every
   blind POST returns `400 {"success":false,"msg":"Time not available."}` with a server `Date`
-  inside the open second (so not an early-arrival rejection), and the post-reguard fresh search
+  inside the open second (so not an early-arrival rejection) — i.e. every POST logs
+  `→ gone[unavailable]`, never `gone[daily_limit]` (see the `SlotGoneError.reason` bullet in the
+  root CLAUDE.md; a `daily_limit` reject means a sibling POST WON and is not a miss at all) —
+  and the post-reguard fresh search
   returns plenty of raw slots with 0 in-window; expect no morning slot to reappear on later
   watcher cycles either. **This is NOT a slot-race loss and no burst size fixes it** — a
   whole-day block means the synthesized morning grid has no real inventory behind it, so
