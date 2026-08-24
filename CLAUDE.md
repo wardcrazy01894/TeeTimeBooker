@@ -1002,6 +1002,7 @@ a row names several sites, grep and update ALL of them in the same PR.
 | Change | Doc sites to update (all of them) |
 |--------|-----------------------------------|
 | Prod infra tag bump / deploy | README.md status (§top + IaC section), CLAUDE.md Status paras, PLAN.md (scope note + §16 M6.T3 row). Mechanically enforced: `tests/test_docs_consistency.py` fails CI if the three docs name different "latest infra tag" versions |
+| Dependency floor bump / dep-comment edit | `pyproject.toml` (bump the floor AND check the comment above it) — a dep comment must name NO tracking version, since Dependabot bumps the floor out from under it. Mechanically enforced: `tests/test_docs_consistency.py` fails CI if the `idna` comment names any version but the CVE boundary, or if the floor drops below it. This claim has drifted TWICE (cleaned in #106, re-drifted by #204) |
 | New/changed config key or default | `core/config.py` field comment, `config/example.toml` + `container.toml` + `local.toml`, README config walkthrough, `tests/test_container_config_parity.py` (add the parity/default pin), CLAUDE.md invariant bullet if load-bearing |
 | Orchestrator/watcher behavior change | CLAUDE.md invariant bullets, PLAN.md §9/§9.1/§12, the owning plan doc's status header (and a supersession banner on any plan it retires) |
 | New CLI flag or env var | README, AZURE_PLAN §7.3 env inventory + `compute.bicep`/`keyvault.bicep` if deployed, CLAUDE.md common commands |
