@@ -9,10 +9,13 @@ scan. This test makes the disagreement a CI failure instead.
 The infra-tag guard deliberately checks AGREEMENT, not correctness — CI cannot know which
 tag is truly deployed, but it CAN know the three docs must name the SAME one.
 
-The pyproject guards below are the same idea applied to CODE comments, which drift exactly
-like docs do: a dependency comment that quotes the version it sits above is stale the next
-time Dependabot bumps that floor. One of those (`test_idna_floor_never_drops_below_cve_
-boundary`) checks CORRECTNESS rather than agreement — it can, because the CVE boundary is a
+The pyproject guards below extend that idea to CODE comments, which drift exactly like docs
+do: a dependency comment quoting the version it sits above is stale the next time Dependabot
+bumps that floor (observed twice on the `idna` pin — cleaned in #106, re-drifted by #204).
+`test_idna_comment_names_no_tracking_version` is that comment guard. Its neighbour
+`test_idna_floor_never_drops_below_cve_boundary` is NOT a comment guard but a SECURITY one
+on the requirement itself — it lives here because it pins the invariant that comment
+describes, and it can check CORRECTNESS rather than agreement since the CVE boundary is a
 fixed fact CI knows. See the "Documentation standard" section of CLAUDE.md for the full
 change→docs mapping.
 """
@@ -85,9 +88,12 @@ _IDNA_COMMENT_ALLOWED_VERSIONS = frozenset({_IDNA_CVE_BOUNDARY})
 _IDNA_REQ_RE = re.compile(r'^\s*"idna(?:\[[^\]]*\])?\s*>=\s*(?P<floor>\d+(?:\.\d+)*)', re.MULTILINE)
 # Lookbehind excludes only [\d.], NOT \w: `\b` and `(?<![\w.])` BOTH fail between "v" and
 # "3" (v is a word char), so `v3.18` — the obvious re-drift wording — slips past them
-# unflagged. Excluding just digits/dots catches it while still refusing to match the tail
-# of a longer version ("3.19.1" yields "3.19", not also "19.1").
-_VERSION_LITERAL_RE = re.compile(r"(?<![\d.])\d+\.\d+")
+# unflagged. Excluding just digits/dots catches it.
+#
+# The trailing (?:\.\d+)+ captures the WHOLE dotted version rather than its first two
+# parts, so a tracking literal that merely EXTENDS the boundary ("3.15.2") surfaces as
+# "3.15.2" and is flagged, instead of truncating to an allow-listed "3.15" and passing.
+_VERSION_LITERAL_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)+")
 
 
 def _version_tuple(raw: str) -> tuple[int, ...]:
@@ -139,8 +145,12 @@ def test_idna_comment_names_no_tracking_version() -> None:
 
 def test_idna_floor_never_drops_below_cve_boundary() -> None:
     """The floor's whole purpose: the resolver can never pick an idna with CVE-2026-45409."""
-    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    match = _IDNA_REQ_RE.search(text)
+    lines = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8").splitlines()
+    # Reuse the SAME locator the comment guard uses. Locating by `.search` over the whole
+    # file instead let the two tests pick different lines under exotic line endings; going
+    # through one helper makes that divergence impossible by construction.
+    line = lines[_idna_requirement_line_index(lines)]
+    match = _IDNA_REQ_RE.match(line)
     assert match is not None, "no `idna>=` requirement in pyproject.toml — the CVE floor is gone"
     floor = _version_tuple(match.group("floor"))
     boundary = _version_tuple(_IDNA_CVE_BOUNDARY)
