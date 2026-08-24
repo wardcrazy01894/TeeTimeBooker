@@ -36,8 +36,8 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "respx>=0.23.1",        # httpx mock for unit tests
-    "ruff>=0.16.2",         # 0.16 promoted PLR0917 to stable + formats md — see [tool.ruff]
-    "mypy>=2.3.0",          # 2.x strict defaults verified clean against this codebase
+    "ruff>=0.16.3",         # 0.16 promoted PLR0917 to stable + formats md — see [tool.ruff]
+    "mypy>=2.3.1",          # 2.x strict defaults verified clean against this codebase
     "pip-audit>=2.10.1",    # dependency vulnerability scanning (CVE check)
 ]
 # Removed (unused): vcrpy (cassettes were never recorded — the live-API drift canary in
