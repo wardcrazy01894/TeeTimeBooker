@@ -6,9 +6,15 @@ fixed elsewhere: a "latest infra tag" claim left behind in one doc (PLAN.md said
 that claim in THREE docs; whichever one the bump misses is a silent lie until the next
 scan. This test makes the disagreement a CI failure instead.
 
-Deliberately checks AGREEMENT, not correctness — CI cannot know which tag is truly
-deployed, but it CAN know the three docs must name the SAME one. See the
-"Documentation standard" section of CLAUDE.md for the full change→docs mapping.
+The infra-tag guard deliberately checks AGREEMENT, not correctness — CI cannot know which
+tag is truly deployed, but it CAN know the three docs must name the SAME one.
+
+The pyproject guards below are the same idea applied to CODE comments, which drift exactly
+like docs do: a dependency comment that quotes the version it sits above is stale the next
+time Dependabot bumps that floor. One of those (`test_idna_floor_never_drops_below_cve_
+boundary`) checks CORRECTNESS rather than agreement — it can, because the CVE boundary is a
+fixed fact CI knows. See the "Documentation standard" section of CLAUDE.md for the full
+change→docs mapping.
 """
 
 from __future__ import annotations
@@ -58,41 +64,76 @@ def test_latest_infra_tag_claims_agree_across_docs() -> None:
 #
 # 2026-08-24: Dependabot #204 bumped the `idna` floor 3.18 -> 3.19 but left the comment
 # above it reading "Floor now tracks the locked version (3.18)" — a present-tense claim
-# that was false the moment it merged. Dependabot bumps this floor on EVERY idna release,
-# so any version literal repeated in that comment is stale by construction. The durable
-# fix is to state no version there at all; this guard keeps it that way.
+# that was false the moment it merged. Dependabot bumps this floor on every idna release
+# (weekly-grouped), so any version literal repeated in that comment is stale by
+# construction. The durable fix is to state no version there at all; this guard keeps it
+# that way.
 #
-# The CVE boundary (3.15) is the ONE version legitimately named: it is a fixed historical
-# fact, not a tracking datum, so it is allowed by _CVE_BOUNDARY below.
+# The CVE boundary (3.15) is the ONE version legitimately named: a fixed historical fact,
+# not a tracking datum. Anything else is flagged.
 
 _IDNA_CVE_BOUNDARY = "3.15"
-_IDNA_REQ_RE = re.compile(r'^\s*"idna>=(?P<floor>\d+\.\d+)"', re.MULTILINE)
-_VERSION_LITERAL_RE = re.compile(r"\b\d+\.\d+\b")
+# Versions allowed to appear in the idna comment. If a future edit legitimately needs
+# another (a python version, say), add it HERE rather than loosening the regex — the guard
+# is deliberately biased toward a loud false positive over a silent miss.
+_IDNA_COMMENT_ALLOWED_VERSIONS = frozenset({_IDNA_CVE_BOUNDARY})
+
+# Matches multi-part floors ("3.19", "3.19.1"), optional extras and spacing, and does NOT
+# require a closing quote — so `"idna>=3.19.1"` and `"idna >= 3.19,<4"` still match. The
+# two-part-only original went VACUOUS-ish on a three-part floor (cryptic StopIteration),
+# and three-part floors are this file's norm: see httpx/pydantic above.
+_IDNA_REQ_RE = re.compile(r'^\s*"idna(?:\[[^\]]*\])?\s*>=\s*(?P<floor>\d+(?:\.\d+)*)', re.MULTILINE)
+# Lookbehind excludes only [\d.], NOT \w: `\b` and `(?<![\w.])` BOTH fail between "v" and
+# "3" (v is a word char), so `v3.18` — the obvious re-drift wording — slips past them
+# unflagged. Excluding just digits/dots catches it while still refusing to match the tail
+# of a longer version ("3.19.1" yields "3.19", not also "19.1").
+_VERSION_LITERAL_RE = re.compile(r"(?<![\d.])\d+\.\d+")
+
+
+def _version_tuple(raw: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in raw.split("."))
+
+
+def _idna_requirement_line_index(lines: list[str]) -> int:
+    idx = next((i for i, line in enumerate(lines) if _IDNA_REQ_RE.match(line)), None)
+    assert idx is not None, (
+        "no `idna>=X.Y` requirement line in pyproject.toml — the pin format changed or the "
+        "dependency moved; update _IDNA_REQ_RE in the same PR so this guard stays live."
+    )
+    return idx
 
 
 def _idna_comment_block() -> str:
-    """The contiguous `#` comment lines immediately preceding the `idna>=` requirement."""
+    """Every comment attached to the `idna` requirement: the lines above it AND its inline `#`."""
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     lines = text.splitlines()
-    idx = next(i for i, line in enumerate(lines) if _IDNA_REQ_RE.match(line))
+    idx = _idna_requirement_line_index(lines)
     block: list[str] = []
     for line in reversed(lines[:idx]):
         if not line.strip().startswith("#"):
             break
         block.append(line)
-    return "\n".join(reversed(block))
+    block.reverse()
+    # House style puts a TRAILING `#` comment on the requirement line itself — every other
+    # dep in this list does (httpx, pydantic, click, ntplib). Scanning only the lines above
+    # left that channel unchecked, so `"idna>=3.20",  # tracks the lock (3.20)` passed.
+    inline = lines[idx].partition("#")[2]
+    if inline.strip():
+        block.append(inline)
+    return "\n".join(block)
 
 
 def test_idna_comment_names_no_tracking_version() -> None:
     """The idna comment must not repeat a version Dependabot will bump out from under it."""
     block = _idna_comment_block()
-    assert block, "no comment block found above the idna requirement — did the pin move?"
-    stale = {v for v in _VERSION_LITERAL_RE.findall(block) if v != _IDNA_CVE_BOUNDARY}
+    assert block, "no comment found on or above the idna requirement — did the pin move?"
+    stale = set(_VERSION_LITERAL_RE.findall(block)) - _IDNA_COMMENT_ALLOWED_VERSIONS
     assert not stale, (
         f"pyproject.toml: the `idna` comment names version literal(s) {sorted(stale)} that "
         f"Dependabot bumps on every release, so they go stale on the next bump (this is "
-        f"exactly how '(3.18)' survived the 3.19 bump). Only the CVE boundary "
-        f"{_IDNA_CVE_BOUNDARY} may be named — describe the floor without a version."
+        f"exactly how '(3.18)' survived the 3.19 bump). Describe the floor without a "
+        f"version, or — if the literal is a fixed fact like the CVE boundary — add it to "
+        f"_IDNA_COMMENT_ALLOWED_VERSIONS."
     )
 
 
@@ -101,8 +142,13 @@ def test_idna_floor_never_drops_below_cve_boundary() -> None:
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     match = _IDNA_REQ_RE.search(text)
     assert match is not None, "no `idna>=` requirement in pyproject.toml — the CVE floor is gone"
-    floor = tuple(int(p) for p in match.group("floor").split("."))
-    boundary = tuple(int(p) for p in _IDNA_CVE_BOUNDARY.split("."))
+    floor = _version_tuple(match.group("floor"))
+    boundary = _version_tuple(_IDNA_CVE_BOUNDARY)
+    # Zero-pad the shorter so a multi-part floor compares correctly: (3,15) must NOT count
+    # as >= (3,15,1). Coupled to _IDNA_REQ_RE now accepting three-part floors.
+    width = max(len(floor), len(boundary))
+    floor += (0,) * (width - len(floor))
+    boundary += (0,) * (width - len(boundary))
     assert floor >= boundary, (
         f"idna floor {match.group('floor')} is below the CVE-2026-45409 boundary "
         f"{_IDNA_CVE_BOUNDARY} — the resolver could pick a vulnerable idna."
