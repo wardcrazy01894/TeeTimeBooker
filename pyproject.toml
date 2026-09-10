@@ -10,8 +10,8 @@ license = { text = "Proprietary" }
 # Runtime deps. Pinned loosely; lock via uv.lock once `uv sync` is run.
 dependencies = [
     "httpx>=0.28.1",        # async-capable HTTP client; cleaner than requests
-    "pydantic>=2.13.4",     # config + payload validation
-    "click>=8.4.2",         # CLI
+    "pydantic>=2.13.5",     # config + payload validation
+    "click>=8.5.0",         # CLI
     # NOT imported directly — idna is transitive via httpx/anyio. Kept here ONLY as a
     # security floor so the resolver can never pick idna<3.15 (CVE-2026-45409, a ReDoS
     # fixed in 3.15). Dependabot bumps the floor below in lockstep with the lock on every
