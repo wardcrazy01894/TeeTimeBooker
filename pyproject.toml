@@ -21,6 +21,11 @@ dependencies = [
     # requirement. Both properties are pinned by tests/test_docs_consistency.py.
     "idna>=3.20",
     "ntplib>=0.4",          # best-effort NTP clock-offset for the 6 AM race (RealClock)
+    # AES-256-GCM (AESGCM) for tenant credential encryption at rest — tenant/crypto.py,
+    # MULTIUSER_PLAN §9.2. Fernet was rejected because it has no associated data. The floor
+    # is Dependabot-managed (bumped with the lock on every release), so this comment names
+    # no version.
+    "cryptography>=50.0.1",
 ]
 
 # Dev deps are a PEP 735 dependency-group, NOT a `[project.optional-dependencies]` extra.
