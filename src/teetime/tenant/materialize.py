@@ -12,9 +12,16 @@ for every rule, including a new rule_id created after an external cancel. A syst
 flipped back, rule reactivated).
 
 Rules: no row for a date already frozen (``core.booking_cutoff.frozen_reason`` in the COURSE
-timezone) or in the past. A collision with an active explicit row is inserted SUPERSEDED. An edit
-touches only PENDING, unleased, not-frozen rows (never BOOKED/SKIPPED/SUPERSEDED). Deactivation
-withdraws PENDING rows with reason ``rule_deactivated``; reactivation restores them if not frozen.
+timezone) or in the past. A collision with an active explicit row is inserted SUPERSEDED. A
+window/party edit rewrites only PENDING, unleased, not-frozen rows (never BOOKED/SKIPPED/
+SUPERSEDED). Deactivation, deletion and a weekday change WITHDRAW the rule's PENDING **and
+SUPERSEDED** rows (system reason; round-4 D1); BOOKED rows are never touched. Order (§7.7):
+withdraw the rows FIRST, then write the rule inactive, so a crash in between never leaves pending
+rows of an inactive rule (``load_event_rows`` also filters inactive rules as belt and braces).
+Reactivation goes through ``TenantStore.reactivate_rule_row`` only, which restores the row's
+pre-supersede status (``superseded_from``: SKIPPED stays SKIPPED, round-5) else PENDING. The
+materializer NEVER writes superseded -> pending (only the web's one-off withdraw restores a
+superseded row, round-4 D2).
 
 STUB — implemented in MULTIUSER_PLAN MU-6.
 """
@@ -51,8 +58,12 @@ class RuleConflictError(ValueError):
 class DateAction(StrEnum):
     SKIP_USER_TERMINAL = "skip_user_terminal"
     SKIP_FROZEN = "skip_frozen"
-    NOTHING = "nothing"  # own row already pending/booked/skipped, or superseded while slot held
-    REACTIVATE = "reactivate"  # own row system-withdrawn (or superseded) and the slot is free
+    # own row already pending/booked/skipped, or superseded (then the slot is held by the
+    # explicit row, and D1 guarantees its rule is active; the materializer never un-supersedes)
+    NOTHING = "nothing"
+    # own row system-withdrawn and the slot is free -> ``reactivate_rule_row`` (restores
+    # ``superseded_from`` or PENDING). NEVER a superseded row (round-4 D1).
+    REACTIVATE = "reactivate"
     CREATE = "create"  # no own row; the slot is free
     CREATE_SUPERSEDED = "create_superseded"  # no own row; another active row holds the slot
 
@@ -124,6 +135,8 @@ async def apply_rule_edit(
     now: datetime,
 ) -> MaterializeReport:
     """Window/party change: rewrite PENDING unleased not-frozen rule rows in place. Weekday
-    change: withdraw old-weekday PENDING rows, then materialize the new weekday. Deactivate
-    (``new.active is False``): withdraw PENDING (reason ``rule_deactivated``); BOOKED untouched."""
+    change: withdraw old-weekday PENDING and SUPERSEDED rows (``rule_weekday_changed``), then
+    materialize the new weekday. Deactivate (``new.active is False``): withdraw PENDING and
+    SUPERSEDED rows (``rule_deactivated``) BEFORE writing the rule inactive (§7.7); BOOKED rows are
+    untouched (round-4 D1)."""
     raise NotImplementedError(_MU6)
