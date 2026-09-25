@@ -16,8 +16,10 @@ timezone) or in the past. A collision with an active explicit row is inserted SU
 window/party edit rewrites only PENDING, unleased, not-frozen rows (never BOOKED/SKIPPED/
 SUPERSEDED). Deactivation, deletion and a weekday change WITHDRAW the rule's PENDING **and
 SUPERSEDED** rows (system reason; round-4 D1); BOOKED rows are never touched. Order (§7.7):
-withdraw the rows FIRST, then write the rule inactive, so a crash in between never leaves pending
-rows of an inactive rule (``load_event_rows`` also filters inactive rules as belt and braces).
+``reset_materialized_through`` FIRST, then withdraw the unleased rows, then write the rule
+inactive, so a crash part-way leaves the tick work to do. Rows skipped because they were leased
+are swept later by the tick via ``rows_of_inactive_rules``; until then ``load_event_rows`` /
+``load_watch_rows`` never offer them and ``finalize_lost`` withdraws them instead of LOST.
 Reactivation goes through ``TenantStore.reactivate_rule_row`` only, which restores the row's
 pre-supersede status (``superseded_from``: SKIPPED stays SKIPPED, round-5) else PENDING. The
 materializer NEVER writes superseded -> pending (only the web's one-off withdraw restores a
@@ -121,7 +123,9 @@ async def materialize_tick(
     now: datetime,
 ) -> list[MaterializeReport]:
     """Watcher entry: one indexed query (rules with ``materialized_through`` short of the
-    horizon), a no-op on most runs. ``policies`` is keyed by CourseId string."""
+    horizon), a no-op on most runs, plus the ``rows_of_inactive_rules`` sweep that withdraws rows a
+    deactivation had to skip while they were leased (§7.7). ``policies`` is keyed by CourseId
+    string."""
     raise NotImplementedError(_MU6)
 
 
@@ -137,6 +141,6 @@ async def apply_rule_edit(
     """Window/party change: rewrite PENDING unleased not-frozen rule rows in place. Weekday
     change: withdraw old-weekday PENDING and SUPERSEDED rows (``rule_weekday_changed``), then
     materialize the new weekday. Deactivate (``new.active is False``): withdraw PENDING and
-    SUPERSEDED rows (``rule_deactivated``) BEFORE writing the rule inactive (§7.7); BOOKED rows are
-    untouched (round-4 D1)."""
+    SUPERSEDED rows (``rule_deactivated``) after ``reset_materialized_through`` and BEFORE
+    writing the rule inactive (§7.7); BOOKED rows are untouched (round-4 D1)."""
     raise NotImplementedError(_MU6)
