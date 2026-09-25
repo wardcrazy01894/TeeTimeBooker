@@ -1538,6 +1538,32 @@ class TenantStoreConformance:
 
     # --- materializer support -------------------------------------------------------------
 
+    async def test_get_rule_unscoped_reads_any_rule(self, harness: StoreHarness) -> None:
+        """MU-6: the tick's sweep names its withdraw reason from the STORED rule (missing ->
+        ``rule_deleted``, inactive -> ``rule_deactivated``, else ``rule_weekday_changed``), so
+        it needs a system read of any rule, active or not, with no ``user_id`` scoping."""
+        s = harness.store
+        t = await _tenant(s)
+        active = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        dormant = await s.upsert_rule(_rule(t, weekday=6, active=False), user_id=t.user.id)
+        assert await s.get_rule_unscoped(active.id) == active
+        assert await s.get_rule_unscoped(dormant.id) == dormant
+        assert await s.get_rule_unscoped(RuleId(uuid4())) is None
+        edited = await s.upsert_rule(replace(active, party_size=3), user_id=t.user.id)
+        assert await s.get_rule_unscoped(active.id) == edited  # always the STORED version
+
+    async def test_get_account_unscoped_reads_any_users_account(
+        self, harness: StoreHarness
+    ) -> None:
+        """MU-6: the tick maps a due rule to its course (and so its ``ReleasePolicy``) through
+        the account, which a system actor reads with no ``user_id`` (the web never does)."""
+        s = harness.store
+        t = await _tenant(s)
+        other = await _tenant(s, n=1)
+        assert await s.get_account_unscoped(t.account.id) == t.account
+        assert await s.get_account_unscoped(other.account.id) == other.account
+        assert await s.get_account_unscoped(CourseAccountId(uuid4())) is None
+
     async def test_rules_needing_materialization(self, harness: StoreHarness) -> None:
         s = harness.store
         t = await _tenant(s)
