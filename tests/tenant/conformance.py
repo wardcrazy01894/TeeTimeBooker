@@ -2494,3 +2494,130 @@ class TenantStoreConformance:
         assert await s.rules_needing_materialization(through=through) == []
         await s.reset_materialized_through(rule.id)
         assert [r.id for r in await s.rules_needing_materialization(through=through)] == [rule.id]
+
+    # --- review round 4 --------------------------------------------------------------------
+
+    async def _weekday_change_withdraws(
+        self, s: TenantStore, t: Tenant, rule: StandingRule, row: RequestRow, weekday: int
+    ) -> StandingRule:
+        rule = await s.upsert_rule(replace(rule, weekday=weekday), user_id=t.user.id)
+        current = await _get(s, row)
+        if current.status is not RowStatus.WITHDRAWN:
+            await s.transition_row(
+                row.id,
+                user_id=None,
+                to=RowStatus.WITHDRAWN,
+                actor=Actor.MATERIALIZER,
+                reason="rule_weekday_changed",
+                now=NOW,
+            )
+        return rule
+
+    async def test_withdraw_explicit_does_not_restore_row_of_weekday_changed_rule(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-4 MF-A: a Saturday row is never restored under a rule now on Sunday."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, rule_row = await _rule_row(s, t)
+        explicit = await _explicit(s, t)
+        await self._weekday_change_withdraws(s, t, rule, rule_row, weekday=6)
+        await s.transition_row(
+            explicit.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        assert (await _get(s, rule_row)).status is RowStatus.WITHDRAWN
+        assert await harness.slot_pointer(t.account.id, TARGET) is None
+        assert await s.load_event_rows(targets={MB: TARGET}, now=NOW) == []
+
+    async def test_withdraw_explicit_restores_row_when_weekday_flipped_back_while_slot_held(
+        self, harness: StoreHarness
+    ) -> None:
+        """The guard is the rule's CURRENT weekday, not the withdraw reason: changed away and
+        back while the one-off held the slot, the row restores when the one-off is withdrawn."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, rule_row = await _rule_row(s, t)
+        explicit = await _explicit(s, t)
+        rule = await self._weekday_change_withdraws(s, t, rule, rule_row, weekday=6)
+        rule = await s.upsert_rule(replace(rule, weekday=SAT), user_id=t.user.id)
+        await s.transition_row(
+            explicit.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        assert (await _get(s, rule_row)).status is RowStatus.PENDING
+        assert await harness.slot_pointer(t.account.id, TARGET) == rule_row.id
+
+    async def test_withdraw_rerequest_after_user_cancel_keeps_date_blocked(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-7 decision: withdrawing a re-request undoes the re-request, not the cancel; the
+        superseded rule row stays SUPERSEDED (inert) on a user-terminal date."""
+        s = harness.store
+        t = await _tenant(s)
+        _, rule_row = await _rule_row(s, t)
+        e1 = await _book(s, await _explicit(s, t), raw_id="E1")
+        await _lease(s, e1, owner=WEB)
+        await s.record_outcomes(
+            [
+                _outcome(
+                    e1,
+                    actor=Actor.WEB,
+                    to_status=RowStatus.CANCELLED,
+                    status_reason="user",
+                    last_outcome="cancelled",
+                    release_lease_owner=WEB,
+                )
+            ]
+        )
+        e2 = await _explicit(s, t)  # "Re-request this date"
+        await s.transition_row(
+            e2.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        assert (await _get(s, rule_row)).status is RowStatus.SUPERSEDED
+        assert await harness.slot_pointer(t.account.id, TARGET) is None
+        assert await s.load_event_rows(targets={MB: TARGET}, now=NOW) == []
+
+    async def test_upsert_rule_honours_a_reset_watermark(self, harness: StoreHarness) -> None:
+        """Round-4 SF-A: a reset wins over the caller's stale copy of the watermark."""
+        s = harness.store
+        t = await _tenant(s)
+        read = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        through = NOW.date() + timedelta(days=21)
+        await s.set_materialized_through(read.id, through)
+        stale = replace(read, materialized_through=through)  # the web read it after the tick
+        await s.reset_materialized_through(read.id)
+        edited = await s.upsert_rule(replace(stale, window_latest=time(11, 0)), user_id=t.user.id)
+        assert edited.materialized_through is None
+        assert [r.id for r in await s.rules_needing_materialization(through=through)] == [read.id]
+
+    async def test_reactivation_flow_resets_watermark_after_upsert(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-4 SF-A: the reactivation flow is upsert(active=True) THEN reset, so the tick
+        revisits withdrawn dates even if the web's synchronous materialize never runs."""
+        s = harness.store
+        t = await _tenant(s)
+        rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        through = NOW.date() + timedelta(days=21)
+        await s.set_materialized_through(rule.id, through)
+        off = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        on = await s.upsert_rule(
+            replace(off, active=True, materialized_through=through), user_id=t.user.id
+        )
+        assert on.materialized_through == through  # without the reset the tick would skip it
+        await s.reset_materialized_through(rule.id)
+        assert [r.id for r in await s.rules_needing_materialization(through=through)] == [rule.id]

@@ -290,12 +290,19 @@ class InMemoryTenantStore:
             for r in history
             if r.status is RowStatus.WITHDRAWN and r.status_reason in SYSTEM_WITHDRAW_REASONS
         ]
-        if not superseded and any(is_user_terminal(r) for r in history):
-            withdrawn = []
+        if any(is_user_terminal(r) for r in history):
+            # Round-7: a user-terminal date stays blocked for the rule. Withdrawing a re-request
+            # undoes the re-request, not the cancel; a superseded rule row stays SUPERSEDED (inert).
+            return None
         for row in [*superseded, *withdrawn]:
             rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
             if row.source is not RowSource.RULE or rule is None or not rule.active:
                 continue
+            if (
+                rule.course_account_id != row.course_account_id
+                or row.target_date.weekday() != rule.weekday
+            ):
+                continue  # round-4 MF-A: never restore onto a weekday the rule no longer covers
             if row_is_frozen(row, now=now):
                 continue
             if lease_held(row, now=now):
@@ -580,7 +587,8 @@ class InMemoryTenantStore:
         return lost
 
     def _withdraw_for_inactive_rule(self, row: RequestRow, now: datetime) -> None:
-        reason = "rule_deactivated"
+        exists = row.rule_id is not None and row.rule_id in self._rules
+        reason = "rule_deactivated" if exists else "rule_deleted"
         check_transition(row, RowStatus.WITHDRAWN, actor=Actor.MATERIALIZER, now=now, reason=reason)
         new = replace(
             self._unleased_write(row, now),
@@ -896,10 +904,11 @@ class InMemoryTenantStore:
             ruledays[key] = rule.id
         stored = rule
         if existing is not None:
-            through = max(
-                (d for d in (existing.materialized_through, rule.materialized_through) if d),
-                default=None,
-            )
+            # A stored None is a RESET (§7.7) and wins over the caller's copy; otherwise the
+            # watermark never moves backwards.
+            through = existing.materialized_through
+            if through is not None and rule.materialized_through is not None:
+                through = max(through, rule.materialized_through)
             stored = replace(rule, version=existing.version + 1, materialized_through=through)
         self._ruledays = ruledays
         self._rules[rule.id] = stored

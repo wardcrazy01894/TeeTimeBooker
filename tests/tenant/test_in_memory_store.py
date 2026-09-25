@@ -13,15 +13,19 @@ import pytest
 
 from teetime.core.models import CourseId
 from teetime.tenant.in_memory_store import InMemoryTenantStore
-from teetime.tenant.models import CourseAccountId, RowId, RuleId, UserId
+from teetime.tenant.models import CourseAccountId, RowId, RowStatus, RuleId, UserId
 
 from .conformance import (
     COURSE_TIMEZONES,
     CUTOFF,
+    FROZEN_NOW,
     MAX_ACCOUNTS_PER_COURSE,
     NOW,
+    TARGET,
     StoreHarness,
     TenantStoreConformance,
+    _rule_row,
+    _tenant,
 )
 
 
@@ -66,3 +70,16 @@ async def test_unknown_course_timezone_is_a_loud_error() -> None:
     store = InMemoryTenantStore(course_timezones={}, cutoff=CUTOFF)
     with pytest.raises(KeyError):
         store.course_timezone(CourseId("nowhere:1"))
+
+
+async def test_finalize_withdraws_row_of_deleted_rule_as_rule_deleted() -> None:
+    """Nit (round 4): a row whose rule no longer exists is withdrawn ``rule_deleted``, not
+    ``rule_deactivated``. In-memory only: the Protocol has no rule delete yet, so the missing
+    rule is simulated by removing it from the store's dict."""
+    store = _store()
+    t = await _tenant(store)
+    rule, _row = await _rule_row(store, t)
+    del store._rules[rule.id]
+    assert await store.finalize_lost(now=FROZEN_NOW) == []
+    (after,) = await store.rows_for_account_date(t.account.id, TARGET)
+    assert (after.status, after.status_reason) == (RowStatus.WITHDRAWN, "rule_deleted")

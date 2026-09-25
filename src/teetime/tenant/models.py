@@ -312,7 +312,11 @@ def derive_account_id(user_id: UserId, course_id: CourseId) -> CourseAccountId:
 
 
 def is_user_terminal(row: RequestRow) -> bool:
-    """True iff ``row`` blocks every materialization of its (account, date) (``USER_TERMINAL``)."""
+    """True iff ``row`` blocks every materialization of its (account, date) (``USER_TERMINAL``).
+
+    It also blocks RESTORING a rule row for that date (round-7): withdrawing a later re-request
+    undoes the re-request, not the cancel, so a superseded or system-withdrawn rule row stays put.
+    Only a new explicit row (the user's "Re-request this date") books the date again."""
     return row.status_reason is not None and (row.status, row.status_reason) in USER_TERMINAL
 
 
