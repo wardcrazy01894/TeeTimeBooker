@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import traceback
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -319,3 +321,83 @@ def test_plaintext_never_in_repr(ring_a: Keyring) -> None:
         assert _PLAINTEXT not in rendering
         assert blob.split(":")[3] not in rendering
         assert _b64(_KEY_A) not in rendering
+
+
+# --- review round 1 (PR #220): must-fix 1 — key material never echoed from a load error -----
+# During rotation an operator hand-edits `TENANT-CREDS-KEYRING` in the Portal; if the new key
+# lands on the WRONG side of the JSON (as a kid, or as `active`) the ring must still fail closed
+# WITHOUT the key reaching the exception text — the runner logs that exception to Log
+# Analytics, and the E7 literal registry cannot help because it loads from the ring that
+# failed to parse.
+
+_SWAPPED_KEY = os.urandom(32)
+_SWAPPED_KEY_B64 = _b64(_SWAPPED_KEY)
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        '{"active": "k1", "keys": {"<K>": "k1"}}',  # kid and value swapped
+        '{"active": "<K>", "keys": {"k1": "<K>"}}',  # key pasted as `active`
+        '{"active": "k1", "keys": {"<K>": "<K16>"}}',  # key as kid, short value
+        '{"active": "k1", "keys": {"<K>": "<K>"}}',  # key as kid, valid 32-byte value
+        '{"active": "k1", "keys": {"k1": "<K>", "<K>": "<K>"}}',  # extra key-shaped kid
+    ],
+)
+def test_swapped_kid_and_key_never_echoes_key_material(template: str) -> None:
+    raw = template.replace("<K16>", _b64(_SWAPPED_KEY[:16])).replace("<K>", _SWAPPED_KEY_B64)
+    with pytest.raises(KeyringError) as info:
+        load_keyring(raw)
+    rendered = "".join(traceback.format_exception(info.value))
+    for text in (str(info.value), repr(info.value), rendered):
+        assert _SWAPPED_KEY_B64 not in text
+        assert _SWAPPED_KEY_B64[:20] not in text  # nor any truncated echo of it
+        assert _SWAPPED_KEY.hex() not in text
+
+
+@pytest.mark.parametrize("kid", ["k1", "2026-09-25", "rot.2_a", "K" * 32])
+def test_kid_label_pattern_accepts_short_labels(kid: str) -> None:
+    ring = load_keyring(_ring_json(kid, {kid: _KEY_A}))
+    assert ring.active_kid == kid
+
+
+@pytest.mark.parametrize(
+    "kid",
+    ["", "k 1", "k/1", "k+1", "k=1", "k:1", "K" * 33, "kïd", _b64(_KEY_A)],
+)
+def test_kid_label_pattern_rejects_key_shaped_or_unsafe_kids(kid: str) -> None:
+    # A base64 AES-256 key is 44 chars of [A-Za-z0-9+/=]; the 32-char cap alone rejects it,
+    # and the alphabet keeps the blob delimiter (':') and whitespace out.
+    with pytest.raises(KeyringError, match="key id"):
+        load_keyring(_ring_json(kid, {kid: _KEY_A}))
+
+
+def test_keyring_post_init_errors_never_echo_kids() -> None:
+    # The type-level invariants (a hand-built ring) must not echo kids either: a kid is
+    # operator data that may be a mis-pasted secret, so load errors name ENTRY POSITIONS.
+    with pytest.raises(KeyringError) as info:
+        Keyring(active_kid="k1", keys={"k1": _KEY_A, _SWAPPED_KEY_B64: _KEY_B})
+    assert _SWAPPED_KEY_B64 not in str(info.value)
+    with pytest.raises(KeyringError) as info:
+        Keyring(active_kid=_SWAPPED_KEY_B64, keys={"k1": _KEY_A})
+    assert _SWAPPED_KEY_B64 not in str(info.value)
+    with pytest.raises(KeyringError) as info:
+        Keyring(active_kid="k1", keys={"k1": _KEY_A[:16]})
+    assert "#1" in str(info.value)  # positional, not by name
+
+
+# --- review round 1: should-fix 1 — duplicate JSON keys are rejected, not last-wins ---------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"active": "k1", "keys": {"k1": "<A>", "k1": "<B>"}}',  # duplicate kid
+        '{"active": "k1", "keys": {"k1": "<A>"}, "keys": {"k1": "<B>"}}',  # duplicate `keys`
+        '{"active": "k1", "active": "k2", "keys": {"k1": "<A>", "k2": "<B>"}}',  # dup active
+    ],
+)
+def test_keyring_duplicate_json_keys_fail_loud(raw: str) -> None:
+    raw = raw.replace("<A>", _b64(_KEY_A)).replace("<B>", _b64(_KEY_B))
+    with pytest.raises(KeyringError, match="duplicate"):
+        load_keyring(raw)
