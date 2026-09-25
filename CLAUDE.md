@@ -362,7 +362,13 @@ hooks E2 + E3 + the allocator; `tenant/allocation.py` is real, not a stub): the 
 set_blind_allowlist` filters `synthesize_blind_slots` before truncation (default `None` = no
 filter). The operator's 08:45–10:00 burst is pinned byte-identical to the pre-widening grid
 (`test_widened_grid_emits_identical_slots_for_0845_1000_window`); nothing in the TOML path calls
-the hook, so this is NOT a booking-behavior change. Details in `src/teetime/courses/CLAUDE.md`. Tenant store (decided 2026-09-25): a Cosmos DB
+the hook, so this is NOT a booking-behavior change. Details in `src/teetime/courses/CLAUDE.md`.
+**MU-4 is DONE in code, UNWIRED** (engine hooks E5 + E6 + E7, each defaulting to today's
+behaviour and called by nothing in the TOML path): `WatchOrchestrator(reconcile_eligible=…)`
+restricts the duplicate reconcile to eligible (owned) reservations, `ForeUpAdapter.
+snapshot_trusted` (`ReservationSnapshotHealth`) says whether the last login's reservation cache
+can be believed, and `core.redaction.register_secret_literals` masks exact secret values in logs.
+See the reconcile, `list_reservations` and log-redaction bullets below. Tenant store (decided 2026-09-25): a Cosmos DB
 free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
 "no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path
 is unaffected.
@@ -462,6 +468,19 @@ in `core/` — never directly. This is the cut line for parallel work.
   functional test cannot: under pytest the root logger already has handlers, so the wrong
   order still attaches and `basicConfig` no-ops) and separately pins, through a real CLI
   entrypoint, that the wiring EXISTS at all.
+  **Exact-literal secrets (E7, MULTIUSER_PLAN §9.4, MU-4 — unwired).** Keyring keys and
+  decrypted ForeUP passwords have no recognisable shape, so no pattern catches them.
+  `core.redaction.register_secret_literals(values)` adds them to a process-wide registry that
+  `redact_text` applies FIRST (so a secret containing an email/PAN-shaped substring is masked
+  whole, as `<redacted-secret>`) — the filter therefore covers the message, `%`-args,
+  `exc_text` and `stack_info` with no change of its own, and call-site `redact_text` gets it
+  too. Additive + idempotent; longest literal wins on overlap (regex-escaped alternation);
+  values shorter than `SECRET_LITERAL_MIN_LEN = 8` are IGNORED (a 1-char literal would shred
+  every line — so a <8-char password is NOT masked) as are values occurring inside a
+  redaction marker (they would break idempotency across handler fan-out). The (set, pattern)
+  state is swapped as one tuple under a lock, so a logging thread never sees a mismatch. An
+  EMPTY registry is a strict no-op — the TOML path registers nothing. `tests/conftest.py`
+  restores the registry around every test (same vacuous-assert hazard as the handler filters).
   **Known gap (accepted):** a traceback printed by Python's default excepthook never passes
   through logging, so the filter cannot see it (`_run` logs `exc_info=True` then re-raises;
   the interpreter prints it again to stderr). Keeping credentials out of exception messages
@@ -644,8 +663,8 @@ in `core/` — never directly. This is the cut line for parallel work.
   ForeUP course has no committed template/grid); Mangrove Bay overrides with
   `blind_post=True` + `synthesize_blind_slots`. TeeItUp + the default FakeAdapter are
   `blind_post=False`. So a non-capable course can never reach the blind path even with a
-  mis-edited config. (The other two opt-in capabilities — `ReservationCacheRefreshable`,
-  `AuthStateReportable` — remain HONEST `runtime_checkable` `isinstance` presence-checks:
+  mis-edited config. (The other opt-in capabilities — `ReservationCacheRefreshable`,
+  `AuthStateReportable`, `ReservationSnapshotHealth` (E6) — remain HONEST `runtime_checkable` `isinstance` presence-checks:
   for those "has the method" *is* the capability, so they can't desync the way a flag could
   and are deliberately NOT folded into `AdapterCapabilities`.)
 - **The T0 blind burst is STAGGERED across the release boundary, not simultaneous
@@ -786,6 +805,19 @@ in `core/` — never directly. This is the cut line for parallel work.
   next bullet). `list_reservations()` raises
   `RuntimeError` if `authenticate()` has never been called — preventing a silent
   empty-list from vacuously passing the pre-book guard in misconfigured deployments.
+  **Snapshot trust (E6, MULTIUSER_PLAN §7.5, MU-4 — read only by tenant code).** Three quiet
+  `authenticate()` degradations leave that cache empty (or STALE from an earlier login) while
+  `list_reservations()` returns it without complaint: (a) a soft login failure (400/401/rejected
+  body), (b) a 200 whose body is not JSON, (c) a JSON success whose `reservations` is missing or
+  not a list (round-2 SF3). `ForeUpAdapter.snapshot_trusted` — the opt-in `runtime_checkable`
+  `ReservationSnapshotHealth` capability in `core/adapter.py` — is True ONLY when the latest
+  login parsed a real list (an EMPTY list is a genuine "no reservations" and IS trusted). It is
+  reset at the start of every real login attempt (before the warm-up GET, so a refresh that
+  raises can never leave the previous login's trust standing); an idempotent short-circuited
+  `authenticate()` keeps the last login's value. `list_reservations()` and the cache itself are
+  UNCHANGED — the flag only says whether an ABSENCE may be believed (the tenant watcher's vanish
+  inference / adoption must ignore an untrusted snapshot, or it would read `[]` as an external
+  cancel and re-book: a double booking).
 - **Forcing a fresh reservation snapshot mid-run = `refresh_reservations`, NOT a
   second `authenticate()`.** Because `authenticate()` is IDEMPOTENT (`if self._logged_in:
   return` short-circuits before the login POST — RACE_PREWARM_PLAN §3.1), calling it again
@@ -839,6 +871,18 @@ in `core/` — never directly. This is the cut line for parallel work.
   second booking on the same date+party_size would also be cancelled — server-sourced reservations
   are all `is_managed=False` (raw id, no `TTB:` prefix), so the N matches are indistinguishable.
   N=1 and `policy.enabled=false` leave reservations untouched.
+  **E5 eligibility hook (MULTIUSER_PLAN §2.3/§7.6, MU-4 — unwired):** `WatchOrchestrator` takes a
+  keyword-only `reconcile_eligible: Callable[[ExistingReservation], bool] | None = None`, honoured
+  on BOTH reconcile paths (`_check_course` and the Gate-3 `_reconcile_booked_course`). `None` (the
+  default, and all the TOML path ever passes) = every match eligible = the unchanged branch
+  above. When set, only ELIGIBLE reservations are cancel candidates: the kept one is the best
+  ELIGIBLE reservation (an ineligible one is never kept-in-place-of nor cancelled, even when it
+  outranks every eligible one), the other eligible ones are cancelled, and with ≤1 eligible
+  nothing is cancelled and the lock is not taken (an owned + a manual booking for the same
+  date+party therefore BOTH stay held — the §7.6 documented residual). The survivors are
+  returned kept-eligible-first so `_check_course`'s `matching[0]` stays a reservation the caller
+  owns. This is what resolves the "manual second booking would be cancelled" residual for the
+  hosted path (it passes "owned by the bot"; a dry-run env passes `lambda _: False`).
 - **Cancel-before-book protocol** in `UpgradeOrchestrator`: ForeUP rejects a second
   book POST with HTTP 400 while an existing reservation is live. The orchestrator
   therefore cancels first, then books. This leaves a ~1-2 second no-booking window
