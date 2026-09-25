@@ -354,7 +354,9 @@ a tenant watcher, and a FastAPI/HTMX Container App. The new modules are on disk 
 `src/teetime/tenant/`, `src/teetime/web/`, `src/teetime/core/release_policy.py`,
 `src/teetime/courses/foreup/token_pool.py`, `src/teetime/dev/virtual_clock.py`; most are still
 stubs that raise `NotImplementedError` with an MU-milestone reference, and the ones already
-implemented per-milestone (`core/release_policy.py`, MU-1; `tenant/allocation.py`, MU-3; `tenant/crypto.py`, MU-7) are covered by
+implemented per-milestone (`core/release_policy.py`, MU-1; `tenant/allocation.py`, MU-3;
+`tenant/crypto.py`, MU-7; `tenant/models.py`, the `TenantStore` Protocol and
+`tenant/in_memory_store.py` with the `tests/tenant/conformance.py` suite, MU-5) are covered by
 their own tests. **Nothing imports them from the production path.**
 (`src/teetime/courses/foreup/token_pool.py` is IMPLEMENTED (MU-2) and backs `ForeUpAdapter`'s
 private CAPTCHA pool with unchanged default behaviour; the shared/injected mode has no caller yet.)
@@ -797,6 +799,23 @@ in `core/` — never directly. This is the cut line for parallel work.
   a successful cancel+rebook to clear the old in-process idempotency record
   before inserting the new one. Must be called under the advisory lock.
   See `persistence/store.py`.
+- **Two stores, two jobs: `BookingStore` vs `TenantStore` (MULTIUSER_PLAN §3.7, MU-5).**
+  `persistence.BookingStore` (`InMemoryStore`) is UNCHANGED and stays the engine's per-run memory
+  (terminals, attempt log, in-process `request_lock`); nothing durable. `tenant.store.TenantStore`
+  is its sibling for the multi-user path: durable intent + ownership (users, course accounts,
+  standing rules, dated request rows, the ownership ledger, snapshots, row leases). Neither imports
+  the other's implementation, and nothing in `core/`/`courses/`/`persistence/` imports `tenant`.
+  `tenant.in_memory_store.InMemoryTenantStore` is the reference implementation and reproduces the
+  Cosmos semantics the plan relies on: deterministic ids (`rule_row_id`, `derive_account_id`), the
+  `slot|<date>` pointer that makes "one ACTIVE row per (account, date)" a uniqueness fact (and the
+  `ruleday|<weekday>` pointer for one active rule per weekday), IfMatch-style rule versions, and
+  all-or-nothing batches with IfMatch-style checks. The §3.4 state machine is the pure
+  `tenant.models.check_transition`/`check_create` (actor + frozen + reason guards); the store adds
+  the lease guards (every web/materializer write requires the row unleased, M4; `record_outcomes`
+  status changes require an UNEXPIRED lease held by the writer) and the `RowFingerprint` check on lease acquire (M5). **The contract is
+  the conformance suite `tests/tenant/conformance.py`, not a docstring**: any `TenantStore`
+  (the future `CosmosTenantStore`, MU-8b) must pass `TenantStoreConformance` unchanged; subclass it
+  with a `harness` fixture, as `tests/tenant/test_in_memory_store.py` does.
 - **`WatchOrchestrator` and `UpgradeOrchestrator` live in `core/`**. They follow
   the same collaborator-injection pattern as `Orchestrator`. Neither is
   long-running — each is a single-invocation check (one ACA Job execution).

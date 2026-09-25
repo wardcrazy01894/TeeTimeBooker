@@ -12,9 +12,21 @@ for every rule, including a new rule_id created after an external cancel. A syst
 flipped back, rule reactivated).
 
 Rules: no row for a date already frozen (``core.booking_cutoff.frozen_reason`` in the COURSE
-timezone) or in the past. A collision with an active explicit row is inserted SUPERSEDED. An edit
-touches only PENDING, unleased, not-frozen rows (never BOOKED/SKIPPED/SUPERSEDED). Deactivation
-withdraws PENDING rows with reason ``rule_deactivated``; reactivation restores them if not frozen.
+timezone) or in the past. A collision with an active explicit row is inserted SUPERSEDED. A
+window/party edit rewrites only PENDING, unleased, not-frozen rows (never BOOKED/SKIPPED/
+SUPERSEDED). Deactivation, deletion and a weekday change WITHDRAW the rule's PENDING **and
+SUPERSEDED** rows (system reason; round-4 D1); BOOKED rows are never touched. Order (§7.7):
+``reset_materialized_through`` FIRST, then withdraw the unleased rows, then reset AGAIN (a
+concurrent tick may have re-advanced it), then write the rule inactive, so a crash part-way
+leaves the tick work to do. Reactivation and a weekday change need no separate reset:
+``upsert_rule`` clears the watermark itself in those writes (round-5). Rows skipped because they
+were leased are swept later by the tick via ``rows_no_longer_covered`` (missing, inactive or
+weekday-moved rules); until then ``load_event_rows`` /
+``load_watch_rows`` never offer them and ``finalize_lost`` withdraws them instead of LOST.
+Reactivation goes through ``TenantStore.reactivate_rule_row`` only, which restores the row's
+pre-supersede status (``superseded_from``: SKIPPED stays SKIPPED, round-5) else PENDING. The
+materializer NEVER writes superseded -> pending (only the web's one-off withdraw restores a
+superseded row, round-4 D2).
 
 STUB — implemented in MULTIUSER_PLAN MU-6.
 """
@@ -51,8 +63,12 @@ class RuleConflictError(ValueError):
 class DateAction(StrEnum):
     SKIP_USER_TERMINAL = "skip_user_terminal"
     SKIP_FROZEN = "skip_frozen"
-    NOTHING = "nothing"  # own row already pending/booked/skipped, or superseded while slot held
-    REACTIVATE = "reactivate"  # own row system-withdrawn (or superseded) and the slot is free
+    # own row already pending/booked/skipped, or superseded (then the slot is held by the
+    # explicit row, and D1 guarantees its rule is active; the materializer never un-supersedes)
+    NOTHING = "nothing"
+    # own row system-withdrawn and the slot is free -> ``reactivate_rule_row`` (restores
+    # ``superseded_from`` or PENDING). NEVER a superseded row (round-4 D1).
+    REACTIVATE = "reactivate"
     CREATE = "create"  # no own row; the slot is free
     CREATE_SUPERSEDED = "create_superseded"  # no own row; another active row holds the slot
 
@@ -98,7 +114,9 @@ async def materialize_rule(
     now: datetime,
 ) -> MaterializeReport:
     """Insert missing rows for ``rule`` up to the horizon, skipping frozen dates, then advance
-    ``materialized_through``. Safe to call repeatedly (idempotent)."""
+    ``materialized_through``. Safe to call repeatedly (idempotent). Materialize the FULL horizon
+    ``[today, today + horizon]``, never only the dates after the watermark: the daily tick is what
+    repairs withdrawn rows left by an interrupted deactivation (§7.7)."""
     raise NotImplementedError(_MU6)
 
 
@@ -110,7 +128,9 @@ async def materialize_tick(
     now: datetime,
 ) -> list[MaterializeReport]:
     """Watcher entry: one indexed query (rules with ``materialized_through`` short of the
-    horizon), a no-op on most runs. ``policies`` is keyed by CourseId string."""
+    horizon), a no-op on most runs, plus the ``rows_no_longer_covered`` sweep that withdraws rows a
+    deactivation had to skip while they were leased (§7.7). ``policies`` is keyed by CourseId
+    string."""
     raise NotImplementedError(_MU6)
 
 
@@ -123,7 +143,11 @@ async def apply_rule_edit(
     cutoff: BookingCutoffConfig,
     now: datetime,
 ) -> MaterializeReport:
-    """Window/party change: rewrite PENDING unleased not-frozen rule rows in place. Weekday
-    change: withdraw old-weekday PENDING rows, then materialize the new weekday. Deactivate
-    (``new.active is False``): withdraw PENDING (reason ``rule_deactivated``); BOOKED untouched."""
+    """Window/party change: rewrite PENDING unleased not-frozen rule rows in place via
+    ``TenantStore.rewrite_pending_rule_row`` (leased rows are skipped for that week). Weekday
+    change: ``upsert_rule`` (clears the watermark), withdraw old-weekday PENDING and SUPERSEDED
+    rows (``rule_weekday_changed``), then materialize the new weekday. Deactivate
+    (``new.active is False``): withdraw PENDING and SUPERSEDED rows (``rule_deactivated``)
+    after ``reset_materialized_through`` and BEFORE writing the rule inactive (§7.7); BOOKED rows
+    are untouched (round-4 D1)."""
     raise NotImplementedError(_MU6)
