@@ -96,7 +96,8 @@ def test_cron_pair_chicago() -> None:
 
 
 def test_cron_pair_honours_lead_minutes() -> None:
-    assert cron_pair(MB_POLICY, lead_minutes=0) == ("0 10 * * *", "0 11 * * *")
+    # 60 is the largest lead that keeps an on-the-hour release's fire in the gate hour (05:00).
+    assert cron_pair(MB_POLICY, lead_minutes=60) == ("0 9 * * *", "0 10 * * *")
     assert cron_pair(MB_POLICY, lead_minutes=30) == ("30 9 * * *", "30 10 * * *")
 
 
@@ -156,6 +157,47 @@ def test_validate_rejects_lead_that_crosses_midnight() -> None:
 def test_validate_rejects_negative_lead() -> None:
     with pytest.raises(ValueError, match="lead_minutes"):
         validate_release_policy(MB_POLICY, lead_minutes=-1)
+
+
+@pytest.mark.parametrize(
+    ("release_time", "lead"),
+    [
+        # 06:30 - 10 min = 06:20: the fire lands in hour 6, the gate wants hour 5. Summer: both
+        # crons land 06:20/07:20 EDT -> NEVER books; winter: the WRONG (daylight) cron lands
+        # 05:20 EST and PASSES with T0 70 min out -> busy-wait blows the 1200 s replica timeout.
+        pytest.param(time(6, 30), 10, id="0630_lead10_lands_in_release_hour"),
+        # Lead 0: fire == release (hour 6). December: the daylight cron lands 05:00 EST and
+        # passes with T0 a full hour away.
+        pytest.param(time(6, 0), 0, id="lead0_fire_equals_release"),
+        # Lead 70: fire 04:50, hour 4 != 5. December never books.
+        pytest.param(time(6, 0), 70, id="lead70_lands_two_hours_early"),
+        pytest.param(time(6, 30), 91, id="0630_lead91_just_past_the_hour"),
+    ],
+)
+def test_validate_rejects_lead_outside_gate_hour(release_time: time, lead: int) -> None:
+    """The derived fire time MUST land in hour ``release_time.hour - 1``: that is the reading
+    ``dst_gate.should_proceed`` makes (§6.3 reuses it per event), so anything else is a policy
+    whose crons can never pass the gate in one season, or pass in the WRONG one."""
+    policy = ReleasePolicy(advance_days=7, release_time=release_time, timezone=NY)
+    with pytest.raises(ValueError, match="hour"):
+        validate_release_policy(policy, lead_minutes=lead)
+    with pytest.raises(ValueError, match="hour"):
+        cron_pair(policy, lead_minutes=lead)
+
+
+@pytest.mark.parametrize(
+    ("release_time", "lead"),
+    [
+        pytest.param(time(6, 30), 45, id="0630_lead45"),
+        pytest.param(time(6, 30), 90, id="0630_lead90_boundary"),
+        pytest.param(time(6, 0), 60, id="0600_lead60_boundary"),
+        pytest.param(time(22, 15), 20, id="2215_lead20"),
+    ],
+)
+def test_validate_accepts_lead_inside_gate_hour(release_time: time, lead: int) -> None:
+    policy = ReleasePolicy(advance_days=7, release_time=release_time, timezone=NY)
+    validate_release_policy(policy, lead_minutes=lead)
+    assert fire_time_for(policy, lead_minutes=lead).hour == release_time.hour - 1
 
 
 def test_validate_rejects_bad_timezone() -> None:
@@ -260,6 +302,39 @@ def test_dst_gate_semantics_reproducible_from_policy(on: date, correct_half: int
             clock, timezone=MB_POLICY.timezone, fire_time=MB_POLICY.release_time
         )
         assert proceed is (half == correct_half), (cron, on)
+
+
+_GATE_SWEEP_DATES = (date(2026, 5, 31), date(2026, 12, 6), date(2026, 3, 8), date(2026, 11, 1))
+
+
+@pytest.mark.parametrize(
+    ("release_time", "lead"),
+    [
+        pytest.param(time(6, 0), 10, id="mb_0600_lead10"),
+        pytest.param(time(6, 0), 60, id="0600_lead60_boundary"),
+        pytest.param(time(6, 30), 45, id="0630_lead45"),
+        pytest.param(time(6, 30), 90, id="0630_lead90_boundary"),
+        pytest.param(time(4, 0), 60, id="0400_lead60_band_floor"),
+        pytest.param(time(22, 15), 20, id="2215_lead20_band_ceiling_utc_day_crosses"),
+    ],
+)
+@pytest.mark.parametrize("on", _GATE_SWEEP_DATES, ids=lambda d: d.isoformat())
+def test_every_valid_policy_has_exactly_one_gate_passing_cron_per_day(
+    release_time: time, lead: int, on: date
+) -> None:
+    """validates ⇒ on EVERY UTC day (mid-season AND both transition Sundays) exactly ONE of the
+    two derived crons passes ``should_proceed`` — never zero (a season that never books), never
+    two (a double fire). Pinned across the band, not just for MB."""
+    policy = ReleasePolicy(advance_days=7, release_time=release_time, timezone=NY)
+    validate_release_policy(policy, lead_minutes=lead)
+    passing = [
+        cron
+        for cron in cron_pair(policy, lead_minutes=lead)
+        if should_proceed(
+            FakeClock(start=_cron_instant(cron, on)), timezone=NY, fire_time=release_time
+        )
+    ]
+    assert len(passing) == 1, (release_time, lead, on, passing)
 
 
 def test_correct_cron_fires_lead_minutes_before_release_instant() -> None:
