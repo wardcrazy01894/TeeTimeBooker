@@ -52,6 +52,11 @@ class KeyringError(RuntimeError):
     load, not on the first row. The message NEVER includes key material."""
 
 
+class CredentialEncryptError(ValueError):
+    """The plaintext cannot be encoded (e.g. a lone surrogate). The message NEVER includes the
+    plaintext — a raw ``UnicodeEncodeError`` would carry it in ``.object`` and its repr."""
+
+
 class CredentialDecryptError(RuntimeError):
     """Unknown kid, bad format, or AEAD tag/AAD mismatch. In the booking runner, this skips the
     row AND makes the execution exit non-zero (an operator bug, §4.5). The message NEVER includes

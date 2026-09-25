@@ -15,15 +15,18 @@ import base64
 import json
 import os
 import traceback
+from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from teetime.core.models import CourseId
 from teetime.tenant.crypto import (
     KEYRING_ENV_VAR,
     CredentialDecryptError,
+    CredentialEncryptError,
     Keyring,
     KeyringError,
     credential_aad,
@@ -401,3 +404,105 @@ def test_keyring_duplicate_json_keys_fail_loud(raw: str) -> None:
     raw = raw.replace("<A>", _b64(_KEY_A)).replace("<B>", _b64(_KEY_B))
     with pytest.raises(KeyringError, match="duplicate"):
         load_keyring(raw)
+
+
+# --- review round 1: should-fix 2/3/4 — no secret survives in the exception CHAIN ------------
+# `raise X from None` only sets __suppress_context__; __context__ STILL points at the inner
+# exception, and a UnicodeDecodeError's `.object` is the plaintext bytes, a UnicodeEncodeError's
+# `.object` is the password, and a JSONDecodeError's `.doc` is the WHOLE keyring text. So every
+# wrapped error must carry NO chain at all (raised outside the `except` block), and a RENDERED
+# traceback must be clean too.
+
+
+def _assert_unchained(exc: BaseException) -> None:
+    assert exc.__cause__ is None
+    assert exc.__context__ is None
+
+
+def _rendered(exc: BaseException) -> str:
+    return "".join(traceback.format_exception(exc))
+
+
+def test_invalid_utf8_decrypt_fails_without_leaking_bytes(ring_a: Keyring) -> None:
+    # Only reachable with a blob NOT produced by `encrypt_password` (which always encodes
+    # UTF-8), so build the ciphertext with the library directly.
+    raw = b"\xff\xfe-not-utf8-secret-bytes"
+    nonce = os.urandom(12)
+    ct = AESGCM(_KEY_A).encrypt(nonce, raw, _AAD)
+    blob = ":".join(["v1", "k1", _b64(nonce), _b64(ct)])
+    with pytest.raises(CredentialDecryptError, match="UTF-8") as info:
+        decrypt_password(ring_a, blob, aad=_AAD)
+    _assert_unchained(info.value)
+    for text in (str(info.value), repr(info.value), _rendered(info.value)):
+        assert "not-utf8-secret-bytes" not in text
+        assert "\\xff" not in text
+        assert _b64(ct) not in text
+
+
+def test_encrypt_lone_surrogate_fails_without_leaking_plaintext(ring_a: Keyring) -> None:
+    bad = "pw-\ud800-surrogate-secret"
+    with pytest.raises(CredentialEncryptError) as info:
+        encrypt_password(ring_a, bad, aad=_AAD)
+    _assert_unchained(info.value)
+    for text in (str(info.value), repr(info.value), _rendered(info.value)):
+        assert "surrogate-secret" not in text
+        assert "pw-" not in text
+        assert "\\ud800" not in text
+
+
+def _wrong_aad(ring: Keyring) -> None:
+    decrypt_password(ring, encrypt_password(ring, _PLAINTEXT, aad=_AAD), aad=b"wrong")
+
+
+def _tampered(ring: Keyring) -> None:
+    version, kid, nonce_b64, ct_b64 = encrypt_password(ring, _PLAINTEXT, aad=_AAD).split(":")
+    ct = bytearray(base64.b64decode(ct_b64))
+    ct[-1] ^= 0x01
+    decrypt_password(ring, ":".join([version, kid, nonce_b64, _b64(bytes(ct))]), aad=_AAD)
+
+
+def _bad_nonce_b64(ring: Keyring) -> None:
+    decrypt_password(ring, "v1:k1:!!!!:AAAA", aad=_AAD)
+
+
+def _bad_ct_b64(ring: Keyring) -> None:
+    decrypt_password(ring, "v1:k1:AAAAAAAAAAAAAAAA:!!!!", aad=_AAD)
+
+
+def _bad_json(_: Keyring) -> None:
+    load_keyring('{"active": "k1", "keys": {"k1": "' + _b64(_KEY_A) + '"')  # truncated
+
+
+def _dup_json(_: Keyring) -> None:
+    load_keyring('{"active": "k1", "active": "k1", "keys": {"k1": "' + _b64(_KEY_A) + '"}}')
+
+
+def _bad_key_b64(_: Keyring) -> None:
+    load_keyring('{"active": "k1", "keys": {"k1": "!!!not-base64!!!"}}')
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [_wrong_aad, _tampered, _bad_nonce_b64, _bad_ct_b64, _bad_json, _dup_json, _bad_key_b64],
+    ids=lambda f: f.__name__,
+)
+def test_every_wrapped_error_has_no_exception_chain(
+    ring_a: Keyring, trigger: Callable[[Keyring], None]
+) -> None:
+    with pytest.raises((CredentialDecryptError, KeyringError)) as info:
+        trigger(ring_a)
+    _assert_unchained(info.value)
+
+
+def test_rendered_traceback_contains_no_plaintext_or_key(ring_a: Keyring) -> None:
+    blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    with pytest.raises(CredentialDecryptError) as decrypt_info:
+        decrypt_password(ring_a, blob, aad=b"wrong")
+    key_b64 = _b64(_KEY_A)
+    with pytest.raises(KeyringError) as load_info:
+        load_keyring('{"active": "k1", "keys": {"k1": "' + key_b64 + '", "k2": 5}}')
+    for text in (_rendered(decrypt_info.value), _rendered(load_info.value)):
+        assert _PLAINTEXT not in text
+        assert key_b64 not in text
+        assert _KEY_A.hex() not in text
+        assert blob.split(":")[3] not in text
