@@ -147,7 +147,8 @@ def test_synthesize_truncates_to_max_count() -> None:
 
 def test_synthesize_empty_when_no_grid_time_in_window() -> None:
     adapter = MangroveBayAdapter()
-    dawn = TimeWindow(earliest=time(6, 0), latest=time(7, 0))  # no grid time here
+    # Pre-dawn: no grid time here (the widened grid starts at 07:00, MU-3).
+    dawn = TimeWindow(earliest=time(5, 0), latest=time(6, 30))
     assert adapter.synthesize_blind_slots(_request(dawn), SAT, max_count=99) == []
 
 
@@ -179,3 +180,141 @@ def test_synthesize_log_distinguishes_filtered_from_empty_window(
     # All 11 grid times are in the window, but 0 survive spots/holes/price.
     assert "11 in window" in caplog.text
     assert "0 survived" in caplog.text
+
+
+# --- MULTIUSER_PLAN MU-3 / E3: the grid widened once to the full morning ------------------
+
+# The EXACT grid that shipped from BLIND_POST_PLAN PR2 (2026-06-20) through infra/v2.16.0,
+# captured literally so the pin below does not depend on the current constant.
+PRE_CHANGE_GRID = [
+    "08:45",
+    "08:52",
+    "09:00",
+    "09:07",
+    "09:15",
+    "09:22",
+    "09:30",
+    "09:37",
+    "09:45",
+    "09:52",
+    "10:00",
+]
+# The operator's 08:45-10:00 burst, in the rank order the pre-change grid produced for SAT
+# (2026-05-16 -> start_front prefix 20260416, 0-indexed month). Midpoint 09:22:30; ties on
+# midpoint distance break by ascending tee_time (09:15 before 09:30, 09:00 before 09:45,
+# 08:45 before 10:00). Hand-derived, NOT recomputed through the ranker.
+PRE_CHANGE_RANKED_0845_1000 = [
+    ("09:22", "202604160922"),
+    ("09:15", "202604160915"),
+    ("09:30", "202604160930"),
+    ("09:37", "202604160937"),
+    ("09:07", "202604160907"),
+    ("09:00", "202604160900"),
+    ("09:45", "202604160945"),
+    ("09:52", "202604160952"),
+    ("08:52", "202604160852"),
+    ("08:45", "202604160845"),
+    ("10:00", "202604161000"),
+]
+
+
+def test_widened_grid_emits_identical_slots_for_0845_1000_window() -> None:
+    """MULTIUSER_PLAN §6.5 / E3 non-regression pin: widening the GRID (not the window) must
+    leave the operator's 08:45-10:00 burst byte-identical — same slots, same rank order, same
+    raw `time`/`start_front` — so the STAGGER diagnostic (offset <-> rank pairing) is not
+    confounded. Compared against the pre-change intersection captured literally above."""
+    adapter = MangroveBayAdapter()
+    full = adapter.synthesize_blind_slots(_request(), SAT, max_count=99)
+    assert [(s.tee_time.strftime("%H:%M"), s.slot_id) for s in full] == PRE_CHANGE_RANKED_0845_1000
+    # No time outside the pre-change grid leaks into the operator's window.
+    assert {s.tee_time.strftime("%H:%M") for s in full} <= set(PRE_CHANGE_GRID)
+    for s in full:
+        hhmm = s.tee_time.strftime("%H:%M")
+        assert s.raw["time"] == f"2026-05-16 {hhmm}"
+        assert s.raw["start_front"] == int(s.slot_id)
+    # The shipped prod burst is blind_post_max_count=3 (untouched by MU-3): identical top-3.
+    top3 = adapter.synthesize_blind_slots(_request(), SAT, max_count=3)
+    assert [s.slot_id for s in top3] == ["202604160922", "202604160915", "202604160930"]
+
+
+def test_grid_widened_to_full_morning() -> None:
+    """E3: the grid now spans the full morning on the proven 8/hr cadence
+    (:00,:07,:15,:22,:30,:37,:45,:52) from 07:00 through 12:00, so an EARLIER window (a
+    friend who golfs before 08:45) gets blind slots instead of falling to the search race.
+    Every pre-change point is still present (superset); the list is strictly ascending and
+    duplicate-free (rank_slots_for_request does its own sort; a sorted grid keeps the log
+    readable)."""
+    assert BLIND_POST_MORNING_GRID is not None
+    assert set(PRE_CHANGE_GRID) <= set(BLIND_POST_MORNING_GRID)
+    assert BLIND_POST_MORNING_GRID[0] == "07:00"
+    assert BLIND_POST_MORNING_GRID[-1] == "12:00"
+    assert sorted(BLIND_POST_MORNING_GRID) == BLIND_POST_MORNING_GRID
+    assert len(set(BLIND_POST_MORNING_GRID)) == len(BLIND_POST_MORNING_GRID)
+    cadence = ("00", "07", "15", "22", "30", "37", "45", "52")
+    expected = [f"{h:02d}:{m}" for h in range(7, 12) for m in cadence] + ["12:00"]
+    assert expected == BLIND_POST_MORNING_GRID
+
+
+def test_earlier_window_now_gets_blind_slots() -> None:
+    """The motivating case for E3: a 07:00-08:30 window (earlier than the operator's) used to
+    synthesize [] and fall to the slower search race path; now it gets ranked grid slots."""
+    adapter = MangroveBayAdapter()
+    early = TimeWindow(earliest=time(7, 0), latest=time(8, 30))  # midpoint 07:45
+    slots = adapter.synthesize_blind_slots(_request(early), SAT, max_count=3)
+    # 07:45 (0 min), 07:52 (7 min), 07:37 (8 min) from the midpoint.
+    assert [s.tee_time.strftime("%H:%M") for s in slots] == ["07:45", "07:52", "07:37"]
+
+
+# --- MULTIUSER_PLAN MU-3 / E2: the blind allowlist hook (set_blind_allowlist) --------------
+
+
+def test_allowlist_filters_before_truncation() -> None:
+    """E2: with an allowlist set, synthesize returns (ranked candidates ∩ allowlist) truncated
+    to max_count — the filter runs BEFORE truncation. If it ran after, an allowlist naming
+    slots ranked 6th/8th/10th would leave a 3-burst empty; instead they ARE the burst, in
+    rank order, so every allocated account still gets a full burst (§5.4)."""
+    adapter = MangroveBayAdapter()
+    full = adapter.synthesize_blind_slots(_request(), SAT, max_count=99)
+    assert len(full) == 11
+    chosen = [full[5], full[7], full[9]]  # 09:00, 09:52, 08:45 — none in the natural top-3
+    adapter.set_blind_allowlist(frozenset(s.slot_id for s in chosen))
+    burst = adapter.synthesize_blind_slots(_request(), SAT, max_count=3)
+    assert [s.slot_id for s in burst] == [s.slot_id for s in chosen]
+    assert burst == chosen  # byte-identical TeeTimeSlots, not just ids
+    # Truncation still applies AFTER the filter: an allowlist wider than max_count is cut.
+    adapter.set_blind_allowlist(frozenset(s.slot_id for s in full))
+    assert adapter.synthesize_blind_slots(_request(), SAT, max_count=3) == full[:3]
+
+
+def test_allowlist_none_is_default_and_resets() -> None:
+    """Default = no allowlist = today's behaviour; set_blind_allowlist(None) restores it
+    (the runner may re-plan; a stale allowlist must not leak into a later drop)."""
+    adapter = MangroveBayAdapter()
+    baseline = adapter.synthesize_blind_slots(_request(), SAT, max_count=3)
+    assert adapter.blind_allowlist is None
+    adapter.set_blind_allowlist(frozenset({baseline[2].slot_id}))
+    assert adapter.synthesize_blind_slots(_request(), SAT, max_count=3) == [baseline[2]]
+    adapter.set_blind_allowlist(None)
+    assert adapter.blind_allowlist is None
+    assert adapter.synthesize_blind_slots(_request(), SAT, max_count=3) == baseline
+
+
+def test_allowlist_empty_yields_no_blind_slots() -> None:
+    """An EMPTY allowlist means 'search-only this drop' (§5.3 over-cap / §5.4 exhausted):
+    synthesize returns [] even though the grid has in-window candidates. Distinct from None."""
+    adapter = MangroveBayAdapter()
+    adapter.set_blind_allowlist(frozenset())
+    assert adapter.blind_allowlist == frozenset()
+    assert adapter.synthesize_blind_slots(_request(), SAT, max_count=3) == []
+
+
+def test_allowlist_is_logged_for_fairness_audit(caplog: pytest.LogCaptureFixture) -> None:
+    """The firing-grid log line must say an allowlist was applied and how many survived it,
+    so a per-account burst in a multi-account run is auditable from logs alone."""
+    adapter = MangroveBayAdapter()
+    full = adapter.synthesize_blind_slots(_request(), SAT, max_count=99)
+    adapter.set_blind_allowlist(frozenset({full[1].slot_id, full[4].slot_id}))
+    with caplog.at_level("INFO"):
+        adapter.synthesize_blind_slots(_request(), SAT, max_count=3)
+    assert "allowlist" in caplog.text
+    assert "2 allowed" in caplog.text
