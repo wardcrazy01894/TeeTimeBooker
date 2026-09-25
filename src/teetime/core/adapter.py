@@ -259,6 +259,32 @@ class AuthStateReportable(Protocol):
 
 
 @runtime_checkable
+class ReservationSnapshotHealth(Protocol):
+    """Opt-in capability (MULTIUSER_PLAN §2.3 E6 / §7.5): an adapter whose
+    ``list_reservations()`` reads a login-time SNAPSHOT reports whether the LAST login
+    actually produced a trustworthy one.
+
+    ForeUP is the motivating case. Three quiet degradations return from ``authenticate()``
+    without raising yet leave the cache empty (or stale from a previous login) while
+    ``list_reservations()`` happily returns it: (a) a soft login failure (400/401/rejected
+    body — also visible via ``AuthStateReportable.is_authenticated``), (b) a 200 whose body
+    is not JSON, (c) a JSON success whose ``reservations`` is missing or not a list. To a
+    caller inferring "the booking vanished" from an absent reservation, any of those reads
+    as an external cancel — and a re-book is a double booking. ``snapshot_trusted`` is True
+    ONLY when the latest login parsed a real list (an EMPTY list is a real "no
+    reservations" and is trusted).
+
+    Read only by tenant code (vanish inference / adoption); the single-user engine never
+    consults it, so adapters that read reservations live need not implement it.
+    """
+
+    @property
+    def snapshot_trusted(self) -> bool:
+        """True iff the most recent login produced a parsed reservation list."""
+        ...
+
+
+@runtime_checkable
 class CourseAdapter(Protocol):
     """Structural contract every course implementation satisfies.
 
