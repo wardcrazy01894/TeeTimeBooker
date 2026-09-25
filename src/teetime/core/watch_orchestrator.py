@@ -532,10 +532,12 @@ class WatchOrchestrator:
             # outranks every eligible one (§7.6 residual: an owned + a manual booking for the
             # same date+party both stay held). When >=1 reservation is eligible, an eligible
             # one leads the survivors, so the caller's `matching[0]` is a reservation the bot
-            # owns. With ZERO eligible (and when a single manual match never reaches this
-            # method), `matching[0]` is a MANUAL reservation and `_check_course` still hands
-            # it to `_try_upgrade` — E5 does not guard the upgrade. Tenant code (MU-10) must
-            # gate that on ownership (MULTIUSER_PLAN §7.6; pinned by
+            # owns (unless request_lock is contended: the defer path returns `matching`
+            # unchanged, so `matching[0]` may be manual). With ZERO eligible (and when a
+            # single manual match never reaches this method), `matching[0]` is a MANUAL
+            # reservation and `_check_course` still hands it to `_try_upgrade` — E5 does not
+            # guard the upgrade. Tenant code (MU-10) must gate that on ownership
+            # (MULTIUSER_PLAN §7.6; pinned by
             # test_unadopted_manual_match_reaches_try_upgrade_unguarded).
             eligible: list[ExistingReservation] = []
             ineligible: list[ExistingReservation] = []

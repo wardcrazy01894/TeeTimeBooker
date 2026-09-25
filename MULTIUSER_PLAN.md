@@ -826,7 +826,8 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
   (date, party), only the owned one is eligible, so **both stay held**. ForeUP's 1/day rule normally
   prevents the second one from being created. If it happens anyway, the dashboard flags "manual
   reservation" and the user decides.
-  **E5 does not guard the upgrade (MU-4 review):** with zero eligible matches (or a single manual
+  **E5 does not guard the upgrade (MU-4 review):** with zero eligible matches, a contended
+  `request_lock` (the reconcile defers and returns `matching` unchanged), or a single manual
   match) `_check_course` still synthesizes a `TTB:` booking from `matching[0]` and calls
   `_try_upgrade`, which can cancel a manual reservation (pinned by
   `test_unadopted_manual_match_reaches_try_upgrade_unguarded`). **MU-10 MUST gate `_try_upgrade` on

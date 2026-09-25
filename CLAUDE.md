@@ -887,7 +887,9 @@ in `core/` — never directly. This is the cut line for parallel work.
   nothing is cancelled and the lock is not taken (an owned + a manual booking for the same
   date+party therefore BOTH stay held — the §7.6 documented residual). When ≥1 reservation is
   eligible the survivors are returned eligible-first, so `_check_course`'s `matching[0]` is one
-  the caller owns. **E5 does NOT guard the upgrade:** with ZERO eligible (or a single manual
+  the caller owns (except when `request_lock` is held by another run — the defer returns
+  `matching` unchanged, so `matching[0]` may be manual). **E5 does NOT guard the upgrade:** with
+  ZERO eligible (or a single manual
   match, where the reconcile never runs) `matching[0]` is a MANUAL reservation and
   `_check_course` still synthesizes a `TTB:` booking from it and calls `_try_upgrade`, which can
   cancel it — pinned as today's behaviour by
