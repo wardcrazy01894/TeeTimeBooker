@@ -303,3 +303,23 @@ def test_unsupersede_restores_pre_supersede_status_only() -> None:
     check_transition(was_pending, P, actor=Actor.WEB, now=NOW)
     with pytest.raises(TransitionRefusedError, match="superseded from"):
         check_transition(was_pending, S, actor=Actor.WEB, now=NOW)
+
+
+@pytest.mark.parametrize(
+    ("actor", "reason", "ok"),
+    [
+        (Actor.WEB, "user", True),
+        (Actor.WEB, "already_gone", True),
+        (Actor.WATCHER, "external", True),
+        (Actor.WEB, "external", False),
+        (Actor.WATCHER, "user", False),
+        (Actor.WATCHER, "already_gone", False),
+    ],
+)
+def test_cancel_reason_tied_to_actor(actor: Actor, reason: str, ok: bool) -> None:
+    """Only the watcher infers ``external`` (§7.5); only the web cancels for the user."""
+    if ok:
+        check_transition(_row(B), C, actor=actor, now=NOW, reason=reason)
+    else:
+        with pytest.raises(TransitionRefusedError, match="reason"):
+            check_transition(_row(B), C, actor=actor, now=NOW, reason=reason)

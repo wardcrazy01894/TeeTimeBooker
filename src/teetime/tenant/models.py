@@ -413,9 +413,18 @@ def _guard_supersede(row: RequestRow, actor: Actor, reason: str | None) -> None:
         raise TransitionRefusedError("only rule rows can be superseded")
 
 
+# Who may write which cancel reason: only the watcher infers ``external`` (vanish, §7.5); the web
+# cancels for the user (``user``) or finds the reservation already absent (``already_gone``, §8.5).
+_CANCEL_REASONS_BY_ACTOR: dict[Actor, frozenset[str]] = {
+    Actor.WEB: frozenset({"user", "already_gone"}),
+    Actor.WATCHER: frozenset({"external"}),
+}
+
+
 def _guard_cancel(row: RequestRow, actor: Actor, reason: str | None) -> None:
-    if reason not in CANCEL_REASONS:
-        raise TransitionRefusedError(f"cancel reason {reason!r} not in {sorted(CANCEL_REASONS)}")
+    allowed = _CANCEL_REASONS_BY_ACTOR.get(actor, frozenset())
+    if reason not in allowed:
+        raise TransitionRefusedError(f"cancel reason {reason!r} not in {sorted(allowed)} ({actor})")
 
 
 _GUARDS = {

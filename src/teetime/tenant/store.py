@@ -18,8 +18,14 @@ M4; §3.5):
   (web + materializer). They refuse with ``RowLeaseError`` while ANY owner holds an unexpired
   lease on an affected row, so a booker claim can never be pulled out from under WRITE #2.
 - ``record_outcomes`` is the LEASED path (booking runner, watcher, and the web's managed cancel,
-  which first takes its own 60 s lease). A status change requires ``release_lease_owner`` to be
-  the current lease holder.
+  which first takes its own 60 s lease). A status change requires ``release_lease_owner`` to hold
+  an UNEXPIRED lease at ``RowOutcome.at``. Every unleased write clears an EXPIRED lease, so a
+  stale holder can never reclaim a row the web touched after its lease ran out.
+- The "one ACTIVE rule per (account, weekday)" invariant (round-3 SF1) is a deterministic
+  in-partition pointer doc ``ruleday|<weekday>`` (``activeRuleId``), exactly like the date slot:
+  activating a rule creates it (409 = the weekday is taken), moving or deactivating a rule
+  deletes / re-points it, in the same batch as the rule replace. A scan-then-write cannot hold
+  this invariant under concurrent web requests in Cosmos; the pointer can (§3.2, MU-8b).
 - Lease writes (``claim_rows``, ``acquire_row_lease``, ``release_row_lease``,
   ``set_upgrade_marker``) change the doc ETag but NOT the domain ``version``, so the
   ``RowFingerprint`` a reader registered stays valid across its own lease acquire (M5). ``version``
@@ -78,6 +84,11 @@ class RowLeaseError(RuntimeError):
 class TenantNotFoundError(LookupError):
     """The row / account / rule does not exist OR is not the caller's (``user_id`` scoping). The
     two are deliberately indistinguishable (IDOR defence, §9.1); the web returns 404."""
+
+
+class VersionConflictError(ValueError):
+    """An update was made from a stale read (the caller's ``version`` is not the stored one); the
+    caller must re-read and retry (Cosmos: IfMatch 412). Used for rule edits (§3.4)."""
 
 
 class UniquenessConflictError(ValueError):
@@ -162,9 +173,16 @@ class TenantStore(Protocol):
         Returns nothing; per-row failures are raised as an ``ExceptionGroup`` AFTER every row
         was attempted.
 
-        A REFUSED row (it moved, or the writer no longer holds its lease) still gets its ledger
-        entries, written against (account, date), and the ACTIVE row for that date (if any) gets
-        ``needs_reconcile``; the refusal is then reported in the ``ExceptionGroup`` (M4)."""
+        A REFUSED row (it moved, or the writer no longer holds an unexpired lease) still gets its
+        ledger entries, written against (account, date), and the ACTIVE row for that date (if any)
+        gets ``needs_reconcile``; the refusal is then reported in the ``ExceptionGroup`` (M4).
+        When the date has NO active row, a BOOKED outcome survives ONLY in the ledger and the
+        ``ExceptionGroup``: callers (MU-9a/MU-10b) MUST treat an ``ExceptionGroup`` as a non-zero
+        exit, and the §7.6 ownership report lists such ledger-only bookings as orphans.
+
+        Ledger entries are validated (same account) BEFORE anything is written: an invalid entry
+        writes neither the row nor the ledger (one unit). An outcome with no status change needs
+        no lease, unless ANOTHER owner holds an unexpired one (then it is refused)."""
         ...
 
     # --- leases (watcher + web, §3.5) ------------------------------------------------
@@ -328,7 +346,10 @@ class TenantStore(Protocol):
     async def upsert_rule(self, rule: StandingRule, *, user_id: UserId) -> StandingRule:
         """Create or replace (version bump) a rule on one of ``user_id``'s accounts. Refuses a
         second ACTIVE rule on the same (account, weekday) with ``materialize.RuleConflictError``
-        (round-3 SF1). Does not touch rows (the materializer does, §7.7)."""
+        (round-3 SF1, the ``ruleday|<weekday>`` pointer), and a replace whose ``rule.version`` is
+        not the stored version with ``VersionConflictError`` (IfMatch). ``materialized_through``
+        never moves backwards (a web edit from a copy read before the watcher tick keeps the
+        tick's value). Does not touch rows (the materializer does, §7.7)."""
         ...
 
     async def count_login_probes(

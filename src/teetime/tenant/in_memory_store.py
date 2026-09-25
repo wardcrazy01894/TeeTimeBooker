@@ -11,6 +11,9 @@ Cosmos must also provide:
   is "active" iff the slot points at it, and ``_commit`` derives every slot create / replace /
   delete from the status change in the SAME batch, so the slot and the row statuses can never
   disagree.
+- **Rule-weekday pointer** (§3.2, round-3 SF1): ``self._ruledays[(account, weekday)]`` is the
+  ``ruleday|<weekday>`` doc; ``upsert_rule`` claims / re-points / releases it in the same batch as
+  the rule replace, so "one ACTIVE rule per (account, weekday)" never depends on a scan.
 - **Transactional batch + IfMatch** (§3.2/§3.5): ``_commit`` validates every write (each row must
   still equal the version the writer read; a create's id must be free; a slot claim must find the
   slot free) BEFORE mutating anything, so a batch is all-or-nothing. There is no ``await`` inside a
@@ -63,12 +66,21 @@ from .models import (
     row_request_id,
     rule_row_id,
 )
-from .store import RowLeaseError, RowOutcome, TenantNotFoundError, UniquenessConflictError
+from .store import (
+    RowLeaseError,
+    RowOutcome,
+    TenantNotFoundError,
+    UniquenessConflictError,
+    VersionConflictError,
+)
 
 # Consecutive soft login failures after which an account stops logging in (§7.5).
 SOFT_AUTH_FAILURE_LIMIT = 3
 
 _Write = tuple[RequestRow | None, RequestRow]
+
+# One message for "missing" and "not yours" alike, naming no id (IDOR defence, §9.1).
+_NOT_FOUND = "not found"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +135,8 @@ class InMemoryTenantStore:
         self._rules: dict[RuleId, StandingRule] = {}
         self._rows: dict[RowId, RequestRow] = {}
         self._slots: dict[tuple[CourseAccountId, date], RowId] = {}
+        # The ``ruleday|<weekday>`` pointer docs: one ACTIVE rule per (account, weekday).
+        self._ruledays: dict[tuple[CourseAccountId, int], RuleId] = {}
         self._ledger: dict[tuple[CourseAccountId, CourseId, str], OwnedBooking] = {}
         self._snapshots: dict[CourseAccountId, ReservationSnapshot] = {}
         self._probes: list[_Probe] = []
@@ -133,6 +147,10 @@ class InMemoryTenantStore:
     def slot_pointer(self, account_id: CourseAccountId, day: date) -> RowId | None:
         """The ``slot|<date>`` doc's ``activeRowId`` (conformance ``StoreHarness`` hook)."""
         return self._slots.get((account_id, day))
+
+    def ruleday_pointer(self, account_id: CourseAccountId, weekday: int) -> RuleId | None:
+        """The ``ruleday|<weekday>`` doc's ``activeRuleId`` (conformance ``StoreHarness`` hook)."""
+        return self._ruledays.get((account_id, weekday))
 
     def course_timezone(self, course_id: CourseId) -> str:
         """The course's timezone; an unconfigured course is a loud ``KeyError``."""
@@ -172,7 +190,7 @@ class InMemoryTenantStore:
     def _row(self, row_id: RowId) -> RequestRow:
         row = self._rows.get(row_id)
         if row is None:
-            raise TenantNotFoundError(f"row {row_id}")
+            raise TenantNotFoundError(_NOT_FOUND)
         return row
 
     def _account_for_user(
@@ -180,7 +198,7 @@ class InMemoryTenantStore:
     ) -> CourseAccount:
         account = self._accounts.get(account_id)
         if account is None or (user_id is not None and account.user_id != user_id):
-            raise TenantNotFoundError(f"account {account_id}")
+            raise TenantNotFoundError(_NOT_FOUND)
         return account
 
     def _history(self, account_id: CourseAccountId, day: date) -> list[RequestRow]:
@@ -223,6 +241,14 @@ class InMemoryTenantStore:
             version=1,
             rule_id=rule_id,
         )
+
+    @staticmethod
+    def _unleased_write(row: RequestRow, now: datetime) -> RequestRow:
+        """An unleased (web / materializer / finalizer) write clears an EXPIRED lease, so a stale
+        holder cannot come back and move a row someone else has since written (SF2)."""
+        if row.lease_owner is not None and not lease_held(row, now=now):
+            return replace(row, lease_owner=None, lease_expires_at=None)
+        return row
 
     def _refuse_if_user_terminal(self, account_id: CourseAccountId, day: date) -> None:
         if any(is_user_terminal(r) for r in self._history(account_id, day)):
@@ -300,10 +326,11 @@ class InMemoryTenantStore:
             raise ExceptionGroup(f"record_outcomes: {len(errors)} row(s) not applied", errors)
 
     def _apply_outcome(self, o: RowOutcome) -> None:
+        self._validate_ledger(o)  # before ANY write: the row and its ledger are one unit (SF3)
         row = self._rows.get(o.row_id)
         try:
             if row is None:
-                raise TenantNotFoundError(f"row {o.row_id}")
+                raise TenantNotFoundError(_NOT_FOUND)
             self._commit([(row, self._outcome_row(row, o))])
         except (TransitionRefusedError, RowLeaseError, TenantNotFoundError):
             # The row moved: keep what the bot did (ledger by account + date) and make the
@@ -314,7 +341,8 @@ class InMemoryTenantStore:
         self._write_ledger(o, course_id=row.course_id)
 
     def _outcome_row(self, row: RequestRow, o: RowOutcome) -> RequestRow:
-        holder = row.lease_owner is not None and row.lease_owner == o.release_lease_owner
+        owns = row.lease_owner is not None and row.lease_owner == o.release_lease_owner
+        holder = owns and lease_held(row, now=o.at)  # an expired lease is no lease (SF2)
         if o.to_status is not None:
             check_transition(
                 row,
@@ -325,7 +353,7 @@ class InMemoryTenantStore:
                 needs_reconcile=o.needs_reconcile,
             )
             if not holder:
-                raise RowLeaseError(f"row {row.id}: {o.release_lease_owner!r} does not hold it")
+                raise RowLeaseError(f"row {row.id}: {o.release_lease_owner!r} holds no live lease")
         elif lease_held(row, now=o.at) and not holder:
             raise RowLeaseError(f"row {row.id} is leased by {row.lease_owner!r}")
         new = replace(row, last_outcome=o.last_outcome, last_outcome_at=o.at)
@@ -340,7 +368,7 @@ class InMemoryTenantStore:
             new = replace(new, needs_reconcile=True)
         if o.clear_upgrade_marker:
             new = replace(new, upgrade_started_at=None)
-        if holder:
+        if owns:
             new = replace(new, lease_owner=None, lease_expires_at=None)
         changed = (new.status, new.needs_reconcile, new.booked_raw_id) != (
             row.status,
@@ -378,15 +406,21 @@ class InMemoryTenantStore:
             booked_at=o.at,
         )
 
-    def _write_ledger(self, o: RowOutcome, *, course_id: CourseId | None) -> None:
-        entries = [
+    @staticmethod
+    def _ledger_entries(o: RowOutcome) -> list[OwnedBooking]:
+        return [
             *([o.booking] if o.booking is not None else []),
             *o.held_extras,
             *o.cancelled_extras,
         ]
-        for entry in entries:
+
+    def _validate_ledger(self, o: RowOutcome) -> None:
+        for entry in self._ledger_entries(o):
             if entry.course_account_id != o.course_account_id:
                 raise ValueError(f"ledger entry {entry.id} is for another account")
+
+    def _write_ledger(self, o: RowOutcome, *, course_id: CourseId | None) -> None:
+        for entry in self._ledger_entries(o):
             key = (entry.course_account_id, entry.course_id, entry.raw_reservation_id)
             self._ledger[key] = entry
         if o.cancelled_upgrade_raw_id is not None:
@@ -462,7 +496,12 @@ class InMemoryTenantStore:
                 continue  # an actor is mid-act; the next finalizer pass gets it
             check_transition(row, RowStatus.LOST, actor=Actor.WATCHER, now=now)
             reason = "cutoff" if now >= row.cutoff_at else "date_passed"
-            new = replace(row, status=RowStatus.LOST, status_reason=reason, version=row.version + 1)
+            new = replace(
+                self._unleased_write(row, now),
+                status=RowStatus.LOST,
+                status_reason=reason,
+                version=row.version + 1,
+            )
             self._commit([(row, new)])
             lost.append(new)
         return lost
@@ -558,7 +597,7 @@ class InMemoryTenantStore:
         if lease_held(stored, now=now):
             raise RowLeaseError(f"row {row.id} is leased by {stored.lease_owner!r}")
         new = replace(
-            row,
+            self._unleased_write(row, now),
             status=RowStatus.PENDING,
             status_reason=None,
             window_earliest=rule.window_earliest,
@@ -572,7 +611,7 @@ class InMemoryTenantStore:
     async def set_materialized_through(self, rule_id: RuleId, through: date) -> None:
         rule = self._rules.get(rule_id)
         if rule is None:
-            raise TenantNotFoundError(f"rule {rule_id}")
+            raise TenantNotFoundError(_NOT_FOUND)
         self._rules[rule_id] = replace(rule, materialized_through=through)
 
     # web ---------------------------------------------------------------------------------
@@ -670,7 +709,7 @@ class InMemoryTenantStore:
             if lease_held(holder, now=now):
                 raise RowLeaseError(f"booking in progress for {target_date}")
             superseded = replace(
-                holder,
+                self._unleased_write(holder, now),
                 status=RowStatus.SUPERSEDED,
                 superseded_from=holder.status,
                 version=holder.version + 1,
@@ -691,7 +730,7 @@ class InMemoryTenantStore:
     ) -> RequestRow:
         row = self._row(row_id)
         if actor is Actor.WEB and user_id is None:
-            raise TenantNotFoundError(f"row {row_id}")
+            raise TenantNotFoundError(_NOT_FOUND)
         self._account_for_user(row.course_account_id, user_id)
         if actor not in (Actor.WEB, Actor.MATERIALIZER):
             raise TransitionRefusedError(f"{actor} writes through record_outcomes (leased path)")
@@ -709,7 +748,7 @@ class InMemoryTenantStore:
             if rule is None or not rule.active:
                 raise TransitionRefusedError("the superseded row's rule is not active")
         new = replace(
-            row,
+            self._unleased_write(row, now),
             status=to,
             status_reason=reason,
             superseded_from=None,
@@ -720,7 +759,7 @@ class InMemoryTenantStore:
             restore = self._restorable_superseded(row, now)
             if restore is not None:
                 restored = replace(
-                    restore,
+                    self._unleased_write(restore, now),
                     status=restore.superseded_from or RowStatus.PENDING,
                     status_reason=None,
                     superseded_from=None,
@@ -734,19 +773,32 @@ class InMemoryTenantStore:
         self._account_for_user(rule.course_account_id, user_id)
         existing = self._rules.get(rule.id)
         if existing is not None and existing.course_account_id != rule.course_account_id:
-            raise TenantNotFoundError(f"rule {rule.id}")
+            raise TenantNotFoundError(_NOT_FOUND)
+        if existing is not None and rule.version != existing.version:
+            raise VersionConflictError(
+                f"rule edited from version {rule.version}; stored is {existing.version}"
+            )
+        # One batch: the rule replace + its ruleday pointer ops (§3.2, round-3 SF1).
+        ruledays = dict(self._ruledays)
+        if existing is not None and existing.active:
+            old_key = (existing.course_account_id, existing.weekday)
+            if ruledays.get(old_key) == rule.id:
+                del ruledays[old_key]
         if rule.active:
-            for other in self._rules.values():
-                if (
-                    other.id != rule.id
-                    and other.course_account_id == rule.course_account_id
-                    and other.active
-                    and other.weekday == rule.weekday
-                ):
-                    raise RuleConflictError(
-                        f"account already has an active rule for weekday {rule.weekday}"
-                    )
-        stored = replace(rule, version=existing.version + 1) if existing is not None else rule
+            key = (rule.course_account_id, rule.weekday)
+            if ruledays.get(key, rule.id) != rule.id:
+                raise RuleConflictError(
+                    f"account already has an active rule for weekday {rule.weekday}"
+                )
+            ruledays[key] = rule.id
+        stored = rule
+        if existing is not None:
+            through = max(
+                (d for d in (existing.materialized_through, rule.materialized_through) if d),
+                default=None,
+            )
+            stored = replace(rule, version=existing.version + 1, materialized_through=through)
+        self._ruledays = ruledays
         self._rules[rule.id] = stored
         return stored
 

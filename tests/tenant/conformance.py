@@ -7,9 +7,10 @@ CI (``tests/tenant/test_in_memory_store.py``) and, from MU-8b, ``CosmosTenantSto
 ``StoreHarness`` whose store was built with ``COURSE_TIMEZONES``, ``CUTOFF`` and
 ``MAX_ACCOUNTS_PER_COURSE``.
 
-``StoreHarness.slot_pointer`` reads the implementation's date-slot pointer (``slot|<date>``,
-§3.2) so ``test_slot_and_row_never_diverge`` can pin that the slot and the row statuses never
-disagree. It is the ONLY implementation-specific hook; everything else goes through the Protocol.
+``StoreHarness.slot_pointer`` / ``ruleday_pointer`` read the implementation's pointer docs
+(``slot|<date>`` and ``ruleday|<weekday>``, §3.2) so the suite can pin that each pointer never
+disagrees with the rows / rules. They are the ONLY implementation-specific hooks; everything else
+goes through the Protocol.
 
 Coverage map: the §12 MU-5 named tests, one ``test_transition_<from>_<to>`` per §3.4 table row
 (refused rows included), the M4 lease rules, the M5 fingerprint check, and round-3 SF1
@@ -64,6 +65,7 @@ from teetime.tenant.store import (
     TenantNotFoundError,
     TenantStore,
     UniquenessConflictError,
+    VersionConflictError,
 )
 
 MB = CourseId("foreup:19671:2149")
@@ -88,6 +90,8 @@ WEB = "web:req-1"
 class StoreHarness:
     store: TenantStore
     slot_pointer: Callable[[CourseAccountId, date], Awaitable[RowId | None]]
+    # The ``ruleday|<weekday>`` pointer doc (§3.2): the active rule holding (account, weekday).
+    ruleday_pointer: Callable[[CourseAccountId, int], Awaitable[RuleId | None]]
 
 
 @dataclass(frozen=True)
@@ -733,7 +737,7 @@ class TenantStoreConformance:
         rule, rule_row = await _rule_row(s, t)
         explicit = await _explicit(s, t)
         # Withdraw the one-off while the rule is inactive: no auto-restore, slot freed.
-        await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        rule = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
         await s.transition_row(
             explicit.id,
             user_id=t.user.id,
@@ -1956,3 +1960,163 @@ class TenantStoreConformance:
             )
         assert (await _get(s, explicit)).status is RowStatus.PENDING
         assert (await _get(s, rule_row)).status is RowStatus.SUPERSEDED
+
+    # --- review round 1: leases, ledger atomicity, rule versions, not-found --------------------
+
+    async def test_expired_lease_cleared_by_web_write_and_stale_outcome_refused(
+        self, harness: StoreHarness
+    ) -> None:
+        """SF2: a booker whose claim expired cannot move the row after the web touched it."""
+        s = harness.store
+        t = await _tenant(s)
+        row = await _explicit(s, t)
+        await s.claim_rows([row.id], owner=BOOKER, until=NOW + timedelta(seconds=10), now=NOW)
+        later = NOW + timedelta(seconds=11)
+        for to in (RowStatus.SKIPPED, RowStatus.PENDING):
+            await s.transition_row(
+                row.id, user_id=t.user.id, to=to, actor=Actor.WEB, reason=None, now=later
+            )
+        after_web = await _get(s, row)
+        assert (after_web.lease_owner, after_web.lease_expires_at) == (None, None)
+        with pytest.raises(ExceptionGroup) as eg:
+            await s.record_outcomes(
+                [
+                    _outcome(
+                        row,
+                        to_status=RowStatus.BOOKED,
+                        last_outcome="booked",
+                        booking=_owned(row, "R1"),
+                        release_lease_owner=BOOKER,
+                        at=later,
+                    )
+                ]
+            )
+        assert eg.group_contains(RowLeaseError)
+        after = await _get(s, row)
+        assert after.status is RowStatus.PENDING
+        assert after.needs_reconcile is True
+        ledger = await s.list_owned_bookings(t.account.id, target_date=TARGET)
+        assert [b.raw_reservation_id for b in ledger] == ["R1"]
+
+    async def test_record_outcomes_status_change_requires_unexpired_lease(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        row = await _explicit(s, t)
+        await s.claim_rows([row.id], owner=BOOKER, until=NOW + timedelta(seconds=10), now=NOW)
+        with pytest.raises(ExceptionGroup) as eg:
+            await s.record_outcomes(
+                [
+                    _outcome(
+                        row,
+                        to_status=RowStatus.BOOKED,
+                        last_outcome="booked",
+                        booking=_owned(row, "R1"),
+                        release_lease_owner=BOOKER,
+                        at=NOW + timedelta(seconds=11),
+                    )
+                ]
+            )
+        assert eg.group_contains(RowLeaseError)
+        assert (await _get(s, row)).status is RowStatus.PENDING
+
+    async def test_record_outcomes_invalid_ledger_entry_writes_nothing(
+        self, harness: StoreHarness
+    ) -> None:
+        """SF3: the row and its ledger are one unit; a bad entry leaves neither written."""
+        s = harness.store
+        t = await _tenant(s)
+        other = await _tenant(s, n=1)
+        row = await _explicit(s, t)
+        foreign = await _explicit(s, other)
+        await s.claim_rows([row.id], owner=BOOKER, until=BOOKER_UNTIL, now=NOW)
+        with pytest.raises(ExceptionGroup) as eg:
+            await s.record_outcomes(
+                [
+                    _outcome(
+                        row,
+                        to_status=RowStatus.BOOKED,
+                        last_outcome="booked",
+                        booking=_owned(row, "R1"),
+                        held_extras=(_owned(foreign, "X1", state=BookingState.HELD_EXTRA),),
+                        release_lease_owner=BOOKER,
+                    )
+                ]
+            )
+        assert eg.group_contains(ValueError)
+        after = await _get(s, row)
+        assert after.status is RowStatus.PENDING
+        assert after.lease_owner == BOOKER
+        assert await s.list_owned_bookings(t.account.id, target_date=TARGET) == []
+        assert await s.list_owned_bookings(other.account.id, target_date=TARGET) == []
+
+    async def test_upsert_rule_refuses_stale_version(self, harness: StoreHarness) -> None:
+        """SF5: a rule edit made from a stale read is refused, not silently applied."""
+        s = harness.store
+        t = await _tenant(s)
+        first = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        await s.upsert_rule(replace(first, window_latest=time(11, 0)), user_id=t.user.id)
+        with pytest.raises(VersionConflictError):
+            await s.upsert_rule(replace(first, party_size=4), user_id=t.user.id)
+        (stored,) = await s.rules_needing_materialization(through=TARGET)
+        assert (stored.window_latest, stored.party_size, stored.version) == (time(11, 0), 2, 2)
+
+    async def test_upsert_rule_never_regresses_materialized_through(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        read = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        await s.set_materialized_through(read.id, TARGET)  # the watcher tick, after the read
+        edited = await s.upsert_rule(replace(read, window_latest=time(11, 0)), user_id=t.user.id)
+        assert edited.materialized_through == TARGET
+        assert await s.rules_needing_materialization(through=TARGET) == []
+
+    async def test_ruleday_pointer_tracks_the_active_rule(self, harness: StoreHarness) -> None:
+        """SF6: one active rule per (account, weekday) is a pointer doc, not a scan."""
+        s = harness.store
+        t = await _tenant(s)
+        acc = t.account.id
+        rule = await s.upsert_rule(_rule(t, weekday=SAT), user_id=t.user.id)
+        assert await harness.ruleday_pointer(acc, SAT) == rule.id
+        await s.upsert_rule(_rule(t, weekday=0, active=False), user_id=t.user.id)
+        assert await harness.ruleday_pointer(acc, 0) is None
+        with pytest.raises(RuleConflictError):
+            await s.upsert_rule(_rule(t, weekday=SAT), user_id=t.user.id)
+        assert await harness.ruleday_pointer(acc, SAT) == rule.id
+        rule = await s.upsert_rule(replace(rule, weekday=6), user_id=t.user.id)
+        assert await harness.ruleday_pointer(acc, SAT) is None
+        assert await harness.ruleday_pointer(acc, 6) == rule.id
+        await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        assert await harness.ruleday_pointer(acc, 6) is None
+
+    async def test_not_found_is_indistinguishable_from_not_yours(
+        self, harness: StoreHarness
+    ) -> None:
+        """IDOR defence (§9.1): same message, and no other user's account id in it."""
+        s = harness.store
+        t = await _tenant(s)
+        mallory = await _tenant(s, n=1)
+        row = await _explicit(s, t)
+        with pytest.raises(TenantNotFoundError) as foreign:
+            await s.transition_row(
+                row.id,
+                user_id=mallory.user.id,
+                to=RowStatus.SKIPPED,
+                actor=Actor.WEB,
+                reason=None,
+                now=NOW,
+            )
+        with pytest.raises(TenantNotFoundError) as missing:
+            await s.transition_row(
+                RowId(uuid4()),
+                user_id=mallory.user.id,
+                to=RowStatus.SKIPPED,
+                actor=Actor.WEB,
+                reason=None,
+                now=NOW,
+            )
+        assert str(foreign.value) == str(missing.value)
+        assert str(t.account.id) not in str(foreign.value)
+        assert str(row.id) not in str(foreign.value)

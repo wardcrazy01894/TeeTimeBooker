@@ -13,7 +13,7 @@ import pytest
 
 from teetime.core.models import CourseId
 from teetime.tenant.in_memory_store import InMemoryTenantStore
-from teetime.tenant.models import CourseAccountId, RowId, UserId
+from teetime.tenant.models import CourseAccountId, RowId, RuleId, UserId
 
 from .conformance import (
     COURSE_TIMEZONES,
@@ -41,7 +41,10 @@ class TestInMemoryTenantStore(TenantStoreConformance):
         async def slot_pointer(account: CourseAccountId, day: date) -> RowId | None:
             return store.slot_pointer(account, day)
 
-        return StoreHarness(store=store, slot_pointer=slot_pointer)
+        async def ruleday_pointer(account: CourseAccountId, weekday: int) -> RuleId | None:
+            return store.ruleday_pointer(account, weekday)
+
+        return StoreHarness(store=store, slot_pointer=slot_pointer, ruleday_pointer=ruleday_pointer)
 
 
 async def test_append_audit_redacts_detail() -> None:
