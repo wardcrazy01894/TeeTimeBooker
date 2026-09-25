@@ -28,6 +28,7 @@ import base64
 import binascii
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -57,9 +58,17 @@ class CredentialDecryptError(RuntimeError):
     key material, ciphertext, or plaintext."""
 
 
+# A kid is a short operator LABEL ("k1", "2026-09-25", "rot.2_a"), never key-shaped: the
+# 32-char cap alone rejects a base64 AES-256 key (44 chars), and the alphabet keeps the blob
+# delimiter (':'), whitespace, and the base64 '+', '/', '=' out. Load-time errors additionally
+# never echo a kid at all (they name the entry POSITION), so a secret pasted on the wrong
+# side of the JSON during a hand rotation cannot reach the exception text (review round 1).
+_KID_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+_KID_RULE = "a 1-32 char label of [A-Za-z0-9._-]"
+
+
 def _is_valid_kid(kid: object) -> bool:
-    # ':' is the blob delimiter; a kid containing it would make a blob unparseable.
-    return isinstance(kid, str) and bool(kid) and _SEP not in kid
+    return isinstance(kid, str) and _KID_RE.fullmatch(kid) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,21 +79,38 @@ class Keyring:
 
     def __post_init__(self) -> None:
         # Invariants hold on the TYPE, not just on `load_keyring`, so a hand-built ring in a
-        # test or a future loader cannot bypass them.
+        # test or a future loader cannot bypass them. Messages name entry POSITIONS, never
+        # kids — a kid may be a mis-pasted secret.
         if not self.keys:
             raise KeyringError("keyring has no keys")
-        for kid, key in self.keys.items():
+        for position, (kid, key) in enumerate(self.keys.items(), start=1):
             if not _is_valid_kid(kid):
-                raise KeyringError("keyring contains an invalid key id (empty or contains ':')")
+                raise KeyringError(
+                    f"keyring `keys` entry #{position} has an invalid key id (must be {_KID_RULE})"
+                )
             if not isinstance(key, bytes) or len(key) != _KEY_BYTES:
-                raise KeyringError(f"keyring key {kid!r} must be {_KEY_BYTES} bytes (AES-256)")
+                raise KeyringError(
+                    f"keyring `keys` entry #{position} must be {_KEY_BYTES} bytes (AES-256)"
+                )
         if not _is_valid_kid(self.active_kid):
-            raise KeyringError("keyring `active` must be a non-empty string without ':'")
+            raise KeyringError(f"keyring `active` is not a valid key id (must be {_KID_RULE})")
         if self.active_kid not in self.keys:
-            raise KeyringError(
-                f"keyring `active` key id {self.active_kid!r} is not in `keys` "
-                f"(have {sorted(self.keys)})"
-            )
+            raise KeyringError("keyring `active` key id is not in `keys`")
+
+
+class _DuplicateJsonKeyError(ValueError):
+    """Raised by the `object_pairs_hook` when a JSON object repeats a key."""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    # `json.loads` is last-wins on duplicate keys; for a keyring that would silently drop a
+    # key (or an `active`) the operator believes is present.
+    out: dict[str, object] = {}
+    for key, value in pairs:
+        if key in out:
+            raise _DuplicateJsonKeyError
+        out[key] = value
+    return out
 
 
 def load_keyring(env_value: str | None) -> Keyring:
@@ -93,7 +119,9 @@ def load_keyring(env_value: str | None) -> Keyring:
     if env_value is None or not env_value.strip():
         raise KeyringError(f"{KEYRING_ENV_VAR} is unset or empty")
     try:
-        parsed: object = json.loads(env_value)
+        parsed: object = json.loads(env_value, object_pairs_hook=_reject_duplicate_keys)
+    except _DuplicateJsonKeyError:
+        raise KeyringError(f"{KEYRING_ENV_VAR} JSON has a duplicate key") from None
     except ValueError:
         # `from None`: the JSONDecodeError carries no content, but the discipline is uniform.
         raise KeyringError(f"{KEYRING_ENV_VAR} is not valid JSON") from None
@@ -106,15 +134,22 @@ def load_keyring(env_value: str | None) -> Keyring:
     if not isinstance(raw_keys, dict):
         raise KeyringError(f"{KEYRING_ENV_VAR} `keys` must be a JSON object of kid -> base64")
     keys: dict[str, bytes] = {}
-    for kid, raw in raw_keys.items():
+    for position, (kid, raw) in enumerate(raw_keys.items(), start=1):
         if not _is_valid_kid(kid):
-            raise KeyringError(f"{KEYRING_ENV_VAR} contains an invalid key id")
+            raise KeyringError(
+                f"{KEYRING_ENV_VAR} `keys` entry #{position} has an invalid key id "
+                f"(must be {_KID_RULE})"
+            )
         if not isinstance(raw, str):
-            raise KeyringError(f"{KEYRING_ENV_VAR} key {kid!r} must be a base64 string")
+            raise KeyringError(
+                f"{KEYRING_ENV_VAR} `keys` entry #{position} must be a base64 string"
+            )
         try:
             keys[kid] = base64.b64decode(raw, validate=True)
         except (binascii.Error, ValueError):
-            raise KeyringError(f"{KEYRING_ENV_VAR} key {kid!r} is not valid base64") from None
+            raise KeyringError(
+                f"{KEYRING_ENV_VAR} `keys` entry #{position} is not valid base64"
+            ) from None
     return Keyring(active_kid=active, keys=keys)
 
 
@@ -175,8 +210,10 @@ def decrypt_password(keyring: Keyring, blob: str, *, aad: bytes) -> str:
     key = keyring.keys.get(kid)
     if key is None:
         raise CredentialDecryptError(
-            f"unknown key id {kid!r}: not in the keyring (active {keyring.active_kid!r}, "
-            f"have {sorted(keyring.keys)})"
+            # The blob's kid is echoed: it passed `_KID_RE` (a ≤32-char label, not key-shaped)
+            # and blobs are our own `encrypt_password` output. The ring's OTHER kids are not
+            # listed — nothing more is needed to act on this.
+            f"unknown key id {kid!r}: not in the keyring (active {keyring.active_kid!r})"
         )
     try:
         plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
