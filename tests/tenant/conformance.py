@@ -1847,8 +1847,9 @@ class TenantStoreConformance:
         """Round-4 D1: superseded rule rows are not immune to rule edits."""
         s = harness.store
         t = await _tenant(s)
-        _, rule_row = await _rule_row(s, t)
+        rule, rule_row = await _rule_row(s, t)
         explicit = await _explicit(s, t)
+        await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
         with pytest.raises(TransitionRefusedError, match="reason"):
             await s.transition_row(
                 rule_row.id,
@@ -1867,7 +1868,8 @@ class TenantStoreConformance:
             now=NOW,
         )
         assert (out.status, out.status_reason) == (RowStatus.WITHDRAWN, "rule_deactivated")
-        assert out.superseded_from is None
+        # Round-5: the pre-supersede status survives the withdraw (reactivation restores it).
+        assert out.superseded_from is RowStatus.PENDING
         assert (await _get(s, explicit)).status is RowStatus.PENDING
         assert await harness.slot_pointer(t.account.id, TARGET) == explicit.id
 
@@ -2120,3 +2122,205 @@ class TenantStoreConformance:
         assert str(foreign.value) == str(missing.value)
         assert str(t.account.id) not in str(foreign.value)
         assert str(row.id) not in str(foreign.value)
+
+    # --- review round 2 --------------------------------------------------------------------
+
+    async def _user_terminal_date_with_withdrawn_rule_row(
+        self, s: TenantStore, t: Tenant
+    ) -> RequestRow:
+        _, row = await _rule_row(s, t)
+        row = await s.transition_row(
+            row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        one_off = await _book(s, await _explicit(s, t))
+        await _lease(s, one_off, owner=WEB)
+        await s.record_outcomes(
+            [
+                _outcome(
+                    one_off,
+                    actor=Actor.WEB,
+                    to_status=RowStatus.CANCELLED,
+                    status_reason="user",
+                    last_outcome="cancelled",
+                    release_lease_owner=WEB,
+                )
+            ]
+        )
+        return row
+
+    async def test_record_outcomes_refuses_reactivation(self, harness: StoreHarness) -> None:
+        """MF1 back door: withdrawn -> pending is never a leased (record_outcomes) edge."""
+        s = harness.store
+        t = await _tenant(s)
+        row = await self._user_terminal_date_with_withdrawn_rule_row(s, t)
+        await _lease(s, row, owner=WATCHER)
+        with pytest.raises(ExceptionGroup) as eg:
+            await s.record_outcomes(
+                [
+                    _outcome(
+                        row,
+                        actor=Actor.MATERIALIZER,
+                        to_status=RowStatus.PENDING,
+                        last_outcome="reactivated",
+                        release_lease_owner=WATCHER,
+                    )
+                ]
+            )
+        assert eg.group_contains(TransitionRefusedError)
+        assert (await _get(s, row)).status is RowStatus.WITHDRAWN
+        assert await harness.slot_pointer(t.account.id, TARGET) is None
+
+    async def test_record_outcomes_refuses_withdraw_of_explicit_row(
+        self, harness: StoreHarness
+    ) -> None:
+        """A withdraw via the leased path would skip the D2 restore and strand the rule row."""
+        s = harness.store
+        t = await _tenant(s)
+        _, rule_row = await _rule_row(s, t)
+        explicit = await _explicit(s, t)
+        await _lease(s, explicit, owner=WEB)
+        with pytest.raises(ExceptionGroup) as eg:
+            await s.record_outcomes(
+                [
+                    _outcome(
+                        explicit,
+                        actor=Actor.WEB,
+                        to_status=RowStatus.WITHDRAWN,
+                        status_reason=USER_WITHDRAW_REASON,
+                        last_outcome="withdrawn",
+                        release_lease_owner=WEB,
+                    )
+                ]
+            )
+        assert eg.group_contains(TransitionRefusedError)
+        assert (await _get(s, explicit)).status is RowStatus.PENDING
+        assert (await _get(s, rule_row)).status is RowStatus.SUPERSEDED
+
+    async def test_record_outcomes_refuses_unsupersede(self, harness: StoreHarness) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        rule, rule_row = await _rule_row(s, t)
+        explicit = await _explicit(s, t)
+        await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        await s.transition_row(
+            explicit.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        await _lease(s, await _get(s, rule_row), owner=WEB)
+        with pytest.raises(ExceptionGroup) as eg:
+            await s.record_outcomes(
+                [
+                    _outcome(
+                        rule_row,
+                        actor=Actor.WEB,
+                        to_status=RowStatus.PENDING,
+                        last_outcome="unsuperseded",
+                        release_lease_owner=WEB,
+                    )
+                ]
+            )
+        assert eg.group_contains(TransitionRefusedError)
+        assert (await _get(s, rule_row)).status is RowStatus.SUPERSEDED
+
+    async def test_skip_survives_supersede_deactivate_withdraw_reactivate(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-5 decision: D1 must not undo D2. A skipped rule row that was superseded, then
+        withdrawn by a deactivation, comes back SKIPPED on reactivation, never PENDING."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, rule_row = await _rule_row(s, t)
+        await s.transition_row(
+            rule_row.id,
+            user_id=t.user.id,
+            to=RowStatus.SKIPPED,
+            actor=Actor.WEB,
+            reason=None,
+            now=NOW,
+        )
+        explicit = await _explicit(s, t)
+        rule = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        withdrawn = await s.transition_row(
+            rule_row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        assert withdrawn.superseded_from is RowStatus.SKIPPED
+        await s.transition_row(
+            explicit.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        rule = await s.upsert_rule(replace(rule, active=True), user_id=t.user.id)
+        back = await s.reactivate_rule_row(withdrawn, rule, now=NOW)
+        assert back.status is RowStatus.SKIPPED
+        assert back.superseded_from is None
+        assert await harness.slot_pointer(t.account.id, TARGET) == rule_row.id
+        assert await s.load_event_rows(targets={MB: TARGET}, now=NOW) == []
+
+    async def test_load_event_rows_excludes_rows_of_inactive_rules(
+        self, harness: StoreHarness
+    ) -> None:
+        """Belt and braces for a non-atomic deactivation (§7.7): the booker never books for an
+        inactive rule, even if its pending rows were not withdrawn yet."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, row = await _rule_row(s, t)
+        other = await _tenant(s, n=1)
+        explicit = await _explicit(s, other)
+        await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        rows = await s.load_event_rows(targets={MB: TARGET}, now=NOW)
+        assert [er.row.id for er in rows] == [explicit.id]
+        assert (await _get(s, row)).status is RowStatus.PENDING
+
+    async def test_record_outcomes_ledger_must_match_row_date_and_course(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        row = await _explicit(s, t)
+        await s.claim_rows([row.id], owner=BOOKER, until=BOOKER_UNTIL, now=NOW)
+        for bad in (
+            replace(_owned(row, "D1"), target_date=TARGET + timedelta(days=7)),
+            replace(_owned(row, "C1"), course_id=OTHER_COURSE),
+        ):
+            with pytest.raises(ExceptionGroup) as eg:
+                await s.record_outcomes(
+                    [
+                        _outcome(
+                            row,
+                            to_status=RowStatus.BOOKED,
+                            last_outcome="booked",
+                            booking=bad,
+                            release_lease_owner=BOOKER,
+                        )
+                    ]
+                )
+            assert eg.group_contains(ValueError)
+        assert (await _get(s, row)).status is RowStatus.PENDING
+        assert await s.list_owned_bookings(t.account.id, target_date=TARGET) == []
+
+    async def test_set_materialized_through_never_moves_backwards(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        await s.set_materialized_through(rule.id, TARGET + timedelta(days=14))
+        await s.set_materialized_through(rule.id, TARGET)
+        assert await s.rules_needing_materialization(through=TARGET + timedelta(days=14)) == []

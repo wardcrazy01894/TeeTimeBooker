@@ -170,8 +170,12 @@ class TenantStore(Protocol):
         one for the batch: a refused transition on one row must not roll back other accounts'
         outcomes (M4). Each applies the status transition (via ``check_transition``), ledger
         inserts, ``last_outcome``, ``needs_reconcile``, the upgrade marker, and lease release.
-        Returns nothing; per-row failures are raised as an ``ExceptionGroup`` AFTER every row
-        was attempted.
+        Only the LEASED edges may be written here: pending -> booked (runner, watcher), booked ->
+        booked (watcher upgrade), booked -> pending + needs_reconcile (watcher), booked ->
+        cancelled (watcher ``external``; web ``user`` / ``already_gone`` for the §8.5 cancel).
+        Every other edge is refused, because only the unleased paths carry its guards
+        (user-terminal history, the D2 restore, rule active). Returns nothing; per-row failures
+        are raised as an ``ExceptionGroup`` AFTER every row was attempted.
 
         A REFUSED row (it moved, or the writer no longer holds an unexpired lease) still gets its
         ledger entries, written against (account, date), and the ACTIVE row for that date (if any)
@@ -268,8 +272,10 @@ class TenantStore(Protocol):
     async def reactivate_rule_row(
         self, row: RequestRow, rule: StandingRule, *, now: datetime
     ) -> RequestRow:
-        """System-withdrawn (``models.SYSTEM_WITHDRAW_REASONS``) rule row -> PENDING, with window
-        and party refreshed from ``rule``: one batch of IfMatch replace + slot create. Refused
+        """System-withdrawn (``models.SYSTEM_WITHDRAW_REASONS``) rule row -> its pre-supersede
+        status if it was superseded before the withdraw (``superseded_from``, round-5: SKIPPED
+        stays SKIPPED), else PENDING, with window and party refreshed from ``rule``: one batch of
+        IfMatch replace + slot create. The only writer of withdrawn -> active. Refused
         (``TransitionRefusedError``) if the date has a user-terminal row, is frozen, or the slot is
         held."""
         ...

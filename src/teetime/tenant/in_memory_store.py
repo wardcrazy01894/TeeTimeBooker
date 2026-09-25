@@ -79,6 +79,17 @@ SOFT_AUTH_FAILURE_LIMIT = 3
 
 _Write = tuple[RequestRow | None, RequestRow]
 
+# The ONLY §3.4 edges the LEASED path (``record_outcomes``) may write, and by whom. Everything else
+# (skip, withdraw, un-supersede, reactivate, ...) goes through the unleased paths, which carry the
+# extra guards (user-terminal history, D2 restore, rule active). MU-5 review round 2, MF1.
+_LEASED_EDGES: dict[tuple[RowStatus, RowStatus], frozenset[Actor]] = {
+    (RowStatus.PENDING, RowStatus.BOOKED): frozenset({Actor.BOOKING_RUNNER, Actor.WATCHER}),
+    (RowStatus.BOOKED, RowStatus.BOOKED): frozenset({Actor.WATCHER}),  # upgrade
+    (RowStatus.BOOKED, RowStatus.PENDING): frozenset({Actor.WATCHER}),  # + needs_reconcile
+    # watcher: external (vanish); web: the §8.5 managed cancel (user / already_gone)
+    (RowStatus.BOOKED, RowStatus.CANCELLED): frozenset({Actor.WATCHER, Actor.WEB}),
+}
+
 # One message for "missing" and "not yours" alike, naming no id (IDOR defence, §9.1).
 _NOT_FOUND = "not found"
 
@@ -286,10 +297,15 @@ class InMemoryTenantStore:
         out: list[EventRow] = []
         for row in sorted(self._rows.values(), key=lambda r: r.id):
             account = self._accounts.get(row.course_account_id)
+            rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
+            # Belt and braces for a non-atomic deactivation (§7.7): never offer the booker a row
+            # of an inactive rule, even before the materializer withdrew it.
+            rule_ok = row.rule_id is None or (rule is not None and rule.active)
             if (
                 row.status is RowStatus.PENDING
                 and targets.get(row.course_id) == row.target_date
                 and row.cutoff_at > now
+                and rule_ok
                 and account is not None
                 and account.status is AccountStatus.ACTIVE
             ):
@@ -326,8 +342,9 @@ class InMemoryTenantStore:
             raise ExceptionGroup(f"record_outcomes: {len(errors)} row(s) not applied", errors)
 
     def _apply_outcome(self, o: RowOutcome) -> None:
-        self._validate_ledger(o)  # before ANY write: the row and its ledger are one unit (SF3)
         row = self._rows.get(o.row_id)
+        # Before ANY write: the row and its ledger are one unit (SF3).
+        self._validate_ledger(o, course_id=row.course_id if row is not None else None)
         try:
             if row is None:
                 raise TenantNotFoundError(_NOT_FOUND)
@@ -344,6 +361,11 @@ class InMemoryTenantStore:
         owns = row.lease_owner is not None and row.lease_owner == o.release_lease_owner
         holder = owns and lease_held(row, now=o.at)  # an expired lease is no lease (SF2)
         if o.to_status is not None:
+            leased_by = _LEASED_EDGES.get((row.status, o.to_status), frozenset())
+            if o.actor not in leased_by:
+                raise TransitionRefusedError(
+                    f"{row.status} -> {o.to_status} by {o.actor} is not a record_outcomes edge"
+                )
             check_transition(
                 row,
                 o.to_status,
@@ -414,10 +436,14 @@ class InMemoryTenantStore:
             *o.cancelled_extras,
         ]
 
-    def _validate_ledger(self, o: RowOutcome) -> None:
+    def _validate_ledger(self, o: RowOutcome, *, course_id: CourseId | None) -> None:
         for entry in self._ledger_entries(o):
             if entry.course_account_id != o.course_account_id:
                 raise ValueError(f"ledger entry {entry.id} is for another account")
+            if entry.target_date != o.target_date:
+                raise ValueError(f"ledger entry {entry.id} is for another date")
+            if course_id is not None and entry.course_id != course_id:
+                raise ValueError(f"ledger entry {entry.id} is for another course")
 
     def _write_ledger(self, o: RowOutcome, *, course_id: CourseId | None) -> None:
         for entry in self._ledger_entries(o):
@@ -588,7 +614,9 @@ class InMemoryTenantStore:
         self, row: RequestRow, rule: StandingRule, *, now: datetime
     ) -> RequestRow:
         stored = self._row(row.id)
-        check_transition(row, RowStatus.PENDING, actor=Actor.MATERIALIZER, now=now)
+        # Round-5: back to the pre-supersede status if it was superseded before the withdraw.
+        target = row.superseded_from or RowStatus.PENDING
+        check_transition(row, target, actor=Actor.MATERIALIZER, now=now)
         if row.rule_id != rule.id:
             raise ValueError(f"row {row.id} does not belong to rule {rule.id}")
         if not rule.active:
@@ -598,8 +626,9 @@ class InMemoryTenantStore:
             raise RowLeaseError(f"row {row.id} is leased by {stored.lease_owner!r}")
         new = replace(
             self._unleased_write(row, now),
-            status=RowStatus.PENDING,
+            status=target,
             status_reason=None,
+            superseded_from=None,
             window_earliest=rule.window_earliest,
             window_latest=rule.window_latest,
             party_size=rule.party_size,
@@ -612,6 +641,8 @@ class InMemoryTenantStore:
         rule = self._rules.get(rule_id)
         if rule is None:
             raise TenantNotFoundError(_NOT_FOUND)
+        if rule.materialized_through is not None and rule.materialized_through >= through:
+            return  # never moves backwards (§3.2)
         self._rules[rule_id] = replace(rule, materialized_through=through)
 
     # web ---------------------------------------------------------------------------------
@@ -736,7 +767,7 @@ class InMemoryTenantStore:
             raise TransitionRefusedError(f"{actor} writes through record_outcomes (leased path)")
         if to is RowStatus.SUPERSEDED:
             raise TransitionRefusedError("supersede is written only by create_explicit_row")
-        if (row.status, to) == (RowStatus.WITHDRAWN, RowStatus.PENDING):
+        if row.status is RowStatus.WITHDRAWN and to in (RowStatus.PENDING, RowStatus.SKIPPED):
             # It must re-check the (account, date) history for a user-terminal row, the rule
             # being active, and refresh window/party from the rule (§3.4, operator decision c).
             raise TransitionRefusedError("reactivation is written only by reactivate_rule_row")
@@ -751,7 +782,8 @@ class InMemoryTenantStore:
             self._unleased_write(row, now),
             status=to,
             status_reason=reason,
-            superseded_from=None,
+            # Round-5: a system withdraw KEEPS the pre-supersede status for reactivation.
+            superseded_from=row.superseded_from if to is RowStatus.WITHDRAWN else None,
             version=row.version + 1,
         )
         writes: list[_Write] = [(row, new)]

@@ -218,8 +218,9 @@ class RequestRow:
     # a missing reservation is bot-caused (-> PENDING + needs_reconcile), never external.
     upgrade_started_at: datetime | None = None
     # Round-4 D2 (MU-5 review): the status (PENDING or SKIPPED) a rule row had when an explicit
-    # row superseded it; set only while SUPERSEDED. Un-superseding restores exactly this, so a
-    # user's skip is honoured when their one-off is withdrawn.
+    # row superseded it. Set while SUPERSEDED and KEPT through a system withdraw (round-5), so
+    # both un-superseding and a later reactivation restore exactly this: a user's skip is
+    # honoured when their one-off is withdrawn or the rule is deactivated and reactivated.
     superseded_from: RowStatus | None = None
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
@@ -354,6 +355,8 @@ _TRANSITION_OWNERS: dict[tuple[RowStatus, RowStatus], frozenset[Actor]] = {
     # Round-4 D1: rule deactivate/delete/weekday change withdraws superseded rows too.
     (_SUP, _W): frozenset({Actor.WEB, Actor.MATERIALIZER}),
     (_W, _P): frozenset({Actor.MATERIALIZER}),
+    # Round-5: reactivating a row that was superseded-while-skipped restores SKIPPED.
+    (_W, _S): frozenset({Actor.MATERIALIZER}),
     (_B, _B): frozenset({Actor.WATCHER}),  # upgrade, via UpgradeOrchestrator under the lease
     (_B, RowStatus.CANCELLED): frozenset({Actor.WEB, Actor.WATCHER}),
     (_B, _P): frozenset({Actor.WATCHER}),  # upgrade cancelled the old slot, rebook failed
@@ -361,7 +364,7 @@ _TRANSITION_OWNERS: dict[tuple[RowStatus, RowStatus], frozenset[Actor]] = {
 }
 # Edges back INTO the active set (other than creation) that require the date not frozen.
 _REQUIRES_NOT_FROZEN: frozenset[tuple[RowStatus, RowStatus]] = frozenset(
-    {(_S, _P), (_SUP, _P), (_W, _P)}
+    {(_S, _P), (_SUP, _P), (_W, _P), (_W, _S)}
 )
 # Creation (∅ -> status): the owning actor per row source, and the allowed initial statuses
 # (a rule row colliding with another active row is created SUPERSEDED, §7.7 step 3).
@@ -431,6 +434,7 @@ _GUARDS = {
     (_P, _W): _guard_withdraw,
     (_SUP, _W): _guard_withdraw,
     (_W, _P): _guard_reactivate,
+    (_W, _S): _guard_reactivate,
     (_P, _SUP): _guard_supersede,
     (_S, _SUP): _guard_supersede,
     (_B, RowStatus.CANCELLED): _guard_cancel,
@@ -470,8 +474,9 @@ def check_transition(
         raise TransitionRefusedError(f"{row.target_date} is frozen (cutoff or date passed)")
     if to is RowStatus.LOST and not frozen:
         raise TransitionRefusedError(f"{row.target_date} is not frozen yet; cannot mark lost")
-    if row.status is _SUP and to in (_P, _S):
-        prior = row.superseded_from or _P  # round-4 D2: back to the pre-supersede status
+    if row.status in (_SUP, _W) and to in (_P, _S):
+        # Round-4 D2 / round-5: un-supersede AND reactivation restore the pre-supersede status.
+        prior = row.superseded_from or _P
         if to is not prior:
             raise TransitionRefusedError(f"row was superseded from {prior}; it returns to {prior}")
     if edge == (_B, _P) and not needs_reconcile:

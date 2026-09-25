@@ -323,3 +323,16 @@ def test_cancel_reason_tied_to_actor(actor: Actor, reason: str, ok: bool) -> Non
     else:
         with pytest.raises(TransitionRefusedError, match="reason"):
             check_transition(_row(B), C, actor=actor, now=NOW, reason=reason)
+
+
+def test_reactivation_restores_pre_supersede_status() -> None:
+    """Round-5: a system-withdrawn row that was superseded-while-skipped comes back SKIPPED."""
+    was_skipped = replace(_row(W, reason="rule_deactivated"), superseded_from=S)
+    check_transition(was_skipped, S, actor=Actor.MATERIALIZER, now=NOW)
+    with pytest.raises(TransitionRefusedError, match="superseded from"):
+        check_transition(was_skipped, P, actor=Actor.MATERIALIZER, now=NOW)
+    plain = _row(W, reason="rule_deactivated")
+    with pytest.raises(TransitionRefusedError, match="superseded from"):
+        check_transition(plain, S, actor=Actor.MATERIALIZER, now=NOW)
+    with pytest.raises(TransitionRefusedError):
+        check_transition(was_skipped, S, actor=Actor.WEB, now=NOW)
