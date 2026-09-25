@@ -22,6 +22,7 @@ Coverage areas:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -156,6 +157,7 @@ def _build(
     policy: OneBookingPolicyConfig | None = None,
     cutoff: BookingCutoffConfig | None = None,
     skip_dates: frozenset[date] = frozenset(),
+    reconcile_eligible: Callable[[ExistingReservation], bool] | None = None,
 ) -> tuple[WatchOrchestrator, InMemoryStore, FakeClock]:
     store = store or InMemoryStore()
     clock = FakeClock(start=now_utc)
@@ -171,6 +173,9 @@ def _build(
         policy=policy,
         booking_cutoff=cutoff,
         skip_dates=skip_dates,
+        # Only forwarded when set, so every pre-E5 test still constructs the orchestrator
+        # exactly as before (the explicit-None default is pinned separately).
+        **({"reconcile_eligible": reconcile_eligible} if reconcile_eligible is not None else {}),
     )
     return watch, store, clock
 
@@ -1702,3 +1707,280 @@ def test_watch_stop_acting_routes_through_frozen_reason(
         now, TARGET_DATE, timezone="America/New_York", cutoff=cutoff, skip_dates=skip_dates
     )
     assert watch._should_stop_acting_on_date(now, TARGET_DATE) == expected
+
+
+# ---------------------------------------------------------------------------
+# E5 (MULTIUSER_PLAN §2.3 / §7.6): `reconcile_eligible` restricts the duplicate
+# reconcile's keep-best-cancel-rest to ELIGIBLE (owned) reservations. `None` (the
+# default) makes every match eligible — today's behaviour, byte-for-byte. An
+# INELIGIBLE reservation (a manual booking) is never a cancel candidate AND never
+# the "kept" one: the best ELIGIBLE reservation is kept, the other eligible ones are
+# cancelled, and every ineligible one is left held (§7.6 documented residual: an
+# owned + a manual booking for the same (date, party) both stay held).
+# ---------------------------------------------------------------------------
+
+
+def _owned(*codes: str) -> Callable[[ExistingReservation], bool]:
+    owned = frozenset(codes)
+    return lambda r: r.confirmation_code in owned
+
+
+async def test_reconcile_eligible_none_is_todays_behavior() -> None:
+    """Explicit `reconcile_eligible=None` is identical to omitting it: keep the
+    best-ranked of ALL matches, cancel the rest."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=10, minute=15, code="res-1015"),
+            _reservation(hour=9, minute=30, code="res-0930"),
+            _reservation(hour=9, minute=45, code="res-0945"),  # best
+        ]
+    )
+    adapter.set_search_response([])
+    watch = WatchOrchestrator(
+        adapters={COURSE_ID: adapter},
+        store=InMemoryStore(),
+        notifier=NoopNotifier(),
+        clock=FakeClock(start=TEN_AM_ET_UTC),
+        scheduler=_scheduler(),
+        watch_config=_watch_config(),
+        creds={COURSE_ID: CourseCredentials(username="u", password="p")},
+        policy=OneBookingPolicyConfig(enabled=True),
+        reconcile_eligible=None,
+    )
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None
+    assert adapter.cancel_call_count == 2
+    remaining = await adapter.list_reservations()
+    assert [r.confirmation_code for r in remaining] == ["res-0945"]
+
+
+async def test_reconcile_all_eligible_predicate_matches_none_default() -> None:
+    """A predicate that accepts everything reproduces the default exactly."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=10, minute=15, code="res-1015"),
+            _reservation(hour=9, minute=45, code="res-0945"),
+        ]
+    )
+    adapter.set_search_response([])
+    watch, _, _ = _build(
+        adapter,
+        policy=OneBookingPolicyConfig(enabled=True),
+        reconcile_eligible=lambda _r: True,
+    )
+
+    await watch.check_once(_request(), TARGET_DATE)
+
+    assert adapter.cancel_call_count == 1
+    remaining = await adapter.list_reservations()
+    assert [r.confirmation_code for r in remaining] == ["res-0945"]
+
+
+async def test_reconcile_skips_ineligible_manual_reservation() -> None:
+    """One owned + one manual reservation for the same (date, party): only the owned
+    one is eligible, so there is nothing to collapse — BOTH stay held (§7.6 residual).
+    Without the hook the worse one (here the owned 10:15) would be cancelled; with it,
+    the manual 09:45 is never a candidate and the lone owned one is kept."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=45, code="manual-0945"),  # best, but manual
+            _reservation(hour=10, minute=15, code="bot-1015"),
+        ]
+    )
+    adapter.set_search_response([])
+    watch, _, _ = _build(
+        adapter,
+        policy=OneBookingPolicyConfig(enabled=True),
+        reconcile_eligible=_owned("bot-1015"),
+    )
+
+    result = await watch.check_once(_request(), TARGET_DATE)
+
+    assert result is None
+    assert adapter.cancel_call_count == 0
+    remaining = await adapter.list_reservations()
+    assert sorted(r.confirmation_code for r in remaining) == ["bot-1015", "manual-0945"]
+
+
+async def test_reconcile_keeps_best_eligible_when_best_overall_is_ineligible() -> None:
+    """The best-ranked reservation is a manual (ineligible) one. "Keep the best" means
+    the best ELIGIBLE: the owned 09:30 is kept, the owned 10:15 is cancelled, and the
+    manual 09:45 is untouched even though it outranks both."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=10, minute=15, code="bot-1015"),
+            _reservation(hour=9, minute=45, code="manual-0945"),  # best overall
+            _reservation(hour=9, minute=30, code="bot-0930"),  # best eligible
+        ]
+    )
+    adapter.set_search_response([])
+    watch, _, _ = _build(
+        adapter,
+        policy=OneBookingPolicyConfig(enabled=True),
+        reconcile_eligible=_owned("bot-1015", "bot-0930"),
+    )
+
+    await watch.check_once(_request(), TARGET_DATE)
+
+    assert adapter.cancel_call_count == 1
+    remaining = await adapter.list_reservations()
+    assert sorted(r.confirmation_code for r in remaining) == ["bot-0930", "manual-0945"]
+
+
+async def test_reconcile_eligible_never_cancels_when_nothing_eligible() -> None:
+    """The dry-run posture (§7.8: `reconcile_eligible=lambda _: False`) cancels nothing."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=45, code="res-0945"),
+            _reservation(hour=10, minute=15, code="res-1015"),
+            _reservation(hour=9, minute=0, code="res-0900"),
+        ]
+    )
+    adapter.set_search_response([])
+    store = InMemoryStore()
+    req = _request()
+    watch, _, _ = _build(
+        adapter,
+        store=store,
+        policy=OneBookingPolicyConfig(enabled=True),
+        reconcile_eligible=lambda _r: False,
+    )
+
+    await watch.check_once(req, TARGET_DATE)
+
+    assert adapter.cancel_call_count == 0
+    assert len(await adapter.list_reservations()) == 3
+
+
+async def test_reconcile_eligible_applies_on_gate3_booked_path() -> None:
+    """The Gate-3 (store already BOOKED) reconcile honours the hook too: a manual
+    duplicate beside the owned booked reservation is left held."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=45, code="res-0945"),  # owned, booked
+            _reservation(hour=10, minute=15, code="manual-1015"),
+        ]
+    )
+    adapter.set_search_response([])
+    req = _request()
+    store = InMemoryStore()
+    await store.record_terminal(_booked_terminal(req), TARGET_DATE)
+    watch, _, _ = _build(
+        adapter,
+        store=store,
+        policy=OneBookingPolicyConfig(enabled=True),
+        reconcile_eligible=_owned("res-0945"),
+    )
+
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None and result.outcome == BookingOutcome.BOOKED
+    assert adapter.cancel_call_count == 0
+    remaining = await adapter.list_reservations()
+    assert sorted(r.confirmation_code for r in remaining) == ["manual-1015", "res-0945"]
+
+
+async def test_reconcile_eligible_gate3_still_cancels_eligible_extra() -> None:
+    """Gate-3 path: two OWNED reservations + one manual → the worse owned one is
+    cancelled, the manual one is kept."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=9, minute=45, code="res-0945"),
+            _reservation(hour=10, minute=15, code="res-1015"),
+            _reservation(hour=9, minute=30, code="manual-0930"),
+        ]
+    )
+    adapter.set_search_response([])
+    req = _request()
+    store = InMemoryStore()
+    await store.record_terminal(_booked_terminal(req), TARGET_DATE)
+    watch, _, _ = _build(
+        adapter,
+        store=store,
+        policy=OneBookingPolicyConfig(enabled=True),
+        reconcile_eligible=_owned("res-0945", "res-1015"),
+    )
+
+    await watch.check_once(req, TARGET_DATE)
+
+    assert adapter.cancel_call_count == 1
+    remaining = await adapter.list_reservations()
+    assert sorted(r.confirmation_code for r in remaining) == ["manual-0930", "res-0945"]
+
+
+async def test_reconcile_eligible_log_counts_eligible_and_held(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PR #226 review nit 1: under E5 the reconcile line counts only ELIGIBLE reservations
+    and says how many ineligible ones were left held (not `len(matching)`)."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=10, minute=15, code="bot-1015"),
+            _reservation(hour=9, minute=45, code="manual-0945"),
+            _reservation(hour=9, minute=30, code="bot-0930"),
+        ]
+    )
+    adapter.set_search_response([])
+    watch, _, _ = _build(
+        adapter,
+        policy=OneBookingPolicyConfig(enabled=True),
+        reconcile_eligible=_owned("bot-1015", "bot-0930"),
+    )
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.watch_orchestrator"):
+        await watch.check_once(_request(), TARGET_DATE)
+
+    lines = [r.getMessage() for r in caplog.records if "watch: reconciled" in r.getMessage()]
+    assert lines == [
+        "watch: reconciled 2 duplicate reservations on 2026-05-16 — kept bot-0930, "
+        "cancelled 1 (1 ineligible left held)"
+    ]
+
+
+@pytest.mark.parametrize("manual_minutes", [(15,), (15, 20)])
+async def test_unadopted_manual_match_reaches_try_upgrade_unguarded(
+    manual_minutes: tuple[int, ...],
+) -> None:
+    """CHARACTERIZATION (PR #226 review should-fix 1) — pins TODAY's engine behaviour, which
+    E5 deliberately does NOT change: `reconcile_eligible` only governs the duplicate
+    reconcile. With NO store terminal (a pending row) and live matches that are all
+    INELIGIBLE (manual), `_check_course` still synthesizes a `TTB:` managed booking from
+    `matching[0]` and hands it to `_try_upgrade` — so a better slot CANCELS the manual
+    reservation. Covers both routes: a single manual match (reconcile never runs) and >1
+    manual matches with zero eligible (early return). MULTIUSER_PLAN §7.6 closes this in
+    tenant code (MU-10: adoption + a pre-seeded non-`TTB:` terminal, and `_try_upgrade`
+    MUST be gated on ownership). If this test starts failing because the engine now guards
+    the upgrade itself, update §7.6 and this pin together."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    req = _request()
+    adapter.set_existing_reservations(
+        [
+            ExistingReservation(
+                course_id=COURSE_ID,
+                confirmation_code=f"manual-14{m:02d}",
+                tee_time=datetime(
+                    TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, 14, m, tzinfo=ET
+                ),
+                party_size=len(req.players),
+            )
+            for m in manual_minutes
+        ]
+    )
+    adapter.set_search_response([_pm_slot(hour=14, minute=0)])  # strictly better tier
+    watch, _, _ = _build(adapter, policy=_two_pm_policy(), reconcile_eligible=lambda _r: False)
+
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None and result.outcome == BookingOutcome.BOOKED
+    assert adapter.cancel_call_count == 1  # a MANUAL reservation was cancelled by the upgrade
+    assert adapter.book_call_count == 1

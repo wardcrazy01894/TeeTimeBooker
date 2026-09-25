@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping
+import threading
+from collections.abc import Iterable, Mapping
+
+_log = logging.getLogger(__name__)
 
 # Card + player-PII keys whose VALUES must never reach the attempt_log (PLAN.md §10.1).
 # Matched case-insensitively. Two card shapes: the TeeItUp GNSVC POST namespaces all card
@@ -187,6 +190,87 @@ _URL_CRED_PARAM_RE = re.compile(
 )
 
 
+# --- E7: exact-literal secret registry (MULTIUSER_PLAN §2.3 E7 / §9.4) -------------------
+# Keyring keys and decrypted ForeUP passwords have NO recognisable shape, so no pattern above
+# can catch them. The hosted path registers each one as a literal (keys at startup, each
+# password as it is decrypted) and `redact_text` — hence `RedactingLogFilter` — masks it.
+# An EMPTY registry is a strict no-op, so the TOML path (which registers nothing) is unchanged.
+#
+# Floor of 8 chars (§9.4): a short literal would shred ordinary text — registering "e" would
+# mask every line. The consequence is that a secret shorter than 8 chars is NOT masked; such a
+# password is weak anyway, and the floor is the lesser evil versus destroying the logs.
+SECRET_LITERAL_MIN_LEN = 8
+_SECRET_MARK = "<redacted-secret>"
+# Every replacement token this module emits. A literal occurring INSIDE one of them would
+# re-match its own (or another) marker on every pass, so the filter would stop being idempotent
+# across multi-handler fan-out; such literals are refused. (No real random secret collides.)
+_MARKERS = (
+    _SECRET_MARK,
+    "<redacted-token>",
+    "Bearer <redacted-token>",
+    "<redacted-key>",
+    "<redacted-pan>",
+    "<redacted-email>",
+    "<redacted-phone>",
+)
+# (registered literals, compiled alternation longest-first | None). Swapped as ONE tuple so a
+# concurrent reader (logging from another thread) never sees a set/pattern mismatch; writers
+# serialise on the lock.
+_literal_state: tuple[frozenset[str], re.Pattern[str] | None] = (frozenset(), None)
+_literal_lock = threading.Lock()
+
+
+def register_secret_literals(literals: Iterable[str]) -> int:
+    """Register exact secret values to be masked as ``<redacted-secret>`` in all redacted text.
+
+    Additive and idempotent (re-registering a value is a no-op). Values shorter than
+    ``SECRET_LITERAL_MIN_LEN`` and values that occur inside a redaction marker are REFUSED:
+    one DEBUG line per call reports how many (never the values). Matching is exact and
+    case-sensitive; the longest literal wins where two overlap, so a secret that is a prefix
+    of another never leaves the longer one's tail visible.
+
+    Returns the number of DISTINCT values from this call that are now masked (already
+    registered ones included), so a caller can detect a refused secret — e.g. a decrypted
+    password shorter than the floor, which will NOT be masked.
+
+    Raises ``TypeError`` for a bare ``str``: it is itself an ``Iterable[str]``, so it would be
+    iterated into 1-char literals — all below the floor — and register NOTHING, silently.
+    """
+    if isinstance(literals, str):
+        raise TypeError(
+            "register_secret_literals expects an iterable of secrets, not a single str; "
+            "wrap it: register_secret_literals([value])"
+        )
+    global _literal_state  # noqa: PLW0603 - a process-wide registry is the point
+    values = set(literals)
+    accepted = {
+        lit
+        for lit in values
+        if len(lit) >= SECRET_LITERAL_MIN_LEN and not any(lit in m for m in _MARKERS)
+    }
+    refused = len(values) - len(accepted)
+    if refused:
+        _log.debug(
+            "register_secret_literals: refused %d value(s) (shorter than %d chars or inside a "
+            "redaction marker) — they will NOT be masked",
+            refused,
+            SECRET_LITERAL_MIN_LEN,
+        )
+    with _literal_lock:
+        current = _literal_state[0]
+        merged = current | accepted
+        if merged != current:
+            ordered = sorted(merged, key=len, reverse=True)
+            pattern = re.compile("|".join(re.escape(lit) for lit in ordered))
+            _literal_state = (frozenset(merged), pattern)
+    return len(accepted)
+
+
+def _mask_literals(text: str) -> str:
+    pattern = _literal_state[1]
+    return text if pattern is None else pattern.sub(_SECRET_MARK, text)
+
+
 def _mask_pan_match(m: re.Match[str]) -> str:
     digits = "".join(ch for ch in m.group(0) if ch.isdigit())
     return "<redacted-pan>" if _luhn_ok(digits) else m.group(0)
@@ -204,7 +288,11 @@ def redact_text(text: str) -> str:
     Luhn-gated and length-bounded) so a bare numeric confirmation id / HTTP status survives
     for debugging. NOT a substitute for ``redact_payload`` on structured attempt_log writes —
     this is a free-text log helper.
+
+    Registered secret literals (``register_secret_literals``, E7) are masked FIRST, so a
+    secret that happens to contain an email- or PAN-shaped substring is masked whole.
     """
+    text = _mask_literals(text)
     text = _BEARER_RE.sub("Bearer <redacted-token>", text)
     text = _JWT_RE.sub("<redacted-token>", text)
     text = _URL_CRED_PARAM_RE.sub(r"\1=<redacted-key>", text)
@@ -226,7 +314,8 @@ class RedactingLogFilter(logging.Filter):
     filter on the root logger's HANDLERS sees every record that is actually emitted — hence
     `install_log_redaction` wires handlers, not loggers.
 
-    Covered: `record.msg` + `%`-args (resolved eagerly via `getMessage()`, because the secret
+    Covered: registered exact secret literals (E7, via `redact_text`) as well as the patterns,
+    in `record.msg` + `%`-args (resolved eagerly via `getMessage()`, because the secret
     usually lives in an ARG — httpx passes the URL as `%s` — not in the format string),
     `exc_info` tracebacks (pre-rendered into `record.exc_text`, which `Formatter.format`
     reuses instead of recomputing), and `stack_info`.

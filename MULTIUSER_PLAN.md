@@ -813,10 +813,11 @@ no owned booking means "manual reservation".
 
 ForeUP's `authenticate()` has three quiet degradations. (a) A **soft login failure**
 (400/401/rejected body) returns without raising and **clears** the reservation cache. (b) A
-**200 with a non-JSON body** sets `_logged_in=True` with **no** cache (`base.py`). (c) A **JSON
+**200 with a non-JSON body** sets `_logged_in=True` and does **not** rebuild the cache (`base.py`). (c) A **JSON
 success body whose `reservations` is missing or not a list** also sets `_logged_in=True` and leaves the
-cache empty (`base.py:494-496`) (SF3). In every case,
-`list_reservations()` returns `[]`, which to a naive tenant watcher looks like "the booking
+cache untouched (`base.py:494-496`) (SF3). On a first login the cache is therefore **empty**; on a
+refresh (`refresh_reservations`) it is **STALE** — the previous login's list (PR #226 review). In
+every case `list_reservations()` returns `[]` or an out-of-date list, and `[]` to a naive tenant watcher looks like "the booking
 vanished", leading to cancelled(external) or a re-book (**double booking**). Rules:
 
 - (a) is detected by `is_authenticated` (`AuthStateReportable`, existing). The snapshot is **not**
@@ -870,6 +871,13 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
   (date, party), only the owned one is eligible, so **both stay held**. ForeUP's 1/day rule normally
   prevents the second one from being created. If it happens anyway, the dashboard flags "manual
   reservation" and the user decides.
+  **E5 does not guard the upgrade (MU-4 review):** with zero eligible matches, a contended
+  `request_lock` (the reconcile defers and returns `matching` unchanged), or a single manual
+  match) `_check_course` still synthesizes a `TTB:` booking from `matching[0]` and calls
+  `_try_upgrade`, which can cancel a manual reservation (pinned by
+  `test_unadopted_manual_match_reaches_try_upgrade_unguarded`). **MU-10 MUST gate `_try_upgrade` on
+  ownership** — adoption + the pre-seeded non-`TTB:` terminal above, so an unowned match never
+  reaches the engine's live-reservation upgrade.
 - **Documented residual (nit):** the `needs_reconcile` adoption rule claims ownership only on an
   **exact tee-time match** with a recorded UNCERTAIN slot (§4.6), not merely "in window". A manual
   booking made by the user for the *very same slot* during the reconcile gap would still be
@@ -1453,7 +1461,7 @@ once their dependencies land.
 | **MU-9a** | Runner core: `run_release_event` over `InMemoryTenantStore` + FakeAdapter; streamed per-row writes; self-deadline | `tenant/runner.py` | MU-1, MU-2, MU-3, MU-5, MU-7, MU-9a0 | `test_runner_no_store_calls_inside_race_window`, `test_runner_uses_unmodified_orchestrator_per_account`, `test_runner_two_accounts_each_get_stagger_and_rank0_first`, `test_runner_records_cancel_extras_failure_as_held_extra`, `test_runner_uncertain_blind_post_sets_needs_reconcile`, `test_runner_prewarm_already_booked_is_unowned`, `test_runner_reguard_already_booked_after_uncertain_is_owned`, `test_runner_overcap_account_registered_k0_solves_nothing`, `test_runner_refuses_blind_adapter_missing_blind_methods` (r2 SF1), `test_runner_streams_outcomes_after_quiet_window`, `test_runner_self_deadline_marks_unfinished_needs_reconcile` | – |
 | **MU-9b** | Exit contract + `tenant-run` / `tenant-plan` CLI + the §11.2 verification log lines | `tenant/runner.py` (exit), `__main__.py` (new commands only) | MU-9a | `test_runner_exit_contract_table` (one case per §4.5 row), `test_runner_swallowed_blind_captcha_error_exits_nonzero`, `test_summary_email_failure_exits_nonzero`, `test_runner_one_account_auth_error_does_not_affect_other`, `test_runner_one_account_uncertain_does_not_cancel_siblings`, `test_runner_dst_gate_before_db_read`, `test_runner_claim_skips_leased_row`, `test_runner_emits_first_drop_checklist_lines` (§11.2) | README, CLAUDE.md commands |
 | **MU-9c** | `LeasedBookingStore` (row lease + fingerprint revalidation) | `tenant/store.py` | MU-5 | `test_leased_store_maps_request_lock_to_row_lease`, `test_leased_store_raises_concurrent_run_on_fingerprint_change`, `test_leased_store_release_only_by_owner` | CLAUDE.md lease bullet |
-| **MU-10a** ∥ | Watcher pure decisions: grouping, `needs_login`, `is_owned`, `classify_missing_booking` (vanish / adopt / bot-caused), snapshot proxy factory | `tenant/watcher.py` | MU-4, MU-5, MU-9a0 | `test_watch_groups_by_course_date_party`, `test_watch_no_login_without_opportunity`, `test_watch_reconcile_cadence_spreads_accounts`, `test_watch_cadence_uses_uuid_int_not_hash`, `test_watch_vanish_needs_two_trusted_snapshots`, `test_watch_vanish_excluded_when_upgrade_marker_set` (M2), `test_watch_vanish_excluded_for_ledgered_cancel` (M2), `test_watch_replacement_reservation_adopted_not_external` (M2), `test_watch_adopt_manual_is_unowned_no_upgrade`, `test_snapshot_proxy_capabilities_mirror_inner` (SF1) | – |
+| **MU-10a** ∥ | Watcher pure decisions: grouping, `needs_login`, `is_owned`, `classify_missing_booking` (vanish / adopt / bot-caused), snapshot proxy factory | `tenant/watcher.py` | MU-4, MU-5, MU-9a0 | `test_watch_groups_by_course_date_party`, `test_watch_no_login_without_opportunity`, `test_watch_reconcile_cadence_spreads_accounts`, `test_watch_cadence_uses_uuid_int_not_hash`, `test_watch_vanish_needs_two_trusted_snapshots`, `test_watch_vanish_excluded_when_upgrade_marker_set` (M2), `test_watch_vanish_excluded_for_ledgered_cancel` (M2), `test_watch_replacement_reservation_adopted_not_external` (M2), `test_watch_adopt_manual_is_unowned_no_upgrade`, `test_snapshot_proxy_capabilities_mirror_inner` (SF1). **MUST gate `_try_upgrade` on ownership** (E5 does not; §7.6) | – |
 | **MU-10b** | Watcher runner wiring + `tenant-watch` CLI | `tenant/runner.py` | MU-6, MU-9a, MU-9c, MU-10a | `test_watch_soft_auth_not_persisted`, `test_watch_upgrade_failed_rebook_sets_pending_reconcile` (M2, via recorder), `test_watch_skipped_between_read_and_lock_not_booked` (M5), `test_watch_finalizes_lost_once`, `test_external_cancel_marked_notified_not_rebooked` (Q7), `test_external_cancel_frees_slot_for_explicit_rerequest` (Q7), `test_watch_respects_booker_lease`, `test_dry_run_watcher_never_cancels` (SF2) | CLAUDE.md watcher bullets, PLAN §9.1 |
 | **MU-11** ∥ | Notifications (ACS REST + buffering) | `tenant/notify.py`, `tenant/acs_email.py` | MU-5 | `test_buffering_notifier_no_io`, `test_acs_request_signed`, `test_email_has_no_secret`, `test_operator_summary_on_nonzero` | AZURE_PLAN §7 |
 | **MU-12** | Web skeleton: app, settings, OAuth, sessions, CSRF, headers (adds fastapi, uvicorn, jinja2, authlib, itsdangerous) | `web/app.py`, `web/security.py` | MU-5 | `test_non_invited_subject_403`, `test_session_cookie_flags`, `test_session_absolute_expiry`, `test_post_without_csrf_403`, `test_csp_header_present`, `test_healthz_no_db`, `test_disabled_user_session_rejected_next_request` (SF10), `test_github_invite_matches_only_verified_email` (SF10) | README |
