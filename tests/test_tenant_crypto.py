@@ -506,3 +506,38 @@ def test_rendered_traceback_contains_no_plaintext_or_key(ring_a: Keyring) -> Non
         assert key_b64 not in text
         assert _KEY_A.hex() not in text
         assert blob.split(":")[3] not in text
+
+
+# --- review round 1: nits 1 + 2 --------------------------------------------------------------
+
+
+def test_keyring_keys_are_read_only_and_detached_from_the_source_dict() -> None:
+    # `frozen=True` only freezes attribute REBINDING; a plain dict value could still be
+    # mutated (`ring.keys.clear()`), bypassing the __post_init__ invariants.
+    source = {"k1": _KEY_A}
+    ring = Keyring(active_kid="k1", keys=source)
+    with pytest.raises((TypeError, AttributeError)):
+        ring.keys["k2"] = _KEY_B  # type: ignore[index]
+    with pytest.raises((TypeError, AttributeError)):
+        ring.keys.clear()  # type: ignore[attr-defined]
+    source["k1"] = _KEY_B  # mutating the dict handed in must not reach the ring
+    assert ring.keys["k1"] == _KEY_A
+
+
+_B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+
+def test_non_canonical_base64_in_blob_is_rejected(ring_a: Keyring) -> None:
+    # Python's b64decode (even validate=True) accepts non-zero padding bits, so one ciphertext
+    # has several base64 spellings. Blobs are OUR output and always canonical; a non-canonical
+    # spelling is corruption or tampering with the stored row, not a blob we wrote.
+    blob = encrypt_password(ring_a, "abc", aad=_AAD)  # 19-byte ct → 28 chars, '=' padded
+    version, kid, nonce_b64, ct_b64 = blob.split(":")
+    assert ct_b64.endswith("=") and not ct_b64.endswith("==")
+    i = _B64_ALPHABET.index(ct_b64[-2])
+    non_canonical = ct_b64[:-2] + _B64_ALPHABET[(i & 0b111100) | 0b11] + "="
+    assert non_canonical != ct_b64
+    # sanity: the two spellings decode to the SAME bytes, so GCM alone would accept it
+    assert base64.b64decode(non_canonical, validate=True) == base64.b64decode(ct_b64)
+    with pytest.raises(CredentialDecryptError, match="canonical"):
+        decrypt_password(ring_a, ":".join([version, kid, nonce_b64, non_canonical]), aad=_AAD)
