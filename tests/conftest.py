@@ -10,6 +10,7 @@ from collections.abc import Iterator
 
 import pytest
 
+from teetime.core import redaction
 from teetime.core.redaction import RedactingLogFilter
 
 
@@ -55,3 +56,16 @@ def _restore_root_log_filters() -> Iterator[None]:
                 handler.filters = [
                     f for f in handler.filters if not isinstance(f, RedactingLogFilter)
                 ]
+
+
+@pytest.fixture(autouse=True)
+def _restore_secret_literal_registry() -> Iterator[None]:
+    """Snapshot/restore the E7 secret-literal registry (`register_secret_literals`) around
+    each test. It is process-global by design, so without this a literal registered by one
+    test would silently mask text in every later test — the same vacuous-assert hazard as
+    the handler-filter leak above."""
+    saved = redaction._literal_state
+    try:
+        yield
+    finally:
+        redaction._literal_state = saved
