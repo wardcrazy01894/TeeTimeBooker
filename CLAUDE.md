@@ -357,11 +357,18 @@ a tenant watcher, and a FastAPI/HTMX Container App. Stub modules are on disk and
 production path until the cutover in MULTIUSER_PLAN §11. **MU-1 is DONE in code, UNWIRED**
 (E4): `core/release_policy.py` is real — `ReleasePolicy(advance_days, release_time, timezone,
 hosted_booking)` + pure helpers `target_date_for` (course-local today + advance, NEVER the UTC
-date), `release_instant_for` (zoneinfo, DST-correct), `fire_time_for`, `cron_pair` (the
-`(daylight, standard)` UTC crons for release − 10 min), `validate_release_policy` (v1 hour band
-04–22: a midnight release would fire on D-1 and book a day late; lead may not cross midnight; IANA
-zone must resolve) and `release_key` (`(timezone, release_time)` — the release-EVENT identity that
-groups courses into one job pair). `MangroveBayAdapter.release_policy` = (7, 06:00, America/New_York)
+date), `release_instant_for` (zoneinfo, DST-correct), `fire_time_for`, `cron_pair` (a
+`CronPair(daylight, standard)` of UTC crons for release − 10 min; halves classified by
+`utcoffset()` on Jan 1/Jul 1 of `probe_year`, default the CURRENT year since tzdata changes only
+future rules; **`.deduped`/`.jobs`** flag a no-DST zone whose two halves are one instant — MU-15a
+must derive ONE job from `.jobs`, or two runners race one event), `validate_release_policy` (v1
+hour band 04–22: a midnight release would fire on D-1 and book a day late; lead may not cross
+midnight; IANA zone must resolve; **and the fire time must land in hour `release.hour − 1`** —
+`minute < lead <= minute + 60` — because that is the reading `dst_gate.should_proceed` makes, so
+e.g. 06:30 with the default 10-min lead would never book in summer and pass the WRONG cron in
+winter) and `release_key` (`(timezone, release_time)` — the release-EVENT identity that
+groups courses into one job pair). A (release, lead) × transition-day sweep pins "validates ⇒
+exactly one gate-passing cron per UTC day". `MangroveBayAdapter.release_policy` = (7, 06:00, America/New_York)
 and its derived pair is pinned EQUAL to `compute.bicep`'s `50 9 * * *`/`50 10 * * *` by reading the
 bicep in `tests/test_release_policy.py`; today's `dst_gate.should_proceed` semantics are reproduced
 from the policy. `SydneyMarovitzAdapter.release_policy` = (15, **06:00 PLACEHOLDER — S-M4 unconfirmed**,

@@ -37,14 +37,20 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
   timezone="Area/City", hosted_booking=…)` (`core/release_policy.py`) stating WHEN the course
   releases inventory. It must pass `validate_release_policy` — v1 only supports release hours
   **04–22** (a midnight release, common on TeeItUp, would fire the cron on D-1 and book a day late
-  — see §6.1/§14), the 10-min cron lead may not cross midnight, and the zone must be a valid IANA
-  name. `hosted_booking=False` for any course whose booking path is out of hosted scope (TeeItUp:
-  the PAN path) — no ACA job is ever derived from it. Nothing on the TOML production path reads
-  the policy yet; the tenant runner (MU-9a) and the `release_events.json` parity test (MU-15a)
-  will. Courses sharing `release_key(policy)` = `(timezone, release_time)` share ONE EDT/EST job
-  pair; `cron_pair(policy)` gives its UTC crons (MB: `50 9 * * *` / `50 10 * * *`, pinned equal
-  to `compute.bicep` by `tests/test_release_policy.py`). Add a `test_<course>_release_policy_classvar`
-  test there.
+  — see §6.1/§14), the cron lead may not cross midnight, the zone must be a valid IANA name, and
+  **the fire time (release − lead) must land in hour `release.hour − 1`**, i.e.
+  `release.minute < lead <= release.minute + 60` — that is the reading `dst_gate.should_proceed`
+  makes, so a 06:30 release needs a lead in (30, 90], NOT the default 10 (it would fire 06:20:
+  never books in summer, and in winter the wrong-season cron passes with T0 70 min out and blows
+  the replica timeout). `hosted_booking=False` for any course whose booking path is out of hosted
+  scope (TeeItUp: the PAN path) — no ACA job is ever derived from it. Nothing on the TOML
+  production path reads the policy yet; the tenant runner (MU-9a) and the `release_events.json`
+  parity test (MU-15a) will. Courses sharing `release_key(policy)` = `(timezone, release_time)`
+  share ONE EDT/EST job pair; `cron_pair(policy)` gives its UTC crons as a `CronPair` (MB:
+  `50 9 * * *` / `50 10 * * *`, pinned equal to `compute.bicep` by `tests/test_release_policy.py`).
+  A course in a zone WITHOUT DST gets `CronPair.deduped == True` and `.jobs` of length 1 — deploy
+  ONE job for it, never the -edt/-est pair (both would fire at the same instant and both pass the
+  gate). Add a `test_<course>_release_policy_classvar` test there.
 
 - **Chronogolf course:** stand up `chronogolf/base.py` first (Spike S2).
 
