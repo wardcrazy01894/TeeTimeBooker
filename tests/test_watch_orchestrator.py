@@ -1915,3 +1915,33 @@ async def test_reconcile_eligible_gate3_still_cancels_eligible_extra() -> None:
     assert adapter.cancel_call_count == 1
     remaining = await adapter.list_reservations()
     assert sorted(r.confirmation_code for r in remaining) == ["manual-0930", "res-0945"]
+
+
+async def test_reconcile_eligible_log_counts_eligible_and_held(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PR #226 review nit 1: under E5 the reconcile line counts only ELIGIBLE reservations
+    and says how many ineligible ones were left held (not `len(matching)`)."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    adapter.set_existing_reservations(
+        [
+            _reservation(hour=10, minute=15, code="bot-1015"),
+            _reservation(hour=9, minute=45, code="manual-0945"),
+            _reservation(hour=9, minute=30, code="bot-0930"),
+        ]
+    )
+    adapter.set_search_response([])
+    watch, _, _ = _build(
+        adapter,
+        policy=OneBookingPolicyConfig(enabled=True),
+        reconcile_eligible=_owned("bot-1015", "bot-0930"),
+    )
+
+    with caplog.at_level(logging.INFO, logger="teetime.core.watch_orchestrator"):
+        await watch.check_once(_request(), TARGET_DATE)
+
+    lines = [r.getMessage() for r in caplog.records if "watch: reconciled" in r.getMessage()]
+    assert lines == [
+        "watch: reconciled 2 duplicate reservations on 2026-05-16 — kept bot-0930, "
+        "cancelled 1 (1 ineligible left held)"
+    ]

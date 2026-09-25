@@ -172,3 +172,46 @@ def test_filter_never_raises_with_literals_and_bad_arity() -> None:
     rec = _record(f"%s %s {_PASSWORD}", "only-one")
     assert RedactingLogFilter().filter(rec) is True
     assert _PASSWORD not in str(rec.msg)
+
+
+# --- Review round 1 (PR #226 should-fix 2) ------------------------------------------
+
+
+def test_bare_string_is_rejected_with_type_error() -> None:
+    """`str` is itself an `Iterable[str]`: a bare password would be iterated into 1-char
+    literals, every one below the floor, registering NOTHING — silently. The call shape
+    `register_secret_literals(decrypted)` is exactly what a decrypt site would write."""
+    with pytest.raises(TypeError):
+        register_secret_literals(_PASSWORD)
+    assert redact_text(_PASSWORD) == _PASSWORD  # nothing was registered
+
+
+def test_returns_count_of_accepted_literals() -> None:
+    """The return value is the number of DISTINCT values from this call that are now
+    masked (already-registered ones included), so a caller can detect a refused secret."""
+    assert register_secret_literals([_PASSWORD, _PASSWORD, "short"]) == 1
+    assert register_secret_literals([_PASSWORD, _KEYRING_KEY]) == 2
+    assert register_secret_literals(["abc", "redacted-secret"]) == 0
+    assert register_secret_literals([]) == 0
+
+
+def test_refused_literals_logged_once_at_debug_without_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A refused value (too short / inside a marker) is not silently dropped: ONE DEBUG line
+    per call reports how many were refused — never the values themselves."""
+    with caplog.at_level(logging.DEBUG, logger="teetime.core.redaction"):
+        register_secret_literals(["short1", "abc", "redacted-secret", _PASSWORD])
+    records = [r for r in caplog.records if r.name == "teetime.core.redaction"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    msg = records[0].getMessage()
+    assert "3" in msg
+    for value in ("short1", "abc", "redacted-secret", _PASSWORD):
+        assert value not in msg
+
+
+def test_nothing_logged_when_every_literal_accepted(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.DEBUG, logger="teetime.core.redaction"):
+        register_secret_literals([_PASSWORD])
+    assert not [r for r in caplog.records if r.name == "teetime.core.redaction"]
