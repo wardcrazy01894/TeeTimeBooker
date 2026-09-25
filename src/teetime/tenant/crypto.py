@@ -34,6 +34,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -82,13 +83,17 @@ def _is_valid_kid(kid: object) -> bool:
 @dataclass(frozen=True, slots=True)
 class Keyring:
     active_kid: str
-    # repr=False: key bytes must never appear in a repr/log line.
-    keys: dict[str, bytes] = field(repr=False)
+    # repr=False: key bytes must never appear in a repr/log line. Accepts any Mapping; stored
+    # as a read-only, DETACHED copy (see __post_init__).
+    keys: Mapping[str, bytes] = field(repr=False)
 
     def __post_init__(self) -> None:
         # Invariants hold on the TYPE, not just on `load_keyring`, so a hand-built ring in a
         # test or a future loader cannot bypass them. Messages name entry POSITIONS, never
         # kids — a kid may be a mis-pasted secret.
+        # `frozen=True` only freezes attribute REBINDING — a dict value could still be mutated
+        # (`ring.keys.clear()`) after validation, so snapshot it behind a MappingProxyType.
+        object.__setattr__(self, "keys", MappingProxyType(dict(self.keys)))
         if not self.keys:
             raise KeyringError("keyring has no keys")
         for position, (kid, key) in enumerate(self.keys.items(), start=1):
@@ -212,7 +217,14 @@ def load_keyring_from_env(environ: Mapping[str, str] | None = None) -> Keyring:
 
 
 def credential_aad(account: CourseAccount) -> bytes:
-    """``f"{account.id}|{account.course_id}|{account.username}".encode()``."""
+    """``f"{account.id}|{account.course_id}|{account.username}".encode()``.
+
+    The ``|``-join has no escaping: the format is settled by §9.2 and the first component is a
+    UUID, so an ambiguous split needs a ``|`` in a course id or a username — neither occurs
+    today, and a blob is only ever decrypted for the row it was written to. If AAD ever needs
+    to be collision-proof, a ``v2:`` blob version can switch to length-prefixed components;
+    the version field exists so that can be done without touching ``v1`` rows.
+    """
     return f"{account.id}|{account.course_id}|{account.username}".encode()
 
 
@@ -250,6 +262,11 @@ def _parse_blob(blob: str) -> tuple[str, bytes, bytes]:
     ciphertext = _b64decode_or_none(ct_b64)
     if nonce is None or ciphertext is None:
         raise CredentialDecryptError("credential blob nonce/ciphertext is not valid base64")
+    # Python's b64decode accepts non-zero padding bits, so one ciphertext has several base64
+    # spellings that GCM alone would accept. Blobs are OUR output and always canonical; a
+    # non-canonical spelling is corruption/tampering of the stored row. Re-encode and compare.
+    if _b64(nonce) != nonce_b64 or _b64(ciphertext) != ct_b64:
+        raise CredentialDecryptError("credential blob nonce/ciphertext is not canonical base64")
     if len(nonce) != _NONCE_BYTES:
         raise CredentialDecryptError(f"credential blob nonce must be {_NONCE_BYTES} bytes")
     return kid, nonce, ciphertext
@@ -289,7 +306,11 @@ def needs_rekey(keyring: Keyring, blob: str) -> bool:
 def rekey_password(keyring: Keyring, blob: str, *, aad: bytes) -> str:
     """Re-encrypt ``blob`` under the active kid. IDEMPOTENT: a blob already on the active kid is
     returned unchanged (byte for byte — no fresh nonce), so a re-run of ``tenant-rekey`` writes
-    nothing. The retired kid must still be in the ring (rotation step order, §9.2)."""
+    nothing. The retired kid must still be in the ring (rotation step order, §9.2).
+
+    A blob already on the active kid is NOT decrypted/verified here — only its kid is read
+    (``needs_rekey``). Verification is the next login's job; rekey is a key-migration pass,
+    not an integrity sweep."""
     if not needs_rekey(keyring, blob):
         return blob
     return encrypt_password(keyring, decrypt_password(keyring, blob, aad=aad), aad=aad)

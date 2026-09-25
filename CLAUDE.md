@@ -350,10 +350,12 @@ end-to-end across dev + prod; no operator step remains. See `infra/COST_KILLSWIT
 2026-09-25 via a 3-round plan-with-review; ledgers in its §15). This is the plan for turning the single-user bot into an invite-only site: BYO ForeUP accounts
 with AES-GCM-encrypted passwords, dated request rows plus standing rules, one tenant booking job per
 release event running the UNMODIFIED `Orchestrator` per account, a shared per-course CAPTCHA pool,
-a tenant watcher, and a FastAPI/HTMX Container App. Stub modules are on disk and raise
-`NotImplementedError` with an MU-milestone reference: `src/teetime/tenant/`, `src/teetime/web/`,
-`src/teetime/core/release_policy.py`, `src/teetime/courses/foreup/token_pool.py`,
-`src/teetime/dev/virtual_clock.py`. **Nothing imports them. Prod behaviour, config, and infra are unchanged**, and the TOML `run`/`watch` path stays the
+a tenant watcher, and a FastAPI/HTMX Container App. The new modules are on disk under
+`src/teetime/tenant/`, `src/teetime/web/`, `src/teetime/core/release_policy.py`,
+`src/teetime/courses/foreup/token_pool.py`, `src/teetime/dev/virtual_clock.py`; most are still
+stubs that raise `NotImplementedError` with an MU-milestone reference, and the ones already
+implemented per-milestone (e.g. `tenant/crypto.py`, MU-7) are covered by their own tests. **Nothing
+imports them from the production path. Prod behaviour, config, and infra are unchanged**, and the TOML `run`/`watch` path stays the
 production path until the cutover in MULTIUSER_PLAN §11. Tenant store (decided 2026-09-25): a Cosmos DB
 free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
 "no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path

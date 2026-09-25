@@ -531,11 +531,13 @@ def test_non_canonical_base64_in_blob_is_rejected(ring_a: Keyring) -> None:
     # Python's b64decode (even validate=True) accepts non-zero padding bits, so one ciphertext
     # has several base64 spellings. Blobs are OUR output and always canonical; a non-canonical
     # spelling is corruption or tampering with the stored row, not a blob we wrote.
-    blob = encrypt_password(ring_a, "abc", aad=_AAD)  # 19-byte ct → 28 chars, '=' padded
+    # 3 + 16-byte tag = 19 bytes = 6 full groups + 1 trailing byte → 2 data chars + "==", and
+    # the second data char carries 4 unused (padding) bits.
+    blob = encrypt_password(ring_a, "abc", aad=_AAD)
     version, kid, nonce_b64, ct_b64 = blob.split(":")
-    assert ct_b64.endswith("=") and not ct_b64.endswith("==")
-    i = _B64_ALPHABET.index(ct_b64[-2])
-    non_canonical = ct_b64[:-2] + _B64_ALPHABET[(i & 0b111100) | 0b11] + "="
+    assert ct_b64.endswith("==")
+    i = _B64_ALPHABET.index(ct_b64[-3])
+    non_canonical = ct_b64[:-3] + _B64_ALPHABET[(i & 0b110000) | 0b1111] + "=="
     assert non_canonical != ct_b64
     # sanity: the two spellings decode to the SAME bytes, so GCM alone would accept it
     assert base64.b64decode(non_canonical, validate=True) == base64.b64decode(ct_b64)
