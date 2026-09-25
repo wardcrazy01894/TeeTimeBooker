@@ -342,6 +342,12 @@ class TransitionRefusedError(ValueError):
     """A state-machine transition the §3.4 table forbids (surfaced to the web as a 409)."""
 
 
+class RuleNoLongerCoversError(TransitionRefusedError):
+    """A rule row cannot become (or stay) active because its STORED rule no longer covers the
+    date: the rule was deactivated, deleted, or moved to another weekday (round-5/6). Distinct so
+    the web (MU-13) can render "This rule no longer covers <date>; add it as a one-off instead"."""
+
+
 # The §3.4 table: (from, to) -> the ONLY actors that may write it. Any pair absent here is refused.
 # Guards beyond actor ownership live in ``_GUARDS`` / ``check_transition``; lease guards need the
 # writer's identity and live in the store.

@@ -150,7 +150,9 @@ class TenantStore(Protocol):
         now: datetime,
     ) -> list[EventRow]:
         """READ #1 (§4.2): PENDING rows for each (course, target_date), ``cutoff_at > now``,
-        joined to ACTIVE accounts. Ordered by row id (the allocator rotates from there)."""
+        joined to ACTIVE accounts, EXCLUDING rule rows their STORED rule no longer covers
+        (missing, inactive, other weekday). Ordered by row id (the allocator rotates from
+        there)."""
         ...
 
     async def claim_rows(
@@ -220,12 +222,17 @@ class TenantStore(Protocol):
         now: datetime,
     ) -> list[EventRow]:
         """The single watcher query (§7.1): PENDING (not frozen) + BOOKED rows within each
-        course's ``[local_today, local_today + advance_days]`` horizon, joined to accounts."""
+        course's ``[local_today, local_today + advance_days]`` horizon, joined to accounts. A
+        PENDING rule row its stored rule no longer covers is excluded UNLESS it has
+        ``needs_reconcile`` (round-6: a rebook that may have landed must still be adopted, §7.6);
+        BOOKED rows are always included."""
         ...
 
     async def finalize_lost(self, *, now: datetime) -> list[RequestRow]:
         """PENDING rows now frozen (``cutoff_at <= now`` or date passed) -> LOST; returns
-        them so a ``lost`` email is sent exactly once (§3.4)."""
+        them so a ``lost`` email is sent exactly once (§3.4). A frozen PENDING rule row its stored
+        rule no longer covers is WITHDRAWN instead (``rule_deleted`` / ``rule_deactivated`` /
+        ``rule_weekday_changed``), is not returned, and gets no email."""
         ...
 
     async def get_snapshot(self, account_id: CourseAccountId) -> ReservationSnapshot | None: ...
@@ -285,6 +292,22 @@ class TenantStore(Protocol):
         other weekday or account), the date has a user-terminal row, is frozen, or the slot is
         held. Every writer of an active status onto a rule row applies the same coverage +
         user-terminal guard (round-5 MF1)."""
+        ...
+
+    async def rewrite_pending_rule_row(
+        self,
+        row_id: RowId,
+        *,
+        rule: StandingRule,
+        expected_version: int,
+        now: datetime,
+    ) -> RequestRow:
+        """The rule-edit writer (§3.4, MU-6 ``apply_rule_edit``): rewrite a PENDING rule row's
+        window/party in place from ``rule``. Guards: the row is still ``expected_version``
+        (IfMatch), is this rule's own PENDING row, unleased (``RowLeaseError``), not frozen,
+        ``rule`` is the STORED version, and the stored rule still covers the row
+        (``RuleNoLongerCoversError``). A pending -> pending write does not pass the batch's
+        may-become-active guard, so this method calls the coverage guard itself."""
         ...
 
     async def set_materialized_through(self, rule_id: RuleId, through: date) -> None:
@@ -368,9 +391,12 @@ class TenantStore(Protocol):
         """The UNLEASED guarded transition for the WEB (skip, unskip, withdraw, un-supersede) and
         the MATERIALIZER (system withdraw). ``user_id`` scopes web calls (required for WEB). Refuses
         with ``RowLeaseError`` while the row is leased (M4) and ``TransitionRefusedError`` per
-        §3.4. Refused here: leased-path actors (runner, watcher), booked -> cancelled (a leased
-        edge, ``record_outcomes`` only), the supersede edge (only ever
-        written by ``create_explicit_row``, in the same batch as the explicit row) and
+        §3.4. Unskip and un-supersede of a rule row carry the shared coverage + user-terminal
+        guard: ``RuleNoLongerCoversError`` (a ``TransitionRefusedError``) when the stored rule no
+        longer covers the date, which the web renders as "add it as a one-off instead".
+        Refused here: leased-path actors (runner, watcher), booked -> cancelled (a leased
+        edge, ``record_outcomes`` only), the supersede edge (only ever written by
+        ``create_explicit_row``, in the same batch as the explicit row) and
         withdrawn -> pending (only ever written by ``reactivate_rule_row``, which re-checks the
         user-terminal history and refreshes the row from the rule).
         Withdrawing an explicit row restores, in the same batch, the date's rule row whose rule

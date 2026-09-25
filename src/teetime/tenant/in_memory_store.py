@@ -53,6 +53,7 @@ from .models import (
     RowSource,
     RowStatus,
     RuleId,
+    RuleNoLongerCoversError,
     StandingRule,
     TransitionRefusedError,
     User,
@@ -297,6 +298,8 @@ class InMemoryTenantStore:
         return (
             rule is not None
             and rule.active
+            # Defensive: upsert_rule never moves a rule between accounts, so this leg cannot
+            # fail today; kept so a future account move cannot silently cover foreign rows.
             and rule.course_account_id == row.course_account_id
             and rule.weekday == row.target_date.weekday()
         )
@@ -304,6 +307,7 @@ class InMemoryTenantStore:
     def _uncovered_reason(self, row: RequestRow) -> str:
         """The system withdraw reason for a rule row its rule no longer covers."""
         rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
+        # The account leg is defensive (unreachable today, see _rule_covers_row).
         if rule is None or rule.course_account_id != row.course_account_id:
             return "rule_deleted"
         if not rule.active:
@@ -317,7 +321,7 @@ class InMemoryTenantStore:
         user-terminal row (round-7). Frozen and slot checks are the caller's check_transition /
         check_create and the slot pointer below."""
         if not self._rule_covers_row(row):
-            raise TransitionRefusedError(f"the rule no longer covers {row.target_date}")
+            raise RuleNoLongerCoversError(f"the rule no longer covers {row.target_date}")
         self._refuse_if_user_terminal(row.course_account_id, row.target_date)
 
     def _stored_rule_matching(self, rule: StandingRule) -> StandingRule:
@@ -606,10 +610,12 @@ class InMemoryTenantStore:
                 continue
             # A pending row of an INACTIVE rule is never offered (round-3 MF1: a deactivation
             # that had to skip a leased row). Held bookings are still watched regardless.
+            # needs_reconcile rows stay watched even when their rule no longer covers them
+            # (round-6 SF2): a rebook that landed must still be adopted (§7.6), not lost.
             live_pending = (
                 row.status is RowStatus.PENDING
                 and not row_is_frozen(row, now=now)
-                and self._rule_covers_row(row)
+                and (self._rule_covers_row(row) or row.needs_reconcile)
             )
             if live_pending or row.status is RowStatus.BOOKED:
                 out.append(EventRow(row=row, account=account))
@@ -657,6 +663,7 @@ class InMemoryTenantStore:
             if r.rule_id is not None
             and r.status in (RowStatus.PENDING, RowStatus.SUPERSEDED)
             and not self._rule_covers_row(r)
+            and not r.needs_reconcile  # the watcher reconciles it first (round-6 SF2)
             and not lease_held(r, now=now)
         )
         return sorted(rows, key=lambda r: r.id)
@@ -773,6 +780,40 @@ class InMemoryTenantStore:
         if rule is None:
             raise TenantNotFoundError(_NOT_FOUND)
         self._rules[rule_id] = replace(rule, materialized_through=None)
+
+    async def rewrite_pending_rule_row(
+        self,
+        row_id: RowId,
+        *,
+        rule: StandingRule,
+        expected_version: int,
+        now: datetime,
+    ) -> RequestRow:
+        stored = self._row(row_id)
+        if stored.version != expected_version:
+            raise TransitionRefusedError(f"row {row_id} changed since it was read")
+        if stored.source is not RowSource.RULE or stored.rule_id != rule.id:
+            raise TransitionRefusedError("only this rule's own rule row can be rewritten")
+        if stored.status is not RowStatus.PENDING:
+            raise TransitionRefusedError(
+                f"only a pending row is rewritten (row is {stored.status})"
+            )
+        if row_is_frozen(stored, now=now):
+            raise TransitionRefusedError(f"{stored.target_date} is frozen (cutoff or date passed)")
+        if lease_held(stored, now=now):
+            raise RowLeaseError(f"booking in progress for {stored.target_date}")
+        rule = self._stored_rule_matching(rule)
+        # pending -> pending: _becomes_bookable is False, so the coverage guard is called here.
+        self._guard_rule_row_may_become_active(stored)
+        new = replace(
+            self._unleased_write(stored, now),
+            window_earliest=rule.window_earliest,
+            window_latest=rule.window_latest,
+            party_size=rule.party_size,
+            version=stored.version + 1,
+        )
+        self._commit([(stored, new)])
+        return new
 
     async def set_materialized_through(self, rule_id: RuleId, through: date) -> None:
         rule = self._rules.get(rule_id)
@@ -914,10 +955,6 @@ class InMemoryTenantStore:
         check_transition(row, to, actor=actor, now=now, reason=reason)
         if lease_held(row, now=now):
             raise RowLeaseError(f"booking in progress for {row.target_date}")
-        if row.status is RowStatus.SUPERSEDED and to is not RowStatus.WITHDRAWN:
-            rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
-            if rule is None or not rule.active:
-                raise TransitionRefusedError("the superseded row's rule is not active")
         new = replace(
             self._unleased_write(row, now),
             status=to,

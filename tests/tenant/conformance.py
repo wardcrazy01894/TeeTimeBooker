@@ -48,6 +48,7 @@ from teetime.tenant.models import (
     RowSource,
     RowStatus,
     RuleId,
+    RuleNoLongerCoversError,
     SnapshotEntry,
     StandingRule,
     TransitionRefusedError,
@@ -747,7 +748,7 @@ class TenantStoreConformance:
             now=NOW,
         )
         # Guard "rule active": refused while the rule is off...
-        with pytest.raises(TransitionRefusedError, match="not active"):
+        with pytest.raises(RuleNoLongerCoversError):
             await s.transition_row(
                 rule_row.id,
                 user_id=t.user.id,
@@ -2340,7 +2341,7 @@ class TenantStoreConformance:
         assert (after.status, after.status_reason) == (RowStatus.WITHDRAWN, "rule_deactivated")
         assert await harness.slot_pointer(t.account.id, TARGET) is None
 
-    async def test_rows_of_inactive_rules_lists_unleased_stragglers(
+    async def test_rows_no_longer_covered_lists_unleased_stragglers(
         self, harness: StoreHarness
     ) -> None:
         """Round-3 MF1 (iii): the materializer tick finds rows a deactivation had to skip."""
@@ -2644,7 +2645,9 @@ class TenantStoreConformance:
             row.id, user_id=t.user.id, to=RowStatus.SKIPPED, actor=Actor.WEB, reason=None, now=NOW
         )
         await s.upsert_rule(replace(rule, weekday=6), user_id=t.user.id)
-        with pytest.raises(TransitionRefusedError, match="no longer covers"):
+        # Round-6 decision: refusing is correct; the web renders this type as "This rule no
+        # longer covers <date>; add it as a one-off instead".
+        with pytest.raises(RuleNoLongerCoversError, match="no longer covers"):
             await s.transition_row(
                 row.id,
                 user_id=t.user.id,
@@ -2791,3 +2794,122 @@ class TenantStoreConformance:
         assert await s.acquire_row_lease(
             booked.id, owner=WATCHER, until=until, now=NOW, expected=None
         )
+
+    # --- review round 6 --------------------------------------------------------------------
+
+    async def test_sweep_lists_superseded_row_of_moved_rule(self, harness: StoreHarness) -> None:
+        """Round-6 SF1: the sweep's SUPERSEDED leg (a one-off holds the date, the rule moved)."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, rule_row = await _rule_row(s, t)
+        await _explicit(s, t)
+        await s.upsert_rule(replace(rule, weekday=6), user_id=t.user.id)
+        got = await s.rows_no_longer_covered(now=NOW)
+        assert [r.id for r in got] == [rule_row.id]
+        assert got[0].status is RowStatus.SUPERSEDED
+
+    async def test_needs_reconcile_row_stays_watched_after_rule_moves(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-6 SF2: an upgrade cancelled the old slot and the rebook's fate is unknown
+        (pending + needs_reconcile). Even if the rule then moves, the watcher must still see the
+        row so §7.6 adoption can track a rebook that landed; the sweep leaves it alone."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, rule_row = await _rule_row(s, t)
+        booked = await _book(s, rule_row, raw_id="R1")
+        await _lease(s, booked, owner=WATCHER)
+        await s.record_outcomes(
+            [
+                _outcome(
+                    booked,
+                    actor=Actor.WATCHER,
+                    to_status=RowStatus.PENDING,
+                    last_outcome="upgrade_rebook_uncertain",
+                    cancelled_upgrade_raw_id="R1",
+                    needs_reconcile=True,
+                    release_lease_owner=WATCHER,
+                )
+            ]
+        )
+        await s.upsert_rule(replace(rule, weekday=6), user_id=t.user.id)
+        horizon = {MB: (NOW.date(), TARGET + timedelta(days=14))}
+        watched = await s.load_watch_rows(horizons=horizon, now=NOW)
+        assert [er.row.id for er in watched] == [rule_row.id]
+        assert await s.rows_no_longer_covered(now=NOW) == []
+        assert await s.load_event_rows(targets={MB: TARGET}, now=NOW) == []  # never re-booked
+
+    async def test_rewrite_pending_rule_row(self, harness: StoreHarness) -> None:
+        """Round-6 SF3: the window/party rewrite writer for rule edits, with its own guards."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, row = await _rule_row(s, t)
+        rule = await s.upsert_rule(
+            replace(rule, window_earliest=time(7, 0), window_latest=time(8, 30), party_size=4),
+            user_id=t.user.id,
+        )
+        out = await s.rewrite_pending_rule_row(
+            row.id, rule=rule, expected_version=row.version, now=NOW
+        )
+        assert (out.window_earliest, out.window_latest, out.party_size) == (
+            time(7, 0),
+            time(8, 30),
+            4,
+        )
+        assert out.status is RowStatus.PENDING
+        assert out.version == row.version + 1
+        assert await _get(s, row) == out
+
+    async def test_rewrite_pending_rule_row_guards(self, harness: StoreHarness) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        rule, row = await _rule_row(s, t)
+        # stale row version (IfMatch)
+        with pytest.raises(TransitionRefusedError, match="changed"):
+            await s.rewrite_pending_rule_row(
+                row.id, rule=rule, expected_version=row.version + 1, now=NOW
+            )
+        # frozen
+        with pytest.raises(TransitionRefusedError, match="frozen"):
+            await s.rewrite_pending_rule_row(
+                row.id, rule=rule, expected_version=row.version, now=FROZEN_NOW
+            )
+        # leased
+        await _lease(s, row, owner=BOOKER)
+        with pytest.raises(RowLeaseError):
+            await s.rewrite_pending_rule_row(
+                row.id, rule=rule, expected_version=row.version, now=NOW
+            )
+        await s.release_row_lease(row.id, owner=BOOKER)
+        # stale rule (IfMatch on the stored rule)
+        edited = await s.upsert_rule(replace(rule, window_latest=time(11, 0)), user_id=t.user.id)
+        with pytest.raises(TransitionRefusedError, match="stale"):
+            await s.rewrite_pending_rule_row(
+                row.id, rule=rule, expected_version=row.version, now=NOW
+            )
+        # the stored rule no longer covers the row (moved weekday)
+        moved = await s.upsert_rule(replace(edited, weekday=6), user_id=t.user.id)
+        with pytest.raises(RuleNoLongerCoversError):
+            await s.rewrite_pending_rule_row(
+                row.id, rule=moved, expected_version=row.version, now=NOW
+            )
+        assert await _get(s, row) == row
+
+    async def test_rewrite_pending_rule_row_only_touches_pending(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        rule, row = await _rule_row(s, t)
+        skipped = await s.transition_row(
+            row.id, user_id=t.user.id, to=RowStatus.SKIPPED, actor=Actor.WEB, reason=None, now=NOW
+        )
+        with pytest.raises(TransitionRefusedError, match="pending"):
+            await s.rewrite_pending_rule_row(
+                row.id, rule=rule, expected_version=skipped.version, now=NOW
+            )
+        explicit = await _explicit(s, t, target=TARGET + timedelta(days=7))
+        with pytest.raises(TransitionRefusedError, match="rule row"):
+            await s.rewrite_pending_rule_row(
+                explicit.id, rule=rule, expected_version=explicit.version, now=NOW
+            )
