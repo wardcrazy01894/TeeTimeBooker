@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from ...core.adapter import AdapterCapabilities
-from ...core.models import BookingRequest, CourseId, TeeTimeSlot
+from ...core.models import BookingRequest, CourseId, SlotId, TeeTimeSlot
 from ...core.slot_utils import rank_slots_for_request
 from .base import FOREUP_BASE_URL, ForeUpAdapter, _parse_slot
 
@@ -128,25 +128,28 @@ BLIND_POST_TEMPLATE: dict[str, object] = {
 #
 # DERIVED grid (operator-approved 2026-06-20): the proven Mangrove Bay teesheet cadence is
 # 8 tee times/hour at minutes :00,:07,:15,:22,:30,:37,:45,:52 (confirmed gap-free across the
-# live-searchable afternoon union). Mornings sell out inside the 7-day window so could not be
-# searched directly; this grid is EXTRAPOLATED from that proven cadence over the 08:45-10:00
-# booking window. It is a best-effort starting point: on a 0-booked drop the post-reguard fresh
-# search is the grid-drift fallback, and synthesize_blind_slots logs the firing grid (and search()
-# logs the real matched morning times) so a real drop can confirm or correct it retroactively.
-# If a drop shows drift, update this list — `None` would fail loud (nit 3), but it is populated.
+# live-searchable afternoon union; `07:37` observed live post-drop sits exactly on it —
+# STAGGER_PLAN §1.1). Mornings sell out inside the 7-day window so could not be searched
+# directly; this grid is EXTRAPOLATED from that proven cadence. It is a best-effort starting
+# point: on a 0-booked drop the post-reguard fresh search is the grid-drift fallback, and
+# synthesize_blind_slots logs the firing grid (and search() logs the real matched morning times)
+# so a real drop can confirm or correct it retroactively. If a drop shows drift, update this
+# list — `None` would fail loud (nit 3), but it is populated.
+#
+# WIDENED ONCE to the full morning, 07:00-12:00 (MULTIUSER_PLAN §6.5 / E3, MU-3). The original
+# grid covered only the operator's 08:45-10:00 window, so any EARLIER window (a friend who golfs
+# before 08:45) synthesized zero blind slots and fell to the slower search race path. Widening
+# the GRID is behaviour-preserving for every existing window: synthesize_blind_slots
+# intersects the grid with the request window, so the operator's 08:45-10:00 burst emits
+# byte-identical slots in identical rank order (pinned by
+# `test_widened_grid_emits_identical_slots_for_0845_1000_window`). Grid points outside every
+# requested window are NEVER POSTed. The first tee time before 08:45 is UNVERIFIED (Spike S-M7):
+# a grid point earlier than the real first tee is inert unless a window covers it, and then
+# costs only a 400 -> SlotGoneError -> next candidate. Extend the range, never re-cadence.
+_GRID_CADENCE_MINUTES = ("00", "07", "15", "22", "30", "37", "45", "52")
 BLIND_POST_MORNING_GRID: list[str] | None = [
-    "08:45",
-    "08:52",
-    "09:00",
-    "09:07",
-    "09:15",
-    "09:22",
-    "09:30",
-    "09:37",
-    "09:45",
-    "09:52",
-    "10:00",
-]
+    f"{hour:02d}:{minute}" for hour in range(7, 12) for minute in _GRID_CADENCE_MINUTES
+] + ["12:00"]
 
 
 class MangroveBayAdapter(ForeUpAdapter):
@@ -180,6 +183,26 @@ class MangroveBayAdapter(ForeUpAdapter):
             http_client=http_client,
             captcha_provider=captcha_provider,
         )
+        # MULTIUSER_PLAN §5.4 / E2: None = no filter (today's single-user behaviour).
+        self._blind_allowlist: frozenset[SlotId] | None = None
+
+    @property
+    def blind_allowlist(self) -> frozenset[SlotId] | None:
+        """The allowlist currently applied by synthesize_blind_slots (None = unfiltered)."""
+        return self._blind_allowlist
+
+    def set_blind_allowlist(self, allowlist: frozenset[SlotId] | None) -> None:
+        """Restrict synthesize_blind_slots to ``allowlist`` (a set of grid ``slot_id``s, i.e.
+        ``start_front`` strings) — MULTIUSER_PLAN §5.4 engine hook E2.
+
+        Applied to the RANKED in-window candidates BEFORE truncation to ``max_count``, so an
+        account allocated slots that are not its natural top-N still fires a full burst of
+        exactly those slots, in rank order. ``frozenset()`` means "search-only this drop"
+        (synthesize returns []); ``None`` removes the filter. Set ONCE pre-T0 by the tenant
+        runner from ``tenant.allocation.allocate_blind_slots`` so N accounts' bursts target
+        DISJOINT grid slots; the single-user TOML path never calls it. Pure state — no I/O.
+        """
+        self._blind_allowlist = allowlist
 
     def synthesize_blind_slots(
         self,
@@ -230,7 +253,12 @@ class MangroveBayAdapter(ForeUpAdapter):
             for s in candidates
         )
         ranked = rank_slots_for_request(candidates, request)
-        result = ranked[:max_count]
+        # E2 allowlist (MULTIUSER_PLAN §5.4): filter the RANKED list BEFORE truncation, so an
+        # account allocated non-top-N slots still fires a full burst of exactly those, in rank
+        # order. None = unfiltered (the single-user path); frozenset() = search-only.
+        allowlist = self._blind_allowlist
+        allowed = ranked if allowlist is None else [s for s in ranked if s.slot_id in allowlist]
+        result = allowed[:max_count]
         # Retroactive grid-validation logging (operator request): emit the grid size, how
         # many fell in the request window, how many SURVIVED the spots/holes/price filter,
         # and the in-window times we will blind-POST. The separate in-window vs survived
@@ -238,16 +266,21 @@ class MangroveBayAdapter(ForeUpAdapter):
         # wrong window) vs "in window but 0 survived" (mis-set holes/max_price/party size) —
         # instead of looking identical. Diff against the post-reguard fresh search on a
         # 0-booked drop (search() logs its matched morning tee times) to confirm or correct
-        # the derived grid. PII-free.
+        # the derived grid. PII-free. The allowlist clause makes a per-account burst in a
+        # multi-account run auditable from logs alone (which slots THIS account was allocated).
         _log.info(
-            "MB blind-POST: %d grid time(s), %d in window, %d survived spots/holes/price; "
-            "firing %d for %s (grid=%s, times=%s, max_count=%d)",
+            "MB blind-POST: %d grid time(s), %d in window, %d survived spots/holes/price, %s; "
+            "firing %d for %s (grid=%s..%s, times=%s, max_count=%d)",
             len(BLIND_POST_MORNING_GRID),
             in_window_count,
             len(ranked),
+            "no allowlist"
+            if allowlist is None
+            else f"{len(allowed)} allowed by allowlist of {len(allowlist)}",
             len(result),
             target_date,
-            BLIND_POST_MORNING_GRID,
+            BLIND_POST_MORNING_GRID[0],
+            BLIND_POST_MORNING_GRID[-1],
             [s.tee_time.strftime("%H:%M") for s in result],
             max_count,
         )
