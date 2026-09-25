@@ -2324,3 +2324,173 @@ class TenantStoreConformance:
         await s.set_materialized_through(rule.id, TARGET + timedelta(days=14))
         await s.set_materialized_through(rule.id, TARGET)
         assert await s.rules_needing_materialization(through=TARGET + timedelta(days=14)) == []
+
+    # --- review round 3 --------------------------------------------------------------------
+
+    async def _pending_row_of_deactivated_rule(
+        self, s: TenantStore, t: Tenant
+    ) -> tuple[StandingRule, RequestRow]:
+        """A rule deactivated while its row was leased: the edit had to skip the row (§3.4)."""
+        rule, row = await _rule_row(s, t)
+        await _lease(s, row, owner=BOOKER)
+        rule = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        await s.release_row_lease(row.id, owner=BOOKER)
+        return rule, await _get(s, row)
+
+    async def test_load_watch_rows_excludes_pending_rows_of_inactive_rules(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-3 MF1 (i): the watcher never books for a rule the user switched off."""
+        s = harness.store
+        t = await _tenant(s)
+        _, row = await self._pending_row_of_deactivated_rule(s, t)
+        booked_rule, booked_row = await _rule_row(s, t, target=TARGET + timedelta(days=7))
+        booked = await _book(s, booked_row)
+        await s.upsert_rule(replace(booked_rule, active=False), user_id=t.user.id)
+        horizon = {MB: (NOW.date(), TARGET + timedelta(days=14))}
+        rows = await s.load_watch_rows(horizons=horizon, now=NOW)
+        # A held booking of an inactive rule is still watched (vanish / cancel); the pending
+        # row is not offered.
+        assert {er.row.id for er in rows} == {booked.id}
+        assert row.status is RowStatus.PENDING
+
+    async def test_finalize_withdraws_pending_rows_of_inactive_rules(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-3 MF1 (ii): no spurious "lost" email for a rule the user switched off."""
+        s = harness.store
+        t = await _tenant(s)
+        _, row = await self._pending_row_of_deactivated_rule(s, t)
+        assert await s.finalize_lost(now=FROZEN_NOW) == []
+        after = await _get(s, row)
+        assert (after.status, after.status_reason) == (RowStatus.WITHDRAWN, "rule_deactivated")
+        assert await harness.slot_pointer(t.account.id, TARGET) is None
+
+    async def test_rows_of_inactive_rules_lists_unleased_stragglers(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-3 MF1 (iii): the materializer tick finds rows a deactivation had to skip."""
+        s = harness.store
+        t = await _tenant(s)
+        _, straggler = await self._pending_row_of_deactivated_rule(s, t)
+        active_rule, active_row = await _rule_row(s, t, target=TARGET + timedelta(days=1))
+        leased_rule, leased_row = await _rule_row(s, t, target=TARGET + timedelta(days=2))
+        await _lease(s, leased_row, owner=BOOKER)
+        await s.upsert_rule(replace(leased_rule, active=False), user_id=t.user.id)
+        got = await s.rows_of_inactive_rules(now=NOW)
+        assert [r.id for r in got] == [straggler.id]
+        out = await s.transition_row(
+            straggler.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        assert out.status is RowStatus.WITHDRAWN
+        assert await s.rows_of_inactive_rules(now=NOW) == []
+        assert active_rule.active and (await _get(s, active_row)).status is RowStatus.PENDING
+
+    async def test_withdraw_explicit_restores_system_withdrawn_row_of_active_rule(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-6 decision: deactivate -> reactivate while the one-off holds the slot ->
+        withdraw one-off. The rule row (system-withdrawn, reactivation refused by the held slot)
+        is restored in the withdraw batch, with window/party refreshed from the rule."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, rule_row = await _rule_row(s, t)
+        explicit = await _explicit(s, t)
+        rule = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        withdrawn = await s.transition_row(
+            rule_row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        rule = await s.upsert_rule(
+            replace(rule, active=True, window_earliest=time(7, 0), party_size=3),
+            user_id=t.user.id,
+        )
+        with pytest.raises(TransitionRefusedError):
+            await s.reactivate_rule_row(withdrawn, rule, now=NOW)  # slot still held
+        await s.transition_row(
+            explicit.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        restored = await _get(s, rule_row)
+        assert restored.status is RowStatus.PENDING
+        assert restored.status_reason is None
+        assert (restored.window_earliest, restored.party_size) == (time(7, 0), 3)
+        assert await harness.slot_pointer(t.account.id, TARGET) == rule_row.id
+
+    async def test_withdraw_explicit_restores_system_withdrawn_skip_as_skipped(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        rule, rule_row = await _rule_row(s, t)
+        await s.transition_row(
+            rule_row.id,
+            user_id=t.user.id,
+            to=RowStatus.SKIPPED,
+            actor=Actor.WEB,
+            reason=None,
+            now=NOW,
+        )
+        explicit = await _explicit(s, t)
+        rule = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        await s.transition_row(
+            rule_row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        await s.upsert_rule(replace(rule, active=True), user_id=t.user.id)
+        await s.transition_row(
+            explicit.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        assert (await _get(s, rule_row)).status is RowStatus.SKIPPED
+
+    async def test_transition_row_refuses_cancel(self, harness: StoreHarness) -> None:
+        """Round-3 SF1: booked -> cancelled is a LEASED edge (record_outcomes) only."""
+        s = harness.store
+        t = await _tenant(s)
+        booked = await _book(s, await _explicit(s, t), raw_id="R1")
+        with pytest.raises(TransitionRefusedError, match="record_outcomes"):
+            await s.transition_row(
+                booked.id,
+                user_id=t.user.id,
+                to=RowStatus.CANCELLED,
+                actor=Actor.WEB,
+                reason="user",
+                now=NOW,
+            )
+        assert (await _get(s, booked)).status is RowStatus.BOOKED
+
+    async def test_reset_materialized_through_puts_rule_back_on_the_tick(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-3 SF2: the deactivation flow resets materialization FIRST, so a crash before
+        the rule is written inactive leaves the tick work to do (it re-materializes)."""
+        s = harness.store
+        t = await _tenant(s)
+        rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        through = NOW.date() + timedelta(days=21)
+        await s.set_materialized_through(rule.id, through)
+        assert await s.rules_needing_materialization(through=through) == []
+        await s.reset_materialized_through(rule.id)
+        assert [r.id for r in await s.rules_needing_materialization(through=through)] == [rule.id]

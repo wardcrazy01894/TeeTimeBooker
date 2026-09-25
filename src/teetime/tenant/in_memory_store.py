@@ -38,6 +38,7 @@ from ..core.redaction import redact_payload
 from .materialize import RuleConflictError
 from .models import (
     ACTIVE_ROW_STATUSES,
+    SYSTEM_WITHDRAW_REASONS,
     AccountStatus,
     Actor,
     BookingState,
@@ -267,18 +268,55 @@ class InMemoryTenantStore:
                 f"{day} has a user-terminal row; only an explicit re-request reopens it"
             )
 
-    def _restorable_superseded(self, explicit: RequestRow, now: datetime) -> RequestRow | None:
-        """The rule row a withdrawn explicit row superseded, iff its rule is still active and the
-        date is not frozen (§3.4 superseded -> pre-supersede status, round-4 D2). The restore
-        writes that row too, so it must be unleased like every web write (M4)."""
-        for row in self._history(explicit.course_account_id, explicit.target_date):
-            if row.source is not RowSource.RULE or row.status is not RowStatus.SUPERSEDED:
-                continue
+    def _rule_active_for(self, row: RequestRow) -> bool:
+        """True for explicit rows and for rule rows whose rule exists and is active."""
+        if row.rule_id is None:
+            return True
+        rule = self._rules.get(row.rule_id)
+        return rule is not None and rule.active
+
+    def _restorable_rule_row(self, explicit: RequestRow, now: datetime) -> _Write | None:
+        """The rule row a withdrawn explicit row gives the date back to, restored to
+        ``superseded_from or PENDING``, iff its rule is active and the date not frozen:
+        - a SUPERSEDED row (§3.4, round-4 D2); else
+        - a SYSTEM-WITHDRAWN row with no user-terminal row for the date (round-6: deactivate ->
+          reactivate while the one-off held the slot -> withdraw one-off; reactivation was
+          refused by the held slot, so nothing else would bring it back), refreshed from the rule.
+        The restore writes that row too, so it must be unleased like every web write (M4)."""
+        history = self._history(explicit.course_account_id, explicit.target_date)
+        superseded = [r for r in history if r.status is RowStatus.SUPERSEDED]
+        withdrawn = [
+            r
+            for r in history
+            if r.status is RowStatus.WITHDRAWN and r.status_reason in SYSTEM_WITHDRAW_REASONS
+        ]
+        if not superseded and any(is_user_terminal(r) for r in history):
+            withdrawn = []
+        for row in [*superseded, *withdrawn]:
             rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
-            if rule is not None and rule.active and not row_is_frozen(row, now=now):
-                if lease_held(row, now=now):
-                    raise RowLeaseError(f"booking in progress for {row.target_date}")
-                return row
+            if row.source is not RowSource.RULE or rule is None or not rule.active:
+                continue
+            if row_is_frozen(row, now=now):
+                continue
+            if lease_held(row, now=now):
+                raise RowLeaseError(f"booking in progress for {row.target_date}")
+            target = row.superseded_from or RowStatus.PENDING
+            restored = replace(
+                self._unleased_write(row, now),
+                status=target,
+                status_reason=None,
+                superseded_from=None,
+                version=row.version + 1,
+            )
+            if row.status is RowStatus.WITHDRAWN:
+                check_transition(row, target, actor=Actor.MATERIALIZER, now=now)
+                restored = replace(
+                    restored,
+                    window_earliest=rule.window_earliest,
+                    window_latest=rule.window_latest,
+                    party_size=rule.party_size,
+                )
+            return (row, restored)
         return None
 
     # --- TenantStore ---------------------------------------------------------------------
@@ -297,10 +335,9 @@ class InMemoryTenantStore:
         out: list[EventRow] = []
         for row in sorted(self._rows.values(), key=lambda r: r.id):
             account = self._accounts.get(row.course_account_id)
-            rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
             # Belt and braces for a non-atomic deactivation (§7.7): never offer the booker a row
             # of an inactive rule, even before the materializer withdrew it.
-            rule_ok = row.rule_id is None or (rule is not None and rule.active)
+            rule_ok = self._rule_active_for(row)
             if (
                 row.status is RowStatus.PENDING
                 and targets.get(row.course_id) == row.target_date
@@ -508,7 +545,13 @@ class InMemoryTenantStore:
                 continue
             if not horizon[0] <= row.target_date <= horizon[1]:
                 continue
-            live_pending = row.status is RowStatus.PENDING and not row_is_frozen(row, now=now)
+            # A pending row of an INACTIVE rule is never offered (round-3 MF1: a deactivation
+            # that had to skip a leased row). Held bookings are still watched regardless.
+            live_pending = (
+                row.status is RowStatus.PENDING
+                and not row_is_frozen(row, now=now)
+                and self._rule_active_for(row)
+            )
             if live_pending or row.status is RowStatus.BOOKED:
                 out.append(EventRow(row=row, account=account))
         return out
@@ -520,6 +563,10 @@ class InMemoryTenantStore:
                 continue
             if lease_held(row, now=now):
                 continue  # an actor is mid-act; the next finalizer pass gets it
+            if not self._rule_active_for(row):
+                # The user switched the rule off: a system withdraw, never a "lost" email.
+                self._withdraw_for_inactive_rule(row, now)
+                continue
             check_transition(row, RowStatus.LOST, actor=Actor.WATCHER, now=now)
             reason = "cutoff" if now >= row.cutoff_at else "date_passed"
             new = replace(
@@ -531,6 +578,28 @@ class InMemoryTenantStore:
             self._commit([(row, new)])
             lost.append(new)
         return lost
+
+    def _withdraw_for_inactive_rule(self, row: RequestRow, now: datetime) -> None:
+        reason = "rule_deactivated"
+        check_transition(row, RowStatus.WITHDRAWN, actor=Actor.MATERIALIZER, now=now, reason=reason)
+        new = replace(
+            self._unleased_write(row, now),
+            status=RowStatus.WITHDRAWN,
+            status_reason=reason,
+            version=row.version + 1,
+        )
+        self._commit([(row, new)])
+
+    async def rows_of_inactive_rules(self, *, now: datetime) -> list[RequestRow]:
+        rows = (
+            r
+            for r in self._rows.values()
+            if r.rule_id is not None
+            and r.status in (RowStatus.PENDING, RowStatus.SUPERSEDED)
+            and not self._rule_active_for(r)
+            and not lease_held(r, now=now)
+        )
+        return sorted(rows, key=lambda r: r.id)
 
     async def get_snapshot(self, account_id: CourseAccountId) -> ReservationSnapshot | None:
         return self._snapshots.get(account_id)
@@ -615,7 +684,7 @@ class InMemoryTenantStore:
     ) -> RequestRow:
         stored = self._row(row.id)
         # Round-5: back to the pre-supersede status if it was superseded before the withdraw.
-        target = row.superseded_from or RowStatus.PENDING
+        target = stored.superseded_from or RowStatus.PENDING
         check_transition(row, target, actor=Actor.MATERIALIZER, now=now)
         if row.rule_id != rule.id:
             raise ValueError(f"row {row.id} does not belong to rule {rule.id}")
@@ -636,6 +705,12 @@ class InMemoryTenantStore:
         )
         self._commit([(row, new)])
         return new
+
+    async def reset_materialized_through(self, rule_id: RuleId) -> None:
+        rule = self._rules.get(rule_id)
+        if rule is None:
+            raise TenantNotFoundError(_NOT_FOUND)
+        self._rules[rule_id] = replace(rule, materialized_through=None)
 
     async def set_materialized_through(self, rule_id: RuleId, through: date) -> None:
         rule = self._rules.get(rule_id)
@@ -767,6 +842,9 @@ class InMemoryTenantStore:
             raise TransitionRefusedError(f"{actor} writes through record_outcomes (leased path)")
         if to is RowStatus.SUPERSEDED:
             raise TransitionRefusedError("supersede is written only by create_explicit_row")
+        if to is RowStatus.CANCELLED:
+            # The mirror of MF1: a leased edge (the §8.5 cancel runs under the web's own lease).
+            raise TransitionRefusedError("booked -> cancelled is written only by record_outcomes")
         if row.status is RowStatus.WITHDRAWN and to in (RowStatus.PENDING, RowStatus.SKIPPED):
             # It must re-check the (account, date) history for a user-terminal row, the rule
             # being active, and refresh window/party from the rule (§3.4, operator decision c).
@@ -788,16 +866,9 @@ class InMemoryTenantStore:
         )
         writes: list[_Write] = [(row, new)]
         if row.source is RowSource.EXPLICIT and to is RowStatus.WITHDRAWN:
-            restore = self._restorable_superseded(row, now)
+            restore = self._restorable_rule_row(row, now)
             if restore is not None:
-                restored = replace(
-                    self._unleased_write(restore, now),
-                    status=restore.superseded_from or RowStatus.PENDING,
-                    status_reason=None,
-                    superseded_from=None,
-                    version=restore.version + 1,
-                )
-                writes.append((restore, restored))
+                writes.append(restore)
         self._commit(writes)
         return new
 

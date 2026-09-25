@@ -280,7 +280,23 @@ class TenantStore(Protocol):
         held."""
         ...
 
-    async def set_materialized_through(self, rule_id: RuleId, through: date) -> None: ...
+    async def set_materialized_through(self, rule_id: RuleId, through: date) -> None:
+        """Advance the rule's materialization watermark; never moves it backwards."""
+        ...
+
+    async def reset_materialized_through(self, rule_id: RuleId) -> None:
+        """Clear the watermark (the rule is due for the next tick). The web deactivation flow
+        calls it FIRST, before withdrawing rows and writing the rule inactive, so a crash part-way
+        leaves the tick work to do instead of a withdrawn row nothing revisits (§7.7)."""
+        ...
+
+    async def rows_of_inactive_rules(self, *, now: datetime) -> list[RequestRow]:
+        """Unleased PENDING / SUPERSEDED rule rows whose rule is INACTIVE: the stragglers a
+        deactivation had to skip because they were leased at the time (§3.4 "rule edits never
+        touch leased rows"). The materializer tick withdraws them (system reason, §7.7). SKIPPED
+        rows are deliberately excluded: they are never booked, and keeping them preserves the
+        user's skip across a later reactivation (round-5)."""
+        ...
 
     # --- web (§8) ----------------------------------------------------------------------
 
@@ -341,12 +357,16 @@ class TenantStore(Protocol):
         """The UNLEASED guarded transition for the WEB (skip, unskip, withdraw, un-supersede) and
         the MATERIALIZER (system withdraw). ``user_id`` scopes web calls (required for WEB). Refuses
         with ``RowLeaseError`` while the row is leased (M4) and ``TransitionRefusedError`` per
-        §3.4. Refused here: leased-path actors (runner, watcher), the supersede edge (only ever
+        §3.4. Refused here: leased-path actors (runner, watcher), booked -> cancelled (a leased
+        edge, ``record_outcomes`` only), the supersede edge (only ever
         written by ``create_explicit_row``, in the same batch as the explicit row) and
         withdrawn -> pending (only ever written by ``reactivate_rule_row``, which re-checks the
         user-terminal history and refreshes the row from the rule).
-        Withdrawing an explicit row restores the rule row it superseded to PENDING in the same
-        batch when that rule is still active and the date is not frozen (§3.4)."""
+        Withdrawing an explicit row restores, in the same batch, the date's rule row whose rule
+        is ACTIVE and whose date is not frozen: a SUPERSEDED one (D2), or else a SYSTEM-WITHDRAWN
+        one with no user-terminal row for the date (round-6, the deactivate -> reactivate ->
+        withdraw order, window/party refreshed from the rule). Either returns to
+        ``superseded_from or PENDING``."""
         ...
 
     async def upsert_rule(self, rule: StandingRule, *, user_id: UserId) -> StandingRule:
