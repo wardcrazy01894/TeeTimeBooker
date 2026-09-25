@@ -143,9 +143,11 @@ async def apply_rule_edit(
     cutoff: BookingCutoffConfig,
     now: datetime,
 ) -> MaterializeReport:
-    """Window/party change: rewrite PENDING unleased not-frozen rule rows in place. Weekday
-    change: withdraw old-weekday PENDING and SUPERSEDED rows (``rule_weekday_changed``), then
-    materialize the new weekday. Deactivate (``new.active is False``): withdraw PENDING and
-    SUPERSEDED rows (``rule_deactivated``) after ``reset_materialized_through`` and BEFORE
-    writing the rule inactive (§7.7); BOOKED rows are untouched (round-4 D1)."""
+    """Window/party change: rewrite PENDING unleased not-frozen rule rows in place via
+    ``TenantStore.rewrite_pending_rule_row`` (leased rows are skipped for that week). Weekday
+    change: ``upsert_rule`` (clears the watermark), withdraw old-weekday PENDING and SUPERSEDED
+    rows (``rule_weekday_changed``), then materialize the new weekday. Deactivate
+    (``new.active is False``): withdraw PENDING and SUPERSEDED rows (``rule_deactivated``)
+    after ``reset_materialized_through`` and BEFORE writing the rule inactive (§7.7); BOOKED rows
+    are untouched (round-4 D1)."""
     raise NotImplementedError(_MU6)

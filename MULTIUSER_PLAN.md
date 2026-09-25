@@ -298,6 +298,7 @@ transition), because only they re-check the user-terminal history and refresh wi
 the rule (MU-5 review MF1). The round-6 restore applies only when the rule is ACTIVE, still covers the row (`rule.weekday == target_date.weekday()` and same account), the date is not frozen, and there is **no user-terminal row for (account, date)** (round-4 MF-A: it keys on the rule's CURRENT weekday, not on the withdraw reason, so a row whose rule moved away and back while a one-off held the slot is still restored).
 **Round-7 decision (MU-5 review round 4): a user-terminal date stays BLOCKED for the standing rule regardless of later re-requests.** Withdrawing a re-request undoes the re-request, not the cancel, so the one-off withdraw restores NO rule row on a user-terminal date: a superseded rule row there stays SUPERSEDED, which is inert (the materializer's step 1 skips user-terminal dates, and `load_event_rows` / `load_watch_rows` never return superseded rows). Pinned by `test_withdraw_rerequest_after_user_cancel_keeps_date_blocked`.
 **One "may become active" guard (MU-5 review round 5, systemic).** Every write that puts a rule row into pending/skipped from outside the active set (create, reactivate, un-supersede, the one-off withdraw restore) or unskips it passes ONE guard, enforced inside the store's batch so no writer can skip it: the STORED rule still covers the row (exists, active, same weekday and account: `_rule_covers_row`, round-5), and the date has no user-terminal row. Frozen and the slot are checked by the transition itself. The same `_rule_covers_row` predicate filters every read that offers rows for booking (`load_event_rows`, `load_watch_rows`) and drives `finalize_lost` and the sweep. `insert_rule_row_if_absent` and `reactivate_rule_row` also IfMatch the stored rule (a stale copy is refused), which MU-8b does by asserting the rule doc's (or its `ruleday|<weekday>` pointer's) ETag in the same batch. Pinned by `test_unsupersede_refused_on_user_terminal_date`, `test_unskip_refused_after_weekday_change`, `test_reactivate_refuses_stale_rule`, `test_reactivate_refuses_row_the_stored_rule_no_longer_covers` and `test_insert_rule_row_refuses_stale_rule`. Only PENDING and BOOKED rows are ever leased (round-5 nit).
+**Round-6 decision: unskipping a row the rule no longer covers is REFUSED** (there is no rule to return to). The guard raises `RuleNoLongerCoversError` (a `TransitionRefusedError`), which the web renders as "This rule no longer covers <date>; add it as a one-off instead" (§8.2). Pinned by `test_unskip_refused_after_weekday_change`.
 
 **Round-4 decisions (MU-5 review, coordinator, 2026-09-25):**
 - **(D1) Superseded rule rows are NOT immune to rule edits.** Rule deactivation, rule deletion and
@@ -325,7 +326,7 @@ the rule (MU-5 review MF1). The round-6 restore applies only when the rule is AC
   write it around them.
 
 **Rule edits** never touch `booked`, `skipped`, or leased rows. A window/party change
-re-writes **pending, unleased, not-frozen** rule rows in place (version bump). A weekday change
+re-writes **pending, unleased, not-frozen** rule rows in place (version bump) through `TenantStore.rewrite_pending_rule_row(row_id, *, rule, expected_version, now)` (round-6: row IfMatch, stored-rule IfMatch, and the coverage guard called explicitly, since a pending → pending write is not "becoming bookable"). A weekday change
 withdraws the old-weekday pending **and superseded** rows and materializes the new weekday.
 Deactivation (and deletion) withdraws pending **and superseded** rows
 (`status_reason='rule_deactivated'` / `'rule_deleted'`; round-4 D1). Booked rows stay booked and the user cancels
@@ -891,6 +892,13 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
   `record_outcomes`' `ExceptionGroup`, which the runner/watcher treat as a non-zero exit). The
   ownership report lists owned ledger entries with no BOOKED row for their (account, date) as
   orphans for the operator.
+- **`needs_reconcile` rows stay watched (round-6).** A rule row set pending + `needs_reconcile`
+  (upgrade cancelled the old slot, rebook fate unknown) stays in `load_watch_rows` and out of the
+  `rows_no_longer_covered` sweep EVEN IF its rule no longer covers it, so a rebook that landed is
+  still adopted here instead of becoming an untracked reservation. The reconcile either adopts it
+  (→ booked, normal rules apply) or clears the flag (the next tick then sweeps the row). It is never
+  offered to the booker (`load_event_rows` still filters it). Pinned by
+  `test_needs_reconcile_row_stays_watched_after_rule_moves`.
 
 ### 7.7 Materializer
 
@@ -930,7 +938,7 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
   deactivate/delete/weekday change, so scenario A resolves through the system-withdrawn REACTIVATE
   path; (D2) withdrawing a one-off restores the rule row to its pre-supersede status (pending or
   skipped); (round-5) reactivation restores it too. See §3.4.
-- **Deactivation order (MU-5 review round 2).** Deactivating (or deleting, or moving) a rule is
+- **Deactivation / deletion order (MU-5 review round 2).** Deactivating or deleting a rule is
   NOT atomic across rows: the rule write and each row withdrawal are separate batches (different
   documents, and the rows can be many). The web deactivation flow is therefore, in order:
   (1) `reset_materialized_through(rule)` (the rule becomes due for the tick); (2) withdraw the
@@ -951,8 +959,10 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
   the watermark when the weekday changes or `active` flips to True, in the same write, so there is
   no separate reset step in those flows: a crash before the web's synchronous materialize still
   leaves the tick work to do (pinned by `test_reactivation_clears_watermark_in_upsert` and
-  `test_upsert_rule_clears_watermark_on_weekday_change`). Deactivation keeps its reset → withdraw →
-  reset → inactive order.
+  `test_upsert_rule_clears_watermark_on_weekday_change`). **A weekday MOVE is therefore: (1)
+  `upsert_rule` with the new weekday (clears the watermark); (2) withdraw the old-weekday unleased
+  PENDING / SUPERSEDED rows (`rule_weekday_changed`); (3) materialize the new weekday.** The
+  reset → withdraw → reset → inactive order applies to deactivation and deletion ONLY.
 - **Rows a deactivation or weekday move had to skip (MU-5 review round 3 MF1, widened in round 5).**
   "Rule edits never touch leased rows", so a row the booker or watcher holds at deactivation (or
   when the rule moves to another weekday) stays PENDING under a rule that no longer covers it. Three guards make sure it is never booked and never reported
@@ -966,7 +976,7 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
   `test_load_event_rows_excludes_rows_of_inactive_rules`,
   `test_load_watch_rows_excludes_pending_rows_of_inactive_rules`,
   `test_finalize_withdraws_pending_rows_of_inactive_rules`,
-  `test_rows_of_inactive_rules_lists_unleased_stragglers`,
+  `test_rows_no_longer_covered_lists_unleased_stragglers`,
   `test_weekday_change_straggler_never_offered_and_swept` and
   `test_finalize_withdraws_weekday_mismatch_as_rule_weekday_changed`.
 - **Owners:** the web runs it synchronously on rule create/edit/reactivate. The watcher runs a cheap
@@ -1033,6 +1043,7 @@ account.
 
 Every data query is scoped by the session's `user_id`. There is an IDOR test per route
 (`test_route_rejects_other_users_row`).
+Row transitions map store errors to responses: `RowLeaseError` → 409 "booking in progress"; `RuleNoLongerCoversError` → 409 "This rule no longer covers <date>; add it as a one-off instead" (with an "add as one-off" action, round-6); any other `TransitionRefusedError` → 409 with its message; `TenantNotFoundError` → 404.
 
 ### 8.3 Auth and session
 
@@ -1491,7 +1502,7 @@ once their dependencies land.
 | **MU-3** ∥ | MB grid widening + allowlist (E2, E3) + allocator | `mangrove_bay.py`, `tenant/allocation.py` | MU-0 | `test_widened_grid_emits_identical_slots_for_0845_1000_window`, `test_allowlist_filters_before_truncation`, `test_allocation_disjoint`, `test_allocation_distinct_rank0_when_grid_ge_n`, `test_allocation_disjoint_windows_unaffected`, `test_allocation_rotates_first_pick_by_date` | courses CLAUDE.md MB section |
 | **MU-4** ∥ | Engine hooks E5/E6/E7 | `watch_orchestrator.py` (kwarg only), `foreup/base.py` (`snapshot_trusted`), `core/redaction.py` | MU-0 | `test_reconcile_eligible_none_is_todays_behavior`, `test_reconcile_skips_ineligible_manual_reservation`, `test_foreup_non_json_login_marks_snapshot_untrusted`, `test_foreup_json_login_without_reservations_list_marks_untrusted` (SF3), `test_registered_literal_masked_in_args_and_traceback` | CLAUDE.md reconcile + redaction bullets |
 | **MU-5** ∥ | Tenant models + `TenantStore` Protocol + `InMemoryTenantStore` + transitions + conformance suite | `tenant/models.py`, `tenant/store.py`, `tenant/in_memory_store.py`, `tests/tenant/conformance.py` | MU-0 | `test_one_active_row_per_account_date`, `test_skip_booked_refused`, `test_explicit_supersedes_pending_rule_row`, `test_withdraw_explicit_restores_superseded`, `test_lease_conditional_acquire`, `test_lease_expiry_allows_takeover`, `test_slot_and_row_never_diverge`, `test_supersede_refused_while_leased` (M4), `test_web_transitions_refused_while_leased` (M4), `test_lease_acquire_fails_on_fingerprint_mismatch` (M5), `test_record_outcomes_isolates_rows` (M4), one `test_transition_<from>_<to>` per table row in §3.4 | – |
-| **MU-6** | Materializer (**materialize the FULL horizon `[today, today + horizon]`, never only dates after the watermark**; sweep `rows_no_longer_covered`) | `tenant/materialize.py` | MU-1, MU-5 | `test_materialize_idempotent_on_rule_date`, `test_materialize_skips_frozen_dates`, `test_rule_window_edit_updates_pending_only`, `test_rule_deactivate_withdraws_pending_keeps_booked`, `test_reactivate_restores_withdrawn`, `test_horizon_covers_advance_plus_7`, `test_materializer_does_not_resurrect_cancelled_rule_row` (Q7), `test_weekday_flip_back_rematerializes` (r2 M1), `test_new_rule_does_not_resurrect_external_cancel` (r2 M1), `test_deactivate_then_reactivate_rematerializes`, `test_withdrawn_explicit_restores_superseded_rule_row`, `test_withdrawn_explicit_does_not_block_rule_rematerialization` (r3 M1), `test_new_rule_materializes_date_of_withdrawn_explicit` (r3 M1), `test_second_active_rule_same_weekday_refused` (r3 SF1) | – |
+| **MU-6** | Materializer (**materialize the FULL horizon `[today, today + horizon]`, never only dates after the watermark**; sweep `rows_no_longer_covered`; window/party edits via `rewrite_pending_rule_row`) | `tenant/materialize.py` | MU-1, MU-5 | `test_materialize_idempotent_on_rule_date`, `test_tick_reactivates_withdrawn_rows_before_watermark` (round-6: the full-horizon walk), `test_materialize_skips_frozen_dates`, `test_rule_window_edit_updates_pending_only`, `test_rule_deactivate_withdraws_pending_keeps_booked`, `test_reactivate_restores_withdrawn`, `test_horizon_covers_advance_plus_7`, `test_materializer_does_not_resurrect_cancelled_rule_row` (Q7), `test_weekday_flip_back_rematerializes` (r2 M1), `test_new_rule_does_not_resurrect_external_cancel` (r2 M1), `test_deactivate_then_reactivate_rematerializes`, `test_withdrawn_explicit_restores_superseded_rule_row`, `test_withdrawn_explicit_does_not_block_rule_rematerialization` (r3 M1), `test_new_rule_materializes_date_of_withdrawn_explicit` (r3 M1), `test_second_active_rule_same_weekday_refused` (r3 SF1) | – |
 | **MU-7** ∥ | Crypto (adds `cryptography`) | `tenant/crypto.py` | MU-0 | `test_roundtrip`, `test_aad_mismatch_fails`, `test_unknown_kid_fails`, `test_rekey_idempotent`, `test_keyring_missing_active_fails_loud`, `test_plaintext_never_in_repr` | – |
 | **MU-8a** | Cosmos document mapping: `to_doc`/`from_doc` per type, deterministic ids, `schemaVersion` readers (N, N−1); pure, no SDK calls | `tenant/cosmos/docs.py` | MU-5 | `test_doc_roundtrip_every_type`, `test_deterministic_ids`, `test_reader_accepts_previous_schema_version`, `test_slot_doc_id_encodes_date` | – |
 | **MU-8b** | `CosmosTenantStore` (async `azure-cosmos` + `azure-identity`): transactional batches, IfMatch leases, claim docs; passes the conformance suite `integration`-marked against the real `dev` database | `tenant/cosmos/store.py` | MU-8a, S-M9 | the conformance suite parametrized over `CosmosTenantStore` (integration), plus `test_batch_create_slot_conflict_aborts_row_create`, `test_ifmatch_lease_412_is_not_acquired`, `test_orphan_username_claim_reclaimed`, `test_claim_reclaim_requires_age_and_missing_account` (r2 SF5), `test_claimant_rolls_back_account_on_lost_claim` (r2 SF5), `test_store_uses_ci_containers_only_with_suffix` (r2 SF2) | README deps; AZURE_PLAN §7.2 (MI data-plane auth) |
@@ -1662,6 +1673,7 @@ than in a fourth round. The two residual should-fixes were resolved by decision,
 | **MU-5 review round 3**: pending rows of a rule deactivated while leased stayed bookable by the watcher (and could be reported lost); deactivate → reactivate (slot held) → withdraw one-off stranded the date; web cancel through the unleased path; the §7.7 crash claim was false | **Round-6 decision**: the one-off withdraw batch also restores a system-withdrawn rule row of an active rule (to `superseded_from` or pending, refreshed). Inactive-rule guards in `load_watch_rows` / `finalize_lost` (withdraw, no email) / the tick (`rows_of_inactive_rules`). `transition_row` refuses booked → cancelled. Deactivation resets `materialized_through` first | §3.4, §7.7; `tenant/in_memory_store.py`, `tenant/store.py` |
 | **MU-5 review round 4**: the one-off withdraw could restore a row onto a weekday its rule no longer covered; a stale rule object undid a watermark reset; a tick could re-advance the watermark mid-deactivation; the D2 branch ignored user-terminal dates | **Round-7 decision**: a user-terminal date stays blocked for the rule regardless of later re-requests (no restore in either branch). Restore keyed on the rule's current weekday + account. A stored None watermark wins in `upsert_rule`; deactivation is reset → withdraw → reset → inactive, reactivation is upsert → reset. A missing rule's rows are withdrawn `rule_deleted` | §3.4, §7.7; `tenant/in_memory_store.py`, `tenant/models.py` |
 | **MU-5 review round 5** (systemic form of rounds 2–4): the generic un-supersede bypassed the round-7 block; a rule row stayed bookable on a weekday its rule no longer covered (leased straggler of a weekday move, stale rule passed to reactivate / insert); unskip revived uncovered rows; the §7.7 residual misnamed its repair | ONE stored-rule coverage predicate (`_rule_covers_row`) for reads, the finalizer and the sweep (`rows_no_longer_covered`), and ONE may-become-active guard enforced in the store's batch for every writer; insert/reactivate IfMatch the stored rule; `upsert_rule` clears the watermark on a weekday change or re-activation; only PENDING/BOOKED rows are leasable; MU-6 must materialize the full horizon (the daily tick is the repair) | §3.4, §7.7, §12; `tenant/in_memory_store.py`, `tenant/store.py`, `tenant/materialize.py` |
+| **MU-5 review round 6** (APPROVE; final batch) | Sweep SUPERSEDED leg tested; `needs_reconcile` rows exempt from the coverage filter in `load_watch_rows` and from the sweep (§7.6); `rewrite_pending_rule_row` implemented as the rule-edit writer; **round-6 decision**: unskipping an uncovered row is refused with `RuleNoLongerCoversError`, rendered by the web as "add it as a one-off instead"; a weekday move needs no separate reset; MU-6 must pin `test_tick_reactivates_withdrawn_rows_before_watermark` | §3.4, §7.6, §7.7, §8.2, §12; `tenant/in_memory_store.py`, `tenant/store.py`, `tenant/models.py` |
 
 **Status after round 3: RATIFIED** (2026-09-25). Operator decisions folded in: BYO accounts;
 Cosmos DB free tier for prod + dev (SQL Basic is the documented fallback); the first coordinated
