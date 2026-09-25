@@ -28,13 +28,28 @@ Optional extras:
 
 This file is intentionally tiny: all behavior lives in base.py.
 Adding another CPD/TeeItUp course is a sibling file with a new slug + IDs.
+
+Release policy (MULTIUSER_PLAN §6.1, E4) — `release_policy` below is (15, 06:00 PLACEHOLDER,
+America/Chicago, hosted_booking=False). The 15-day advance is CPD policy; the daily RELEASE TIME
+IS UNCONFIRMED (Spike S-M4: observe the 15-days-out inventory appearing, or ask the pro shop).
+06:00 is the plan's own worked example for a Chicago release (§6.1) and is NOT an observation.
+A midnight release (common on TeeItUp) cannot be represented in v1 — `validate_release_policy`
+rejects hours outside 04-22 because the DST gate + same-day T0 anchoring would book a day late
+(§6.1/§14) — so 00:00 was not an option even as a placeholder. `hosted_booking=False` means NO
+ACA job is ever derived from this policy (§6.4: the TeeItUp PAN path is out of hosted scope);
+it exists as DATA so a second release event can be exercised in the parity/allocation tests.
+Replace the time when S-M4 closes.
 """
 
 from __future__ import annotations
 
+from datetime import time
+from typing import ClassVar
+
 import httpx
 
 from ...core.models import CourseId
+from ...core.release_policy import ReleasePolicy
 from .base import TEEITUP_BOOKING_BASE, TeeItUpAdapter
 
 SYDNEY_MAROVITZ_COURSE_ID = CourseId("teeitup:sydney_marovitz")
@@ -52,6 +67,13 @@ class SydneyMarovitzAdapter(TeeItUpAdapter):
     """Sydney Marovitz specialization. Sets all IDs; inherits HTTP logic."""
 
     booking_page_url = SYDNEY_MAROVITZ_BOOKING_PAGE_URL
+    # S-M4 PLACEHOLDER release time — see the module docstring. Data only; never derives a job.
+    release_policy: ClassVar[ReleasePolicy] = ReleasePolicy(
+        advance_days=SYDNEY_MAROVITZ_ADVANCE_BOOKING_DAYS,
+        release_time=time(6, 0),
+        timezone="America/Chicago",
+        hosted_booking=False,
+    )
 
     def __init__(
         self,
