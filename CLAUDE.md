@@ -352,8 +352,10 @@ with AES-GCM-encrypted passwords, dated request rows plus standing rules, one te
 release event running the UNMODIFIED `Orchestrator` per account, a shared per-course CAPTCHA pool,
 a tenant watcher, and a FastAPI/HTMX Container App. Stub modules are on disk and raise
 `NotImplementedError` with an MU-milestone reference: `src/teetime/tenant/`, `src/teetime/web/`,
-`src/teetime/core/release_policy.py`, `src/teetime/courses/foreup/token_pool.py`,
-`src/teetime/dev/virtual_clock.py`. **Nothing imports them. Prod behaviour, config, and infra are unchanged**, and the TOML `run`/`watch` path stays the
+`src/teetime/core/release_policy.py`, `src/teetime/dev/virtual_clock.py`. **Nothing imports them.**
+(`src/teetime/courses/foreup/token_pool.py` is IMPLEMENTED (MU-2) and backs `ForeUpAdapter`'s
+private CAPTCHA pool with unchanged default behaviour; the shared/injected mode has no caller yet.)
+**Prod behaviour, config, and infra are unchanged**, and the TOML `run`/`watch` path stays the
 production path until the cutover in MULTIUSER_PLAN §11. **MU-3 is DONE in code** (engine
 hooks E2 + E3 + the allocator; `tenant/allocation.py` is real, not a stub): the Mangrove Bay
 `BLIND_POST_MORNING_GRID` spans the full morning 07:00–12:00 and `MangroveBayAdapter.
@@ -855,13 +857,30 @@ in `core/` — never directly. This is the cut line for parallel work.
   pre-T0 and now expired) triggers exactly ONE inline re-solve + re-POST of the same slot
   (`_is_captcha_challenge` is the non-raising sibling of `_guard_captcha`); the re-POST is
   classified normally (a 2nd challenge → `CaptchaError`, no loop). An INLINE-solved token gets
-  no such retry. **Concurrent inline solves are SEMAPHORE-BOUNDED** (`_captcha_solve_sem`,
-  ctor `max_concurrent_captcha_solves` default 6): in the blind-POST burst many `book()`s can
+  no such retry. **Concurrent inline solves are SEMAPHORE-BOUNDED** (`SharedCaptchaPool.
+  solve_inline` / `_inline_sem`; for the default private pool it is sized by the adapter ctor's
+  `max_concurrent_captcha_solves`, default 6): in the blind-POST burst many `book()`s can
   reach the inline solve (pool dry OR MF1 re-solve) at once — without the bound that is an
   N-way herd of ~75 s 2captcha solves at T0, threatening the booking `replicaTimeout` and the
   provider rate limit. Single-book paths (upgrade, sequential fallback) are single-threaded so
   the bound never blocks them; the pre-T0 `prepare_book` prefetch is intentionally UNbounded by
-  it (it calls the provider directly, off the critical path). Adapters with no pre-fetch cost
+  it (it calls the provider directly, off the critical path). **The pool is a
+  `SharedCaptchaPool` (`courses/foreup/token_pool.py`, MULTIUSER_PLAN §5, MU-2).** DEFAULT
+  (no `captcha_pool=` passed — every current caller): the adapter builds a PRIVATE,
+  uncoordinated pool whose single lease IS `_captcha_tokens` and whose inline bound is
+  `max_concurrent_captcha_solves`, so everything above is unchanged (`tests/test_captcha_pool.py`
+  is the unmodified gate). INJECTED (`captcha_pool=` + `captcha_lease_key=`, tenant runner only,
+  not wired yet): adapters of one course share the pool; with demand `register`ed, the first
+  `prepare_book` starts ONE fill (≤ `max_concurrent_solves` in flight, `count` ignored, returns
+  on wave 1 or at T0−10 s, never raises on solve failures — and ALWAYS returns, even if the fill
+  is cancelled by `aclose()` or dies), leases are granted round-robin in draft
+  order, later arrivals + `release`d leases go to a shared reserve, `book()` pops own lease →
+  reserve → inline (both pooled for MF1), `captcha_pool_size()` counts the lease only, and the
+  inline bound AND provider are the POOL's (per course; the adapter's own bound is ignored and a
+  pool built with another `course_id` is refused). Misconfiguration raises `RuntimeError` from
+  `prepare_book` (the orchestrator logs it and `book()` inline-solves): a coordinated pool that
+  was never `arm(t0=…)`ed, or a key that was never `register`ed (over-cap accounts must register
+  with k=0, else they would solve outside the C bound). Adapters with no pre-fetch cost
   (FakeAdapter, TeeItUpAdapter, future
   Chronogolf) implement it as a no-op (they accept `count` for parity and ignore it). Its
   `slot` arg is `TeeTimeSlot | None` (the CAPTCHA is page-level, slot-independent). **Two
