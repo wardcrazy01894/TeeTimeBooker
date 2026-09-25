@@ -212,7 +212,12 @@ class ForeUpAdapter(CourseAdapter):
         # _captcha_tokens and whose inline bound is max_concurrent_captcha_solves — today's
         # semantics exactly. Injected (tenant runner): every adapter of the course shares one
         # pool; this adapter pops its OWN lease, then the shared reserve, and the POOL's
-        # inline bound applies (per course), so max_concurrent_captcha_solves is ignored.
+        # inline bound applies (per course), so max_concurrent_captcha_solves is ignored, and
+        # every solve uses the POOL's provider (this adapter's captcha_provider is then only
+        # the on/off switch) — hence the course-id check below.
+        # The inline bound (SharedCaptchaPool.solve_inline, default 6) caps the T0 herd when
+        # many burst book()s hit an inline / MF1 re-solve at once; the pre-T0 prefetch is
+        # deliberately NOT under it (off the critical path).
         if captcha_pool is None:
             if captcha_lease_key is not None:
                 raise ValueError("captcha_lease_key requires captcha_pool")
@@ -221,30 +226,21 @@ class ForeUpAdapter(CourseAdapter):
                 provider=self._call_captcha_provider,
                 clock=RealClock(),  # unused: an uncoordinated pool never reads the clock
                 max_concurrent_inline_solves=max_concurrent_captcha_solves,
+                course_id=course_id,
             )
             captcha_lease_key = _PRIVATE_LEASE_KEY
         elif captcha_lease_key is None:
             raise ValueError("captcha_pool requires a captcha_lease_key (one per account)")
+        elif captcha_pool.course_id is not None and captcha_pool.course_id != course_id:
+            raise ValueError(
+                f"captcha_pool belongs to {captcha_pool.course_id}, not {course_id}: its "
+                "provider is bound to that course's page URL + site key"
+            )
         self._captcha_pool = captcha_pool
         self._captcha_lease_key = captcha_lease_key
         # LIVE reference to this adapter's lease deque (the pool clears it in place on
         # release), kept under its historical name.
         self._captcha_tokens: collections.deque[str] = captcha_pool.lease_deque(captcha_lease_key)
-        # Inline-solve bound (previously a per-adapter _captcha_solve_sem, now pool-owned).
-        # The blind-POST burst fires up to
-        # captcha_pool_size() book()s at once; if their pooled tokens went stale (solved
-        # pre-T0, expired by T0) they ALL hit the MF1 inline re-solve simultaneously — an
-        # N-way herd of ~75s 2captcha solves at T0, threatening the booking replicaTimeout
-        # and the provider's rate limit. This semaphore caps that herd (single-book paths —
-        # upgrade, sequential fallback — are single-threaded, so it never blocks them). The
-        # pre-T0 prepare_book prefetch is UNbounded by this (it calls the provider directly,
-        # not _solve_captcha_inline) — that concurrency is off the critical path and intended.
-        # Default 6: a balance — high enough not to over-serialise a real all-stale burst
-        # (prepare_book fires up to blind_post_max_count concurrent solves pre-T0 — default 3
-        # since the 2026-07-18 revert of burst-of-one, so an all-stale burst re-solves in ONE
-        # wave under this bound, well within replicaTimeout=1200s even for an operator
-        # who raises the cap severalfold) yet still a guardrail against a pathological runaway.
-        # (The bound lives in the pool: SharedCaptchaPool.solve_inline.)
         # Transient-failure retry budget for IDEMPOTENT calls only (warm-up GET,
         # login POST, search GET, cancel DELETE). Reproduces+fixes the prod failure
         # where a single httpx.ReadTimeout against ForeUP (server up, adjacent polls

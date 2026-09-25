@@ -90,7 +90,10 @@ def _clock() -> FakeClock:
 
 
 def _pool(provider: object, **kw: object) -> SharedCaptchaPool:
-    return SharedCaptchaPool(provider=provider, clock=_clock(), **kw)  # type: ignore[arg-type]
+    """An ARMED pool (coordinated mode refuses to fill unarmed; see the arm tests)."""
+    pool = SharedCaptchaPool(provider=provider, clock=_clock(), **kw)  # type: ignore[arg-type]
+    pool.arm(t0=T0)
+    return pool
 
 
 async def _spin(n: int = 50) -> None:
@@ -493,3 +496,98 @@ async def test_mangrove_bay_accepts_injected_pool() -> None:
         )
         await mb.prepare_book(None, _request(), count=3)
         assert mb.captcha_pool_size() == 2
+
+
+# --- review round 1 (PR #221) -----------------------------------------------------------
+
+
+class _Boom(BaseException):
+    """A BaseException that is NOT an Exception (the fill's per-solve catch misses it)."""
+
+
+def _deadline() -> datetime:
+    return T0 - timedelta(seconds=10)
+
+
+async def test_pool_aclose_while_prefetch_waits_releases_it() -> None:
+    """S1a: aclose() cancelling the fill must release a prefetch already waiting on it,
+    well before the deadline (the orchestrator's prefetch has no timeout of its own)."""
+    provider = _GatedProvider(0)  # every solve parks forever
+    clock = _clock()
+    pool = SharedCaptchaPool(provider=provider, clock=clock)  # type: ignore[arg-type]
+    pool.register(A, 1)
+    pool.arm(t0=T0)
+    waiter = asyncio.create_task(pool.prefetch(A, 1))
+    await _spin(5)
+    await pool.aclose()
+    await asyncio.wait_for(waiter, timeout=1.0)
+    assert clock.now_utc() < _deadline()
+
+
+async def test_pool_prefetch_after_aclose_returns() -> None:
+    """S1b: a prefetch arriving after aclose() returns at once (no fill will ever finish)."""
+    provider = _GatedProvider(0)
+    clock = _clock()
+    pool = SharedCaptchaPool(provider=provider, clock=clock)  # type: ignore[arg-type]
+    pool.register(A, 1)
+    pool.register(B, 1)
+    pool.arm(t0=T0)
+    first = asyncio.create_task(pool.prefetch(A, 1))
+    await _spin(5)
+    await pool.aclose()
+    await asyncio.wait_for(first, timeout=1.0)
+    await asyncio.wait_for(pool.prefetch(B, 1), timeout=1.0)
+    assert clock.now_utc() < _deadline()
+
+
+async def test_pool_non_exception_baseexception_from_provider_does_not_hang(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """S1c: a provider raising a non-Exception BaseException kills the fill task; prefetch
+    must still return promptly and the task's exception must be retrieved + logged."""
+
+    async def boom() -> str:
+        await asyncio.sleep(0)
+        raise _Boom("provider exploded")
+
+    clock = _clock()
+    pool = SharedCaptchaPool(provider=boom, clock=clock)
+    pool.register(A, 1)
+    pool.arm(t0=T0)
+    await asyncio.wait_for(pool.prefetch(A, 1), timeout=1.0)
+    await _spin(5)
+    assert clock.now_utc() < _deadline()
+    assert "fill task died" in caplog.text
+
+
+async def test_pool_coordinated_prefetch_requires_arm() -> None:
+    """S2: an unarmed coordinated fill has no T0-10 s deadline, so a short wave 1 could hold
+    prefetch until wave 2 lands (after T0) -- refuse loudly instead of starting it."""
+    provider = _SeqProvider()
+    pool = SharedCaptchaPool(provider=provider, clock=_clock())
+    pool.register(A, 1)
+    with pytest.raises(RuntimeError, match="arm"):
+        await pool.prefetch(A, 1)
+    assert provider.calls == 0
+
+
+async def test_pool_unregistered_key_on_coordinated_pool_raises() -> None:
+    """S3: once demand is registered, an UNregistered key must not silently solve ``count``
+    tokens outside the C bound (the over-cap footgun of §5.3)."""
+    provider = _SeqProvider()
+    pool = _pool(provider)
+    pool.register(A, 1)
+    with pytest.raises(RuntimeError, match="row-z"):
+        await pool.prefetch(Z, 3)
+    assert provider.calls == 0
+
+
+async def test_adapter_rejects_pool_of_another_course() -> None:
+    """Nit: the pool's provider is bound to one course's page URL + site key; an adapter of
+    another course must not share it."""
+    pool = SharedCaptchaPool(
+        provider=_SeqProvider(), clock=_clock(), course_id=CourseId("foreup:other")
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        with pytest.raises(ValueError, match="foreup:other"):
+            _adapter(client, _SeqProvider(), pool, A)

@@ -42,6 +42,7 @@ from typing import NewType
 
 from ...core.adapter import CaptchaError
 from ...core.clock import Clock
+from ...core.models import CourseId
 
 _log = logging.getLogger(__name__)
 
@@ -53,6 +54,16 @@ LeaseKey = NewType("LeaseKey", str)
 # through the injected Clock (not asyncio.wait_for) so FakeClock tests are deterministic. This
 # runs pre-T0 only, so a <= 0.25 s return latency is irrelevant.
 _DEADLINE_POLL_S = 0.25
+
+
+def _log_fill_death(task: asyncio.Task[None]) -> None:
+    """Retrieve (and log) an exception that killed the fill task, so it is never lost as
+    "Task exception was never retrieved". Cancellation (aclose) is expected, not logged."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _log.error("captcha pool: fill task died: %r", exc)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,12 +95,19 @@ class SharedCaptchaPool:
         max_concurrent_solves: int = 12,
         max_concurrent_inline_solves: int = 6,
         fill_deadline_before_t0_s: float = 10.0,
+        course_id: CourseId | None = None,
     ) -> None:
         """``max_concurrent_solves`` is C in §5.3: burst capacity per drop, so N_blind =
         floor(C / burst). The default 12 is the concurrency that ran live 2026-06-22..29.
-        ``max_concurrent_inline_solves`` is today's ``_captcha_solve_sem`` bound (default 6),
+        ``max_concurrent_inline_solves`` is the former per-adapter inline bound (default 6),
         now per course. ``fill_deadline_before_t0_s`` is the T0-10 s cutoff after which
-        ``prefetch`` returns even if wave 1 is incomplete."""
+        ``prefetch`` returns even if wave 1 is incomplete.
+
+        ``provider`` is bound to ONE course's booking-page URL + site key, and every solve
+        (fill and inline) uses it — an injected adapter's own ``captcha_provider`` is only an
+        on/off switch. ``course_id`` (when set) lets ``ForeUpAdapter`` refuse a pool built for
+        another course."""
+        self.course_id = course_id
         self._provider = provider
         self._clock = clock
         self._max_concurrent_solves = max(1, max_concurrent_solves)
@@ -130,7 +148,7 @@ class SharedCaptchaPool:
 
     def arm(self, *, t0: datetime) -> None:
         """Record T0 so the fill can honour ``fill_deadline_before_t0_s``. Coordinated mode only.
-        Without it a coordinated ``prefetch`` waits for wave 1 with no deadline."""
+        REQUIRED in coordinated mode: an unarmed coordinated ``prefetch`` raises."""
         self._t0 = t0
 
     def _refuse_after_fill(self, what: str) -> None:
@@ -153,8 +171,20 @@ class SharedCaptchaPool:
         wave-1 completion or the deadline. ``count`` is ignored because demand was registered.
         """
         if key not in self._demand:
+            if self._demand:
+                # A coordinated pool's unregistered key would solve ``count`` tokens OUTSIDE
+                # the C bound (the §5.3 over-cap footgun). Refuse loudly: the orchestrator's
+                # prefetch logs the error and book() falls back to semaphore-bounded inline.
+                raise RuntimeError(
+                    f"lease key {key!r} is not registered with this coordinated pool; "
+                    "register every account (k=0 for over-cap) before any prefetch"
+                )
             await self._prefetch_uncoordinated(key, count)
             return
+        if self._t0 is None:
+            # Unarmed there is no T0-10 s deadline: a short wave 1 would hold prefetch until
+            # wave-2 solves land (possibly after T0), pushing the burst past the drop.
+            raise RuntimeError("coordinated SharedCaptchaPool must be arm()ed before prefetch")
         if self._fill_task is None:
             self._start_fill()
         await self._await_wave1()
@@ -207,6 +237,7 @@ class SharedCaptchaPool:
         if not self._grant_order:
             self._wave1_done.set()
         self._fill_task = asyncio.create_task(self._fill(demanded))
+        self._fill_task.add_done_callback(_log_fill_death)
 
     async def _fill(self, demanded: int) -> None:
         # The C bound: at most max_concurrent_solves provider calls in flight. Wave 1 (lease
@@ -225,8 +256,13 @@ class SharedCaptchaPool:
                     self._grant(token)
             self._maybe_wave1_done(demanded)
 
-        await asyncio.gather(*(one() for _ in range(demanded)))
-        self._wave1_done.set()
+        try:
+            await asyncio.gather(*(one() for _ in range(demanded)))
+        finally:
+            # However the fill ends (normally, cancelled by aclose(), or killed by a
+            # non-Exception BaseException from the provider), every waiting and future
+            # prefetch must be released: the orchestrator's prefetch has no timeout.
+            self._wave1_done.set()
 
     def _grant(self, token: str) -> None:
         """Hand one arrival to the next lease in the round-robin sequence (skipping released
@@ -247,9 +283,7 @@ class SharedCaptchaPool:
             self._wave1_done.set()
 
     async def _await_wave1(self) -> None:
-        if self._t0 is None:
-            await self._wave1_done.wait()
-            return
+        assert self._t0 is not None  # prefetch refuses an unarmed coordinated fill
         deadline = self._t0 - self._fill_deadline_before_t0
         while not self._wave1_done.is_set():
             remaining = (deadline - self._clock.now_utc()).total_seconds()
