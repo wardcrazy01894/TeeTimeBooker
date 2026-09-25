@@ -17,9 +17,12 @@ filter (``core.redaction.register_secret_literals``, engine hook E7 — lands in
 use; until E7 exists, callers must keep decrypted values out of every log call.
 
 Leak discipline (pinned by ``tests/test_tenant_crypto.py``): no key byte, ciphertext, or plaintext
-ever reaches a ``repr``, an exception message, or an exception CAUSE chain — every low-level error
-is re-raised ``from None`` so a rendered traceback cannot carry it either. Only key IDs (operator
-labels, never secret) are echoed.
+ever reaches a ``repr``, an exception message, or an exception chain (neither ``__cause__`` nor
+``__context__``) — every low-level error is converted to a return value inside a helper and the
+domain error is raised OUTSIDE the ``except`` block (``raise … from None`` is NOT enough: it
+leaves ``__context__`` pointing at the inner exception, whose ``.object``/``.doc`` carries the
+secret). Only key IDs from a blob (short operator labels, never key-shaped) are echoed, and
+never from a keyring load error.
 """
 
 from __future__ import annotations
@@ -118,18 +121,63 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
     return out
 
 
+# --- leak-free wrappers ---------------------------------------------------------------------
+# Every stdlib/library error below is converted to a RETURN VALUE inside the helper and the
+# domain error is raised by the CALLER, outside any `except` block. That is the only way to
+# get an exception with NO chain: `raise X from None` merely sets __suppress_context__ while
+# __context__ still points at the inner exception — whose `.object` is the plaintext bytes
+# (UnicodeDecodeError) / the password (UnicodeEncodeError), or whose `.doc` is the whole
+# keyring JSON (JSONDecodeError). Pinned by `test_every_wrapped_error_has_no_exception_chain`.
+
+
+def _parse_json(text: str) -> tuple[object, str | None]:
+    """``(parsed, None)`` or ``(None, problem)``. Never raises."""
+    try:
+        return json.loads(text, object_pairs_hook=_reject_duplicate_keys), None
+    except _DuplicateJsonKeyError:
+        return None, "JSON has a duplicate key"
+    except ValueError:
+        return None, "is not valid JSON"
+
+
+def _b64decode_or_none(text: str) -> bytes | None:
+    try:
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _utf8_encode_or_none(text: str) -> bytes | None:
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+
+
+def _utf8_decode_or_none(raw: bytes) -> str | None:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _aesgcm_decrypt_or_none(
+    key: bytes, nonce: bytes, ciphertext: bytes, aad: bytes
+) -> bytes | None:
+    try:
+        return AESGCM(key).decrypt(nonce, ciphertext, aad)
+    except InvalidTag:
+        return None
+
+
 def load_keyring(env_value: str | None) -> Keyring:
     """Parse the keyring JSON. FAIL-CLOSED (unlike skip dates): missing/malformed/active-kid-
     absent raises, because a job that can't decrypt must exit before T0 (§4.5)."""
     if env_value is None or not env_value.strip():
         raise KeyringError(f"{KEYRING_ENV_VAR} is unset or empty")
-    try:
-        parsed: object = json.loads(env_value, object_pairs_hook=_reject_duplicate_keys)
-    except _DuplicateJsonKeyError:
-        raise KeyringError(f"{KEYRING_ENV_VAR} JSON has a duplicate key") from None
-    except ValueError:
-        # `from None`: the JSONDecodeError carries no content, but the discipline is uniform.
-        raise KeyringError(f"{KEYRING_ENV_VAR} is not valid JSON") from None
+    parsed, problem = _parse_json(env_value)
+    if problem is not None:
+        raise KeyringError(f"{KEYRING_ENV_VAR} {problem}")
     if not isinstance(parsed, dict):
         raise KeyringError(f"{KEYRING_ENV_VAR} must be a JSON object")
     active = parsed.get("active")
@@ -149,12 +197,10 @@ def load_keyring(env_value: str | None) -> Keyring:
             raise KeyringError(
                 f"{KEYRING_ENV_VAR} `keys` entry #{position} must be a base64 string"
             )
-        try:
-            keys[kid] = base64.b64decode(raw, validate=True)
-        except (binascii.Error, ValueError):
-            raise KeyringError(
-                f"{KEYRING_ENV_VAR} `keys` entry #{position} is not valid base64"
-            ) from None
+        key = _b64decode_or_none(raw)
+        if key is None:
+            raise KeyringError(f"{KEYRING_ENV_VAR} `keys` entry #{position} is not valid base64")
+        keys[kid] = key
     return Keyring(active_kid=active, keys=keys)
 
 
@@ -177,8 +223,11 @@ def _b64(raw: bytes) -> str:
 def encrypt_password(keyring: Keyring, plaintext: str, *, aad: bytes) -> str:
     """Encrypt under ``keyring.active_kid`` with a fresh random 96-bit nonce."""
     kid = keyring.active_kid
+    encoded = _utf8_encode_or_none(plaintext)
+    if encoded is None:
+        raise CredentialEncryptError("credential plaintext is not encodable as UTF-8")
     nonce = os.urandom(_NONCE_BYTES)
-    ciphertext = AESGCM(keyring.keys[kid]).encrypt(nonce, plaintext.encode("utf-8"), aad)
+    ciphertext = AESGCM(keyring.keys[kid]).encrypt(nonce, encoded, aad)
     return _SEP.join((_BLOB_VERSION, kid, _b64(nonce), _b64(ciphertext)))
 
 
@@ -196,14 +245,11 @@ def _parse_blob(blob: str) -> tuple[str, bytes, bytes]:
             f"unsupported credential blob version (expected {_BLOB_VERSION!r})"
         )
     if not _is_valid_kid(kid):
-        raise CredentialDecryptError("credential blob has an empty key id")
-    try:
-        nonce = base64.b64decode(nonce_b64, validate=True)
-        ciphertext = base64.b64decode(ct_b64, validate=True)
-    except (binascii.Error, ValueError):
-        raise CredentialDecryptError(
-            "credential blob nonce/ciphertext is not valid base64"
-        ) from None
+        raise CredentialDecryptError(f"credential blob key id is invalid (must be {_KID_RULE})")
+    nonce = _b64decode_or_none(nonce_b64)
+    ciphertext = _b64decode_or_none(ct_b64)
+    if nonce is None or ciphertext is None:
+        raise CredentialDecryptError("credential blob nonce/ciphertext is not valid base64")
     if len(nonce) != _NONCE_BYTES:
         raise CredentialDecryptError(f"credential blob nonce must be {_NONCE_BYTES} bytes")
     return kid, nonce, ciphertext
@@ -220,18 +266,17 @@ def decrypt_password(keyring: Keyring, blob: str, *, aad: bytes) -> str:
             # listed — nothing more is needed to act on this.
             f"unknown key id {kid!r}: not in the keyring (active {keyring.active_kid!r})"
         )
-    try:
-        plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
-    except InvalidTag:
+    plaintext = _aesgcm_decrypt_or_none(key, nonce, ciphertext, aad)
+    if plaintext is None:
         raise CredentialDecryptError(
             f"authentication failed under key id {kid!r}: wrong key, AAD mismatch (blob bound "
             "to a different account), or tampered ciphertext"
-        ) from None
-    try:
-        return plaintext.decode("utf-8")
-    except UnicodeDecodeError:
-        # A UnicodeDecodeError message embeds the offending BYTES — never let it propagate.
-        raise CredentialDecryptError("decrypted credential is not valid UTF-8") from None
+        )
+    text = _utf8_decode_or_none(plaintext)
+    if text is None:
+        # Unreachable via `encrypt_password` (always UTF-8); a foreign/corrupt blob only.
+        raise CredentialDecryptError("decrypted credential is not valid UTF-8")
+    return text
 
 
 def needs_rekey(keyring: Keyring, blob: str) -> bool:
