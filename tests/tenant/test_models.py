@@ -277,3 +277,29 @@ def test_booked_to_pending_requires_needs_reconcile() -> None:
     check_transition(_row(B), P, actor=Actor.WATCHER, now=NOW, needs_reconcile=True)
     with pytest.raises(TransitionRefusedError, match="needs_reconcile"):
         check_transition(_row(B), P, actor=Actor.WATCHER, now=NOW)
+
+
+def test_superseded_rule_row_withdrawn_by_system_reason() -> None:
+    """Round-4 D1: rule deactivate/delete/weekday-change withdraws superseded rows too."""
+    for actor, reason in (
+        (Actor.MATERIALIZER, "rule_deactivated"),
+        (Actor.MATERIALIZER, "rule_weekday_changed"),
+        (Actor.WEB, "rule_deleted"),
+    ):
+        check_transition(_row(SUP), W, actor=actor, now=NOW, reason=reason)
+    with pytest.raises(TransitionRefusedError, match="reason"):
+        check_transition(_row(SUP), W, actor=Actor.WEB, now=NOW, reason=USER_WITHDRAW_REASON)
+    with pytest.raises(TransitionRefusedError):
+        check_transition(_row(SUP), W, actor=Actor.WATCHER, now=NOW, reason="rule_deleted")
+
+
+def test_unsupersede_restores_pre_supersede_status_only() -> None:
+    """Round-4 D2: a superseded row returns to the status it had when superseded."""
+    was_skipped = replace(_row(SUP), superseded_from=S)
+    check_transition(was_skipped, S, actor=Actor.WEB, now=NOW)
+    with pytest.raises(TransitionRefusedError, match="superseded from"):
+        check_transition(was_skipped, P, actor=Actor.WEB, now=NOW)
+    was_pending = replace(_row(SUP), superseded_from=P)
+    check_transition(was_pending, P, actor=Actor.WEB, now=NOW)
+    with pytest.raises(TransitionRefusedError, match="superseded from"):
+        check_transition(was_pending, S, actor=Actor.WEB, now=NOW)

@@ -232,12 +232,15 @@ class InMemoryTenantStore:
 
     def _restorable_superseded(self, explicit: RequestRow, now: datetime) -> RequestRow | None:
         """The rule row a withdrawn explicit row superseded, iff its rule is still active and the
-        date is not frozen (§3.4 superseded -> pending)."""
+        date is not frozen (§3.4 superseded -> pre-supersede status, round-4 D2). The restore
+        writes that row too, so it must be unleased like every web write (M4)."""
         for row in self._history(explicit.course_account_id, explicit.target_date):
             if row.source is not RowSource.RULE or row.status is not RowStatus.SUPERSEDED:
                 continue
             rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
             if rule is not None and rule.active and not row_is_frozen(row, now=now):
+                if lease_held(row, now=now):
+                    raise RowLeaseError(f"booking in progress for {row.target_date}")
                 return row
         return None
 
@@ -666,7 +669,12 @@ class InMemoryTenantStore:
             check_transition(holder, RowStatus.SUPERSEDED, actor=Actor.WEB, now=now)
             if lease_held(holder, now=now):
                 raise RowLeaseError(f"booking in progress for {target_date}")
-            superseded = replace(holder, status=RowStatus.SUPERSEDED, version=holder.version + 1)
+            superseded = replace(
+                holder,
+                status=RowStatus.SUPERSEDED,
+                superseded_from=holder.status,
+                version=holder.version + 1,
+            )
             writes.insert(0, (holder, superseded))
         self._commit(writes)
         return row
@@ -696,19 +704,26 @@ class InMemoryTenantStore:
         check_transition(row, to, actor=actor, now=now, reason=reason)
         if lease_held(row, now=now):
             raise RowLeaseError(f"booking in progress for {row.target_date}")
-        if (row.status, to) == (RowStatus.SUPERSEDED, RowStatus.PENDING):
+        if row.status is RowStatus.SUPERSEDED and to is not RowStatus.WITHDRAWN:
             rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
             if rule is None or not rule.active:
                 raise TransitionRefusedError("the superseded row's rule is not active")
-        new = replace(row, status=to, status_reason=reason, version=row.version + 1)
+        new = replace(
+            row,
+            status=to,
+            status_reason=reason,
+            superseded_from=None,
+            version=row.version + 1,
+        )
         writes: list[_Write] = [(row, new)]
         if row.source is RowSource.EXPLICIT and to is RowStatus.WITHDRAWN:
             restore = self._restorable_superseded(row, now)
             if restore is not None:
                 restored = replace(
                     restore,
-                    status=RowStatus.PENDING,
+                    status=restore.superseded_from or RowStatus.PENDING,
                     status_reason=None,
+                    superseded_from=None,
                     version=restore.version + 1,
                 )
                 writes.append((restore, restored))

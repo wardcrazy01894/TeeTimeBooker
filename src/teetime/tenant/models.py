@@ -217,6 +217,10 @@ class RequestRow:
     # (an upgrade may cancel first); cleared by the outcome write. If still set on a later run,
     # a missing reservation is bot-caused (-> PENDING + needs_reconcile), never external.
     upgrade_started_at: datetime | None = None
+    # Round-4 D2 (MU-5 review): the status (PENDING or SKIPPED) a rule row had when an explicit
+    # row superseded it; set only while SUPERSEDED. Un-superseding restores exactly this, so a
+    # user's skip is honoured when their one-off is withdrawn.
+    superseded_from: RowStatus | None = None
     lease_owner: str | None = None
     lease_expires_at: datetime | None = None
     last_outcome: str | None = None
@@ -345,7 +349,10 @@ _TRANSITION_OWNERS: dict[tuple[RowStatus, RowStatus], frozenset[Actor]] = {
     (_P, _SUP): frozenset({Actor.WEB}),
     (_S, _SUP): frozenset({Actor.WEB}),
     (_SUP, _P): frozenset({Actor.WEB}),
+    (_SUP, _S): frozenset({Actor.WEB}),  # round-4 D2: restore a superseded-while-skipped row
     (_P, _W): frozenset({Actor.WEB, Actor.MATERIALIZER}),
+    # Round-4 D1: rule deactivate/delete/weekday change withdraws superseded rows too.
+    (_SUP, _W): frozenset({Actor.WEB, Actor.MATERIALIZER}),
     (_W, _P): frozenset({Actor.MATERIALIZER}),
     (_B, _B): frozenset({Actor.WATCHER}),  # upgrade, via UpgradeOrchestrator under the lease
     (_B, RowStatus.CANCELLED): frozenset({Actor.WEB, Actor.WATCHER}),
@@ -413,6 +420,7 @@ def _guard_cancel(row: RequestRow, actor: Actor, reason: str | None) -> None:
 
 _GUARDS = {
     (_P, _W): _guard_withdraw,
+    (_SUP, _W): _guard_withdraw,
     (_W, _P): _guard_reactivate,
     (_P, _SUP): _guard_supersede,
     (_S, _SUP): _guard_supersede,
@@ -453,6 +461,10 @@ def check_transition(
         raise TransitionRefusedError(f"{row.target_date} is frozen (cutoff or date passed)")
     if to is RowStatus.LOST and not frozen:
         raise TransitionRefusedError(f"{row.target_date} is not frozen yet; cannot mark lost")
+    if row.status is _SUP and to in (_P, _S):
+        prior = row.superseded_from or _P  # round-4 D2: back to the pre-supersede status
+        if to is not prior:
+            raise TransitionRefusedError(f"row was superseded from {prior}; it returns to {prior}")
     if edge == (_B, _P) and not needs_reconcile:
         raise TransitionRefusedError("booked -> pending must set needs_reconcile (M2)")
     guard = _GUARDS.get(edge)

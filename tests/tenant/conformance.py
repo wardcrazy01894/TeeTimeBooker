@@ -1838,3 +1838,121 @@ class TenantStoreConformance:
         after = await _get(s, booked)
         assert after.status is RowStatus.BOOKED
         assert after.booked_raw_id == "R1"
+
+    async def test_rule_deactivate_withdraws_superseded_rows(self, harness: StoreHarness) -> None:
+        """Round-4 D1: superseded rule rows are not immune to rule edits."""
+        s = harness.store
+        t = await _tenant(s)
+        _, rule_row = await _rule_row(s, t)
+        explicit = await _explicit(s, t)
+        with pytest.raises(TransitionRefusedError, match="reason"):
+            await s.transition_row(
+                rule_row.id,
+                user_id=None,
+                to=RowStatus.WITHDRAWN,
+                actor=Actor.MATERIALIZER,
+                reason=USER_WITHDRAW_REASON,
+                now=NOW,
+            )
+        out = await s.transition_row(
+            rule_row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        assert (out.status, out.status_reason) == (RowStatus.WITHDRAWN, "rule_deactivated")
+        assert out.superseded_from is None
+        assert (await _get(s, explicit)).status is RowStatus.PENDING
+        assert await harness.slot_pointer(t.account.id, TARGET) == explicit.id
+
+    async def test_deactivate_withdraw_reactivate_rematerializes_via_system_withdrawn(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-4 D1 scenario: deactivate -> one-off withdrawn -> reactivate. The rule row is
+        withdrawn(system), so the normal reactivate path (slot free) brings it back."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, rule_row = await _rule_row(s, t)
+        explicit = await _explicit(s, t)
+        rule = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        await s.transition_row(
+            rule_row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        await s.transition_row(
+            explicit.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        assert await harness.slot_pointer(t.account.id, TARGET) is None
+        rule = await s.upsert_rule(replace(rule, active=True), user_id=t.user.id)
+        back = await s.reactivate_rule_row(await _get(s, rule_row), rule, now=NOW)
+        assert back.status is RowStatus.PENDING
+        assert await harness.slot_pointer(t.account.id, TARGET) == rule_row.id
+
+    async def test_withdraw_explicit_restores_skipped_rule_row_as_skipped(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-4 D2: withdrawing a one-off honours the user's earlier skip."""
+        s = harness.store
+        t = await _tenant(s)
+        _, rule_row = await _rule_row(s, t)
+        await s.transition_row(
+            rule_row.id,
+            user_id=t.user.id,
+            to=RowStatus.SKIPPED,
+            actor=Actor.WEB,
+            reason=None,
+            now=NOW,
+        )
+        explicit = await _explicit(s, t)
+        assert (await _get(s, rule_row)).superseded_from is RowStatus.SKIPPED
+        await s.transition_row(
+            explicit.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        restored = await _get(s, rule_row)
+        assert restored.status is RowStatus.SKIPPED
+        assert restored.superseded_from is None
+        assert await harness.slot_pointer(t.account.id, TARGET) == rule_row.id
+
+    async def test_supersede_records_pre_supersede_status(self, harness: StoreHarness) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        _, rule_row = await _rule_row(s, t)
+        await _explicit(s, t)
+        assert (await _get(s, rule_row)).superseded_from is RowStatus.PENDING
+
+    async def test_withdraw_explicit_refused_while_superseded_row_leased(
+        self, harness: StoreHarness
+    ) -> None:
+        """The restore writes the superseded row too, so it must be unleased as well (M4)."""
+        s = harness.store
+        t = await _tenant(s)
+        _, rule_row = await _rule_row(s, t)
+        explicit = await _explicit(s, t)
+        await _lease(s, await _get(s, rule_row), owner=WATCHER)
+        with pytest.raises(RowLeaseError):
+            await s.transition_row(
+                explicit.id,
+                user_id=t.user.id,
+                to=RowStatus.WITHDRAWN,
+                actor=Actor.WEB,
+                reason=USER_WITHDRAW_REASON,
+                now=NOW,
+            )
+        assert (await _get(s, explicit)).status is RowStatus.PENDING
+        assert (await _get(s, rule_row)).status is RowStatus.SUPERSEDED
