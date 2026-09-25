@@ -62,6 +62,7 @@ from ...core.adapter import (
     SlotGoneError,
     SlotGoneReason,
 )
+from ...core.clock import RealClock
 from ...core.models import (
     MANAGED_BOOKING_TAG,
     BookingOutcome,
@@ -74,6 +75,10 @@ from ...core.models import (
     TeeTimeSlot,
 )
 from ...core.redaction import redact_text
+from .token_pool import LeaseKey, SharedCaptchaPool
+
+# The single lease key of an adapter's PRIVATE pool (no pool injected).
+_PRIVATE_LEASE_KEY = LeaseKey("private")
 
 _log = logging.getLogger(__name__)
 
@@ -170,6 +175,8 @@ class ForeUpAdapter(CourseAdapter):
         max_retries: int = 2,
         retry_backoff_s: float = 0.5,
         max_concurrent_captcha_solves: int = 6,
+        captcha_pool: SharedCaptchaPool | None = None,
+        captcha_lease_key: LeaseKey | None = None,
     ) -> None:
         self.course_id = course_id
         self._course_pk = course_pk
@@ -199,8 +206,32 @@ class ForeUpAdapter(CourseAdapter):
         # late-firing fallback candidate keeps the freshest token. Empty pool means
         # book() solves inline (single-token / normal path). Single-use: a popped token
         # is never returned to the pool.
-        self._captcha_tokens: collections.deque[str] = collections.deque()
-        # Bounds CONCURRENT inline CAPTCHA solves. The blind-POST burst fires up to
+        #
+        # The tokens live in a SharedCaptchaPool (MULTIUSER_PLAN §5, engine change E1).
+        # Default (no pool injected): a PRIVATE pool, uncoordinated, whose single lease is
+        # _captcha_tokens and whose inline bound is max_concurrent_captcha_solves — today's
+        # semantics exactly. Injected (tenant runner): every adapter of the course shares one
+        # pool; this adapter pops its OWN lease, then the shared reserve, and the POOL's
+        # inline bound applies (per course), so max_concurrent_captcha_solves is ignored.
+        if captcha_pool is None:
+            if captcha_lease_key is not None:
+                raise ValueError("captcha_lease_key requires captcha_pool")
+            captcha_pool = SharedCaptchaPool(
+                # Late-bound so the private pool always calls this adapter's provider.
+                provider=self._call_captcha_provider,
+                clock=RealClock(),  # unused: an uncoordinated pool never reads the clock
+                max_concurrent_inline_solves=max_concurrent_captcha_solves,
+            )
+            captcha_lease_key = _PRIVATE_LEASE_KEY
+        elif captcha_lease_key is None:
+            raise ValueError("captcha_pool requires a captcha_lease_key (one per account)")
+        self._captcha_pool = captcha_pool
+        self._captcha_lease_key = captcha_lease_key
+        # LIVE reference to this adapter's lease deque (the pool clears it in place on
+        # release), kept under its historical name.
+        self._captcha_tokens: collections.deque[str] = captcha_pool.lease_deque(captcha_lease_key)
+        # Inline-solve bound (previously a per-adapter _captcha_solve_sem, now pool-owned).
+        # The blind-POST burst fires up to
         # captcha_pool_size() book()s at once; if their pooled tokens went stale (solved
         # pre-T0, expired by T0) they ALL hit the MF1 inline re-solve simultaneously — an
         # N-way herd of ~75s 2captcha solves at T0, threatening the booking replicaTimeout
@@ -213,7 +244,7 @@ class ForeUpAdapter(CourseAdapter):
         # since the 2026-07-18 revert of burst-of-one, so an all-stale burst re-solves in ONE
         # wave under this bound, well within replicaTimeout=1200s even for an operator
         # who raises the cap severalfold) yet still a guardrail against a pathological runaway.
-        self._captcha_solve_sem = asyncio.Semaphore(max(1, max_concurrent_captcha_solves))
+        # (The bound lives in the pool: SharedCaptchaPool.solve_inline.)
         # Transient-failure retry budget for IDEMPOTENT calls only (warm-up GET,
         # login POST, search GET, cancel DELETE). Reproduces+fixes the prod failure
         # where a single httpx.ReadTimeout against ForeUP (server up, adjacent polls
@@ -631,23 +662,25 @@ class ForeUpAdapter(CourseAdapter):
         Callers must guard `self._captcha_provider is not None` first.
         """
         assert self._captcha_provider is not None
-        # Bound concurrent solves (see _captcha_solve_sem): in the blind-POST burst many
-        # book()s can reach here at once; without this they would fire an N-way herd of
-        # ~75s 2captcha solves at T0.
-        try:
-            async with self._captcha_solve_sem:
-                return await self._captcha_provider()
-        except TimeoutError as exc:
-            raise CaptchaError(f"CAPTCHA solve timed out: {exc}") from exc
+        # Bounded by the pool's inline semaphore: in the blind-POST burst many book()s can
+        # reach here at once; without the bound they would fire an N-way herd of ~75s
+        # 2captcha solves at T0. Private pool: this adapter's bound; shared: per course.
+        return await self._captcha_pool.solve_inline()
+
+    async def _call_captcha_provider(self) -> str:
+        """The private pool's provider: late-bound to ``self._captcha_provider``."""
+        assert self._captcha_provider is not None
+        return await self._captcha_provider()
 
     def captcha_pool_size(self) -> int:
-        """Number of pre-solved CAPTCHA tokens currently in the FIFO pool.
+        """Number of pre-solved CAPTCHA tokens currently in this adapter's LEASE.
 
         BlindPostCapable member (BLIND_POST_PLAN.md §3). The orchestrator sizes the
         blind burst at ``min(len(blind_slots), captcha_pool_size())`` so every
         concurrent ``book()`` pops a pooled token rather than inline-solving at T0.
+        A shared pool's reserve is deliberately excluded (MULTIUSER_PLAN §5.2).
         """
-        return len(self._captcha_tokens)
+        return self._captcha_pool.lease_size(self._captcha_lease_key)
 
     def synthesize_blind_slots(
         self,
@@ -697,33 +730,14 @@ class ForeUpAdapter(CourseAdapter):
           many succeeded (possibly zero).
 
         No CAPTCHA provider configured (dry-run or test) → no-op regardless of count.
+
+        Delegates to ``SharedCaptchaPool.prefetch``: the private (default) pool runs the
+        above verbatim; a shared pool with demand registered for this adapter's lease key
+        joins the one coordinated fill instead and ignores ``count`` (MULTIUSER_PLAN §5.2).
         """
         if self._captcha_provider is None:
             return
-        _log.info("ForeUP: pre-fetching %d CAPTCHA token(s) concurrently...", count)
-        provider = self._captcha_provider
-        results = await asyncio.gather(
-            *(provider() for _ in range(count)),
-            return_exceptions=True,
-        )
-        tokens = [r for r in results if isinstance(r, str)]
-        self._captcha_tokens.extend(tokens)
-        failures = [r for r in results if isinstance(r, BaseException)]
-        if tokens:
-            _log.info(
-                "ForeUP: pre-fetched %d/%d CAPTCHA token(s) — pool size %d.",
-                len(tokens),
-                count,
-                len(self._captcha_tokens),
-            )
-            return
-        # Nothing solved.
-        if count == 1 and failures:
-            exc = failures[0]
-            if isinstance(exc, TimeoutError):
-                raise CaptchaError(f"CAPTCHA pre-fetch timed out: {exc}") from exc
-            raise exc
-        _log.warning("ForeUP: all %d CAPTCHA pre-fetches failed — book() will solve inline.", count)
+        await self._captcha_pool.prefetch(self._captcha_lease_key, count)
 
     async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
         """POST /reservations echoing slot raw fields with overridden player/fee totals."""
@@ -762,13 +776,15 @@ class ForeUpAdapter(CourseAdapter):
         # re-solve below; a freshly inline-solved token does not.
         from_pool = False
         if self._captcha_provider is not None:
-            if self._captcha_tokens:
-                # Pop the OLDEST pooled token (FIFO) — single-use, never returned.
-                body["captchaid"] = self._captcha_tokens.popleft()
+            # Pop the OLDEST pooled token (FIFO) — own lease, then a shared pool's reserve.
+            # Single-use, never returned. Either source counts as pooled for MF1.
+            pooled = self._captcha_pool.pop(self._captcha_lease_key)
+            if pooled is not None:
+                body["captchaid"] = pooled
                 from_pool = True
                 _log.info(
                     "ForeUP: using pooled CAPTCHA token (%d left in pool), posting booking...",
-                    len(self._captcha_tokens),
+                    self.captcha_pool_size(),
                 )
             else:
                 _log.info("ForeUP: requesting CAPTCHA token (this can take 15-30s)...")

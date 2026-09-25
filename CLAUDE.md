@@ -352,8 +352,10 @@ with AES-GCM-encrypted passwords, dated request rows plus standing rules, one te
 release event running the UNMODIFIED `Orchestrator` per account, a shared per-course CAPTCHA pool,
 a tenant watcher, and a FastAPI/HTMX Container App. Stub modules are on disk and raise
 `NotImplementedError` with an MU-milestone reference: `src/teetime/tenant/`, `src/teetime/web/`,
-`src/teetime/core/release_policy.py`, `src/teetime/courses/foreup/token_pool.py`,
-`src/teetime/dev/virtual_clock.py`. **Nothing imports them. Prod behaviour, config, and infra are unchanged**, and the TOML `run`/`watch` path stays the
+`src/teetime/core/release_policy.py`, `src/teetime/dev/virtual_clock.py`. **Nothing imports them.**
+(`src/teetime/courses/foreup/token_pool.py` is IMPLEMENTED (MU-2) and backs `ForeUpAdapter`'s
+private CAPTCHA pool with unchanged default behaviour; the shared/injected mode has no caller yet.)
+**Prod behaviour, config, and infra are unchanged**, and the TOML `run`/`watch` path stays the
 production path until the cutover in MULTIUSER_PLAN §11. Tenant store (decided 2026-09-25): a Cosmos DB
 free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
 "no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path
@@ -855,7 +857,18 @@ in `core/` — never directly. This is the cut line for parallel work.
   N-way herd of ~75 s 2captcha solves at T0, threatening the booking `replicaTimeout` and the
   provider rate limit. Single-book paths (upgrade, sequential fallback) are single-threaded so
   the bound never blocks them; the pre-T0 `prepare_book` prefetch is intentionally UNbounded by
-  it (it calls the provider directly, off the critical path). Adapters with no pre-fetch cost
+  it (it calls the provider directly, off the critical path). **The pool is a
+  `SharedCaptchaPool` (`courses/foreup/token_pool.py`, MULTIUSER_PLAN §5, MU-2).** DEFAULT
+  (no `captcha_pool=` passed — every current caller): the adapter builds a PRIVATE,
+  uncoordinated pool whose single lease IS `_captcha_tokens` and whose inline bound is
+  `max_concurrent_captcha_solves`, so everything above is unchanged (`tests/test_captcha_pool.py`
+  is the unmodified gate). INJECTED (`captcha_pool=` + `captcha_lease_key=`, tenant runner only,
+  not wired yet): adapters of one course share the pool; with demand `register`ed, the first
+  `prepare_book` starts ONE fill (≤ `max_concurrent_solves` in flight, `count` ignored, returns
+  on wave 1 or at T0−10 s once `arm`ed, never raises), leases are granted round-robin in draft
+  order, later arrivals + `release`d leases go to a shared reserve, `book()` pops own lease →
+  reserve → inline (both pooled for MF1), `captcha_pool_size()` counts the lease only, and the
+  inline bound is the POOL's (per course; the adapter's own bound is ignored). Adapters with no pre-fetch cost
   (FakeAdapter, TeeItUpAdapter, future
   Chronogolf) implement it as a no-op (they accept `count` for parity and ignore it). Its
   `slot` arg is `TeeTimeSlot | None` (the CAPTCHA is page-level, slot-independent). **Two
