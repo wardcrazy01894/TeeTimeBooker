@@ -261,6 +261,22 @@ class TenantStore(Protocol):
 
     async def rules_needing_materialization(self, *, through: date) -> list[StandingRule]: ...
 
+    async def get_rule_unscoped(self, rule_id: RuleId) -> StandingRule | None:
+        """SYSTEM read (the materializer tick, MU-6): the STORED rule by id, active or not, with
+        NO ``user_id`` scoping. The tick's sweep names each straggler's withdraw reason from it
+        (missing -> ``rule_deleted``, inactive -> ``rule_deactivated``, else
+        ``rule_weekday_changed``, §7.7). Never called from a web request: the web reads rules
+        user-scoped (IDOR, §9.1). Cosmos (MU-8b): a point read of the rule doc."""
+        ...
+
+    async def get_account_unscoped(self, account_id: CourseAccountId) -> CourseAccount | None:
+        """SYSTEM read (the materializer tick, MU-6): the account by id with NO ``user_id``
+        scoping, so a due rule (which carries only ``course_account_id``) can be mapped to its
+        course and so to its ``ReleasePolicy`` (horizon + course-local today). Never called
+        from a web request, which uses the user-scoped ``get_account`` (IDOR, §9.1). Cosmos
+        (MU-8b): a point read of the partition's ``account`` doc."""
+        ...
+
     async def rows_for_account_date(
         self, account_id: CourseAccountId, target_date: date
     ) -> list[RequestRow]:
