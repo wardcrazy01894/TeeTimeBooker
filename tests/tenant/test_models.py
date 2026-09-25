@@ -203,7 +203,6 @@ def test_create_refused_in_non_initial_status() -> None:
         (_row(B), B, Actor.WATCHER, None, NOW),
         (_row(B), C, Actor.WEB, "user", NOW),
         (_row(B), C, Actor.WATCHER, "external", NOW),
-        (_row(B), P, Actor.WATCHER, None, NOW),
         (_row(P), L, Actor.WATCHER, None, FROZEN_NOW),
     ],
 )
@@ -267,3 +266,14 @@ def test_check_transition_refused(
 ) -> None:
     with pytest.raises(TransitionRefusedError, match=match):
         check_transition(row, to, actor=actor, now=now, reason=reason)
+
+
+# --- review round 1 (MU-5) --------------------------------------------------------------
+
+
+def test_booked_to_pending_requires_needs_reconcile() -> None:
+    """M2 edge: an upgrade cancelled the old slot and the rebook failed. Without the flag the
+    §7.6 in-window adoption never applies and a landed rebook is adopted as unowned."""
+    check_transition(_row(B), P, actor=Actor.WATCHER, now=NOW, needs_reconcile=True)
+    with pytest.raises(TransitionRefusedError, match="needs_reconcile"):
+        check_transition(_row(B), P, actor=Actor.WATCHER, now=NOW)

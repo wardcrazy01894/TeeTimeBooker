@@ -1769,3 +1769,72 @@ class TenantStoreConformance:
         await s.append_audit(
             user_id=t.user.id, action="row.skip", row_id=None, detail={"k": "v"}, at=NOW
         )
+
+    # --- review round 1 (MU-5) ------------------------------------------------------------
+
+    async def test_transition_row_refuses_reactivation(self, harness: StoreHarness) -> None:
+        """withdrawn(system) -> pending is written ONLY by ``reactivate_rule_row`` (which checks
+        user-terminal history, rule active and refreshes the window). Probe: rule row withdrawn,
+        then a one-off booked + cancelled by the user (user-terminal) — the date must stay shut."""
+        s = harness.store
+        t = await _tenant(s)
+        _, row = await _rule_row(s, t)
+        await s.transition_row(
+            row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        one_off = await _book(s, await _explicit(s, t))
+        await _lease(s, one_off, owner=WEB)
+        await s.record_outcomes(
+            [
+                _outcome(
+                    one_off,
+                    actor=Actor.WEB,
+                    to_status=RowStatus.CANCELLED,
+                    status_reason="user",
+                    last_outcome="cancelled",
+                    release_lease_owner=WEB,
+                )
+            ]
+        )
+        with pytest.raises(TransitionRefusedError, match="reactivate_rule_row"):
+            await s.transition_row(
+                row.id,
+                user_id=None,
+                to=RowStatus.PENDING,
+                actor=Actor.MATERIALIZER,
+                reason=None,
+                now=NOW,
+            )
+        assert (await _get(s, row)).status is RowStatus.WITHDRAWN
+        assert await harness.slot_pointer(t.account.id, TARGET) is None
+
+    async def test_booked_to_pending_without_needs_reconcile_refused(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        booked = await _book(s, await _explicit(s, t), raw_id="R1")
+        await _lease(s, booked, owner=WATCHER)
+        with pytest.raises(ExceptionGroup) as eg:
+            await s.record_outcomes(
+                [
+                    _outcome(
+                        booked,
+                        actor=Actor.WATCHER,
+                        to_status=RowStatus.PENDING,
+                        last_outcome="upgrade_rebook_failed",
+                        cancelled_upgrade_raw_id="R1",
+                        needs_reconcile=False,
+                        release_lease_owner=WATCHER,
+                    )
+                ]
+            )
+        assert eg.group_contains(TransitionRefusedError)
+        after = await _get(s, booked)
+        assert after.status is RowStatus.BOOKED
+        assert after.booked_raw_id == "R1"

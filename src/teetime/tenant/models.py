@@ -427,11 +427,15 @@ def check_transition(
     actor: Actor,
     now: datetime,
     reason: str | None = None,
+    needs_reconcile: bool = False,
 ) -> None:
     """Raise ``TransitionRefusedError`` unless the §3.4 table allows ``row.status -> to`` for
     ``actor`` at ``now`` (e.g. booked -> skipped is always refused; unskip / un-supersede /
     reactivate require not frozen; pending -> lost requires frozen). ``reason`` is the new
     ``status_reason`` (withdraw and cancel validate it against their vocabularies).
+    ``needs_reconcile`` is the value the write sets: booked -> pending (the M2 upgrade
+    cancel-ok / rebook-failed edge) is refused unless it is True, because without the flag the
+    §7.6 in-window adoption never applies and a landed rebook would be adopted as unowned.
 
     Pure. Lease guards ("row not leased" for web/materializer writes, "holds the lease" for the
     runner/watcher) need the writer's identity, so the STORE enforces them in the same atomic
@@ -449,6 +453,8 @@ def check_transition(
         raise TransitionRefusedError(f"{row.target_date} is frozen (cutoff or date passed)")
     if to is RowStatus.LOST and not frozen:
         raise TransitionRefusedError(f"{row.target_date} is not frozen yet; cannot mark lost")
+    if edge == (_B, _P) and not needs_reconcile:
+        raise TransitionRefusedError("booked -> pending must set needs_reconcile (M2)")
     guard = _GUARDS.get(edge)
     if guard is not None:
         guard(row, actor, reason)

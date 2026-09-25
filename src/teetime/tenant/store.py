@@ -317,8 +317,10 @@ class TenantStore(Protocol):
         """The UNLEASED guarded transition for the WEB (skip, unskip, withdraw, un-supersede) and
         the MATERIALIZER (system withdraw). ``user_id`` scopes web calls (required for WEB). Refuses
         with ``RowLeaseError`` while the row is leased (M4) and ``TransitionRefusedError`` per
-        §3.4. Leased-path actors (runner, watcher) and the supersede edge (only ever written by
-        ``create_explicit_row``, in the same batch as the explicit row) are refused here.
+        §3.4. Refused here: leased-path actors (runner, watcher), the supersede edge (only ever
+        written by ``create_explicit_row``, in the same batch as the explicit row) and
+        withdrawn -> pending (only ever written by ``reactivate_rule_row``, which re-checks the
+        user-terminal history and refreshes the row from the rule).
         Withdrawing an explicit row restores the rule row it superseded to PENDING in the same
         batch when that rule is still active and the date is not frozen (§3.4)."""
         ...

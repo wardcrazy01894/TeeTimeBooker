@@ -313,7 +313,14 @@ class InMemoryTenantStore:
     def _outcome_row(self, row: RequestRow, o: RowOutcome) -> RequestRow:
         holder = row.lease_owner is not None and row.lease_owner == o.release_lease_owner
         if o.to_status is not None:
-            check_transition(row, o.to_status, actor=o.actor, now=o.at, reason=o.status_reason)
+            check_transition(
+                row,
+                o.to_status,
+                actor=o.actor,
+                now=o.at,
+                reason=o.status_reason,
+                needs_reconcile=o.needs_reconcile,
+            )
             if not holder:
                 raise RowLeaseError(f"row {row.id}: {o.release_lease_owner!r} does not hold it")
         elif lease_held(row, now=o.at) and not holder:
@@ -682,6 +689,10 @@ class InMemoryTenantStore:
             raise TransitionRefusedError(f"{actor} writes through record_outcomes (leased path)")
         if to is RowStatus.SUPERSEDED:
             raise TransitionRefusedError("supersede is written only by create_explicit_row")
+        if (row.status, to) == (RowStatus.WITHDRAWN, RowStatus.PENDING):
+            # It must re-check the (account, date) history for a user-terminal row, the rule
+            # being active, and refresh window/party from the rule (§3.4, operator decision c).
+            raise TransitionRefusedError("reactivation is written only by reactivate_rule_row")
         check_transition(row, to, actor=actor, now=now, reason=reason)
         if lease_held(row, now=now):
             raise RowLeaseError(f"booking in progress for {row.target_date}")
