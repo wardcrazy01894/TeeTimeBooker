@@ -91,7 +91,9 @@ def validate_release_policy(
     policy: ReleasePolicy, *, lead_minutes: int = DEFAULT_LEAD_MINUTES
 ) -> None:
     """Raise ``ValueError`` if ``policy`` violates the v1 invariants above (§6.1), or if a cron
-    lead of ``lead_minutes`` would put the fire instant on the PREVIOUS calendar day."""
+    lead of ``lead_minutes`` would put the fire instant on the PREVIOUS calendar day, or if the
+    fire instant would land outside the DST-gate hour ``release_time.hour - 1`` (i.e. unless
+    ``release_time.minute < lead_minutes <= release_time.minute + 60``)."""
     if policy.advance_days < 0:
         raise ValueError(f"advance_days must be >= 0, got {policy.advance_days}")
     _zone(policy)  # raises on an unknown IANA name
@@ -108,10 +110,25 @@ def validate_release_policy(
         )
     if lead_minutes < 0:
         raise ValueError(f"lead_minutes must be >= 0, got {lead_minutes}")
-    if _minutes_of_day(policy.release_time) - lead_minutes < 0:
+    fire_total = _minutes_of_day(policy.release_time) - lead_minutes
+    if fire_total < 0:
         raise ValueError(
             f"a {lead_minutes}-minute lead before release_time "
             f"{policy.release_time.isoformat()} crosses midnight onto the previous day"
+        )
+    # The DST gate (§6.3 reuses `should_proceed(fire_time=release_time)` per event) admits a
+    # run iff the course-local HOUR at cron time == release_time.hour - 1. So the fire time
+    # MUST land in that hour — equivalently `minute < lead <= minute + 60`. Otherwise the pair
+    # is silently unusable: e.g. 06:30 with the default 10-min lead fires 06:20, hour 6 — in
+    # summer NEITHER cron passes (06:20 / 07:20 EDT, never books), and in winter the WRONG
+    # cron passes (05:20 EST, hour 5) with T0 70 min out, so the busy-wait blows the 1200 s
+    # replica timeout — exactly the failure `dst_gate.py` exists to prevent. Lead 0 fails the
+    # same way (December: daylight cron lands 05:00 EST, T0 an hour away).
+    if fire_total // 60 != policy.release_time.hour - 1:
+        raise ValueError(
+            f"a {lead_minutes}-minute lead before release_time {policy.release_time.isoformat()} "
+            f"fires at {fire_total // 60:02d}:{fire_total % 60:02d}, outside the DST-gate hour "
+            f"{policy.release_time.hour - 1:02d} (need release minute < lead <= minute + 60)"
         )
 
 
@@ -121,8 +138,9 @@ def _minutes_of_day(t: time) -> int:
 
 def fire_time_for(policy: ReleasePolicy, *, lead_minutes: int = DEFAULT_LEAD_MINUTES) -> time:
     """Course-local wall-clock at which the cron lands the runner: ``release_time - lead``.
-    MB -> 05:50. Its ``.hour`` is ``release_time.hour - 1`` for any lead in ``(0, 60]`` on an
-    on-the-hour release, which is exactly what ``dst_gate.should_proceed`` tests."""
+    MB -> 05:50. Its ``.hour`` is GUARANTEED to be ``release_time.hour - 1`` — the reading
+    ``dst_gate.should_proceed`` makes — because ``validate_release_policy`` (called here)
+    rejects any ``(release_time, lead)`` for which that does not hold."""
     validate_release_policy(policy, lead_minutes=lead_minutes)
     total = _minutes_of_day(policy.release_time) - lead_minutes
     return time(total // 60, total % 60)
