@@ -37,11 +37,13 @@ _MAX_RELEASE_HOUR = 22
 # the value ``compute.bicep`` has shipped since M6.
 DEFAULT_LEAD_MINUTES = 10
 
-# A fixed reference year for probing a zone's two DST halves. The pair is a property of the
-# zone's RULES, not of "now", so a constant keeps ``cron_pair`` deterministic (no clock read)
-# and byte-stable across test runs; if a jurisdiction abolishes DST, tzdata changes the rules
-# for every year and the probe follows.
-_DST_PROBE_YEAR = 2026
+# NOTE on probing DST halves (``cron_pair``): tzdata changes only FUTURE rules — after a DST
+# abolition the OLD years keep their old transitions — so a fixed reference year would keep
+# returning the pre-abolition pair forever. ``cron_pair`` therefore probes the year the
+# caller passes (``probe_year``), defaulting to the CURRENT UTC year so a rule change surfaces
+# as soon as tzdata ships it (and the MU-15a parity test then fails loudly against the
+# committed JSON). That default is the module's ONLY wall-clock read; it selects which year's
+# RULES to read, never a T0 instant, so FakeClock determinism is not at stake.
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +80,30 @@ def release_key(policy: ReleasePolicy) -> ReleaseKey:
     """Group ``policy`` into its release event: identical ``(timezone, release_time)`` ->
     identical key, so a ``dict[ReleaseKey, list[...]]`` yields one job pair per event."""
     return ReleaseKey(timezone=policy.timezone, release_time=policy.release_time)
+
+
+class CronPair(NamedTuple):
+    """``(daylight, standard)`` UTC crons for one release event — a plain 2-tuple for the
+    ``release_events.json`` ``cronDst``/``cronStd`` shape (§6.2), plus the DEDUPE signal.
+
+    In a zone with no DST (America/Phoenix) both halves are the SAME instant. Deploying the
+    usual ``-edt``/``-est`` job pair would then fire two runners at once, and BOTH pass the
+    DST gate, so two processes race one event with no lease in toml mode. ``deduped`` says
+    so and ``jobs`` is what the MU-15a event loop must iterate to derive jobs from.
+    """
+
+    daylight: str
+    standard: str
+
+    @property
+    def deduped(self) -> bool:
+        """True when both halves are the same cron: derive ONE job, not two."""
+        return self.daylight == self.standard
+
+    @property
+    def jobs(self) -> tuple[str, ...]:
+        """The distinct crons to deploy: ``(daylight,)`` when deduped, else both."""
+        return (self.daylight,) if self.deduped else (self.daylight, self.standard)
 
 
 def _zone(policy: ReleasePolicy) -> ZoneInfo:
@@ -160,7 +186,12 @@ def release_instant_for(policy: ReleasePolicy, now_utc: datetime) -> datetime:
     """Today's release instant (tz-aware UTC), where "today" is the calendar date of
     ``now_utc`` in the COURSE timezone. Uses ``zoneinfo`` so DST resolves correctly (§6.3):
     on the spring-forward morning 06:00 ET is already EDT (10:00Z); on the fall-back morning
-    it is EST (11:00Z), the unambiguous second 06:00 under ``fold=0`` (PLAN.md §6.3)."""
+    it is EST (11:00Z), the unambiguous second 06:00 under ``fold=0`` (PLAN.md §6.3).
+
+    Does NOT validate ``policy`` (only the zone must resolve): a midnight release computes
+    silently, and the same-day anchoring is exactly why v1 rejects it elsewhere — call
+    ``validate_release_policy`` at the boundary that ACCEPTS a policy (adapter ClassVar tests,
+    the MU-15a event derivation), not on every read."""
     local_release = datetime.combine(
         _local_today(policy, now_utc), policy.release_time, tzinfo=_zone(policy)
     )
@@ -173,34 +204,59 @@ def target_date_for(policy: ReleasePolicy, now_utc: datetime) -> date:
     Always computed in the COURSE timezone, never UTC or the runner's zone: the tenant booking
     runner's READ #1 selects rows for exactly this date (§4.2). (22:30 EDT on the 25th is
     02:30Z on the 26th — the UTC date is already tomorrow, the course's is not.)
+
+    Does NOT validate ``policy`` (only the zone must resolve) — see ``release_instant_for``.
     """
     return _local_today(policy, now_utc) + timedelta(days=policy.advance_days)
 
 
-def _utc_cron_for(fire_local: time, zone: ZoneInfo, probe: date) -> str:
-    """Daily ``M H * * *`` UTC cron for ``fire_local`` under the offset in force on ``probe``.
-    A daily cron is date-free, so the UTC conversion crossing a day boundary is harmless."""
-    fire_utc = datetime.combine(probe, fire_local, tzinfo=zone).astimezone(UTC)
+def _utc_cron_for(fire_local_on_probe: datetime) -> str:
+    """Daily ``M H * * *`` UTC cron for a zone-aware fire instant on a probe date. A daily cron
+    is date-free, so the UTC conversion crossing a day boundary (a 22:xx ET release fires the
+    previous UTC day) is harmless."""
+    fire_utc = fire_local_on_probe.astimezone(UTC)
     return f"{fire_utc.minute} {fire_utc.hour} * * *"
 
 
 def cron_pair(
-    policy: ReleasePolicy, *, lead_minutes: int = DEFAULT_LEAD_MINUTES
-) -> tuple[str, str]:
-    """``(daylight_cron, standard_cron)`` UTC cron expressions firing ``lead_minutes`` before
+    policy: ReleasePolicy,
+    *,
+    lead_minutes: int = DEFAULT_LEAD_MINUTES,
+    probe_year: int | None = None,
+) -> CronPair:
+    """``CronPair(daylight, standard)`` UTC cron expressions firing ``lead_minutes`` before
     ``release_time`` in each DST half. MB 06:00 ET -> ``("50 9 * * *", "50 10 * * *")``, the
     values ``compute.bicep`` ships today. ``tests/test_release_events_parity.py`` (MU-15a) pins
-    ``infra/bicep/release_events.json`` to this function (§6.2).
+    ``infra/bicep/release_events.json`` to this function (§6.2). Validates the policy first.
 
-    The halves are found by probing Jan 1 and Jul 1 of a fixed reference year and asking the
-    zone which one is in daylight time (``dst() != 0``) — so a southern-hemisphere zone still
-    returns (daylight, standard) in that order, and a zone with no DST (America/Phoenix)
-    returns the same cron twice, which the job pair tolerates (both fire at the right instant;
-    the DST gate admits both).
+    **How the halves are found.** Jan 1 and Jul 1 of ``probe_year`` (default: the current UTC
+    year — see the module note on why a FIXED year would be wrong after a DST abolition) are
+    converted with the zone's rules and classified by ``utcoffset()``: the half with the
+    LARGER offset is daylight (clocks sprung forward), so a southern-hemisphere zone still
+    comes out ``(daylight, standard)``. ``dst()`` is deliberately NOT used — it is a heuristic
+    tzdata does not model uniformly (Africa/Casablanca reports ``dst() != 0`` for its permanent
+    UTC+1). **Equal offsets ⇒ the same cron twice**, and the pair reports ``deduped=True``:
+    that is NOT tolerable as two jobs (both would fire at one instant and both pass the gate —
+    two runners racing one event), so MU-15a derives from ``CronPair.jobs``, which is then a
+    1-tuple.
+
+    Known limits, all outside the ratified v1 band or unreachable by any planned course (US
+    zones only), documented rather than handled: (a) a DST period lying strictly BETWEEN the
+    two probes (Casablanca's Ramadan dip) is invisible — the pair is deduped and the runner
+    would be an hour off for those weeks; (b) a 30-minute DST offset (Australia/Lord_Howe)
+    puts the wrong-season cron in the SAME gate hour, so both jobs pass — a double fire;
+    (c) a zone whose transition instant falls between the two crons (EET's 04:00-local
+    fall-back with a 04:xx release) also double-fires on that one morning. The validator's
+    04-22 band and 1-hour US transitions at 02:00 local make (b)/(c) impossible for MB and
+    the Chicago placeholder — pinned by the (release, lead) x transition-day sweep in
+    ``tests/test_release_policy.py``.
     """
     fire_local = fire_time_for(policy, lead_minutes=lead_minutes)
     zone = _zone(policy)
-    jan, jul = date(_DST_PROBE_YEAR, 1, 1), date(_DST_PROBE_YEAR, 7, 1)
-    jan_is_daylight = bool(datetime.combine(jan, fire_local, tzinfo=zone).dst())
-    daylight, standard = (jan, jul) if jan_is_daylight else (jul, jan)
-    return _utc_cron_for(fire_local, zone, daylight), _utc_cron_for(fire_local, zone, standard)
+    year = datetime.now(tz=UTC).year if probe_year is None else probe_year
+    jan = datetime.combine(date(year, 1, 1), fire_local, tzinfo=zone)
+    jul = datetime.combine(date(year, 7, 1), fire_local, tzinfo=zone)
+    jan_off, jul_off = jan.utcoffset(), jul.utcoffset()
+    assert jan_off is not None and jul_off is not None  # ZoneInfo always supplies one
+    daylight, standard = (jan, jul) if jan_off > jul_off else (jul, jan)
+    return CronPair(daylight=_utc_cron_for(daylight), standard=_utc_cron_for(standard))
