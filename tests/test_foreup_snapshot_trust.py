@@ -19,6 +19,7 @@ import respx
 from teetime.core.adapter import ReservationSnapshotHealth
 from teetime.core.models import CourseCredentials, CourseId
 from teetime.courses.foreup.base import FOREUP_BASE_URL, LOGIN_PATH, ForeUpAdapter
+from teetime.courses.teeitup.sydney_marovitz import SydneyMarovitzAdapter
 from teetime.dev.fake_adapter import FakeAdapter
 
 CID = CourseId("foreup:mangrove_bay")
@@ -59,6 +60,11 @@ async def test_foreup_satisfies_reservation_snapshot_health() -> None:
 def test_fake_adapter_does_not_claim_snapshot_health() -> None:
     """Opt-in: an adapter without the property is not a ReservationSnapshotHealth."""
     assert not isinstance(FakeAdapter(course_id=CID), ReservationSnapshotHealth)
+
+
+def test_teeitup_adapter_does_not_claim_snapshot_health() -> None:
+    """TeeItUp reads reservations with a live GET — no login snapshot to distrust."""
+    assert not isinstance(SydneyMarovitzAdapter(), ReservationSnapshotHealth)
 
 
 async def test_snapshot_untrusted_before_authenticate() -> None:

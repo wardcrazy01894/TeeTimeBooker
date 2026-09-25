@@ -1945,3 +1945,42 @@ async def test_reconcile_eligible_log_counts_eligible_and_held(
         "watch: reconciled 2 duplicate reservations on 2026-05-16 — kept bot-0930, "
         "cancelled 1 (1 ineligible left held)"
     ]
+
+
+@pytest.mark.parametrize("manual_minutes", [(15,), (15, 20)])
+async def test_unadopted_manual_match_reaches_try_upgrade_unguarded(
+    manual_minutes: tuple[int, ...],
+) -> None:
+    """CHARACTERIZATION (PR #226 review should-fix 1) — pins TODAY's engine behaviour, which
+    E5 deliberately does NOT change: `reconcile_eligible` only governs the duplicate
+    reconcile. With NO store terminal (a pending row) and live matches that are all
+    INELIGIBLE (manual), `_check_course` still synthesizes a `TTB:` managed booking from
+    `matching[0]` and hands it to `_try_upgrade` — so a better slot CANCELS the manual
+    reservation. Covers both routes: a single manual match (reconcile never runs) and >1
+    manual matches with zero eligible (early return). MULTIUSER_PLAN §7.6 closes this in
+    tenant code (MU-10: adoption + a pre-seeded non-`TTB:` terminal, and `_try_upgrade`
+    MUST be gated on ownership). If this test starts failing because the engine now guards
+    the upgrade itself, update §7.6 and this pin together."""
+    adapter = FakeAdapter(course_id=COURSE_ID)
+    req = _request()
+    adapter.set_existing_reservations(
+        [
+            ExistingReservation(
+                course_id=COURSE_ID,
+                confirmation_code=f"manual-14{m:02d}",
+                tee_time=datetime(
+                    TARGET_DATE.year, TARGET_DATE.month, TARGET_DATE.day, 14, m, tzinfo=ET
+                ),
+                party_size=len(req.players),
+            )
+            for m in manual_minutes
+        ]
+    )
+    adapter.set_search_response([_pm_slot(hour=14, minute=0)])  # strictly better tier
+    watch, _, _ = _build(adapter, policy=_two_pm_policy(), reconcile_eligible=lambda _r: False)
+
+    result = await watch.check_once(req, TARGET_DATE)
+
+    assert result is not None and result.outcome == BookingOutcome.BOOKED
+    assert adapter.cancel_call_count == 1  # a MANUAL reservation was cancelled by the upgrade
+    assert adapter.book_call_count == 1

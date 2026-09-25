@@ -477,7 +477,10 @@ in `core/` — never directly. This is the cut line for parallel work.
   too. Additive + idempotent; longest literal wins on overlap (regex-escaped alternation);
   values shorter than `SECRET_LITERAL_MIN_LEN = 8` are IGNORED (a 1-char literal would shred
   every line — so a <8-char password is NOT masked) as are values occurring inside a
-  redaction marker (they would break idempotency across handler fan-out). The (set, pattern)
+  redaction marker (they would break idempotency across handler fan-out); refused values are
+  COUNTED in one DEBUG line (never logged), and the call returns how many distinct values are
+  now masked so a caller can detect a refused password. A bare `str` raises `TypeError` (it is
+  an `Iterable[str]` and would otherwise register nothing, silently). The (set, pattern)
   state is swapped as one tuple under a lock, so a logging thread never sees a mismatch. An
   EMPTY registry is a strict no-op — the TOML path registers nothing. `tests/conftest.py`
   restores the registry around every test (same vacuous-assert hazard as the handler filters).
@@ -879,9 +882,15 @@ in `core/` — never directly. This is the cut line for parallel work.
   ELIGIBLE reservation (an ineligible one is never kept-in-place-of nor cancelled, even when it
   outranks every eligible one), the other eligible ones are cancelled, and with ≤1 eligible
   nothing is cancelled and the lock is not taken (an owned + a manual booking for the same
-  date+party therefore BOTH stay held — the §7.6 documented residual). The survivors are
-  returned kept-eligible-first so `_check_course`'s `matching[0]` stays a reservation the caller
-  owns. This is what resolves the "manual second booking would be cancelled" residual for the
+  date+party therefore BOTH stay held — the §7.6 documented residual). When ≥1 reservation is
+  eligible the survivors are returned eligible-first, so `_check_course`'s `matching[0]` is one
+  the caller owns. **E5 does NOT guard the upgrade:** with ZERO eligible (or a single manual
+  match, where the reconcile never runs) `matching[0]` is a MANUAL reservation and
+  `_check_course` still synthesizes a `TTB:` booking from it and calls `_try_upgrade`, which can
+  cancel it — pinned as today's behaviour by
+  `test_unadopted_manual_match_reaches_try_upgrade_unguarded`. The hosted path closes this in
+  tenant code (MU-10 adoption + a pre-seeded non-`TTB:` terminal, and it MUST gate `_try_upgrade`
+  on ownership — MULTIUSER_PLAN §7.6). This is what resolves the "manual second booking would be cancelled" residual for the
   hosted path (it passes "owned by the bot"; a dry-run env passes `lambda _: False`).
 - **Cancel-before-book protocol** in `UpgradeOrchestrator`: ForeUP rejects a second
   book POST with HTTP 400 while an existing reservation is live. The orchestrator
