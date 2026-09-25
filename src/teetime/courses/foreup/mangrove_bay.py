@@ -15,13 +15,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import date
+from datetime import date, time
+from typing import ClassVar
 from zoneinfo import ZoneInfo
 
 import httpx
 
 from ...core.adapter import AdapterCapabilities
 from ...core.models import BookingRequest, CourseId, SlotId, TeeTimeSlot
+from ...core.release_policy import ReleasePolicy
 from ...core.slot_utils import rank_slots_for_request
 from .base import FOREUP_BASE_URL, ForeUpAdapter, _parse_slot
 
@@ -166,6 +168,13 @@ class MangroveBayAdapter(ForeUpAdapter):
     # The only course that flips blind_post on (overrides synthesize_blind_slots below);
     # inherits ForeUP's refreshable + auth-state capabilities.
     capabilities: AdapterCapabilities = AdapterCapabilities(blind_post=True)
+    # When MB releases inventory (MULTIUSER_PLAN §6.1, E4): 7 days out at 06:00 ET — the same
+    # values `scheduler.timezone`/`fire_time`/`target_offsets` carry in the TOML configs and
+    # that `compute.bicep`'s `50 9`/`50 10` crons encode (pinned equal by
+    # tests/test_release_policy.py). Data only: nothing on the TOML production path reads it.
+    release_policy: ClassVar[ReleasePolicy] = ReleasePolicy(
+        advance_days=7, release_time=time(6, 0), timezone="America/New_York"
+    )
 
     def __init__(
         self,

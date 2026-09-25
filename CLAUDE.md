@@ -352,9 +352,21 @@ with AES-GCM-encrypted passwords, dated request rows plus standing rules, one te
 release event running the UNMODIFIED `Orchestrator` per account, a shared per-course CAPTCHA pool,
 a tenant watcher, and a FastAPI/HTMX Container App. Stub modules are on disk and raise
 `NotImplementedError` with an MU-milestone reference: `src/teetime/tenant/`, `src/teetime/web/`,
-`src/teetime/core/release_policy.py`, `src/teetime/courses/foreup/token_pool.py`,
+`src/teetime/courses/foreup/token_pool.py`,
 `src/teetime/dev/virtual_clock.py`. **Nothing imports them. Prod behaviour, config, and infra are unchanged**, and the TOML `run`/`watch` path stays the
-production path until the cutover in MULTIUSER_PLAN §11. **MU-3 is DONE in code** (engine
+production path until the cutover in MULTIUSER_PLAN §11. **MU-1 is DONE in code, UNWIRED**
+(E4): `core/release_policy.py` is real — `ReleasePolicy(advance_days, release_time, timezone,
+hosted_booking)` + pure helpers `target_date_for` (course-local today + advance, NEVER the UTC
+date), `release_instant_for` (zoneinfo, DST-correct), `fire_time_for`, `cron_pair` (the
+`(daylight, standard)` UTC crons for release − 10 min), `validate_release_policy` (v1 hour band
+04–22: a midnight release would fire on D-1 and book a day late; lead may not cross midnight; IANA
+zone must resolve) and `release_key` (`(timezone, release_time)` — the release-EVENT identity that
+groups courses into one job pair). `MangroveBayAdapter.release_policy` = (7, 06:00, America/New_York)
+and its derived pair is pinned EQUAL to `compute.bicep`'s `50 9 * * *`/`50 10 * * *` by reading the
+bicep in `tests/test_release_policy.py`; today's `dst_gate.should_proceed` semantics are reproduced
+from the policy. `SydneyMarovitzAdapter.release_policy` = (15, **06:00 PLACEHOLDER — S-M4 unconfirmed**,
+America/Chicago, `hosted_booking=False`). Nothing on the production path reads any of it; the
+ACA crons stay hand-written until MU-15a. **MU-3 is DONE in code** (engine
 hooks E2 + E3 + the allocator; `tenant/allocation.py` is real, not a stub): the Mangrove Bay
 `BLIND_POST_MORNING_GRID` spans the full morning 07:00–12:00 and `MangroveBayAdapter.
 set_blind_allowlist` filters `synthesize_blind_slots` before truncation (default `None` = no
