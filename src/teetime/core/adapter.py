@@ -169,7 +169,8 @@ class BlindPostCapable(Protocol):
         The orchestrator sizes the blind burst at ``min(len(blind_slots),
         captcha_pool_size())`` so each concurrent ``book()`` pops a pooled token and
         none inline-solves at T0 (the latency failure the feature removes). See
-        BLIND_POST_PLAN.md §5/§6. ``ForeUpAdapter`` returns ``len(self._captcha_tokens)``;
+        BLIND_POST_PLAN.md §5/§6. ``ForeUpAdapter`` returns its captcha-pool LEASE size
+        (a shared pool's reserve excluded);
         adapters with no CAPTCHA may return a large/scriptable value.
         """
         ...

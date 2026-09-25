@@ -26,6 +26,7 @@ from ...core.models import BookingRequest, CourseId, SlotId, TeeTimeSlot
 from ...core.release_policy import ReleasePolicy
 from ...core.slot_utils import rank_slots_for_request
 from .base import FOREUP_BASE_URL, ForeUpAdapter, _parse_slot
+from .token_pool import LeaseKey, SharedCaptchaPool
 
 _log = logging.getLogger(__name__)
 
@@ -181,6 +182,8 @@ class MangroveBayAdapter(ForeUpAdapter):
         *,
         http_client: httpx.AsyncClient | None = None,
         captcha_provider: Callable[[], Awaitable[str]] | None = None,
+        captcha_pool: SharedCaptchaPool | None = None,
+        captcha_lease_key: LeaseKey | None = None,
     ) -> None:
         super().__init__(
             course_id=MANGROVE_BAY_COURSE_ID,
@@ -191,6 +194,8 @@ class MangroveBayAdapter(ForeUpAdapter):
             timezone="America/New_York",
             http_client=http_client,
             captcha_provider=captcha_provider,
+            captcha_pool=captcha_pool,
+            captcha_lease_key=captcha_lease_key,
         )
         # MULTIUSER_PLAN §5.4 / E2: None = no filter (today's single-user behaviour).
         self._blind_allowlist: frozenset[SlotId] | None = None
