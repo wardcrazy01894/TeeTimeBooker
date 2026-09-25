@@ -69,6 +69,15 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ---
 
+## Multi-user website
+
+- **Multi-user hosted site (BYO ForeUP accounts, rules/dates/skips, per-user email).**
+  RATIFIED 2026-09-25 in [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) (stubs on disk, nothing wired).
+  It supersedes the single-user FRONTEND_PLAN below. Store: Cosmos DB free tier (decided
+  2026-09-25, MULTIUSER_PLAN §10.2).
+
+---
+
 ## Frontend (single-user web UI)
 
 A full, ratified design already exists: **[FRONTEND_PLAN.md](./FRONTEND_PLAN.md)**
