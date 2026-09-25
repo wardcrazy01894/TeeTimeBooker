@@ -18,6 +18,8 @@ import re
 import threading
 from collections.abc import Iterable, Mapping
 
+_log = logging.getLogger(__name__)
+
 # Card + player-PII keys whose VALUES must never reach the attempt_log (PLAN.md §10.1).
 # Matched case-insensitively. Two card shapes: the TeeItUp GNSVC POST namespaces all card
 # fields under "Payment"/"Payments_" (Payment.CC.CreditCardNumber, Payment.CC.CVVCode,
@@ -218,28 +220,50 @@ _literal_state: tuple[frozenset[str], re.Pattern[str] | None] = (frozenset(), No
 _literal_lock = threading.Lock()
 
 
-def register_secret_literals(literals: Iterable[str]) -> None:
+def register_secret_literals(literals: Iterable[str]) -> int:
     """Register exact secret values to be masked as ``<redacted-secret>`` in all redacted text.
 
     Additive and idempotent (re-registering a value is a no-op). Values shorter than
-    ``SECRET_LITERAL_MIN_LEN`` and values that occur inside a redaction marker are ignored.
-    Matching is exact and case-sensitive; the longest literal wins where two overlap, so a
-    secret that is a prefix of another never leaves the longer one's tail visible.
+    ``SECRET_LITERAL_MIN_LEN`` and values that occur inside a redaction marker are REFUSED:
+    one DEBUG line per call reports how many (never the values). Matching is exact and
+    case-sensitive; the longest literal wins where two overlap, so a secret that is a prefix
+    of another never leaves the longer one's tail visible.
+
+    Returns the number of DISTINCT values from this call that are now masked (already
+    registered ones included), so a caller can detect a refused secret — e.g. a decrypted
+    password shorter than the floor, which will NOT be masked.
+
+    Raises ``TypeError`` for a bare ``str``: it is itself an ``Iterable[str]``, so it would be
+    iterated into 1-char literals — all below the floor — and register NOTHING, silently.
     """
+    if isinstance(literals, str):
+        raise TypeError(
+            "register_secret_literals expects an iterable of secrets, not a single str; "
+            "wrap it: register_secret_literals([value])"
+        )
     global _literal_state  # noqa: PLW0603 - a process-wide registry is the point
+    values = set(literals)
+    accepted = {
+        lit
+        for lit in values
+        if len(lit) >= SECRET_LITERAL_MIN_LEN and not any(lit in m for m in _MARKERS)
+    }
+    refused = len(values) - len(accepted)
+    if refused:
+        _log.debug(
+            "register_secret_literals: refused %d value(s) (shorter than %d chars or inside a "
+            "redaction marker) — they will NOT be masked",
+            refused,
+            SECRET_LITERAL_MIN_LEN,
+        )
     with _literal_lock:
         current = _literal_state[0]
-        accepted = {
-            lit
-            for lit in literals
-            if len(lit) >= SECRET_LITERAL_MIN_LEN and not any(lit in m for m in _MARKERS)
-        }
         merged = current | accepted
-        if merged == current:
-            return
-        ordered = sorted(merged, key=len, reverse=True)
-        pattern = re.compile("|".join(re.escape(lit) for lit in ordered))
-        _literal_state = (frozenset(merged), pattern)
+        if merged != current:
+            ordered = sorted(merged, key=len, reverse=True)
+            pattern = re.compile("|".join(re.escape(lit) for lit in ordered))
+            _literal_state = (frozenset(merged), pattern)
+    return len(accepted)
 
 
 def _mask_literals(text: str) -> str:

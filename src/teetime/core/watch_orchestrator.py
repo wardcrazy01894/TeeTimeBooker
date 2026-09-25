@@ -572,13 +572,24 @@ class WatchOrchestrator:
             )
             return matching
 
-        log.info(
-            "watch: reconciled %d duplicate reservations on %s — kept %s, cancelled %d",
-            len(matching),
-            target_date,
-            keep.confirmation_code,
-            len(extras),
-        )
+        if self._reconcile_eligible is None:
+            log.info(
+                "watch: reconciled %d duplicate reservations on %s — kept %s, cancelled %d",
+                len(matching),
+                target_date,
+                keep.confirmation_code,
+                len(extras),
+            )
+        else:
+            log.info(
+                "watch: reconciled %d duplicate reservations on %s — kept %s, cancelled %d "
+                "(%d ineligible left held)",
+                len(extras) + 1,
+                target_date,
+                keep.confirmation_code,
+                len(extras),
+                len(survivors) - 1,
+            )
         return survivors
 
     def _rank_reservations(
