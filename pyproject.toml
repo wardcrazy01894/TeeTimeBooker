@@ -19,7 +19,7 @@ dependencies = [
     # wording repeated the then-locked one and was false the moment the next bump merged.
     # The CVE boundary stays 3.15, which keeps this a guard rather than a load-bearing
     # requirement. Both properties are pinned by tests/test_docs_consistency.py.
-    "idna>=3.19",
+    "idna>=3.20",
     "ntplib>=0.4",          # best-effort NTP clock-offset for the 6 AM race (RealClock)
 ]
 
@@ -39,7 +39,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "respx>=0.23.1",        # httpx mock for unit tests
-    "ruff>=0.16.7",         # 0.16 promoted PLR0917 to stable + formats md — see [tool.ruff]
+    "ruff>=0.16.8",         # 0.16 promoted PLR0917 to stable + formats md — see [tool.ruff]
     "mypy>=2.3.1",          # 2.x strict defaults verified clean against this codebase
     "pip-audit>=2.10.1",    # dependency vulnerability scanning (CVE check)
 ]
