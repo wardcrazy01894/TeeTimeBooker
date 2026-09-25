@@ -202,7 +202,9 @@ class TenantStore(Protocol):
     ) -> bool:
         """Conditional lease acquire; True iff acquired. Cosmos: point read + IfMatch replace (a 412
         means not acquired). With ``expected`` set, status/version/booked_raw_id must also be
-        unchanged in the doc read; the IfMatch makes check-and-set atomic (M5)."""
+        unchanged in the doc read; the IfMatch makes check-and-set atomic (M5). Only PENDING and
+        BOOKED rows are leasable (nothing is booked, upgraded or cancelled from any other status);
+        any other status returns False."""
         ...
 
     async def release_row_lease(self, row_id: RowId, *, owner: str) -> None:
@@ -266,7 +268,10 @@ class TenantStore(Protocol):
         free; otherwise as SUPERSEDED). A create conflict returns None and means only that a row
         EXISTS, not that the date is handled: the caller must consult ``rows_for_account_date``
         and may call ``reactivate_rule_row`` (round-2 M1). Callers first skip dates with a
-        user-terminal row (``models.USER_TERMINAL``)."""
+        user-terminal row (``models.USER_TERMINAL``). ``rule`` must be the STORED version
+        (IfMatch; a stale copy is ``TransitionRefusedError``), so a row is never created under a
+        rule that has since moved weekday. Cosmos (MU-8b): assert the rule doc's (or its
+        ``ruleday|<weekday>`` pointer's) ETag in the same batch as the row create."""
         ...
 
     async def reactivate_rule_row(
@@ -275,9 +280,11 @@ class TenantStore(Protocol):
         """System-withdrawn (``models.SYSTEM_WITHDRAW_REASONS``) rule row -> its pre-supersede
         status if it was superseded before the withdraw (``superseded_from``, round-5: SKIPPED
         stays SKIPPED), else PENDING, with window and party refreshed from ``rule``: one batch of
-        IfMatch replace + slot create. The only writer of withdrawn -> active. Refused
-        (``TransitionRefusedError``) if the date has a user-terminal row, is frozen, or the slot is
-        held."""
+        IfMatch replace + slot create. Refused (``TransitionRefusedError``) if ``rule`` is not the
+        STORED version (IfMatch, round-5), the stored rule no longer covers the row (inactive,
+        other weekday or account), the date has a user-terminal row, is frozen, or the slot is
+        held. Every writer of an active status onto a rule row applies the same coverage +
+        user-terminal guard (round-5 MF1)."""
         ...
 
     async def set_materialized_through(self, rule_id: RuleId, through: date) -> None:
@@ -292,10 +299,12 @@ class TenantStore(Protocol):
         revisits (§7.7). A stored None also wins over a caller's stale copy in ``upsert_rule``."""
         ...
 
-    async def rows_of_inactive_rules(self, *, now: datetime) -> list[RequestRow]:
-        """Unleased PENDING / SUPERSEDED rule rows whose rule is INACTIVE: the stragglers a
-        deactivation had to skip because they were leased at the time (§3.4 "rule edits never
-        touch leased rows"). The materializer tick withdraws them (system reason, §7.7). SKIPPED
+    async def rows_no_longer_covered(self, *, now: datetime) -> list[RequestRow]:
+        """Unleased PENDING / SUPERSEDED rule rows their STORED rule no longer covers (missing,
+        inactive, or on another weekday / account): the stragglers a deactivation or weekday move
+        had to skip because they were leased at the time (§3.4 "rule edits never touch leased
+        rows"). The materializer tick withdraws them with the matching system reason
+        (``rule_deleted`` / ``rule_deactivated`` / ``rule_weekday_changed``, §7.7). SKIPPED
         rows are deliberately excluded: they are never booked, and keeping them preserves the
         user's skip across a later reactivation (round-5)."""
         ...
@@ -378,7 +387,9 @@ class TenantStore(Protocol):
         (round-3 SF1, the ``ruleday|<weekday>`` pointer), and a replace whose ``rule.version`` is
         not the stored version with ``VersionConflictError`` (IfMatch). ``materialized_through``
         never moves backwards (a web edit from a copy read before the watcher tick keeps the
-        tick's value). Does not touch rows (the materializer does, §7.7)."""
+        tick's value), except that a stored None (a reset) wins, and a weekday change or a
+        re-activation CLEARS it in the same write so the rule is due for the tick (round-5 SF-2).
+        Does not touch rows (the materializer does, §7.7)."""
         ...
 
     async def count_login_probes(

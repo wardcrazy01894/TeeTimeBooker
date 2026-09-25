@@ -904,11 +904,12 @@ class TenantStoreConformance:
         assert await harness.slot_pointer(t.account.id, TARGET) is None  # slot free, but...
         with pytest.raises(TransitionRefusedError, match="user-terminal"):
             await s.reactivate_rule_row(row, rule, now=NOW)
+        # A brand-new rule for that weekday (the old one switched off first: one active rule
+        # per weekday) is blocked too. It is passed as stored: rules are IfMatch'd (round 5).
+        await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        fresh = await s.upsert_rule(_rule(t, rule_id=RuleId(uuid4())), user_id=t.user.id)
         with pytest.raises(TransitionRefusedError, match="user-terminal"):
-            fresh = await s.upsert_rule(
-                _rule(t, rule_id=RuleId(uuid4()), active=False), user_id=t.user.id
-            )
-            await s.insert_rule_row_if_absent(replace(fresh, active=True), TARGET, now=NOW)
+            await s.insert_rule_row_if_absent(fresh, TARGET, now=NOW)
 
     async def test_transition_withdrawn_pending_refused_for_user_withdrawn(
         self, harness: StoreHarness
@@ -1162,14 +1163,17 @@ class TenantStoreConformance:
         assert after.lease_expires_at == later + timedelta(seconds=60)
 
     async def test_lease_acquire_fails_on_fingerprint_mismatch(self, harness: StoreHarness) -> None:
-        """M5: the watcher read the row, then the user skipped it; its acquire must fail."""
+        """M5: the watcher read the row, then the user skipped (and unskipped) it; its acquire
+        must fail. (A SKIPPED row is never leasable at all, round-5 nit 1, so the fresh acquire
+        below is made after the unskip.)"""
         s = harness.store
         t = await _tenant(s)
         row = await _explicit(s, t)
         seen = _fp(row)
-        await s.transition_row(
-            row.id, user_id=t.user.id, to=RowStatus.SKIPPED, actor=Actor.WEB, reason=None, now=NOW
-        )
+        for to in (RowStatus.SKIPPED, RowStatus.PENDING):
+            await s.transition_row(
+                row.id, user_id=t.user.id, to=to, actor=Actor.WEB, reason=None, now=NOW
+            )
         until = NOW + timedelta(seconds=300)
         assert not await s.acquire_row_lease(
             row.id, owner=WATCHER, until=until, now=NOW, expected=seen
@@ -1225,9 +1229,7 @@ class TenantStoreConformance:
         assert (await _get(s, booked)).upgrade_started_at is None
         assert await s.set_upgrade_marker(booked.id, owner=WATCHER, at=NOW, expected=fp)
 
-    @pytest.mark.parametrize(
-        "action", ["skip", "unskip", "withdraw", "supersede", "system_withdraw"]
-    )
+    @pytest.mark.parametrize("action", ["skip", "withdraw", "supersede", "system_withdraw"])
     async def test_web_transitions_refused_while_leased(
         self, harness: StoreHarness, action: str
     ) -> None:
@@ -1239,15 +1241,6 @@ class TenantStoreConformance:
             row = await _explicit(s, t)
         else:
             _, row = await _rule_row(s, t)
-        if action == "unskip":
-            row = await s.transition_row(
-                row.id,
-                user_id=t.user.id,
-                to=RowStatus.SKIPPED,
-                actor=Actor.WEB,
-                reason=None,
-                now=NOW,
-            )
         await _lease(s, row, owner=BOOKER)
         before = await _get(s, row)
         with pytest.raises(RowLeaseError):
@@ -1256,15 +1249,6 @@ class TenantStoreConformance:
                     row.id,
                     user_id=t.user.id,
                     to=RowStatus.SKIPPED,
-                    actor=Actor.WEB,
-                    reason=None,
-                    now=NOW,
-                )
-            elif action == "unskip":
-                await s.transition_row(
-                    row.id,
-                    user_id=t.user.id,
-                    to=RowStatus.PENDING,
                     actor=Actor.WEB,
                     reason=None,
                     now=NOW,
@@ -1945,23 +1929,15 @@ class TenantStoreConformance:
     async def test_withdraw_explicit_refused_while_superseded_row_leased(
         self, harness: StoreHarness
     ) -> None:
-        """The restore writes the superseded row too, so it must be unleased as well (M4)."""
+        """The restore writes the superseded row too, so it must be unleased (M4). Since round-5
+        nit 1 a superseded row cannot be leased at all, so the precondition cannot arise."""
         s = harness.store
         t = await _tenant(s)
         _, rule_row = await _rule_row(s, t)
-        explicit = await _explicit(s, t)
-        await _lease(s, await _get(s, rule_row), owner=WATCHER)
-        with pytest.raises(RowLeaseError):
-            await s.transition_row(
-                explicit.id,
-                user_id=t.user.id,
-                to=RowStatus.WITHDRAWN,
-                actor=Actor.WEB,
-                reason=USER_WITHDRAW_REASON,
-                now=NOW,
-            )
-        assert (await _get(s, explicit)).status is RowStatus.PENDING
-        assert (await _get(s, rule_row)).status is RowStatus.SUPERSEDED
+        await _explicit(s, t)
+        assert not await s.acquire_row_lease(
+            rule_row.id, owner=WATCHER, until=NOW + timedelta(seconds=300), now=NOW, expected=None
+        )
 
     # --- review round 1: leases, ledger atomicity, rule versions, not-found --------------------
 
@@ -2158,7 +2134,6 @@ class TenantStoreConformance:
         s = harness.store
         t = await _tenant(s)
         row = await self._user_terminal_date_with_withdrawn_rule_row(s, t)
-        await _lease(s, row, owner=WATCHER)
         with pytest.raises(ExceptionGroup) as eg:
             await s.record_outcomes(
                 [
@@ -2215,7 +2190,6 @@ class TenantStoreConformance:
             reason=USER_WITHDRAW_REASON,
             now=NOW,
         )
-        await _lease(s, await _get(s, rule_row), owner=WEB)
         with pytest.raises(ExceptionGroup) as eg:
             await s.record_outcomes(
                 [
@@ -2377,7 +2351,7 @@ class TenantStoreConformance:
         leased_rule, leased_row = await _rule_row(s, t, target=TARGET + timedelta(days=2))
         await _lease(s, leased_row, owner=BOOKER)
         await s.upsert_rule(replace(leased_rule, active=False), user_id=t.user.id)
-        got = await s.rows_of_inactive_rules(now=NOW)
+        got = await s.rows_no_longer_covered(now=NOW)
         assert [r.id for r in got] == [straggler.id]
         out = await s.transition_row(
             straggler.id,
@@ -2388,7 +2362,7 @@ class TenantStoreConformance:
             now=NOW,
         )
         assert out.status is RowStatus.WITHDRAWN
-        assert await s.rows_of_inactive_rules(now=NOW) == []
+        assert await s.rows_no_longer_covered(now=NOW) == []
         assert active_rule.active and (await _get(s, active_row)).status is RowStatus.PENDING
 
     async def test_withdraw_explicit_restores_system_withdrawn_row_of_active_rule(
@@ -2604,11 +2578,10 @@ class TenantStoreConformance:
         assert edited.materialized_through is None
         assert [r.id for r in await s.rules_needing_materialization(through=through)] == [read.id]
 
-    async def test_reactivation_flow_resets_watermark_after_upsert(
-        self, harness: StoreHarness
-    ) -> None:
-        """Round-4 SF-A: the reactivation flow is upsert(active=True) THEN reset, so the tick
-        revisits withdrawn dates even if the web's synchronous materialize never runs."""
+    async def test_reactivation_clears_watermark_in_upsert(self, harness: StoreHarness) -> None:
+        """Round-5 SF-2 (coordinator decision): ``upsert_rule`` clears the watermark itself when
+        a rule is re-activated, so the tick revisits withdrawn dates even if the web's
+        synchronous materialize never runs (no separate reset step)."""
         s = harness.store
         t = await _tenant(s)
         rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
@@ -2618,6 +2591,203 @@ class TenantStoreConformance:
         on = await s.upsert_rule(
             replace(off, active=True, materialized_through=through), user_id=t.user.id
         )
-        assert on.materialized_through == through  # without the reset the tick would skip it
-        await s.reset_materialized_through(rule.id)
+        assert on.materialized_through is None
         assert [r.id for r in await s.rules_needing_materialization(through=through)] == [rule.id]
+
+    # --- review round 5 --------------------------------------------------------------------
+
+    async def _user_cancelled_date_with_superseded_rule_row(
+        self, s: TenantStore, t: Tenant
+    ) -> RequestRow:
+        _, rule_row = await _rule_row(s, t)
+        e1 = await _book(s, await _explicit(s, t), raw_id="E1")
+        await _lease(s, e1, owner=WEB)
+        await s.record_outcomes(
+            [
+                _outcome(
+                    e1,
+                    actor=Actor.WEB,
+                    to_status=RowStatus.CANCELLED,
+                    status_reason="user",
+                    last_outcome="cancelled",
+                    release_lease_owner=WEB,
+                )
+            ]
+        )
+        return await _get(s, rule_row)
+
+    async def test_unsupersede_refused_on_user_terminal_date(self, harness: StoreHarness) -> None:
+        """Round-5 MF1: the generic web un-supersede carries the same guards as every other
+        writer of an active status onto a rule row (round-7: the date stays blocked)."""
+        s = harness.store
+        t = await _tenant(s)
+        rule_row = await self._user_cancelled_date_with_superseded_rule_row(s, t)
+        assert rule_row.status is RowStatus.SUPERSEDED
+        with pytest.raises(TransitionRefusedError, match="user-terminal"):
+            await s.transition_row(
+                rule_row.id,
+                user_id=t.user.id,
+                to=RowStatus.PENDING,
+                actor=Actor.WEB,
+                reason=None,
+                now=NOW,
+            )
+        assert (await _get(s, rule_row)).status is RowStatus.SUPERSEDED
+        assert await s.load_event_rows(targets={MB: TARGET}, now=NOW) == []
+
+    async def test_unskip_refused_after_weekday_change(self, harness: StoreHarness) -> None:
+        """Round-5 SF1: unskip may not revive a row its rule no longer covers."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, row = await _rule_row(s, t)
+        await s.transition_row(
+            row.id, user_id=t.user.id, to=RowStatus.SKIPPED, actor=Actor.WEB, reason=None, now=NOW
+        )
+        await s.upsert_rule(replace(rule, weekday=6), user_id=t.user.id)
+        with pytest.raises(TransitionRefusedError, match="no longer covers"):
+            await s.transition_row(
+                row.id,
+                user_id=t.user.id,
+                to=RowStatus.PENDING,
+                actor=Actor.WEB,
+                reason=None,
+                now=NOW,
+            )
+        assert (await _get(s, row)).status is RowStatus.SKIPPED
+
+    async def test_weekday_change_straggler_never_offered_and_swept(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-5 MF2 (a): a leased Saturday row survives a move of its rule to Sunday (the
+        withdraw had to skip it). It is never offered again and the sweep finds it."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, row = await _rule_row(s, t)
+        await _lease(s, row, owner=WATCHER)
+        await s.upsert_rule(replace(rule, weekday=6), user_id=t.user.id)
+        with pytest.raises(RowLeaseError):
+            await s.transition_row(
+                row.id,
+                user_id=None,
+                to=RowStatus.WITHDRAWN,
+                actor=Actor.MATERIALIZER,
+                reason="rule_weekday_changed",
+                now=NOW,
+            )
+        await s.release_row_lease(row.id, owner=WATCHER)
+        assert await s.load_event_rows(targets={MB: TARGET}, now=NOW) == []
+        horizon = {MB: (NOW.date(), TARGET + timedelta(days=14))}
+        assert await s.load_watch_rows(horizons=horizon, now=NOW) == []
+        assert [r.id for r in await s.rows_no_longer_covered(now=NOW)] == [row.id]
+
+    async def test_finalize_withdraws_weekday_mismatch_as_rule_weekday_changed(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        rule, row = await _rule_row(s, t)
+        await _lease(s, row, owner=WATCHER)
+        await s.upsert_rule(replace(rule, weekday=6), user_id=t.user.id)
+        await s.release_row_lease(row.id, owner=WATCHER)
+        assert await s.finalize_lost(now=FROZEN_NOW) == []
+        after = await _get(s, row)
+        assert (after.status, after.status_reason) == (RowStatus.WITHDRAWN, "rule_weekday_changed")
+
+    async def test_reactivate_refuses_stale_rule(self, harness: StoreHarness) -> None:
+        """Round-5 MF2 (b): validated against the STORED rule (IfMatch on its version)."""
+        s = harness.store
+        t = await _tenant(s)
+        saturday, row = await _rule_row(s, t)
+        row = await s.transition_row(
+            row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        await s.upsert_rule(replace(saturday, weekday=6), user_id=t.user.id)
+        with pytest.raises(TransitionRefusedError, match="stale"):
+            await s.reactivate_rule_row(row, saturday, now=NOW)
+        assert (await _get(s, row)).status is RowStatus.WITHDRAWN
+
+    async def test_reactivate_refuses_row_the_stored_rule_no_longer_covers(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        saturday, row = await _rule_row(s, t)
+        row = await s.transition_row(
+            row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_weekday_changed",
+            now=NOW,
+        )
+        sunday = await s.upsert_rule(replace(saturday, weekday=6), user_id=t.user.id)
+        with pytest.raises(TransitionRefusedError, match="no longer covers"):
+            await s.reactivate_rule_row(row, sunday, now=NOW)
+
+    async def test_insert_rule_row_refuses_stale_rule(self, harness: StoreHarness) -> None:
+        """Round-5 MF2 (c): a stale Saturday copy cannot create a row under a Sunday rule."""
+        s = harness.store
+        t = await _tenant(s)
+        saturday = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        await s.upsert_rule(replace(saturday, weekday=6), user_id=t.user.id)
+        with pytest.raises(TransitionRefusedError, match="stale"):
+            await s.insert_rule_row_if_absent(saturday, TARGET, now=NOW)
+        assert await s.rows_for_account_date(t.account.id, TARGET) == []
+
+    async def test_upsert_rule_clears_watermark_on_weekday_change(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-5 SF-2: a weekday change clears the watermark in the same write; a window edit
+        and a deactivation keep it (deactivation keeps its reset -> withdraw -> reset order)."""
+        s = harness.store
+        t = await _tenant(s)
+        rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        through = NOW.date() + timedelta(days=21)
+        await s.set_materialized_through(rule.id, through)
+        rule = await s.upsert_rule(replace(rule, window_latest=time(11, 0)), user_id=t.user.id)
+        assert rule.materialized_through == through
+        rule = await s.upsert_rule(replace(rule, weekday=6), user_id=t.user.id)
+        assert rule.materialized_through is None
+        await s.set_materialized_through(rule.id, through)
+        off = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        assert off.materialized_through == through
+
+    async def test_acquire_lease_refused_on_non_bookable_status(
+        self, harness: StoreHarness
+    ) -> None:
+        """Round-5 nit 1: only PENDING and BOOKED rows are ever leased."""
+        s = harness.store
+        t = await _tenant(s)
+        until = NOW + timedelta(seconds=300)
+        skipped = await _explicit(s, t)
+        await s.transition_row(
+            skipped.id,
+            user_id=t.user.id,
+            to=RowStatus.SKIPPED,
+            actor=Actor.WEB,
+            reason=None,
+            now=NOW,
+        )
+        withdrawn = await _explicit(s, t, target=TARGET + timedelta(days=7))
+        await s.transition_row(
+            withdrawn.id,
+            user_id=t.user.id,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.WEB,
+            reason=USER_WITHDRAW_REASON,
+            now=NOW,
+        )
+        for row in (skipped, withdrawn):
+            assert not await s.acquire_row_lease(
+                row.id, owner=WATCHER, until=until, now=NOW, expected=None
+            )
+            assert (await _get(s, row)).lease_owner is None
+        booked = await _book(s, await _explicit(s, t, target=TARGET + timedelta(days=14)))
+        assert await s.acquire_row_lease(
+            booked.id, owner=WATCHER, until=until, now=NOW, expected=None
+        )

@@ -80,6 +80,21 @@ SOFT_AUTH_FAILURE_LIMIT = 3
 
 _Write = tuple[RequestRow | None, RequestRow]
 
+# Only these statuses are ever leased: nothing is booked, upgraded or cancelled from any other.
+_LEASABLE_STATUSES = frozenset({RowStatus.PENDING, RowStatus.BOOKED})
+
+
+def _becomes_bookable(old: RequestRow | None, new: RequestRow) -> bool:
+    """True when a write puts a row into PENDING / SKIPPED from outside the active set
+    (create, reactivate, restore, un-supersede) or unskips it. booked -> pending (the M2 edge)
+    is excluded: it records what already happened and must never be refused."""
+    if new.status not in (RowStatus.PENDING, RowStatus.SKIPPED):
+        return False
+    if old is None or old.status not in ACTIVE_ROW_STATUSES:
+        return True
+    return old.status is RowStatus.SKIPPED and new.status is RowStatus.PENDING
+
+
 # The ONLY §3.4 edges the LEASED path (``record_outcomes``) may write, and by whom. Everything else
 # (skip, withdraw, un-supersede, reactivate, ...) goes through the unleased paths, which carry the
 # extra guards (user-terminal history, D2 restore, rule active). MU-5 review round 2, MF1.
@@ -178,6 +193,9 @@ class InMemoryTenantStore:
                 raise TransitionRefusedError(f"row {new.id} already exists")
             if old is not None and stored != old:
                 raise TransitionRefusedError(f"row {new.id} changed since it was read")
+        for old, new in writes:
+            if new.source is RowSource.RULE and _becomes_bookable(old, new):
+                self._guard_rule_row_may_become_active(new)
         slots = dict(self._slots)
         for old, new in writes:  # releases first, so a supersede frees the slot it re-points
             key = (new.course_account_id, new.target_date)
@@ -268,12 +286,48 @@ class InMemoryTenantStore:
                 f"{day} has a user-terminal row; only an explicit re-request reopens it"
             )
 
-    def _rule_active_for(self, row: RequestRow) -> bool:
-        """True for explicit rows and for rule rows whose rule exists and is active."""
+    def _rule_covers_row(self, row: RequestRow) -> bool:
+        """THE coverage predicate (round-5 MF1/MF2), read from the STORED rule: True for explicit
+        rows, and for a rule row whose rule exists, is active, is on the row's weekday and belongs
+        to the row's account. Every read path that offers rows for booking and every writer of an
+        active status onto a rule row goes through it."""
         if row.rule_id is None:
             return True
         rule = self._rules.get(row.rule_id)
-        return rule is not None and rule.active
+        return (
+            rule is not None
+            and rule.active
+            and rule.course_account_id == row.course_account_id
+            and rule.weekday == row.target_date.weekday()
+        )
+
+    def _uncovered_reason(self, row: RequestRow) -> str:
+        """The system withdraw reason for a rule row its rule no longer covers."""
+        rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
+        if rule is None or rule.course_account_id != row.course_account_id:
+            return "rule_deleted"
+        if not rule.active:
+            return "rule_deactivated"
+        return "rule_weekday_changed"
+
+    def _guard_rule_row_may_become_active(self, row: RequestRow) -> None:
+        """The shared "may become active" guard for a rule row (round-5 MF1), enforced inside the
+        batch so NO writer can skip it: create, reactivate, un-supersede, unskip, the one-off
+        withdraw restore. The rule must still cover the row, and the date must have no
+        user-terminal row (round-7). Frozen and slot checks are the caller's check_transition /
+        check_create and the slot pointer below."""
+        if not self._rule_covers_row(row):
+            raise TransitionRefusedError(f"the rule no longer covers {row.target_date}")
+        self._refuse_if_user_terminal(row.course_account_id, row.target_date)
+
+    def _stored_rule_matching(self, rule: StandingRule) -> StandingRule:
+        """IfMatch on the rule (round-5 MF2 b/c): the caller's copy must be the stored version.
+        Cosmos (MU-8b): read the rule doc (or its ``ruleday|<weekday>`` pointer) and assert its
+        ETag in the same batch as the row write."""
+        stored = self._rules.get(rule.id)
+        if stored is None or stored.version != rule.version:
+            raise TransitionRefusedError(f"stale rule {rule.id}: re-read and retry")
+        return stored
 
     def _restorable_rule_row(self, explicit: RequestRow, now: datetime) -> _Write | None:
         """The rule row a withdrawn explicit row gives the date back to, restored to
@@ -295,14 +349,10 @@ class InMemoryTenantStore:
             # undoes the re-request, not the cancel; a superseded rule row stays SUPERSEDED (inert).
             return None
         for row in [*superseded, *withdrawn]:
-            rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
-            if row.source is not RowSource.RULE or rule is None or not rule.active:
-                continue
-            if (
-                rule.course_account_id != row.course_account_id
-                or row.target_date.weekday() != rule.weekday
-            ):
-                continue  # round-4 MF-A: never restore onto a weekday the rule no longer covers
+            if row.source is not RowSource.RULE or not self._rule_covers_row(row):
+                continue  # round-4 MF-A / round-5: only a row its (stored) rule still covers
+            rule = self._rules[row.rule_id] if row.rule_id is not None else None
+            assert rule is not None  # covered implies the rule exists
             if row_is_frozen(row, now=now):
                 continue
             if lease_held(row, now=now):
@@ -344,7 +394,7 @@ class InMemoryTenantStore:
             account = self._accounts.get(row.course_account_id)
             # Belt and braces for a non-atomic deactivation (§7.7): never offer the booker a row
             # of an inactive rule, even before the materializer withdrew it.
-            rule_ok = self._rule_active_for(row)
+            rule_ok = self._rule_covers_row(row)
             if (
                 row.status is RowStatus.PENDING
                 and targets.get(row.course_id) == row.target_date
@@ -524,6 +574,8 @@ class InMemoryTenantStore:
         expected: RowFingerprint | None,
     ) -> bool:
         row = self._row(row_id)
+        if row.status not in _LEASABLE_STATUSES:
+            return False  # nothing is ever booked, upgraded or cancelled from any other status
         if lease_held(row, now=now) and row.lease_owner != owner:
             return False
         if not _fingerprint_matches(row, expected):
@@ -557,7 +609,7 @@ class InMemoryTenantStore:
             live_pending = (
                 row.status is RowStatus.PENDING
                 and not row_is_frozen(row, now=now)
-                and self._rule_active_for(row)
+                and self._rule_covers_row(row)
             )
             if live_pending or row.status is RowStatus.BOOKED:
                 out.append(EventRow(row=row, account=account))
@@ -570,9 +622,10 @@ class InMemoryTenantStore:
                 continue
             if lease_held(row, now=now):
                 continue  # an actor is mid-act; the next finalizer pass gets it
-            if not self._rule_active_for(row):
-                # The user switched the rule off: a system withdraw, never a "lost" email.
-                self._withdraw_for_inactive_rule(row, now)
+            if not self._rule_covers_row(row):
+                # The user switched the rule off, deleted it or moved its weekday: a system
+                # withdraw, never a "lost" email.
+                self._withdraw_uncovered(row, now)
                 continue
             check_transition(row, RowStatus.LOST, actor=Actor.WATCHER, now=now)
             reason = "cutoff" if now >= row.cutoff_at else "date_passed"
@@ -586,9 +639,8 @@ class InMemoryTenantStore:
             lost.append(new)
         return lost
 
-    def _withdraw_for_inactive_rule(self, row: RequestRow, now: datetime) -> None:
-        exists = row.rule_id is not None and row.rule_id in self._rules
-        reason = "rule_deactivated" if exists else "rule_deleted"
+    def _withdraw_uncovered(self, row: RequestRow, now: datetime) -> None:
+        reason = self._uncovered_reason(row)
         check_transition(row, RowStatus.WITHDRAWN, actor=Actor.MATERIALIZER, now=now, reason=reason)
         new = replace(
             self._unleased_write(row, now),
@@ -598,13 +650,13 @@ class InMemoryTenantStore:
         )
         self._commit([(row, new)])
 
-    async def rows_of_inactive_rules(self, *, now: datetime) -> list[RequestRow]:
+    async def rows_no_longer_covered(self, *, now: datetime) -> list[RequestRow]:
         rows = (
             r
             for r in self._rows.values()
             if r.rule_id is not None
             and r.status in (RowStatus.PENDING, RowStatus.SUPERSEDED)
-            and not self._rule_active_for(r)
+            and not self._rule_covers_row(r)
             and not lease_held(r, now=now)
         )
         return sorted(rows, key=lambda r: r.id)
@@ -664,6 +716,7 @@ class InMemoryTenantStore:
         self, rule: StandingRule, target_date: date, *, now: datetime
     ) -> RequestRow | None:
         account = self._account_for_user(rule.course_account_id, None)
+        rule = self._stored_rule_matching(rule)
         if target_date.weekday() != rule.weekday:
             raise ValueError(f"{target_date} is not on the rule's weekday ({rule.weekday})")
         if not rule.active:
@@ -696,6 +749,7 @@ class InMemoryTenantStore:
         check_transition(row, target, actor=Actor.MATERIALIZER, now=now)
         if row.rule_id != rule.id:
             raise ValueError(f"row {row.id} does not belong to rule {rule.id}")
+        rule = self._stored_rule_matching(rule)
         if not rule.active:
             raise TransitionRefusedError(f"rule {rule.id} is inactive")
         self._refuse_if_user_terminal(row.course_account_id, row.target_date)
@@ -909,6 +963,12 @@ class InMemoryTenantStore:
             through = existing.materialized_through
             if through is not None and rule.materialized_through is not None:
                 through = max(through, rule.materialized_through)
+            moved = rule.weekday != existing.weekday
+            reactivated = rule.active and not existing.active
+            if moved or reactivated:
+                # Round-5 SF-2 (coordinator decision): the rule is due for the tick in the same
+                # write, so a crash before the web's synchronous materialize loses nothing.
+                through = None
             stored = replace(rule, version=existing.version + 1, materialized_through=through)
         self._ruledays = ruledays
         self._rules[rule.id] = stored
