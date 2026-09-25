@@ -354,9 +354,16 @@ a tenant watcher, and a FastAPI/HTMX Container App. The new modules are on disk 
 `src/teetime/tenant/`, `src/teetime/web/`, `src/teetime/core/release_policy.py`,
 `src/teetime/courses/foreup/token_pool.py`, `src/teetime/dev/virtual_clock.py`; most are still
 stubs that raise `NotImplementedError` with an MU-milestone reference, and the ones already
-implemented per-milestone (e.g. `tenant/crypto.py`, MU-7) are covered by their own tests. **Nothing
-imports them from the production path. Prod behaviour, config, and infra are unchanged**, and the TOML `run`/`watch` path stays the
-production path until the cutover in MULTIUSER_PLAN §11. Tenant store (decided 2026-09-25): a Cosmos DB
+implemented per-milestone (`tenant/allocation.py`, MU-3; `tenant/crypto.py`, MU-7) are covered by
+their own tests. **Nothing imports them from the production path. Prod behaviour, config, and
+infra are unchanged**, and the TOML `run`/`watch` path stays the
+production path until the cutover in MULTIUSER_PLAN §11. **MU-3 is DONE in code** (engine
+hooks E2 + E3 + the allocator; `tenant/allocation.py` is real, not a stub): the Mangrove Bay
+`BLIND_POST_MORNING_GRID` spans the full morning 07:00–12:00 and `MangroveBayAdapter.
+set_blind_allowlist` filters `synthesize_blind_slots` before truncation (default `None` = no
+filter). The operator's 08:45–10:00 burst is pinned byte-identical to the pre-widening grid
+(`test_widened_grid_emits_identical_slots_for_0845_1000_window`); nothing in the TOML path calls
+the hook, so this is NOT a booking-behavior change. Details in `src/teetime/courses/CLAUDE.md`. Tenant store (decided 2026-09-25): a Cosmos DB
 free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
 "no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path
 is unaffected.
