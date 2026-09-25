@@ -851,8 +851,9 @@ in `core/` — never directly. This is the cut line for parallel work.
   pre-T0 and now expired) triggers exactly ONE inline re-solve + re-POST of the same slot
   (`_is_captcha_challenge` is the non-raising sibling of `_guard_captcha`); the re-POST is
   classified normally (a 2nd challenge → `CaptchaError`, no loop). An INLINE-solved token gets
-  no such retry. **Concurrent inline solves are SEMAPHORE-BOUNDED** (`_captcha_solve_sem`,
-  ctor `max_concurrent_captcha_solves` default 6): in the blind-POST burst many `book()`s can
+  no such retry. **Concurrent inline solves are SEMAPHORE-BOUNDED** (`SharedCaptchaPool.
+  solve_inline` / `_inline_sem`; for the default private pool it is sized by the adapter ctor's
+  `max_concurrent_captcha_solves`, default 6): in the blind-POST burst many `book()`s can
   reach the inline solve (pool dry OR MF1 re-solve) at once — without the bound that is an
   N-way herd of ~75 s 2captcha solves at T0, threatening the booking `replicaTimeout` and the
   provider rate limit. Single-book paths (upgrade, sequential fallback) are single-threaded so
@@ -865,10 +866,15 @@ in `core/` — never directly. This is the cut line for parallel work.
   is the unmodified gate). INJECTED (`captcha_pool=` + `captcha_lease_key=`, tenant runner only,
   not wired yet): adapters of one course share the pool; with demand `register`ed, the first
   `prepare_book` starts ONE fill (≤ `max_concurrent_solves` in flight, `count` ignored, returns
-  on wave 1 or at T0−10 s once `arm`ed, never raises), leases are granted round-robin in draft
+  on wave 1 or at T0−10 s, never raises on solve failures — and ALWAYS returns, even if the fill
+  is cancelled by `aclose()` or dies), leases are granted round-robin in draft
   order, later arrivals + `release`d leases go to a shared reserve, `book()` pops own lease →
   reserve → inline (both pooled for MF1), `captcha_pool_size()` counts the lease only, and the
-  inline bound is the POOL's (per course; the adapter's own bound is ignored). Adapters with no pre-fetch cost
+  inline bound AND provider are the POOL's (per course; the adapter's own bound is ignored and a
+  pool built with another `course_id` is refused). Misconfiguration raises `RuntimeError` from
+  `prepare_book` (the orchestrator logs it and `book()` inline-solves): a coordinated pool that
+  was never `arm(t0=…)`ed, or a key that was never `register`ed (over-cap accounts must register
+  with k=0, else they would solve outside the C bound). Adapters with no pre-fetch cost
   (FakeAdapter, TeeItUpAdapter, future
   Chronogolf) implement it as a no-op (they accept `count` for parity and ignore it). Its
   `slot` arg is `TeeTimeSlot | None` (the CAPTCHA is page-level, slot-independent). **Two
