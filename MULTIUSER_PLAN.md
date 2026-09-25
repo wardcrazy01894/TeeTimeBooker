@@ -282,7 +282,7 @@ a global cutoff-policy change needs a migration that recomputes `cutoff_at`, §1
 | superseded → pending **or skipped** | web | explicit row withdrawn; rule active; not frozen; superseded row not leased. It returns to **exactly its pre-supersede status** (`superseded_from`): a user's skip is honoured (round-4 D2). The materializer never writes this edge |
 | superseded → withdrawn | materializer/web (**system** reasons only: rule deactivated, deleted, or weekday changed) | not leased (round-4 D1: superseded rows are not immune to rule edits) |
 | pending → withdrawn | web (delete explicit: `status_reason=user_withdrawn` — **NOT user-terminal** (round-3 M1): it means "undo my one-off", not "never book this date", so a later rule may still materialize the date; withdrawing an explicit row that superseded a rule row restores that rule row to **its prior status** (pending or skipped, D2) **in the same batch**); materializer/web (**system** reasons: `rule_weekday_changed`, `rule_deactivated`, `rule_deleted`) | not leased |
-| withdrawn(**any system reason**) → pending **or skipped** (round-5: back to `superseded_from` if the row was superseded before the withdraw) | materializer, **only via `reactivate_rule_row`** (rule becomes applicable to that date again: weekday flipped back, reactivated, or a different rule now covers it) | not frozen; **no user-terminal row for (account, date)** (§7.7); slot free. IfMatch replace (refreshing window/party from the current rule) + create slot, in one batch (round-2 M1) |
+| withdrawn(**any system reason**) → pending **or skipped** (round-5: back to `superseded_from` if the row was superseded before the withdraw) | materializer via `reactivate_rule_row` (rule becomes applicable to that date again: weekday flipped back, reactivated, or a different rule now covers it); **or** the web's one-off withdraw batch (round-6: the one-off held the slot, so reactivation was refused) | not frozen; **no user-terminal row for (account, date)** (§7.7); rule active and still covering the date (weekday + account, round-4 MF-A); slot free (or freed by the one-off in the same batch). IfMatch replace (refreshing window/party from the current rule) + create slot, in one batch (round-2 M1) |
 | booked → booked (upgrade) | tenant watcher | via `UpgradeOrchestrator` under row lease |
 | booked → cancelled | web (user cancel, §8.5: reason `user` or `already_gone`); watcher (reason `external` only; reasons are tied to the actor, MU-5 review) (`external`: the reservation is absent from **two consecutive trusted** snapshots, **and** `upgrade_started_at` is NULL, **and** the id is not ledgered `cancelled_upgrade`/`cancelled_extra`, **and** no same-(date, party) replacement reservation exists; a replacement is adopted instead, §7.5) | lease |
 | booked → pending (+`needs_reconcile`) | tenant watcher | **refused unless the write sets `needs_reconcile`** (MU-5 review MF2; without it the §7.6 in-window adoption never applies). The upgrade cancelled the old slot and the rebook failed. **Detected by observation, not by the store terminal** (`delete_terminal` runs only after a *successful* rebook, `upgrade_orchestrator.py:492`; after a failed rebook Gate 3 returns the old `prior`). The recording decorator (§4.6) sees `cancel_reservation(booked_raw_id)` succeed and no new BOOKED. If the process dies before the write, the `upgrade_started_at` intent marker (set under the lease **before** the engine runs) makes the next run treat a missing reservation as bot-caused: pending + needs_reconcile, **not** cancelled(external) (M2) |
@@ -294,8 +294,9 @@ A lease is "held" only until `lease_expires_at`: every unleased write clears an 
 status change through `record_outcomes` needs an UNEXPIRED lease at the outcome's time, so a stale
 holder never reclaims a row someone else wrote after its lease ran out (MU-5 review SF2).
 **withdrawn → pending or skipped is written only by `reactivate_rule_row`** (and, round-6, by the one-off withdraw batch; never the generic web/materializer
-transition), because only it re-checks the user-terminal history and refreshes window/party from
-the rule (MU-5 review MF1).
+transition), because only they re-check the user-terminal history and refresh window/party from
+the rule (MU-5 review MF1). The round-6 restore applies only when the rule is ACTIVE, still covers the row (`rule.weekday == target_date.weekday()` and same account), the date is not frozen, and there is **no user-terminal row for (account, date)** (round-4 MF-A: it keys on the rule's CURRENT weekday, not on the withdraw reason, so a row whose rule moved away and back while a one-off held the slot is still restored).
+**Round-7 decision (MU-5 review round 4): a user-terminal date stays BLOCKED for the standing rule regardless of later re-requests.** Withdrawing a re-request undoes the re-request, not the cancel, so the one-off withdraw restores NO rule row on a user-terminal date: a superseded rule row there stays SUPERSEDED, which is inert (the materializer's step 1 skips user-terminal dates, and `load_event_rows` / `load_watch_rows` never return superseded rows). Pinned by `test_withdraw_rerequest_after_user_cancel_keeps_date_blocked`.
 
 **Round-4 decisions (MU-5 review, coordinator, 2026-09-25):**
 - **(D1) Superseded rule rows are NOT immune to rule edits.** Rule deactivation, rule deletion and
@@ -906,7 +907,9 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
      - withdrawn for a **system** reason (`rule_weekday_changed`/`rule_deactivated`/`rule_deleted`)
        and the slot is free → **reactivate** (batch: IfMatch replace to pending or `superseded_from`, with window/party
        refreshed from the current rule + create the slot);
-     - withdrawn for a system reason and the slot is HELD (e.g. by a one-off) → leave it: **round-6 decision**, the one-off's withdraw batch restores it (to `superseded_from` or pending, refreshed from the rule) when that rule is active and the date not frozen, so deactivate → reactivate (refused: slot held) → withdraw one-off no longer strands the date. Pinned by `test_withdraw_explicit_restores_system_withdrawn_row_of_active_rule`;
+     - withdrawn for a system reason and the slot is HELD (e.g. by a one-off) → leave it: **round-6 decision**, the one-off's withdraw batch restores it (to `superseded_from` or pending, refreshed from the rule) when the rule is ACTIVE, still covers the row (`rule.weekday == target_date.weekday()` and same account), the date is not frozen, and there is **no user-terminal row for (account, date)**, so deactivate → reactivate (refused: slot held) → withdraw one-off no longer strands the date, and a rule moved to another weekday never gets a row back on the old one. Pinned by `test_withdraw_explicit_restores_system_withdrawn_row_of_active_rule`,
+       `test_withdraw_explicit_does_not_restore_row_of_weekday_changed_rule` and
+       `test_withdraw_explicit_restores_row_when_weekday_flipped_back_while_slot_held`;
      - superseded and the slot is still held → leave it (round-4 D1: a rule deactivate/delete/
        weekday change has already WITHDRAWN superseded rows, so a still-superseded row always
        belongs to an active rule; the materializer never writes superseded → pending);
@@ -929,10 +932,20 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
   NOT atomic across rows: the rule write and each row withdrawal are separate batches (different
   documents, and the rows can be many). The web deactivation flow is therefore, in order:
   (1) `reset_materialized_through(rule)` (the rule becomes due for the tick); (2) withdraw the
-  unleased PENDING / SUPERSEDED rows; (3) write the rule inactive. A crash after (1) or (2)
-  leaves an ACTIVE rule with a cleared watermark, so the next tick re-materializes (reactivating
-  the withdrawn rows) instead of skipping it (MU-5 review round 3 SF2; pinned by
-  `test_reset_materialized_through_puts_rule_back_on_the_tick`).
+  unleased PENDING / SUPERSEDED rows; (3) `reset_materialized_through(rule)` AGAIN (a concurrent
+  tick may have re-advanced the watermark between (1) and (2); round-4 SF-B); (4) write the rule
+  inactive. A crash after (1), (2) or (3) leaves an ACTIVE rule with a cleared watermark, so the
+  next tick re-materializes (reactivating the withdrawn rows) instead of skipping it (MU-5 review
+  round 3 SF2; pinned by
+  `test_reset_materialized_through_puts_rule_back_on_the_tick`). A stored None watermark wins over
+  the caller's copy in `upsert_rule` (a reset is never undone by a stale object; round-4 SF-A,
+  `test_upsert_rule_honours_a_reset_watermark`). **Residual (accepted):** a tick that re-advances
+  the watermark between (3) and a crash before (4) leaves an active rule with a current watermark
+  and some withdrawn rows; the next rule edit or reactivation (both reset) repairs it. It needs a
+  crash AND a race inside one web request.
+- **Reactivation order (round-4 SF-A).** `upsert_rule(active=True)`, THEN `reset_materialized_through`,
+  then the web's synchronous materialize. A crash before the synchronous materialize still leaves
+  the tick work to do (pinned by `test_reactivation_flow_resets_watermark_after_upsert`).
 - **Rows a deactivation had to skip (MU-5 review round 3 MF1, coordinator decision).** "Rule
   edits never touch leased rows", so a row the booker or watcher holds at deactivation stays
   PENDING under an inactive rule. Three guards make sure it is never booked and never reported
@@ -1637,6 +1650,7 @@ than in a fourth round. The two residual should-fixes were resolved by decision,
 | **MU-5 review** superseded rule row stranded (deactivate → withdraw one-off → reactivate left it superseded forever); restore ignored a prior skip; reactivation bypassable via the generic transition; booked → pending without `needs_reconcile`; stale lease holders; scan-based rule uniqueness Cosmos cannot make atomic | **D1**: rule deactivate/delete/weekday change withdraws superseded rows too (system reason); **D2**: un-supersede restores the stored pre-supersede status (`superseded_from`). Plus: withdrawn → pending only via `reactivate_rule_row`; booked → pending requires `needs_reconcile`; expired leases cleared on unleased writes and required unexpired for status changes; `ruleday|<weekday>` pointer doc + IfMatch rule versions; cancel reasons tied to actor; ledger-only bookings reported as orphans | §3.1, §3.2, §3.4, §7.6, §7.7; `tenant/models.py`, `tenant/in_memory_store.py`, `tests/tenant/conformance.py` |
 | **MU-5 review round 2**: `record_outcomes` still wrote any §3.4 edge for a lease holder (reactivation, withdraw, un-supersede around their guards); D1 cleared `superseded_from`, so reactivation turned a hidden skip into a booking; deactivation not atomic across rows | **Round-5 decision**: `superseded_from` survives superseded → withdrawn and `reactivate_rule_row` restores it (withdrawn → skipped edge). Leased-edge allowlist for `record_outcomes`. §7.7 withdraw-rows-first order, and `load_event_rows` filters inactive rules. Ledger entries must match the row's date and course; `set_materialized_through` never moves backwards | §3.4, §7.7; `tenant/in_memory_store.py`, `tenant/models.py`, `tenant/materialize.py` docstrings |
 | **MU-5 review round 3**: pending rows of a rule deactivated while leased stayed bookable by the watcher (and could be reported lost); deactivate → reactivate (slot held) → withdraw one-off stranded the date; web cancel through the unleased path; the §7.7 crash claim was false | **Round-6 decision**: the one-off withdraw batch also restores a system-withdrawn rule row of an active rule (to `superseded_from` or pending, refreshed). Inactive-rule guards in `load_watch_rows` / `finalize_lost` (withdraw, no email) / the tick (`rows_of_inactive_rules`). `transition_row` refuses booked → cancelled. Deactivation resets `materialized_through` first | §3.4, §7.7; `tenant/in_memory_store.py`, `tenant/store.py` |
+| **MU-5 review round 4**: the one-off withdraw could restore a row onto a weekday its rule no longer covered; a stale rule object undid a watermark reset; a tick could re-advance the watermark mid-deactivation; the D2 branch ignored user-terminal dates | **Round-7 decision**: a user-terminal date stays blocked for the rule regardless of later re-requests (no restore in either branch). Restore keyed on the rule's current weekday + account. A stored None watermark wins in `upsert_rule`; deactivation is reset → withdraw → reset → inactive, reactivation is upsert → reset. A missing rule's rows are withdrawn `rule_deleted` | §3.4, §7.7; `tenant/in_memory_store.py`, `tenant/models.py` |
 
 **Status after round 3: RATIFIED** (2026-09-25). Operator decisions folded in: BYO accounts;
 Cosmos DB free tier for prod + dev (SQL Basic is the documented fallback); the first coordinated

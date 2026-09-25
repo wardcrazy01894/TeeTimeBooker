@@ -286,8 +286,10 @@ class TenantStore(Protocol):
 
     async def reset_materialized_through(self, rule_id: RuleId) -> None:
         """Clear the watermark (the rule is due for the next tick). The web deactivation flow
-        calls it FIRST, before withdrawing rows and writing the rule inactive, so a crash part-way
-        leaves the tick work to do instead of a withdrawn row nothing revisits (§7.7)."""
+        calls it FIRST and AGAIN after withdrawing rows (a concurrent tick may have re-advanced
+        it), before writing the rule inactive; the reactivation flow calls it after its upsert. A
+        crash part-way then leaves the tick work to do instead of a withdrawn row nothing
+        revisits (§7.7). A stored None also wins over a caller's stale copy in ``upsert_rule``."""
         ...
 
     async def rows_of_inactive_rules(self, *, now: datetime) -> list[RequestRow]:
@@ -363,10 +365,11 @@ class TenantStore(Protocol):
         withdrawn -> pending (only ever written by ``reactivate_rule_row``, which re-checks the
         user-terminal history and refreshes the row from the rule).
         Withdrawing an explicit row restores, in the same batch, the date's rule row whose rule
-        is ACTIVE and whose date is not frozen: a SUPERSEDED one (D2), or else a SYSTEM-WITHDRAWN
-        one with no user-terminal row for the date (round-6, the deactivate -> reactivate ->
-        withdraw order, window/party refreshed from the rule). Either returns to
-        ``superseded_from or PENDING``."""
+        is ACTIVE and still covers it (same weekday + account, round-4 MF-A) and whose date is not
+        frozen: a SUPERSEDED one (D2), or else a SYSTEM-WITHDRAWN one (round-6, the deactivate ->
+        reactivate -> withdraw order, window/party refreshed from the rule). Either returns to
+        ``superseded_from or PENDING``. Nothing is restored on a user-terminal date (round-7):
+        withdrawing a re-request undoes the re-request, not the cancel."""
         ...
 
     async def upsert_rule(self, rule: StandingRule, *, user_id: UserId) -> StandingRule:

@@ -16,9 +16,11 @@ timezone) or in the past. A collision with an active explicit row is inserted SU
 window/party edit rewrites only PENDING, unleased, not-frozen rows (never BOOKED/SKIPPED/
 SUPERSEDED). Deactivation, deletion and a weekday change WITHDRAW the rule's PENDING **and
 SUPERSEDED** rows (system reason; round-4 D1); BOOKED rows are never touched. Order (§7.7):
-``reset_materialized_through`` FIRST, then withdraw the unleased rows, then write the rule
-inactive, so a crash part-way leaves the tick work to do. Rows skipped because they were leased
-are swept later by the tick via ``rows_of_inactive_rules``; until then ``load_event_rows`` /
+``reset_materialized_through`` FIRST, then withdraw the unleased rows, then reset AGAIN (a
+concurrent tick may have re-advanced it), then write the rule inactive, so a crash part-way
+leaves the tick work to do. Reactivation is ``upsert_rule(active=True)`` THEN
+``reset_materialized_through``, then the synchronous materialize. Rows skipped because they were
+leased are swept later by the tick via ``rows_of_inactive_rules``; until then ``load_event_rows`` /
 ``load_watch_rows`` never offer them and ``finalize_lost`` withdraws them instead of LOST.
 Reactivation goes through ``TenantStore.reactivate_rule_row`` only, which restores the row's
 pre-supersede status (``superseded_from``: SKIPPED stays SKIPPED, round-5) else PENDING. The
