@@ -761,11 +761,12 @@ in `core/` — never directly. This is the cut line for parallel work.
   the other's implementation, and nothing in `core/`/`courses/`/`persistence/` imports `tenant`.
   `tenant.in_memory_store.InMemoryTenantStore` is the reference implementation and reproduces the
   Cosmos semantics the plan relies on: deterministic ids (`rule_row_id`, `derive_account_id`), the
-  `slot|<date>` pointer that makes "one ACTIVE row per (account, date)" a uniqueness fact, and
+  `slot|<date>` pointer that makes "one ACTIVE row per (account, date)" a uniqueness fact (and the
+  `ruleday|<weekday>` pointer for one active rule per weekday), IfMatch-style rule versions, and
   all-or-nothing batches with IfMatch-style checks. The §3.4 state machine is the pure
   `tenant.models.check_transition`/`check_create` (actor + frozen + reason guards); the store adds
   the lease guards (every web/materializer write requires the row unleased, M4; `record_outcomes`
-  requires the lease holder) and the `RowFingerprint` check on lease acquire (M5). **The contract is
+  status changes require an UNEXPIRED lease held by the writer) and the `RowFingerprint` check on lease acquire (M5). **The contract is
   the conformance suite `tests/tenant/conformance.py`, not a docstring**: any `TenantStore`
   (the future `CosmosTenantStore`, MU-8b) must pass `TenantStoreConformance` unchanged; subclass it
   with a `harness` fixture, as `tests/tenant/test_in_memory_store.py` does.
