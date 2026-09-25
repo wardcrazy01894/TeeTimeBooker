@@ -3,9 +3,8 @@
 Invariants live in the store (Cosmos: deterministic ids + date-slot pointer docs + transactional
 batches, §3.2) AND in the state-machine
 checker (``check_transition``, §3.4), and both are exercised by the store conformance suite (MU-5).
-``frozen`` is DERIVED (``core.booking_cutoff.frozen_reason``), never a stored status.
-
-STUB — implemented in MULTIUSER_PLAN MU-5.
+``frozen`` is DERIVED, never a stored status: ``row_is_frozen`` reads the row's denormalized
+``cutoff_at`` (= ``core.booking_cutoff.cutoff_instant``) plus "date passed in the course tz".
 """
 
 from __future__ import annotations
@@ -14,11 +13,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from enum import StrEnum
 from typing import NewType
-from uuid import UUID
+from uuid import UUID, uuid5
+from zoneinfo import ZoneInfo
 
-from ..core.models import CourseId, RequestId
-
-_MU5 = "MULTIUSER_PLAN.md MU-5"
+from ..core.models import CourseId, RequestId, derive_request_id
 
 UserId = NewType("UserId", UUID)
 CourseAccountId = NewType("CourseAccountId", UUID)
@@ -83,6 +81,15 @@ USER_TERMINAL: frozenset[tuple[RowStatus, str]] = frozenset(
         (RowStatus.CANCELLED, "external"),
         (RowStatus.CANCELLED, "already_gone"),
     }
+)
+# The only reason a WEB withdraw of an EXPLICIT row may carry ("undo my one-off"). NOT
+# user-terminal (see above), and disjoint from the system reasons, which apply to RULE rows only.
+USER_WITHDRAW_REASON = "user_withdrawn"
+# booked -> cancelled must name one of these (user = web cancel, external = the watcher's vanish
+# inference §7.5, already_gone = a web cancel that found the reservation already absent). Every
+# cancelled row is user-terminal for its (account, date).
+CANCEL_REASONS: frozenset[str] = frozenset(
+    reason for status, reason in USER_TERMINAL if status is RowStatus.CANCELLED
 )
 
 
@@ -276,11 +283,141 @@ class EventRow:
     account: CourseAccount
 
 
+# Namespace for the deterministic tenant ids (§3.1). Constant by design: changing it would
+# re-key every account and rule row.
+_TENANT_ID_NAMESPACE = UUID("5d0c8a3e-2b7f-4e61-9c1a-7f3e0b6d4a21")
+
+
 def row_request_id(row_id: RowId) -> RequestId:
     """``derive_request_id(f"tenant-row|{row_id}")`` (§3.3). NOT the TOML fingerprint: two
     accounts with identical window + synthesized guest names would otherwise share a RequestId
     and collide on ``request_lock`` inside one runner process."""
-    raise NotImplementedError(_MU5)
+    return derive_request_id(f"tenant-row|{row_id}")
+
+
+def rule_row_id(rule_id: RuleId, target_date: date) -> RowId:
+    """Deterministic id of the rule row for (rule, date): the UUID form of the Cosmos document id
+    ``row|rule|<rule_id>|<date>`` (§3.1), so UNIQUE(rule_id, date) is the id's uniqueness."""
+    return RowId(uuid5(_TENANT_ID_NAMESPACE, f"row|rule|{rule_id}|{target_date.isoformat()}"))
+
+
+def derive_account_id(user_id: UserId, course_id: CourseId) -> CourseAccountId:
+    """``accountId = uuid5(user_id, course_id)`` (§3.1): UNIQUE(user, course) by construction."""
+    return CourseAccountId(uuid5(user_id, str(course_id)))
+
+
+def is_user_terminal(row: RequestRow) -> bool:
+    """True iff ``row`` blocks every materialization of its (account, date) (``USER_TERMINAL``)."""
+    return row.status_reason is not None and (row.status, row.status_reason) in USER_TERMINAL
+
+
+def row_is_frozen(row: RequestRow, *, now: datetime) -> bool:
+    """Derived ``frozen`` (§3.4): ``now >= cutoff_at`` (inclusive, like ``frozen_reason``) or the
+    target date has passed in the row's COURSE timezone. The skip leg is retired for tenant rows
+    (a skip is the SKIPPED status)."""
+    if now >= row.cutoff_at:
+        return True
+    return row.target_date < now.astimezone(ZoneInfo(row.timezone)).date()
+
+
+def lease_held(row: RequestRow, *, now: datetime) -> bool:
+    """True iff some owner holds an UNEXPIRED lease on ``row`` (§3.5)."""
+    return (
+        row.lease_owner is not None
+        and row.lease_expires_at is not None
+        and row.lease_expires_at > now
+    )
+
+
+class TransitionRefusedError(ValueError):
+    """A state-machine transition the §3.4 table forbids (surfaced to the web as a 409)."""
+
+
+# The §3.4 table: (from, to) -> the ONLY actors that may write it. Any pair absent here is refused.
+# Guards beyond actor ownership live in ``_GUARDS`` / ``check_transition``; lease guards need the
+# writer's identity and live in the store.
+_P, _B, _S = RowStatus.PENDING, RowStatus.BOOKED, RowStatus.SKIPPED
+_SUP, _W = RowStatus.SUPERSEDED, RowStatus.WITHDRAWN
+_TRANSITION_OWNERS: dict[tuple[RowStatus, RowStatus], frozenset[Actor]] = {
+    (_P, _B): frozenset({Actor.BOOKING_RUNNER, Actor.WATCHER}),
+    (_P, _S): frozenset({Actor.WEB}),
+    (_S, _P): frozenset({Actor.WEB}),
+    (_P, _SUP): frozenset({Actor.WEB}),
+    (_S, _SUP): frozenset({Actor.WEB}),
+    (_SUP, _P): frozenset({Actor.WEB}),
+    (_P, _W): frozenset({Actor.WEB, Actor.MATERIALIZER}),
+    (_W, _P): frozenset({Actor.MATERIALIZER}),
+    (_B, _B): frozenset({Actor.WATCHER}),  # upgrade, via UpgradeOrchestrator under the lease
+    (_B, RowStatus.CANCELLED): frozenset({Actor.WEB, Actor.WATCHER}),
+    (_B, _P): frozenset({Actor.WATCHER}),  # upgrade cancelled the old slot, rebook failed
+    (_P, RowStatus.LOST): frozenset({Actor.WATCHER}),  # the finalizer
+}
+# Edges back INTO the active set (other than creation) that require the date not frozen.
+_REQUIRES_NOT_FROZEN: frozenset[tuple[RowStatus, RowStatus]] = frozenset(
+    {(_S, _P), (_SUP, _P), (_W, _P)}
+)
+# Creation (∅ -> status): the owning actor per row source, and the allowed initial statuses
+# (a rule row colliding with another active row is created SUPERSEDED, §7.7 step 3).
+_CREATE_OWNER: dict[RowSource, Actor] = {
+    RowSource.EXPLICIT: Actor.WEB,
+    RowSource.RULE: Actor.MATERIALIZER,
+}
+_CREATE_STATUSES: dict[RowSource, frozenset[RowStatus]] = {
+    RowSource.EXPLICIT: frozenset({_P}),
+    RowSource.RULE: frozenset({_P, _SUP}),
+}
+
+
+def check_create(row: RequestRow, *, actor: Actor, now: datetime) -> None:
+    """The ``∅ -> pending`` row of §3.4 (pure): explicit rows are created by the WEB, rule rows by
+    the MATERIALIZER (PENDING, or SUPERSEDED on collision), never for a frozen/past date. The
+    "no other active row" leg is the store's (the slot pointer, §3.2)."""
+    owner = _CREATE_OWNER[row.source]
+    if actor is not owner:
+        raise TransitionRefusedError(f"{actor} may not create a {row.source} row (only {owner})")
+    if row.status not in _CREATE_STATUSES[row.source]:
+        raise TransitionRefusedError(f"a {row.source} row cannot be created {row.status}")
+    if row_is_frozen(row, now=now):
+        raise TransitionRefusedError(f"{row.target_date} is frozen (cutoff or date passed)")
+
+
+def _guard_withdraw(row: RequestRow, actor: Actor, reason: str | None) -> None:
+    # WEB: an explicit row carries USER_WITHDRAW_REASON; a rule row (rule deleted/edited from the
+    # web) carries a SYSTEM reason. MATERIALIZER: system reasons on rule rows only.
+    if row.source is RowSource.EXPLICIT:
+        ok = actor is Actor.WEB and reason == USER_WITHDRAW_REASON
+    else:
+        ok = reason in SYSTEM_WITHDRAW_REASONS
+    if not ok:
+        raise TransitionRefusedError(
+            f"withdraw reason {reason!r} is not valid for a {row.source} row by {actor}"
+        )
+
+
+def _guard_reactivate(row: RequestRow, actor: Actor, reason: str | None) -> None:
+    if row.status_reason not in SYSTEM_WITHDRAW_REASONS:
+        raise TransitionRefusedError(
+            f"only a system-withdrawn row comes back (status_reason={row.status_reason!r})"
+        )
+
+
+def _guard_supersede(row: RequestRow, actor: Actor, reason: str | None) -> None:
+    if row.source is not RowSource.RULE:
+        raise TransitionRefusedError("only rule rows can be superseded")
+
+
+def _guard_cancel(row: RequestRow, actor: Actor, reason: str | None) -> None:
+    if reason not in CANCEL_REASONS:
+        raise TransitionRefusedError(f"cancel reason {reason!r} not in {sorted(CANCEL_REASONS)}")
+
+
+_GUARDS = {
+    (_P, _W): _guard_withdraw,
+    (_W, _P): _guard_reactivate,
+    (_P, _SUP): _guard_supersede,
+    (_S, _SUP): _guard_supersede,
+    (_B, RowStatus.CANCELLED): _guard_cancel,
+}
 
 
 def check_transition(
@@ -289,12 +426,29 @@ def check_transition(
     *,
     actor: Actor,
     now: datetime,
+    reason: str | None = None,
 ) -> None:
     """Raise ``TransitionRefusedError`` unless the §3.4 table allows ``row.status -> to`` for
-    ``actor`` at ``now`` (e.g. booked -> skipped is always refused; creation/unskip require not
-    frozen). Pure; the store calls it inside the transaction that performs the write."""
-    raise NotImplementedError(_MU5)
+    ``actor`` at ``now`` (e.g. booked -> skipped is always refused; unskip / un-supersede /
+    reactivate require not frozen; pending -> lost requires frozen). ``reason`` is the new
+    ``status_reason`` (withdraw and cancel validate it against their vocabularies).
 
-
-class TransitionRefusedError(ValueError):
-    """A state-machine transition the §3.4 table forbids (surfaced to the web as a 409)."""
+    Pure. Lease guards ("row not leased" for web/materializer writes, "holds the lease" for the
+    runner/watcher) need the writer's identity, so the STORE enforces them in the same atomic
+    write; so is "no other active row" (the slot pointer)."""
+    edge = (row.status, to)
+    if edge == (_B, _S):
+        raise TransitionRefusedError("a booked row cannot be skipped: use Cancel instead")
+    owners = _TRANSITION_OWNERS.get(edge)
+    if owners is None:
+        raise TransitionRefusedError(f"no transition {row.status} -> {to}")
+    if actor not in owners:
+        raise TransitionRefusedError(f"{actor} may not write {row.status} -> {to}")
+    frozen = row_is_frozen(row, now=now)
+    if edge in _REQUIRES_NOT_FROZEN and frozen:
+        raise TransitionRefusedError(f"{row.target_date} is frozen (cutoff or date passed)")
+    if to is RowStatus.LOST and not frozen:
+        raise TransitionRefusedError(f"{row.target_date} is not frozen yet; cannot mark lost")
+    guard = _GUARDS.get(edge)
+    if guard is not None:
+        guard(row, actor, reason)

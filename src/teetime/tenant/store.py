@@ -5,10 +5,25 @@ memory (``InMemoryStore``: terminals, attempt log, in-process ``request_lock``).
 carries durable intent + ownership: users, course accounts, standing rules, dated rows, the
 ownership ledger, snapshots, login-probe counters and the audit log.
 
-Implementations (not yet written): ``InMemoryTenantStore`` (MU-5, tests + conformance reference)
-and ``CosmosTenantStore`` (MU-8b, async ``azure-cosmos`` + MI auth, free-tier account §10.2). Both
-must pass the same parametrized conformance suite (the Cosmos leg is ``integration``-marked against
-the real ``dev`` database; no emulator in CI).
+Implementations: ``tenant.in_memory_store.InMemoryTenantStore`` (MU-5, tests + the conformance
+reference) and ``CosmosTenantStore`` (MU-8b, async ``azure-cosmos`` + MI auth, free-tier account
+§10.2). Both must pass the same conformance suite, ``tests/tenant/conformance.py`` (the Cosmos leg
+is ``integration``-marked against the real ``dev`` database; no emulator in CI). The suite, not this
+docstring, is the executable contract.
+
+Write paths and their lease rule (§3.4 "every web-initiated transition requires the row unleased",
+M4; §3.5):
+
+- ``transition_row`` / ``create_explicit_row`` / ``reactivate_rule_row`` are the UNLEASED paths
+  (web + materializer). They refuse with ``RowLeaseError`` while ANY owner holds an unexpired
+  lease on an affected row, so a booker claim can never be pulled out from under WRITE #2.
+- ``record_outcomes`` is the LEASED path (booking runner, watcher, and the web's managed cancel,
+  which first takes its own 60 s lease). A status change requires ``release_lease_owner`` to be
+  the current lease holder.
+- Lease writes (``claim_rows``, ``acquire_row_lease``, ``release_row_lease``,
+  ``set_upgrade_marker``) change the doc ETag but NOT the domain ``version``, so the
+  ``RowFingerprint`` a reader registered stays valid across its own lease acquire (M5). ``version``
+  bumps on every status / booking / content change.
 
 Cosmos mapping (§3.1/§3.2): partition key = ``course_account_id``, so a row, its date-slot pointer
 doc (``slot|<date>``: the one-ACTIVE-row-per-(account, date) invariant), its ledger entries and the
@@ -60,6 +75,17 @@ class RowLeaseError(RuntimeError):
     "booking in progress"; ``LeasedBookingStore`` maps it to ``ConcurrentRunError``."""
 
 
+class TenantNotFoundError(LookupError):
+    """The row / account / rule does not exist OR is not the caller's (``user_id`` scoping). The
+    two are deliberately indistinguishable (IDOR defence, §9.1); the web returns 404."""
+
+
+class UniquenessConflictError(ValueError):
+    """A cross-partition uniqueness claim is taken (§3.2): UNIQUE(course, username), UNIQUE
+    (provider, subject), ``max_accounts_per_course``, or an account id that is not
+    ``models.derive_account_id(user_id, course_id)``."""
+
+
 @dataclass(frozen=True, slots=True)
 class RowOutcome:
     """One row's post-burst / post-act result for ``record_outcomes`` (§4.2 WRITE #2).
@@ -70,8 +96,11 @@ class RowOutcome:
 
     ``to_status`` is None when the row stays in its status (e.g. NO_INVENTORY leaves it
     PENDING). ``booking`` is the ownership record to insert (BOOKED by us), and
-    ``cancelled_extras`` are raw ids ``_cancel_extras`` cancelled (ledger state
-    cancelled_extra). ``release_lease_owner`` releases the claim iff still held by that owner.
+    ``cancelled_extras`` are the ledger entries of the surplus bookings ``_cancel_extras``
+    cancelled (state cancelled_extra; full entries, not bare raw ids, so the ledger keeps the
+    tee time the recorder saw). ``release_lease_owner`` names the writer's lease: a status change
+    requires it to be the current holder, and the lease is released iff still held by it.
+    ``status_reason`` is the new reason (e.g. ``external`` on booked -> cancelled).
     """
 
     row_id: RowId
@@ -83,7 +112,7 @@ class RowOutcome:
     at: datetime
     result: BookingResult | None = None
     booking: OwnedBooking | None = None
-    cancelled_extras: tuple[str, ...] = ()
+    cancelled_extras: tuple[OwnedBooking, ...] = ()
     held_extras: tuple[OwnedBooking, ...] = ()  # _cancel_extras failures (M1)
     cancelled_upgrade_raw_id: str | None = None  # an upgrade's cancelled old reservation (M2)
     clear_upgrade_marker: bool = False
@@ -131,7 +160,11 @@ class TenantStore(Protocol):
         outcomes (M4). Each applies the status transition (via ``check_transition``), ledger
         inserts, ``last_outcome``, ``needs_reconcile``, the upgrade marker, and lease release.
         Returns nothing; per-row failures are raised as an ``ExceptionGroup`` AFTER every row
-        was attempted."""
+        was attempted.
+
+        A REFUSED row (it moved, or the writer no longer holds its lease) still gets its ledger
+        entries, written against (account, date), and the ACTIVE row for that date (if any) gets
+        ``needs_reconcile``; the refusal is then reported in the ``ExceptionGroup`` (M4)."""
         ...
 
     # --- leases (watcher + web, §3.5) ------------------------------------------------
@@ -229,6 +262,11 @@ class TenantStore(Protocol):
 
     async def get_user_by_subject(self, provider: str, subject: str) -> User | None: ...
 
+    async def upsert_user(self, user: User) -> None:
+        """Create or replace a user (operator ``/admin/users`` invite/disable, §8.2). Enforces
+        UNIQUE(provider, subject) for bound users (``UniquenessConflictError``)."""
+        ...
+
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:
         """First sign-in: bind an INVITED user's subject (matched by provider-verified email).
         Returns None if not invited (the web returns 403)."""
@@ -262,7 +300,8 @@ class TenantStore(Protocol):
         now: datetime,
     ) -> RequestRow:
         """Supersedes a PENDING/SKIPPED rule row for the same (account, date) in the same
-        transaction; refuses if a BOOKED row holds the date (§3.4)."""
+        transaction; refuses (``TransitionRefusedError``) if a BOOKED row or another explicit row
+        holds the date, or the date is frozen; ``RowLeaseError`` if the rule row is leased (M4)."""
         ...
 
     async def transition_row(
@@ -275,10 +314,20 @@ class TenantStore(Protocol):
         reason: str | None,
         now: datetime,
     ) -> RequestRow:
-        """Generic guarded transition (skip/unskip/withdraw/…); ``user_id`` scopes web calls."""
+        """The UNLEASED guarded transition for the WEB (skip, unskip, withdraw, un-supersede) and
+        the MATERIALIZER (system withdraw). ``user_id`` scopes web calls (required for WEB). Refuses
+        with ``RowLeaseError`` while the row is leased (M4) and ``TransitionRefusedError`` per
+        §3.4. Leased-path actors (runner, watcher) and the supersede edge (only ever written by
+        ``create_explicit_row``, in the same batch as the explicit row) are refused here.
+        Withdrawing an explicit row restores the rule row it superseded to PENDING in the same
+        batch when that rule is still active and the date is not frozen (§3.4)."""
         ...
 
-    async def upsert_rule(self, rule: StandingRule, *, user_id: UserId) -> StandingRule: ...
+    async def upsert_rule(self, rule: StandingRule, *, user_id: UserId) -> StandingRule:
+        """Create or replace (version bump) a rule on one of ``user_id``'s accounts. Refuses a
+        second ACTIVE rule on the same (account, weekday) with ``materialize.RuleConflictError``
+        (round-3 SF1). Does not touch rows (the materializer does, §7.7)."""
+        ...
 
     async def count_login_probes(
         self, *, user_id: UserId | None, username_hash: str | None, since: datetime
