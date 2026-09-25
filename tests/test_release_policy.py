@@ -22,6 +22,7 @@ import pytest
 from teetime.core.clock import FakeClock
 from teetime.core.dst_gate import should_proceed
 from teetime.core.release_policy import (
+    CronPair,
     ReleaseKey,
     ReleasePolicy,
     cron_pair,
@@ -101,10 +102,59 @@ def test_cron_pair_honours_lead_minutes() -> None:
     assert cron_pair(MB_POLICY, lead_minutes=30) == ("30 9 * * *", "30 10 * * *")
 
 
-def test_cron_pair_no_dst_zone_is_identical_halves() -> None:
-    # Arizona never observes DST: both "halves" are the same UTC instant (MST = UTC-7).
+def test_cron_pair_is_a_tuple_pair_with_no_dedupe_for_a_dst_zone() -> None:
+    pair = cron_pair(MB_POLICY)
+    assert isinstance(pair, CronPair)
+    assert (pair.daylight, pair.standard) == ("50 9 * * *", "50 10 * * *")
+    assert pair.deduped is False
+    assert pair.jobs == ("50 9 * * *", "50 10 * * *")  # two ACA jobs, one per DST half
+
+
+def test_cron_pair_no_dst_zone_is_deduped_to_one_job() -> None:
+    """Arizona never observes DST: both halves are the same UTC instant (MST = UTC-7). Two
+    jobs named -edt/-est would then fire at the SAME instant and BOTH pass the gate — two
+    runners racing one event with no lease in toml mode. The pair says so, and ``jobs`` is
+    the single cron MU-15a's event loop must derive ONE job from."""
     az = ReleasePolicy(advance_days=7, release_time=time(6, 0), timezone="America/Phoenix")
-    assert cron_pair(az) == ("50 12 * * *", "50 12 * * *")
+    pair = cron_pair(az)
+    assert pair == ("50 12 * * *", "50 12 * * *")  # still a 2-tuple for the JSON shape
+    assert pair.deduped is True
+    assert pair.jobs == ("50 12 * * *",)
+
+
+def test_cron_pair_halves_ordered_by_utc_offset_not_dst_flag() -> None:
+    """Jan 1 and Jul 1 of the probe year are classified by comparing ``utcoffset()`` — the
+    daylight half is the one with the LARGER offset (clocks sprung forward). Morocco is the
+    case a ``dst()`` heuristic mishandles: tzdata models it as permanent UTC+1 with ``dst()``
+    non-zero year-round (except the Ramadan dip in between), so both probes share an offset
+    and the pair must be DEDUPED, not two identical 'daylight' crons."""
+    casa = ReleasePolicy(advance_days=7, release_time=time(6, 0), timezone="Africa/Casablanca")
+    pair = cron_pair(casa)
+    assert pair == ("50 4 * * *", "50 4 * * *")
+    assert pair.deduped is True
+    # The Jan/Jul probes cannot see a DST period that lies strictly BETWEEN them (Casablanca's
+    # Ramadan shift): that limitation is documented on cron_pair and is unreachable by any
+    # planned course (all are US zones).
+
+
+def test_cron_pair_probe_year_selects_that_years_rules() -> None:
+    """tzdata changes only FUTURE rules, so a fixed probe year would keep an old pair after a
+    DST abolition. Brazil abolished DST in 2019: probing 2018 yields a real pair (Jan is
+    summer time there), probing 2026 yields a deduped one."""
+    sp = ReleasePolicy(advance_days=7, release_time=time(6, 0), timezone="America/Sao_Paulo")
+    old = cron_pair(sp, probe_year=2018)
+    assert old == ("50 7 * * *", "50 8 * * *")  # daylight FIRST even though it is January
+    assert old.deduped is False
+    new = cron_pair(sp, probe_year=2026)
+    assert new == ("50 8 * * *", "50 8 * * *")
+    assert new.deduped is True
+
+
+def test_cron_pair_default_probe_year_is_current_utc_year() -> None:
+    # The default reads the CURRENT year so an abolition shows up as soon as tzdata ships it;
+    # for a zone whose rules are stable across years the explicit and default forms agree.
+    this_year = datetime.now(tz=UTC).year
+    assert cron_pair(MB_POLICY) == cron_pair(MB_POLICY, probe_year=this_year)
 
 
 def test_fire_time_is_release_minus_lead() -> None:
