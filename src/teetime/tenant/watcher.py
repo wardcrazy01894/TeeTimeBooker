@@ -64,9 +64,13 @@ def needs_login(
     snapshot: ReservationSnapshot | None,
     run_index: int,
     now: datetime,
+    owned: Sequence[OwnedBooking] = (),
+    cadence: int = RECONCILE_EVERY_N_RUNS,
 ) -> LoginReason | None:
     """Why this row's account must log in this run, or None (no ForeUP login). Pure; §7.1 step 3
-    lists the reasons in priority order."""
+    lists the reasons in priority order. ``owned`` is the row's (account, date) ledger (an
+    upgrade candidate counts only for an OWNED booking, §7.6); ``cadence`` is the reconcile
+    period in runs (``RECONCILE_EVERY_N_RUNS``)."""
     raise NotImplementedError(_MU10)
 
 
