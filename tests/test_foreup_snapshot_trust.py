@@ -197,3 +197,30 @@ async def test_idempotent_reauth_keeps_trust() -> None:
         await adapter.authenticate(CREDS)
         assert login.call_count == 1
         assert adapter.snapshot_trusted is True
+
+
+@respx.mock
+async def test_foreup_warmup_error_on_refresh_leaves_snapshot_untrusted() -> None:
+    """A refresh whose warm-up GET raises (transport error, retries exhausted) never
+    reaches the login POST - the flag must still drop, since the cache is the previous
+    login's."""
+    boom = httpx.ConnectError("down")
+    respx.get(WARMUP_URL).mock(side_effect=[httpx.Response(200, text="ok"), boom, boom, boom])
+    respx.post(LOGIN_URL).mock(
+        return_value=httpx.Response(200, json={"success": True, "reservations": [_RES]})
+    )
+    async with _client() as client:
+        adapter = ForeUpAdapter(
+            course_id=CID,
+            course_pk=19671,
+            booking_class_id=2149,
+            schedule_id=2149,
+            timezone="America/New_York",
+            http_client=client,
+            retry_backoff_s=0,
+        )
+        await adapter.authenticate(CREDS)
+        assert adapter.snapshot_trusted is True
+        with pytest.raises(httpx.ConnectError):
+            await adapter.refresh_reservations(CREDS)
+        assert adapter.snapshot_trusted is False

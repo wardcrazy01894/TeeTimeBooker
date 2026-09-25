@@ -189,6 +189,10 @@ class ForeUpAdapter(CourseAdapter):
         self._client = http_client
         self._owns_client = http_client is None
         self._logged_in = False  # True only after a successful username/password login
+        # E6 (ReservationSnapshotHealth): True only when the LATEST login response carried a
+        # real `reservations` list. Reset before every login POST so a raise / soft-fail /
+        # non-JSON / list-less body can never leave a previous login's trust standing.
+        self._snapshot_trusted = False
         self._captcha_provider = captcha_provider
         # JWT extracted from the login response — sent as x-authorization: Bearer <token>
         # on cancel_reservation() requests. None if login hasn't been called or the
@@ -449,6 +453,9 @@ class ForeUpAdapter(CourseAdapter):
         if self._logged_in:
             _log.info("ForeUP: already logged in — skipping re-authentication")
             return
+        # E6: a real login attempt starts here, so the previous login's trust no longer
+        # applies — whatever raises / soft-fails / degrades below leaves it False.
+        self._snapshot_trusted = False
         _log.info("ForeUP: warming up session cookie...")
         warmup_path = f"/index.php/booking/{self._course_pk}/{self._booking_class_id}"
         await self._send_with_retry(lambda: self._c().get(warmup_path), op="warm-up")
@@ -521,6 +528,7 @@ class ForeUpAdapter(CourseAdapter):
             raw_res: object = data.get("reservations")
             if isinstance(raw_res, list):
                 self._reservations_from_login = raw_res
+                self._snapshot_trusted = True
         _log.info("ForeUP: login successful")
 
     @property
@@ -530,6 +538,15 @@ class ForeUpAdapter(CourseAdapter):
         (400/401/rejected body) is swallowed by ``authenticate()`` and leaves this False,
         so the race pre-warm skips recording this course and re-authenticates at T0."""
         return self._logged_in
+
+    @property
+    def snapshot_trusted(self) -> bool:
+        """``ReservationSnapshotHealth`` capability (MULTIUSER_PLAN E6 / §7.5). True iff the
+        latest login parsed a real ``reservations`` list. False before any login, after a
+        soft-failed login, a non-JSON 200, a JSON success whose ``reservations`` is missing or
+        not a list, or a login that raised. ``list_reservations()`` is unaffected — it still
+        returns whatever the cache holds; this only says whether to BELIEVE an absence."""
+        return self._snapshot_trusted
 
     async def refresh_reservations(self, creds: CourseCredentials) -> None:
         """Force a fresh login so ``list_reservations()`` returns a CURRENT snapshot.
