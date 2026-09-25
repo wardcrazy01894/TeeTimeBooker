@@ -18,9 +18,10 @@ SUPERSEDED). Deactivation, deletion and a weekday change WITHDRAW the rule's PEN
 SUPERSEDED** rows (system reason; round-4 D1); BOOKED rows are never touched. Order (§7.7):
 ``reset_materialized_through`` FIRST, then withdraw the unleased rows, then reset AGAIN (a
 concurrent tick may have re-advanced it), then write the rule inactive, so a crash part-way
-leaves the tick work to do. Reactivation is ``upsert_rule(active=True)`` THEN
-``reset_materialized_through``, then the synchronous materialize. Rows skipped because they were
-leased are swept later by the tick via ``rows_of_inactive_rules``; until then ``load_event_rows`` /
+leaves the tick work to do. Reactivation and a weekday change need no separate reset:
+``upsert_rule`` clears the watermark itself in those writes (round-5). Rows skipped because they
+were leased are swept later by the tick via ``rows_no_longer_covered`` (missing, inactive or
+weekday-moved rules); until then ``load_event_rows`` /
 ``load_watch_rows`` never offer them and ``finalize_lost`` withdraws them instead of LOST.
 Reactivation goes through ``TenantStore.reactivate_rule_row`` only, which restores the row's
 pre-supersede status (``superseded_from``: SKIPPED stays SKIPPED, round-5) else PENDING. The
@@ -113,7 +114,9 @@ async def materialize_rule(
     now: datetime,
 ) -> MaterializeReport:
     """Insert missing rows for ``rule`` up to the horizon, skipping frozen dates, then advance
-    ``materialized_through``. Safe to call repeatedly (idempotent)."""
+    ``materialized_through``. Safe to call repeatedly (idempotent). Materialize the FULL horizon
+    ``[today, today + horizon]``, never only the dates after the watermark: the daily tick is what
+    repairs withdrawn rows left by an interrupted deactivation (§7.7)."""
     raise NotImplementedError(_MU6)
 
 
@@ -125,7 +128,7 @@ async def materialize_tick(
     now: datetime,
 ) -> list[MaterializeReport]:
     """Watcher entry: one indexed query (rules with ``materialized_through`` short of the
-    horizon), a no-op on most runs, plus the ``rows_of_inactive_rules`` sweep that withdraws rows a
+    horizon), a no-op on most runs, plus the ``rows_no_longer_covered`` sweep that withdraws rows a
     deactivation had to skip while they were leased (§7.7). ``policies`` is keyed by CourseId
     string."""
     raise NotImplementedError(_MU6)
