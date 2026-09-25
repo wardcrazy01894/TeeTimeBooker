@@ -1,0 +1,321 @@
+"""MULTIUSER_PLAN MU-7 — ``tenant.crypto`` (AES-256-GCM credential encryption, §9.2).
+
+Pins the contract the runner (MU-9a) and the web connect flow (MU-14) rely on:
+  * a blob decrypts only with the SAME AAD it was encrypted under (account binding),
+  * the blob format is versioned and carries the key id, so rotation can find stale blobs,
+  * the keyring is FAIL-CLOSED (missing / malformed / active-kid-absent raises at load),
+  * plaintext and key material never surface in a repr or an exception message.
+
+Never mocks the SUT: every test drives the real AESGCM path with a real 32-byte key.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+from datetime import UTC, datetime
+from uuid import UUID
+
+import pytest
+
+from teetime.core.models import CourseId
+from teetime.tenant.crypto import (
+    KEYRING_ENV_VAR,
+    CredentialDecryptError,
+    Keyring,
+    KeyringError,
+    credential_aad,
+    decrypt_password,
+    encrypt_password,
+    load_keyring,
+    load_keyring_from_env,
+    needs_rekey,
+    rekey_password,
+)
+from teetime.tenant.models import (
+    AccountProvenance,
+    AccountStatus,
+    CourseAccount,
+    CourseAccountId,
+    UserId,
+)
+
+# Deterministic 32-byte keys so a failing assertion message is reproducible. They are
+# TEST fixtures, not secrets — but the tests still assert they never appear in a repr.
+_KEY_A = bytes(range(32))
+_KEY_B = bytes(range(32, 64))
+_PLAINTEXT = "hunter2-correct-horse-battery"  # long enough to be a meaningful literal
+_AAD = b"account-1|foreup:19671:2149|golfer@example.com"
+
+
+def _b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _ring_json(active: str, keys: dict[str, bytes]) -> str:
+    return json.dumps({"active": active, "keys": {kid: _b64(k) for kid, k in keys.items()}})
+
+
+@pytest.fixture
+def ring_a() -> Keyring:
+    return load_keyring(_ring_json("k1", {"k1": _KEY_A}))
+
+
+@pytest.fixture
+def ring_ab() -> Keyring:
+    """Rotation state: ``k2`` is active, ``k1`` is retired but still readable."""
+    return load_keyring(_ring_json("k2", {"k1": _KEY_A, "k2": _KEY_B}))
+
+
+# --- round trip + format ------------------------------------------------------------------
+
+
+def test_roundtrip(ring_a: Keyring) -> None:
+    blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    assert decrypt_password(ring_a, blob, aad=_AAD) == _PLAINTEXT
+
+
+def test_roundtrip_handles_unicode_and_empty_password(ring_a: Keyring) -> None:
+    for pw in ("", "pässwörd-✓-🔐"):
+        blob = encrypt_password(ring_a, pw, aad=_AAD)
+        assert decrypt_password(ring_a, blob, aad=_AAD) == pw
+
+
+def test_blob_format_is_versioned_and_carries_kid(ring_a: Keyring) -> None:
+    blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    version, kid, nonce_b64, ct_b64 = blob.split(":")
+    assert version == "v1"
+    assert kid == "k1"
+    assert len(base64.b64decode(nonce_b64, validate=True)) == 12  # 96-bit GCM nonce
+    # ciphertext = len(plaintext) + 16-byte GCM tag
+    assert len(base64.b64decode(ct_b64, validate=True)) == len(_PLAINTEXT.encode()) + 16
+
+
+def test_fresh_nonce_per_encrypt(ring_a: Keyring) -> None:
+    a = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    b = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    assert a != b
+    assert a.split(":")[2] != b.split(":")[2]
+
+
+# --- failure modes -------------------------------------------------------------------------
+
+
+def test_aad_mismatch_fails(ring_a: Keyring) -> None:
+    blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    other_account = b"account-2|foreup:19671:2149|golfer@example.com"
+    with pytest.raises(CredentialDecryptError):
+        decrypt_password(ring_a, blob, aad=other_account)
+
+
+def test_unknown_kid_fails(ring_a: Keyring) -> None:
+    blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    ring_other = load_keyring(_ring_json("k9", {"k9": _KEY_B}))
+    with pytest.raises(CredentialDecryptError, match="k1"):
+        decrypt_password(ring_other, blob, aad=_AAD)
+
+
+def test_tampered_ciphertext_fails(ring_a: Keyring) -> None:
+    blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    version, kid, nonce_b64, ct_b64 = blob.split(":")
+    ct = bytearray(base64.b64decode(ct_b64))
+    ct[0] ^= 0x01  # flip one bit in the ciphertext body → GCM tag no longer verifies
+    tampered = ":".join([version, kid, nonce_b64, _b64(bytes(ct))])
+    with pytest.raises(CredentialDecryptError):
+        decrypt_password(ring_a, tampered, aad=_AAD)
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        "",
+        "not-a-blob",
+        "v2:k1:AAAAAAAAAAAAAAAA:AAAA",  # unsupported version
+        "v1:k1:AAAA",  # too few fields
+        "v1:k1:!!!!:AAAA",  # nonce not base64
+        "v1:k1:AAAAAAAAAAAAAAAA:!!!!",  # ciphertext not base64
+    ],
+)
+def test_malformed_blob_fails(ring_a: Keyring, blob: str) -> None:
+    with pytest.raises(CredentialDecryptError):
+        decrypt_password(ring_a, blob, aad=_AAD)
+
+
+# --- keyring loading -----------------------------------------------------------------------
+
+
+def test_keyring_env_var_is_a_name_only() -> None:
+    # The code carries only the env var NAME; the value is a Key-Vault-injected secret.
+    assert KEYRING_ENV_VAR == "TENANT_CREDS_KEYRING"
+
+
+def test_load_keyring_from_env_reads_the_named_var() -> None:
+    ring = load_keyring_from_env({KEYRING_ENV_VAR: _ring_json("k1", {"k1": _KEY_A})})
+    assert ring.active_kid == "k1"
+
+
+def test_load_keyring_from_env_unset_fails_loud_naming_the_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(KEYRING_ENV_VAR, raising=False)
+    with pytest.raises(KeyringError, match=KEYRING_ENV_VAR):
+        load_keyring_from_env()  # defaults to os.environ
+    with pytest.raises(KeyringError, match=KEYRING_ENV_VAR):
+        load_keyring_from_env({})
+
+
+def test_load_keyring_parses_active_and_retired_keys(ring_ab: Keyring) -> None:
+    assert ring_ab.active_kid == "k2"
+    assert set(ring_ab.keys) == {"k1", "k2"}
+
+
+def test_keyring_missing_active_fails_loud() -> None:
+    # `active` names a kid that is not in `keys` → a job that cannot encrypt must exit
+    # before T0, not discover it on the first row.
+    with pytest.raises(KeyringError, match="active"):
+        load_keyring(_ring_json("k2", {"k1": _KEY_A}))
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,  # env var unset
+        "",  # env var empty
+        "   ",
+        "{not json",
+        "[]",  # wrong top-level shape
+        '{"keys": {}}',  # no `active`
+        '{"active": "k1"}',  # no `keys`
+        '{"active": "k1", "keys": {}}',  # empty ring
+        '{"active": "k1", "keys": {"k1": "!!!not-base64!!!"}}',
+        '{"active": "k1", "keys": {"k1": 123}}',  # key not a string
+        '{"active": 1, "keys": {"1": "' + _b64(_KEY_A) + '"}}',  # active not a string
+        '{"active": "", "keys": {"": "' + _b64(_KEY_A) + '"}}',  # empty kid
+        '{"active": "a:b", "keys": {"a:b": "' + _b64(_KEY_A) + '"}}',  # ':' is the delimiter
+    ],
+)
+def test_keyring_env_malformed_fails_loud(raw: str | None) -> None:
+    with pytest.raises(KeyringError):
+        load_keyring(raw)
+
+
+@pytest.mark.parametrize("length", [16, 31, 33, 64])
+def test_keyring_rejects_non_256_bit_key(length: int) -> None:
+    with pytest.raises(KeyringError, match="32"):
+        load_keyring(_ring_json("k1", {"k1": bytes(length)}))
+
+
+def test_keyring_error_never_echoes_key_material() -> None:
+    # A malformed ring must fail loud WITHOUT reflecting the (possibly partly valid) secret
+    # value back into the exception text, which lands in logs / tracebacks.
+    good_key = _b64(_KEY_A)
+    raw = '{"active": "k1", "keys": {"k1": "' + good_key + '", "k2": "' + good_key + '", "x": 1}}'
+    with pytest.raises(KeyringError) as info:
+        load_keyring(raw)
+    assert good_key not in str(info.value)
+    assert good_key not in repr(info.value)
+
+
+# --- rotation ------------------------------------------------------------------------------
+
+
+def test_needs_rekey_is_true_only_for_non_active_kid(ring_a: Keyring, ring_ab: Keyring) -> None:
+    old_blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)  # under k1
+    new_blob = encrypt_password(ring_ab, _PLAINTEXT, aad=_AAD)  # under k2 (active)
+    assert needs_rekey(ring_ab, old_blob) is True
+    assert needs_rekey(ring_ab, new_blob) is False
+
+
+def test_needs_rekey_malformed_blob_fails_loud(ring_a: Keyring) -> None:
+    with pytest.raises(CredentialDecryptError):
+        needs_rekey(ring_a, "garbage")
+
+
+def test_rekey_idempotent(ring_a: Keyring, ring_ab: Keyring) -> None:
+    old_blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)  # under retired k1
+    once = rekey_password(ring_ab, old_blob, aad=_AAD)
+    assert once != old_blob
+    assert once.split(":")[1] == "k2"
+    assert decrypt_password(ring_ab, once, aad=_AAD) == _PLAINTEXT
+    # Second pass is a no-op: already on the active kid → the SAME blob comes back, byte for
+    # byte (no fresh nonce), so a re-run of `tenant-rekey` writes nothing.
+    twice = rekey_password(ring_ab, once, aad=_AAD)
+    assert twice == once
+
+
+def test_rekey_requires_the_retired_key_to_still_be_in_the_ring(ring_a: Keyring) -> None:
+    old_blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)  # under k1
+    ring_k2_only = load_keyring(_ring_json("k2", {"k2": _KEY_B}))  # k1 dropped too early
+    with pytest.raises(CredentialDecryptError, match="k1"):
+        rekey_password(ring_k2_only, old_blob, aad=_AAD)
+
+
+def test_rekey_with_wrong_aad_fails(ring_a: Keyring, ring_ab: Keyring) -> None:
+    old_blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    with pytest.raises(CredentialDecryptError):
+        rekey_password(ring_ab, old_blob, aad=b"someone-else")
+
+
+# --- AAD derivation ------------------------------------------------------------------------
+
+
+def _account(**overrides: object) -> CourseAccount:
+    base: dict[str, object] = {
+        "id": CourseAccountId(UUID("11111111-1111-1111-1111-111111111111")),
+        "user_id": UserId(UUID("22222222-2222-2222-2222-222222222222")),
+        "course_id": CourseId("foreup:19671:2149"),
+        "provenance": AccountProvenance.USER_SUPPLIED,
+        "username": "golfer@example.com",
+        "password_ciphertext": "",
+        "key_id": "k1",
+        "status": AccountStatus.ACTIVE,
+        "verified_at": datetime(2026, 9, 25, tzinfo=UTC),
+    }
+    base.update(overrides)
+    return CourseAccount(**base)  # type: ignore[arg-type]
+
+
+def test_credential_aad_binds_account_course_and_username() -> None:
+    aad = credential_aad(_account())
+    assert aad == b"11111111-1111-1111-1111-111111111111|foreup:19671:2149|golfer@example.com"
+
+
+def test_credential_aad_changes_when_any_component_changes() -> None:
+    base = credential_aad(_account())
+    assert credential_aad(_account(username="other@example.com")) != base
+    assert credential_aad(_account(course_id=CourseId("foreup:1:2"))) != base
+    assert (
+        credential_aad(_account(id=CourseAccountId(UUID("33333333-3333-3333-3333-333333333333"))))
+        != base
+    )
+
+
+def test_blob_copied_onto_another_account_row_fails(ring_a: Keyring) -> None:
+    # The §9.1 threat: a ciphertext moved to another account's row must not decrypt.
+    victim = _account()
+    attacker = _account(id=CourseAccountId(UUID("33333333-3333-3333-3333-333333333333")))
+    blob = encrypt_password(ring_a, _PLAINTEXT, aad=credential_aad(victim))
+    assert decrypt_password(ring_a, blob, aad=credential_aad(victim)) == _PLAINTEXT
+    with pytest.raises(CredentialDecryptError):
+        decrypt_password(ring_a, blob, aad=credential_aad(attacker))
+
+
+# --- no leakage ----------------------------------------------------------------------------
+
+
+def test_plaintext_never_in_repr(ring_a: Keyring) -> None:
+    blob = encrypt_password(ring_a, _PLAINTEXT, aad=_AAD)
+    assert _PLAINTEXT not in blob
+    # Keyring repr must not carry key bytes in ANY encoding.
+    for rendering in (repr(ring_a), str(ring_a)):
+        assert _PLAINTEXT not in rendering
+        assert _b64(_KEY_A) not in rendering
+        assert repr(_KEY_A) not in rendering
+        assert _KEY_A.hex() not in rendering
+    # A failed decrypt (wrong AAD) must not reflect plaintext, ciphertext, or key material.
+    with pytest.raises(CredentialDecryptError) as info:
+        decrypt_password(ring_a, blob, aad=b"wrong")
+    for rendering in (str(info.value), repr(info.value)):
+        assert _PLAINTEXT not in rendering
+        assert blob.split(":")[3] not in rendering
+        assert _b64(_KEY_A) not in rendering
