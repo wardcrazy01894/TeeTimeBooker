@@ -32,6 +32,26 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
 
   No other code needs to change.
 
+- **Release policy (both platforms, MULTIUSER_PLAN §6.1 / MU-1):** give the adapter class a
+  `release_policy: ClassVar[ReleasePolicy] = ReleasePolicy(advance_days=…, release_time=time(H, M),
+  timezone="Area/City", hosted_booking=…)` (`core/release_policy.py`) stating WHEN the course
+  releases inventory. It must pass `validate_release_policy` — v1 only supports release hours
+  **04–22** (a midnight release, common on TeeItUp, would fire the cron on D-1 and book a day late
+  — see §6.1/§14), the cron lead may not cross midnight, the zone must be a valid IANA name, and
+  **the fire time (release − lead) must land in hour `release.hour − 1`**, i.e.
+  `release.minute < lead <= release.minute + 60` — that is the reading `dst_gate.should_proceed`
+  makes, so a 06:30 release needs a lead in (30, 90], NOT the default 10 (it would fire 06:20:
+  never books in summer, and in winter the wrong-season cron passes with T0 70 min out and blows
+  the replica timeout). `hosted_booking=False` for any course whose booking path is out of hosted
+  scope (TeeItUp: the PAN path) — no ACA job is ever derived from it. Nothing on the TOML
+  production path reads the policy yet; the tenant runner (MU-9a) and the `release_events.json`
+  parity test (MU-15a) will. Courses sharing `release_key(policy)` = `(timezone, release_time)`
+  share ONE EDT/EST job pair; `cron_pair(policy)` gives its UTC crons as a `CronPair` (MB:
+  `50 9 * * *` / `50 10 * * *`, pinned equal to `compute.bicep` by `tests/test_release_policy.py`).
+  A course in a zone WITHOUT DST gets `CronPair.deduped == True` and `.jobs` of length 1 — deploy
+  ONE job for it, never the -edt/-est pair (both would fire at the same instant and both pass the
+  gate). Add a `test_<course>_release_policy_classvar` test there.
+
 - **Chronogolf course:** stand up `chronogolf/base.py` first (Spike S2).
 
 ## Mangrove Bay specifics (ForeUP)
@@ -41,6 +61,11 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
 - `public_booking_class_id = 12239` — the "Public" booking class from the page's `SCHEDULES` JSON; used in the login POST and is distinct from the teesheet URL ID
 - Login uses `api_key=""` (empty); search uses `api_key="no_limits"` — confirmed by browser capture
 - 7-day window opens 06:00 America/New_York exactly; minimum 2 players required
+- **Release policy** (MU-1): `MangroveBayAdapter.release_policy = ReleasePolicy(advance_days=7,
+  release_time=06:00, timezone="America/New_York", hosted_booking=True)`. Derived cron pair
+  `("50 9 * * *", "50 10 * * *")` — pinned EQUAL to `compute.bicep`'s `cronEdtDaily`/`cronEstDaily`
+  by `tests/test_release_policy.py::test_cron_pair_mb_matches_compute_bicep`, and the DST gate's
+  `hour == fire_time.hour - 1` reading is reproduced from it. Data only until the MULTIUSER cutover.
 - **Party size is 4** (configured in `config/example.toml` + `config/local.toml` as 4 `[[request.players]]` entries). The idempotency layer-2 guard (`list_reservations`) matches on `party_size == len(request.players)` exactly — if you change party size between production runs an existing booking with the old party size will NOT block a new attempt. Cancel any conflicting reservation before deploying a party-size change.
 - **Schedule books wanted morning days (default Sat+Sun)** (multi-day re-arch). Two ACA Job crons (one per DST half: `teetime-job-<env>-edt` / `-est`) fire DAILY at ~05:50 ET; each run computes `today + target_offsets[0]` (=7) and books it only if its weekday has a configured window (else fast-exits 0 via `core/booking_day_gate.py`). The watcher checks the next upcoming occurrence of each wanted weekday within the horizon, one reservation per date. For ad-hoc dev runs use `teetime run --no-wait --dry-run true` (or `--fire-time HH:MM:SS` for an on-demand `--wait` check); the `watch` command takes `--date` to pin a specific date. (The old `book.yml` / `workflow_dispatch` path was removed in #43.)
 - **Time windows are per-day** (PERDAY_WINDOWS_PLAN): each `[[request.time_windows]]` carries a `weekday`. Currently Sat+Sun both 08:45–10:00 ET (midpoint 09:22:30; slot closest to the midpoint wins). Multiple windows may share a day — at most ONE reservation that day, booked in the best window (window list order = preference). The wanted booking days are derived from these windows (no separate `target_weekdays`).
@@ -94,6 +119,13 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
 - `course_slug = "sydney-r-marovitz-golf-course"`, `gn_facility_id = 4014`, `gnc_facility_id = 7218`
 - `kenna_facility_id = "54f14cb60c8ad60378b02bfb"`, `channel_id = "20972"`
 - **15-day advance booking window** (CPD policy). `advance_booking_days = 15`.
+- **Release policy** (MU-1): `SydneyMarovitzAdapter.release_policy = ReleasePolicy(advance_days=15,
+  release_time=06:00 **PLACEHOLDER**, timezone="America/Chicago", hosted_booking=False)`. The daily
+  release TIME is **UNCONFIRMED** (MULTIUSER_PLAN Spike S-M4) — 06:00 is the plan's §6.1 worked
+  example for a Chicago release, not an observation; 00:00 (common on TeeItUp) is not representable
+  in v1 (`validate_release_policy` rejects hours outside 04–22). `hosted_booking=False` ⇒ no ACA job
+  is ever derived; the policy is data for the parity/allocation tests only. Replace the time when
+  S-M4 closes (two probes an hour apart around the 15-days-out inventory appearing, or a pro-shop answer).
 - **9 holes** (`holes = 9`). This is a par-3 course; there is no 18-hole option.
 - **Party size** must include at least 2 players (singles must call the shop).
 - **Payment flow**: TeeItUp native accounts use direct card entry via `POST https://tr.gnsvc.com/AddReservation` (form-encoded). There is no "card on file" wallet — card credentials are passed each booking call. Required `extra` fields in `CourseCredentials`:
