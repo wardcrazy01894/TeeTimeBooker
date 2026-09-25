@@ -120,7 +120,7 @@ from .slot_utils import rank_slots_for_request
 from .upgrade_orchestrator import UpgradeOrchestrator
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from ..notifications.notifier import Notifier
     from ..persistence.store import BookingStore
@@ -187,6 +187,8 @@ class WatchOrchestrator:
         policy: OneBookingPolicyConfig | None = None,
         booking_cutoff: BookingCutoffConfig | None = None,
         skip_dates: frozenset[date] = frozenset(),
+        *,
+        reconcile_eligible: Callable[[ExistingReservation], bool] | None = None,
     ) -> None:
         self._adapters = adapters
         self._store = store
@@ -204,6 +206,10 @@ class WatchOrchestrator:
         # bookings and upgrades — the same stop-acting gate. Defense-in-depth: even if the CLI
         # forgot to filter a skipped date, the orchestrator refuses it (Edge E5).
         self._skip_dates = skip_dates
+        # E5 (MULTIUSER_PLAN §2.3/§7.6): restricts the duplicate reconcile's keep-best-
+        # cancel-rest to ELIGIBLE reservations (the hosted path passes "owned by the bot").
+        # None = every match is eligible — today's single-user behaviour, byte-for-byte.
+        self._reconcile_eligible = reconcile_eligible
 
     async def check_once(
         self,
@@ -495,9 +501,15 @@ class WatchOrchestrator:
         _cancel_extras); this recovers a crash (or a prior failed cancel) that left
         duplicates.
 
+        E5 (``reconcile_eligible``): when set, only ELIGIBLE reservations are cancel
+        candidates and the kept one is the best ELIGIBLE reservation; ineligible ones are
+        never cancelled and are returned after it. With <=1 eligible nothing is cancelled and
+        the lock is not taken. ``None`` (default) = every match eligible = the behaviour below.
+
         Returns the surviving reservation(s):
-        - ``[kept]`` on success (the kept one is returned even if an extra's cancel
-          failed — that extra is logged CRITICAL and retried on the next watch run);
+        - ``[kept]`` on success, ``[kept, *ineligible]`` under E5 (the kept one is
+          returned even if an extra's cancel failed — that extra is logged CRITICAL
+          and retried on the next watch run);
         - ``matching`` unchanged if the request_lock was contended (another run is
           already acting — let it reconcile rather than racing it).
 
@@ -511,7 +523,30 @@ class WatchOrchestrator:
         notify+re-raise path). full-repo-scan 2026-07-09 correctness M1.
         """
         ranked = self._rank_reservations(matching, course_id, request, target_date)
-        keep, extras = ranked[0], ranked[1:]
+        if self._reconcile_eligible is None:
+            keep, extras = ranked[0], ranked[1:]
+            survivors = [keep]
+        else:
+            # E5: only ELIGIBLE reservations are candidates. "Keep the best" means the best
+            # ELIGIBLE one; an ineligible (manual) reservation is never cancelled, even when it
+            # outranks every eligible one (§7.6 residual: an owned + a manual booking for the
+            # same date+party both stay held). The kept eligible one leads the survivors so
+            # the caller's `matching[0]` stays a reservation the bot owns.
+            eligible: list[ExistingReservation] = []
+            ineligible: list[ExistingReservation] = []
+            for res in ranked:  # partition preserves rank order in both halves
+                (eligible if self._reconcile_eligible(res) else ineligible).append(res)
+            if len(eligible) <= 1:
+                log.info(
+                    "watch: %d reservations on %s but only %d eligible for reconcile — "
+                    "leaving all held",
+                    len(matching),
+                    target_date,
+                    len(eligible),
+                )
+                return eligible + ineligible
+            keep, extras = eligible[0], eligible[1:]
+            survivors = [keep, *ineligible]
         try:
             async with self._store.request_lock(request.request_id):
                 for res in extras:
@@ -544,7 +579,7 @@ class WatchOrchestrator:
             keep.confirmation_code,
             len(extras),
         )
-        return [keep]
+        return survivors
 
     def _rank_reservations(
         self,
