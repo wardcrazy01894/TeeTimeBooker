@@ -26,6 +26,17 @@ dependencies = [
     # is Dependabot-managed (bumped with the lock on every release), so this comment names
     # no version.
     "cryptography>=50.0.1",
+    # Multi-user web app (MULTIUSER_PLAN §8, MU-12): `teetime web` — the ASGI app factory,
+    # server-rendered pages, OAuth sign-in (GitHub + Google), signed sessions and form parsing.
+    # Floors are Dependabot-managed (bumped with the lock on every release), so these comments
+    # name no version. Only the web command imports any of them; the booking/watch jobs and
+    # the TOML production path never do.
+    "fastapi>=0.141.1",         # app factory + routing + dependencies (§8.1)
+    "uvicorn>=0.54.0",          # ASGI server behind `teetime web` (§8.1)
+    "jinja2>=3.1.6",            # server-rendered templates, autoescape on (§9.1 XSS row)
+    "authlib>=1.8.0",           # OAuth 2 / OIDC client for GitHub + Google sign-in (§8.3)
+    "itsdangerous>=2.2.0",      # signed session cookie (Starlette SessionMiddleware, §8.3)
+    "python-multipart>=0.0.32", # HTML form parsing (CSRF token + admin forms)
 ]
 
 # Dev deps are a PEP 735 dependency-group, NOT a `[project.optional-dependencies]` extra.
@@ -121,6 +132,14 @@ no_implicit_reexport = true
 
 [[tool.mypy.overrides]]
 module = ["ntplib.*"]
+ignore_missing_imports = true
+
+# authlib ships no `py.typed` and no stub package exists, so this is the ONE per-module
+# exception (deliberately NOT a blanket `ignore_missing_imports`). Every authlib call is
+# confined to `web/oauth.py`, which narrows each untyped result to a typed value at the
+# boundary so the rest of the web package stays fully checked under strict mode.
+[[tool.mypy.overrides]]
+module = ["authlib.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
