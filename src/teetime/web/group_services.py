@@ -35,6 +35,7 @@ from .booking_form import RankedChoice, parse_price
 from .services import (
     ActionRefusedError,
     InvalidInputError,
+    WebNotFoundError,
     _conflict,
     _own_account,
     _policy_for,
@@ -141,7 +142,12 @@ async def create_group_rule(
     rules: list[StandingRule] = []
     failures: list[GroupFailure] = []
     for account_id, options in _in_rank_order(choice):
-        account = await _own_account(store, user_id=user_id, account_id=account_id)
+        try:
+            account = await _own_account(store, user_id=user_id, account_id=account_id)
+        except WebNotFoundError:
+            # Ownership was checked when the form was parsed; the account vanished since.
+            failures.append(GroupFailure(account_id, _GONE))
+            continue
         policy = _policy_for(account, policies)
         rule = StandingRule(
             id=RuleId(uuid4()),

@@ -425,3 +425,32 @@ async def test_an_account_that_vanishes_mid_save_is_reported_not_a_404(clock: Fa
     )
     assert [r.course_account_id for r in report.rows] == [a.id]
     assert [f.account_id for f in report.failures] == [b.id]
+
+
+class _HiddenAccountStore(InMemoryTenantStore):
+    """``get_account`` no longer returns one account, as if it was removed after the form was
+    parsed."""
+
+    hidden: object = None
+
+    async def get_account(self, account_id, *, user_id):  # type: ignore[no-untyped-def,override]
+        if account_id == self.hidden:
+            return None
+        return await super().get_account(account_id, user_id=user_id)
+
+
+async def test_a_rule_group_with_a_vanished_account_saves_the_rest(clock: FakeClock) -> None:
+    store = _HiddenAccountStore(course_timezones=COURSE_TIMEZONES, cutoff=CUTOFF)
+    user_id, a, b = await _member(store)
+    store.hidden = b.id  # the SECOND course in rank order
+    report = await services.create_group_rule(
+        store,
+        user_id=user_id,
+        weekday=SAT,
+        choice=_choice(a, b),
+        policies=POLICIES,
+        cutoff=CUTOFF,
+        clock=clock,
+    )
+    assert [r.course_account_id for r in report.rules] == [a.id]
+    assert [f.account_id for f in report.failures] == [b.id]
