@@ -42,6 +42,8 @@ class CookiePolicy:
     """The session cookie flags. A test pins these exact values."""
 
     secure: bool = True
+    # Documents a Starlette-enforced invariant, NOT a knob: SessionMiddleware always sets
+    # HttpOnly and takes no parameter for it, so flipping this to False changes nothing.
     http_only: bool = True
     same_site: Literal["lax", "strict", "none"] = "lax"
     path: str = "/"

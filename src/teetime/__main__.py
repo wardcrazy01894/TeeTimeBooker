@@ -820,6 +820,10 @@ def _serve_web(app: FastAPI, *, host: str, port: int) -> None:
     """Run uvicorn. `log_config=None` keeps the basicConfig + redaction filter above in charge
     (uvicorn would otherwise install its own handlers, which the filter is not attached to)."""
 
+    # proxy_headers=True with uvicorn's default forwarded_allow_ips trusts X-Forwarded-* from
+    # ANY peer. Accepted for now: nothing derives the scheme/host from the request (the OAuth
+    # redirect comes from TEETIME_PUBLIC_BASE_URL) and the app is not deployed. MU-15a must
+    # scope forwarded_allow_ips to the Container Apps ingress once its source range is known.
     uvicorn.run(app, host=host, port=port, log_config=None, proxy_headers=True)
 
 
