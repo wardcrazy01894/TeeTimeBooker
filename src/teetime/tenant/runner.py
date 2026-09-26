@@ -141,9 +141,12 @@ class AdapterFactory(Protocol):
     ) -> CourseAdapter: ...
 
 
-PoolFactory = Callable[[CourseId], SharedCaptchaPool | None]
-"""Builds a course's shared CAPTCHA pool (MU-9b: after the once-per-course site-key pre-flight,
-bound to that course's page URL + site key), or ``None`` for a course without one (fakes)."""
+PoolFactory = Callable[[CourseId], SharedCaptchaPool | Awaitable[SharedCaptchaPool | None] | None]
+"""Builds a course's shared CAPTCHA pool, or ``None`` for a course without one (fakes). May be
+async: the CLI's factory runs the once-per-course site-key pre-flight (a ForeUP GET) and binds
+the pool's 2captcha provider to that course's page URL + live site key. The runner calls it
+once per course AFTER READ #1 + the claim + decrypt (§4.2), so a day with no rows never
+touches ForeUP."""
 
 
 class ExitStatus(IntEnum):
@@ -408,7 +411,8 @@ async def _book_event(
     pools: dict[CourseId, SharedCaptchaPool | None] = {}
     try:
         for cid in sorted({r.row.course_id for r in runnable}):
-            pools[cid] = pool_factory(cid) if pool_factory is not None else None
+            built = pool_factory(cid) if pool_factory is not None else None
+            pools[cid] = await built if inspect.isawaitable(built) else built
         accounts = await _prepare_accounts(
             runnable,
             creds,
@@ -466,6 +470,109 @@ async def _book_event(
         outcome_write_failures=tuple(write_failures),
     )
     return replace(report, auth_failed_accounts=auth_failed), events
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedRow:
+    """One pending row as ``tenant-plan`` shows it (ids and times only — no login names)."""
+
+    row_id: RowId
+    course_id: CourseId
+    target_date: date
+    window: tuple[time, time]
+    party_size: int
+    allowlist_times: tuple[str, ...]
+    search_only: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EventPlan:
+    event: ReleaseEvent
+    targets: Mapping[CourseId, date]
+    rows: tuple[PlannedRow, ...]
+    orders: Mapping[CourseId, tuple[RowId, ...]]
+
+    def render(self) -> list[str]:
+        """The lines ``teetime tenant-plan`` prints."""
+        targets = " ".join(f"{cid}={d.isoformat()}" for cid, d in sorted(self.targets.items()))
+        lines = [
+            f"tenant-plan {self.event.key}: release {self.event.release_time:%H:%M} "
+            f"{self.event.timezone}; target {targets}",
+            f"{len(self.rows)} pending row(s)",
+        ]
+        by_id = {r.row_id: r for r in self.rows}
+        for course_id in sorted({r.course_id for r in self.rows}):
+            order = self.orders.get(course_id, ())
+            ranked = [by_id[r] for r in order] + sorted(
+                (r for r in self.rows if r.course_id == course_id and r.row_id not in order),
+                key=lambda r: str(r.row_id),
+            )
+            lines.append(f"{course_id}: draft order [{','.join(str(r) for r in order)}]")
+            for r in ranked:
+                blind = "search-only" if r.search_only else f"blind [{','.join(r.allowlist_times)}]"
+                lines.append(
+                    f"  row {r.row_id} {r.target_date.isoformat()} "
+                    f"{r.window[0]:%H:%M}-{r.window[1]:%H:%M} party {r.party_size}: {blind}"
+                )
+        return lines
+
+
+async def plan_release_event(
+    *,
+    event: ReleaseEvent,
+    policies: Mapping[CourseId, ReleasePolicy],
+    store: TenantStore,
+    clock: Clock,
+    scheduler: SchedulerConfig,
+    adapter_factory: AdapterFactory,
+) -> EventPlan:
+    """``teetime tenant-plan``: what ``tenant-run`` would do for ``event`` right now — its
+    pending rows and the blind-slot allocation — with NO ForeUP call, NO claim, NO decrypt and
+    NO CAPTCHA solve. One READ #1 (bounded like the runner's), then the same pure allocation
+    over dry-run adapters built with no pool (``synthesize_blind_slots`` is pure for MB)."""
+    now = clock.now_utc()
+    targets = {cid: target_date_for(policies[cid], now) for cid in event.course_ids}
+    loaded = await _store_call(
+        store.load_event_rows(targets=targets, now=now), clock=clock, not_after=None
+    )
+    rows = [r for r in loaded if not row_is_frozen(r.row, now=now)]
+    accounts = [
+        _Account(
+            event_row=r,
+            request=_request_for(r.row, dry_run=True),
+            creds=CourseCredentials(username="", password=""),  # never used: no login
+            recorder=make_recording_adapter(
+                adapter_factory(
+                    course_id=r.row.course_id,
+                    account=r.account,
+                    pool=None,
+                    lease_key=None,
+                    dry_run=True,
+                ),
+                clock=clock,
+            ),
+            lease_key=LeaseKey(str(r.row.id)),
+            pool=None,
+        )
+        for r in rows
+    ]
+    try:
+        orders = _allocate(accounts, burst=scheduler.blind_post_max_count, label="tenant-plan")
+    finally:
+        await _close_adapters(accounts)
+    planned = tuple(
+        PlannedRow(
+            row_id=a.row.id,
+            course_id=a.row.course_id,
+            target_date=a.row.target_date,
+            window=(a.row.window_earliest, a.row.window_latest),
+            party_size=a.row.party_size,
+            allowlist_times=a.allowlist_times,
+            search_only=a.search_only,
+        )
+        for a in accounts
+    )
+    return EventPlan(event=event, targets=targets, rows=planned, orders=orders)
 
 
 def assert_blind_methods_present(adapters: Sequence[CourseAdapter]) -> None:
@@ -557,6 +664,7 @@ class _Account:
     lease_key: LeaseKey
     pool: SharedCaptchaPool | None
     allowlist: frozenset[SlotId] | None = None
+    allowlist_times: tuple[str, ...] = ()  # the allowlist as course-local HH:MM, rank order
     search_only: bool = False
     orchestrator: Orchestrator | None = None
     # The engine notifier: collect only, no I/O in the race (§8.7); drained after WRITE #2.
@@ -844,7 +952,9 @@ async def _prepare_accounts(
     return accounts
 
 
-def _allocate(accounts: Sequence[_Account], *, burst: int) -> dict[CourseId, tuple[RowId, ...]]:
+def _allocate(
+    accounts: Sequence[_Account], *, burst: int, label: str = "tenant-run"
+) -> dict[CourseId, tuple[RowId, ...]]:
     """§5.4 per course: each blind account's UNFILTERED ranked candidates (its allowlist cleared
     first — MU-3 review follow-up), a snake draft over the week-rotated order, then
     ``set_blind_allowlist``. Accounts beyond ``C // burst`` (or drafting nothing) and
@@ -883,23 +993,23 @@ def _allocate(accounts: Sequence[_Account], *, burst: int) -> dict[CourseId, tup
         )
         for row_id, (account, recorder) in blind.items():
             account.allowlist = allocation.allowlists[row_id]
+            account.allowlist_times = tuple(
+                s.tee_time.strftime("%H:%M")
+                for s in ranked[row_id]
+                if s.slot_id in account.allowlist
+            )
             account.search_only = row_id in allocation.search_only
             recorder.set_blind_allowlist(account.allowlist)
         orders[course_id] = allocation.order
         allowed = " ".join(
-            f"allowlist[{row_id}]=["
-            + ",".join(
-                s.tee_time.strftime("%H:%M")
-                for s in ranked[row_id]
-                if s.slot_id in allocation.allowlists[row_id]
-            )
-            + "]"
+            f"allowlist[{row_id}]=[{','.join(blind[row_id][0].allowlist_times)}]"
             for row_id in allocation.order
             if row_id not in allocation.search_only
         )
         # §11.2 line 2: with one account the times equal the adapter's own blind-POST line.
         log.info(
-            "tenant-run: allocation order=[%s] %s search_only=[%s]",
+            "%s: allocation order=[%s] %s search_only=[%s]",
+            label,
             ",".join(str(r) for r in allocation.order),
             allowed,
             ",".join(sorted(str(r) for r in allocation.search_only)),
