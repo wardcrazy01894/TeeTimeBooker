@@ -18,6 +18,7 @@ import respx
 
 from teetime.core.models import BookingOutcome, BookingResult, CourseId, RequestId
 from teetime.core.redaction import register_secret_literals
+from teetime.notifications.notifier import Notifier
 from teetime.tenant import notify
 from teetime.tenant.models import User, UserId, UserRole, UserStatus
 from teetime.tenant.notify import (
@@ -255,3 +256,9 @@ async def test_email_user_notifier_failure_never_raises(caplog: pytest.LogCaptur
     notifier = EmailUserNotifier(FakeEmailSender(fail=True), user=_user())
     await notifier.send(_event(UserEventKind.BOOKED))  # must not raise
     assert "not delivered" in caplog.text
+
+
+def test_buffering_notifier_satisfies_engine_notifier_protocol() -> None:
+    """The per-account engine notifier during the race: it must structurally satisfy the
+    engine's runtime_checkable ``Notifier`` Protocol so MU-9a can inject it unchanged."""
+    assert isinstance(BufferingNotifier(), Notifier)

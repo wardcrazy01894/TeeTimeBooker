@@ -211,7 +211,10 @@ class AcsEmailClient:
         except _RetriesExhaustedError as exc:
             result = EmailSendResult(ok=False, status=exc.status, error=exc.error)
         except Exception as exc:  # never raise: a mail failure must not mask an outcome
-            result = EmailSendResult(ok=False, status="error", error=type(exc).__name__)
+            # An UNEXPECTED error (not a classified transport/HTTP failure): keep the traceback so
+            # it is diagnosable from logs; the redaction filter scrubs it on the way out.
+            log.warning("ACS email not sent: unexpected %s", type(exc).__name__, exc_info=True)
+            return EmailSendResult(ok=False, status="error", error=type(exc).__name__)
         log.warning("ACS email not sent: status=%s error=%s", result.status, result.error)
         return result
 
