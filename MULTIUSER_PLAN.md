@@ -1711,7 +1711,13 @@ data-plane role assignments are created by hand by the operator.
 
 ## 16. Ranked preferences: one ranked list of course + time options, price per course (operator request 2026-09-26)
 
-Status: **RATIFIED 2026-09-26 (3 review rounds, #239). MU-R1 (model + store + mapping) is DONE in code; MU-R2/R3 pending.** Supersedes
+Status: **RATIFIED 2026-09-26 (3 review rounds, #239). MU-R1 (#243) DONE in code. MU-R2 part 1
+(price cap on every tenant engine request, `tenant/groups.py` pure rules, `rows_in_groups`, the
+booker/tenant-plan group floor) DONE in code; part 2 (post-WRITE #2 collapse, watcher floor +
+collapse + cross-course upgrade, §7.5 `cancelled_group`) and MU-R3 pending.** Build notes:
+`booked_rank` is COMPUTED (`groups.booked_rank`, first match of the course-local tee time), not
+stored — a booked row's options never change, so it is stable; the group read is
+`TenantStore.rows_in_groups` (the plan's `list_group`); `create_group` lands with the MU-R3 form. Supersedes
 MU-P1 (the per-account price cap is folded in here) and promotes the §3.6 cross-course hook from
 "designed only" to built.
 
