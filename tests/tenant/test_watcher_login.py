@@ -279,7 +279,7 @@ def test_watch_cadence_uses_uuid_int_not_hash() -> None:
         acct = dc_replace(account(0), id=CourseAccountId(acct_id))
         pending = event(acct)
         reason = needs_login(
-            pending, group_slots=[], snapshot=FRESH, run_index=run_index, now=NOW, cadence=n
+            pending, group_slots=[], snapshot=None, run_index=run_index, now=NOW, cadence=n
         )
         assert (reason is LoginReason.CADENCE) is ((acct_id.int + run_index) % n == 0)
 
