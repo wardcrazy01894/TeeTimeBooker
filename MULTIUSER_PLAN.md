@@ -1403,8 +1403,8 @@ These are created by the operator, never by CI (round-2 SF3), after `cosmos.bice
 
 | # | Principal | Role | Scope | Why |
 |---|-----------|------|-------|-----|
-| 1 | prod user-assigned MI (`id-teetime-prod`) | Contributor | `/dbs/prod` | prod jobs + web |
-| 2 | dev user-assigned MI (`id-teetime-dev`) | Contributor | `/dbs/dev` | dev jobs + web |
+| 1 | prod user-assigned MI (`mi-teetime-prod`) | Contributor | `/dbs/prod` | prod jobs + web |
+| 2 | dev user-assigned MI (`mi-teetime-dev`) | Contributor | `/dbs/dev` | dev jobs + web |
 | 3 | developer principal(s) running integration tests | Contributor | `/dbs/dev/colls/tenant-ci` and `/dbs/dev/colls/global-ci` | conformance suite (§10.2) |
 | 4 | operator's own user | **Reader** | `/dbs/prod` and `/dbs/dev` | Portal **Data Explorer** works only through data-plane RBAC once `disableLocalAuth` is on (nit); read-only, so a Portal slip cannot mutate rows |
 
