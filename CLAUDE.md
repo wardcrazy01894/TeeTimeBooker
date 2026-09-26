@@ -357,7 +357,8 @@ stubs that raise `NotImplementedError` with an MU-milestone reference, and the o
 implemented per-milestone (`core/release_policy.py`, MU-1; `tenant/allocation.py`, MU-3;
 `tenant/crypto.py`, MU-7; `tenant/models.py`, the `TenantStore` Protocol and
 `tenant/in_memory_store.py` with the `tests/tenant/conformance.py` suite, MU-5;
-`dev/virtual_clock.py` + `tenant/recording.py` + `dev/blind_fake_adapter.py`, MU-9a0) are covered by
+`dev/virtual_clock.py` + `tenant/recording.py` + `dev/blind_fake_adapter.py`, MU-9a0;
+`tenant/cosmos/documents.py`, MU-8a) are covered by
 their own tests. **Nothing imports them from the production path.**
 (`src/teetime/courses/foreup/token_pool.py` is IMPLEMENTED (MU-2) and backs `ForeUpAdapter`'s
 private CAPTCHA pool with unchanged default behaviour; the shared/injected mode has no caller yet.)
@@ -436,7 +437,19 @@ FULL `[local_today, local_today + max(21, advance_days + 7)]` horizon every call
 (window/party rewrite, weekday move, the reset→withdraw→reset→inactive deactivation, reactivation)
 and `materialize_tick` (due rules + the `rows_no_longer_covered` sweep). It needed two read-only
 `TenantStore` additions — `get_rule_unscoped` / `get_account_unscoped`, system reads with no
-`user_id` (the web never calls them) — conformance-pinned. See the materializer bullet below. Tenant store (decided 2026-09-25): a Cosmos DB
+`user_id` (the web never calls them) — conformance-pinned. See the materializer bullet below. **MU-8a is DONE in code, UNWIRED**
+(`tenant/cosmos/documents.py`, pure, no Azure SDK import — MU-8b adds `azure-cosmos`/`azure-identity`
+and the store): `to_*_doc`/`from_*_doc` per persisted type plus `to_doc`/`from_doc` dispatchers,
+returning `Stored(item, etag)` with Cosmos `_etag` read through (never written) for IfMatch.
+Deterministic ids per §3.1 (`account`, `rule|<id>`, `row|rule|<rule_id>|<date>` — a rule row whose
+`RowId` is not `rule_row_id(...)` is refused — `row|x|<uuid>`, `slot|<date>`, `ruleday|<weekday>`,
+`booking|<course_id>|<raw_id>`, `snapshot`) partitioned by `accountId`; `global` docs carry a
+prefixed `pk` (`user:<id>` = id, `claim:<sha256 of kind|key>` = id, `probe:<UTC hour>`,
+`audit:<userId|system>`), and only `probe` (2 h) / `audit` (400 d) carry a per-item `ttl`. camelCase
+keys, UTC ISO instants (a naive datetime is refused), `type` + `schemaVersion` on every doc (readers
+accept N and N−1, refuse anything else; a missing defaulted field reads as its default, a missing
+required one is refused); `row_fingerprint_of` / `event_row_from_docs` are the read projections.
+Tests: `tests/tenant/cosmos/test_documents.py`. Tenant store (decided 2026-09-25): a Cosmos DB
 free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
 "no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path
 is unaffected.
