@@ -167,6 +167,10 @@ window, party size); edits apply from the next drop. **`/dates`** adds a one-off
 unskips a rule's date, withdraws a one-off, and re-requests a date after a cancel. Cancelling a
 booked tee time from the site arrives with MU-14.
 
+`teetime tenant-watch --dry-run true` runs one multi-user tenant-watcher pass (MU-10b: shared
+searches, logins only on an opportunity, snapshot trust, vanish/adoption, ownership-gated
+upgrades). It needs `TENANT_CREDS_KEYRING` and, until MU-16, runs over an empty in-memory store.
+
 ---
 
 ## Docker (v1)
