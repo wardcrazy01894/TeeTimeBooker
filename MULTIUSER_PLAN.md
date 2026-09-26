@@ -1403,8 +1403,8 @@ These are created by the operator, never by CI (round-2 SF3), after `cosmos.bice
 
 | # | Principal | Role | Scope | Why |
 |---|-----------|------|-------|-----|
-| 1 | prod user-assigned MI (`id-teetime-prod`) | Contributor | `/dbs/prod` | prod jobs + web |
-| 2 | dev user-assigned MI (`id-teetime-dev`) | Contributor | `/dbs/dev` | dev jobs + web |
+| 1 | prod user-assigned MI (`mi-teetime-prod`) | Contributor | `/dbs/prod` | prod jobs + web |
+| 2 | dev user-assigned MI (`mi-teetime-dev`) | Contributor | `/dbs/dev` | dev jobs + web |
 | 3 | developer principal(s) running integration tests | Contributor | `/dbs/dev/colls/tenant-ci` and `/dbs/dev/colls/global-ci` | conformance suite (§10.2) |
 | 4 | operator's own user | **Reader** | `/dbs/prod` and `/dbs/dev` | Portal **Data Explorer** works only through data-plane RBAC once `disableLocalAuth` is on (nit); read-only, so a Portal slip cannot mutate rows |
 
@@ -1593,7 +1593,7 @@ immediately after MU-0: MU-1, MU-2, MU-3, MU-4, MU-5, MU-7.
     §10.5 runbook** (decided 2026-09-25: CI never holds `sqlRoleAssignments/write`).
 11. Does dev's KV hold the **same** MB account as prod? (The concurrent-login evidence in §11
     depends on it.)
-12. ~~Operator notify address~~. **RESOLVED 2026-09-26:** `alanc3939@gmail.com`. KV secret
+12. ~~Operator notify address~~. **RESOLVED 2026-09-26:** the operator's personal address (not written here: the repo is public). KV secret
     `OPERATOR-NOTIFY-EMAIL`, wired as `OPERATOR_NOTIFY_EMAIL` into the tenant jobs (tenant-mode
     only, `compute.bicep`) and available for the web app's `TEETIME_OPERATOR_EMAIL` (a separate,
     plain, non-secret value — the operator's SIGN-IN identity, not the notification recipient;

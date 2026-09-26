@@ -386,7 +386,7 @@ def test_redact_text_masks_plus_and_dotted_locals() -> None:
 
     Exact-output assertions, for the partial-match reason in the test above.
     """
-    for addr in ("alanc3939+claude@gmail.com", "first.last@sub.example.org", "a_b-c@e-x.test"):
+    for addr in ("golfer+tag@example.com", "first.last@sub.example.org", "a_b-c@e-x.test"):
         out = redact_text(f"contact: {addr}")
         assert out == "contact: <redacted-email>", f"partial or missed match for {addr}: {out}"
 
