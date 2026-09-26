@@ -1701,7 +1701,7 @@ data-plane role assignments are created by hand by the operator.
 
 ---
 
-## 16. Ranked preferences: courses, time windows, and price (operator request 2026-09-26)
+## 16. Ranked preferences: one ranked list of course + time options, price per course (operator request 2026-09-26)
 
 Status: **DESIGN — to be reviewed; built in MU-R1..R3 after MU-8b and MU-14 merge.** Supersedes
 MU-P1 (the per-account price cap is folded in here) and promotes the §3.6 cross-course hook from
@@ -1713,18 +1713,19 @@ One form, used for BOTH a one-off date and a weekly standing rule (the only diff
 "Every <weekday>"):
 
 1. **Party size.**
-2. **Courses, in rank order** (add / remove / move up / move down). Only courses the user has
-   connected a ForeUP account for are offered.
-3. **Under each course: time windows, in rank order** (e.g. 1st 08:00–09:00, 2nd 09:00–10:30,
-   3rd 07:00–08:00). At least one per course.
-4. **Under each course: max price per player**, pre-filled from that course account's default and
-   editable for this request. The account default is **$100** unless the user changed it on the
-   account page (per person, per course).
+2. **One ranked list of options**, each option = **(course, time window)** — add / remove / move up
+   / move down. Courses can repeat and interleave, e.g.:
+   1. Course A, 09:00–10:00
+   2. Course B, 09:00–10:00
+   3. Course A, 08:00–09:00
+   Only courses the user has connected a ForeUP account for are offered.
+3. **Max price per player, per course** (one field per course that appears in the list), pre-filled
+   from that course account's default and editable for this request. The account default is
+   **$100** unless the user changed it on the account page (per person, per course).
 
-Expectation (to be stated on the form): the bot books the **best available** option by that ranking —
-course rank first, then window rank within the course, then closeness to the window's midpoint. It
-holds at most **one** tee time per person per day; if a better-ranked option opens later it upgrades
-(within a course, as today; across courses, per §16.4).
+Stated on the form: the bot books the **highest-ranked available option** (ties inside one option
+broken by closeness to the window's midpoint). It holds at most **one** tee time per person per day,
+and if a higher-ranked option opens later it moves to it (upgrade) and cancels the lower one.
 
 Most usage is expected to be one-off dates, so the dashboard's primary action is "Book a date", with
 standing rules one level down.
@@ -1732,51 +1733,59 @@ standing rules one level down.
 ### 16.2 Data model (no engine change)
 
 - `CourseAccount.default_max_price: Decimal` (new; default `100.00`). Replaces MU-P1.
-- A **group** = one user's request for one date (or one weekly rule), spanning courses. It is stored
-  as one `RequestRow` (or `StandingRule`) **per course**, all carrying the same `group_id` and a
-  `group_rank` (0 = first choice). These fields already exist (§3.6) and are already in the Cosmos
-  mapping (MU-8a).
-- `RequestRow.windows` and `StandingRule.windows`: an ordered tuple of `(earliest, latest)` replacing
-  the single `window_earliest/window_latest` (migration: a one-element tuple). The engine already
-  treats `BookingRequest.time_windows` list order as preference (`rank_slots_for_request` sorts by
-  window index first), so this maps straight through.
-- `RequestRow.max_price` / `StandingRule.max_price`: `Decimal | None`; `None` = use the account's
-  `default_max_price` at run time. Fed to `BookingRequest.max_price_per_player` per course — possible
-  without an engine change because the runner already builds one request per (account, course).
-- Unchanged invariants: one ACTIVE row per (course account, date) (each course has its own account,
-  so a group has at most one row per course account); one active rule per (course account, weekday).
-  New: all rows of a group share `target_date`, `party_size` and `user`; the web writes them together.
-- Cosmos: rows of one group live in DIFFERENT account partitions, so a group is NOT one batch. Each
-  row is independently valid; the web writes them in rank order and a partial write leaves a
-  smaller, still-correct group (the dashboard shows it; the user can add the rest). Documented, not
-  engineered around.
+- A **group** = one user's request for one date (or one weekly rule). It is stored as one
+  `RequestRow` (or `StandingRule`) **per course that appears in the list**, all carrying the same
+  `group_id` (the §3.6 fields, already in the model and the Cosmos mapping). `group_rank` becomes the
+  row's BEST option rank (informational/sorting only).
+- `RequestRow.options` / `StandingRule.options`: an ordered tuple of `(rank, earliest, latest)` for
+  THAT course, where `rank` is the option's position in the user's global list (1-based). Replaces
+  the single `window_earliest/window_latest` (migration: `((1, earliest, latest),)`). The row's
+  windows passed to the engine are its options in ascending rank — the engine already prefers
+  earlier-listed windows (`rank_slots_for_request` sorts by window index first), so within-course
+  order is correct with no engine change.
+- `RequestRow.max_price` / `StandingRule.max_price`: `Decimal | None`; `None` = the account's
+  `default_max_price` at run time. Fed to `BookingRequest.max_price_per_player` per course (the runner
+  already builds one request per account/course).
+- **Achieved rank**: when a row books, record `booked_rank` = the rank of the option whose window
+  contains `booked_tee_time`. This is what cross-course comparison uses.
+- Unchanged invariants: one ACTIVE row per (course account, date) (each course has its own account);
+  one active rule per (course account, weekday). New: all rows of a group share `target_date`,
+  `party_size` and `user`; option ranks are unique across the group and contiguous 1..N.
+- Cosmos: rows of one group live in DIFFERENT account partitions, so a group is NOT one batch. The web
+  writes them in rank order; a partial write leaves a smaller, still-valid group (shown on the
+  dashboard; the user can re-save). Documented, not engineered around.
 
-### 16.3 Booking a group (same release time)
+### 16.3 Booking a group at the drop
 
-Courses that drop at the same instant (the common case; one release event) are run by the booker as
-ONE orchestrator per account per course, exactly as today. The runner builds each course's request
-with that row's ranked windows and price. If more than one course in a group books at T0, the
-**cross-course keep-best** rule (§16.4) cancels the lower-ranked booking(s) right after the race —
-the same shape as today's in-run `_cancel_extras`, lifted to the group.
+Courses that drop at the same instant run as ONE orchestrator per account per course, exactly as
+today, each with its row's windows (ascending rank) and price. Each may book its best available
+window. The **group keep-best** step (§16.4) then keeps the booking with the LOWEST `booked_rank` and
+cancels the others — the same shape as today's in-run `_cancel_extras`, lifted to the group.
 
-### 16.4 Cross-course keep-best (the §3.6 hook, now built)
+### 16.4 Group keep-best + cross-course upgrade (the §3.6 hook, now built)
 
-The invariant: **at most one BOOKED row per group.** Enforced by the watcher (and the booker's post-race
-step): when a row of rank r is BOOKED and a row of rank < r in the same group also becomes BOOKED,
-the lower-ranked booking is cancelled via the §8.5 managed-cancel path (owned bookings only — a
-manual reservation is never auto-cancelled). Different release times: a lower-ranked course that
-drops EARLIER is booked when it drops (a bird in the hand); when the higher-ranked course drops
-later and books, the lower one is cancelled. A lower-ranked course that drops LATER than an
-already-booked higher-ranked one is skipped for that date (its row becomes `superseded` by the group).
+Invariant: **at most one BOOKED row per group, and it is the best achieved rank.** Enforced by the
+booker's post-race step and by the watcher:
+- Two BOOKED rows in a group → keep the lower `booked_rank`, cancel the other via the §8.5
+  managed-cancel path (**owned** bookings only — a manual reservation is never auto-cancelled; if the
+  better one is manual, the bot's is cancelled, never the user's).
+- Upgrade: the watcher looks for a slot at ANY course of the group whose option rank beats the
+  current `booked_rank`; if found it books it (cancel-before-book is NOT needed across courses — they
+  are different accounts), then cancels the worse booking. Within one course the existing
+  upgrade path still applies (it already understands window order).
+- Different release times: a course that drops EARLIER is booked when it drops; a later-dropping,
+  higher-ranked option upgrades it when it drops. An option that could only ever rank worse than
+  what is already booked is not attempted.
 
 ### 16.5 PRs
 
-- **MU-R1** — model + store + Cosmos mapping: `windows`, `max_price`, `default_max_price`, group
-  write/read helpers (`list_group`, `create_group`), conformance tests, migration of single-window
-  rows/rules to one-element tuples.
+- **MU-R1** — model + store + Cosmos mapping: `options` (ranked windows), `max_price`,
+  `default_max_price`, `booked_rank`, group helpers (`list_group`, `create_group`), rank-uniqueness
+  validation, conformance tests, migration of single-window rows/rules.
 - **MU-R2** — engine wiring: materializer for grouped rules; runner + watcher build per-course
-  requests from ranked windows + price; §16.4 keep-best in the booker's post-race step and the
-  watcher; tests incl. a two-course same-drop race and a two-course different-drop upgrade.
-- **MU-R3** — web: the §16.1 form for one-off dates and rules (ranked courses, ranked windows, price
-  pre-filled + editable), account page default price, dashboard shows the group and which option
-  booked.
+  requests from ranked options + price; `booked_rank` recorded; §16.4 keep-best in the booker's
+  post-race step and the watcher's cross-course upgrade; tests incl. the operator's example
+  (A 9–10 > B 9–10 > A 8–9) for same-drop and different-drop cases.
+- **MU-R3** — web: the §16.1 form (flat ranked option list, per-course price pre-filled + editable)
+  for one-off dates and rules; account page default price; dashboard shows the group and which option
+  booked (and its rank).
