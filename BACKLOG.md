@@ -80,6 +80,12 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Multi-user follow-ups
 
+- **Cosmos: the "no user-terminal row" guard is a query outside the batch** (MU-8b review): a user
+  cancel landing in the same round-trip as a rule-row reactivate could be missed. Cheap fix: a
+  `terminal|<date>` pointer doc upserted on every user-terminal write, whose ETag the guard asserts
+  in the batch (like the `ruleday` pointer).
+- **Cosmos `_write_account` create→409→blind upsert has no ETag** (MU-8b review): IfMatch-replace
+  with retry, like the rest of the module.
 - **Runner: release leases claimed before a mid-retry claim failure** (MU-9b review should-fix):
   today they expire at T0+1200 s, blocking the watcher ~20 min; a bounded release (outside the
   race window) would free them on the next watch cycle.
@@ -99,6 +105,12 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   logs across a `sign_in()` round-trip and assert the mocked bearer token / client secret never
   appear, like `tests/test_log_redaction.py` pins the 2captcha case. Do it in MU-14.
 - **Scope uvicorn `forwarded_allow_ips` to the ACA ingress** in MU-15a (today it trusts any peer).
+- **MU-15b: the Cosmos index policy must cover `CosmosTenantStore.QUERIED_PATHS`** (MU-8b). The
+  §3.2 list (`/type`, `/courseId`, `/targetDate`, `/status`, `/cutoffAt`, `/userId`) is too short:
+  the store also filters on `/source`, `/rowId`, `/ruleId`, `/active`, `/rawReservationId`,
+  `/oauthProvider`, `/oauthSubject`, `/usernameHash`, and Cosmos rejects a filter on an excluded
+  path. Then run the integration conformance leg (README) once the account exists: it has never
+  run against real Cosmos.
 - **Rule deletion must clear the `ruleday|<weekday>` pointer atomically** (surfaced in the MU-6
   review). The store has no rule delete yet; when MU-8b (Cosmos) or MU-13 (web) adds one, it must
   remove the rule doc and its weekday pointer in ONE batch, or that weekday is blocked to every new
