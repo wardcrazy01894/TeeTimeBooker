@@ -25,6 +25,8 @@ from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.models import User, UserId, UserRole, UserStatus
 from teetime.web.app import OAuthProviderSettings, WebSettings, create_app
 
+from ..tenant.conformance import COURSE_TIMEZONES, CUTOFF
+
 BASE_URL = "https://teetime-web-dev.example.azurecontainerapps.io"
 OPERATOR_EMAIL = "operator@example.test"
 T0 = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
@@ -47,9 +49,14 @@ def settings() -> WebSettings:
     )
 
 
+def new_store() -> InMemoryTenantStore:
+    """The web only touches users + audit; the course/cutoff config is the conformance suite's."""
+    return InMemoryTenantStore(course_timezones=COURSE_TIMEZONES, cutoff=CUTOFF)
+
+
 @pytest.fixture
 def store() -> InMemoryTenantStore:
-    return InMemoryTenantStore()
+    return new_store()
 
 
 @pytest.fixture

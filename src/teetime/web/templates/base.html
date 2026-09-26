@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}TeeTimeBooker{% endblock %}</title>
+  <link rel="stylesheet" href="/static/base.css">
+</head>
+<body>
+  <header class="site">
+    <a class="brand" href="/">TeeTimeBooker</a>
+    {% if user is defined and user %}
+    <nav>
+      <span class="who">{{ user.display_name or user.email }}</span>
+      {% if is_operator is defined and is_operator %}<a href="/admin/users">Users</a>{% endif %}
+      <form method="post" action="/logout" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Sign out</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

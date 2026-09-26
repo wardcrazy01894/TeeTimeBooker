@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · TeeTimeBooker{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+{% if dry_run %}<p class="banner">Dry-run environment: nothing here books or cancels a real tee time.</p>{% endif %}
+<p>Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider }} (subject {{ user.oauth_subject }}).</p>
+<p class="placeholder">Your request rows, standing rules and course accounts appear here once MU-13 lands.</p>
+{% endblock %}

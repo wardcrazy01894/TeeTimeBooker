@@ -16,7 +16,7 @@ from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.web.app import WebSettings, create_app
 from teetime.web.security import security_headers
 
-from .conftest import T0
+from .conftest import T0, new_store
 
 PUBLIC_PATHS = {"/healthz", "/login", "/login/{provider}", "/auth/{provider}/callback"}
 PUBLIC_MOUNTS = {"/static"}
@@ -26,7 +26,7 @@ class SpyStore:
     """Records every store METHOD call, delegating to a real InMemoryTenantStore."""
 
     def __init__(self) -> None:
-        self.inner = InMemoryTenantStore()
+        self.inner = new_store()
         self.calls: list[str] = []
 
     def __getattr__(self, name: str) -> Any:
