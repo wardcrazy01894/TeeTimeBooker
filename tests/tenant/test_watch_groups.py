@@ -8,8 +8,10 @@ from datetime import time
 from typing import Any
 from uuid import uuid4
 
+from teetime.core.adapter import RateLimitError
 from teetime.core.clock import FakeClock
 from teetime.tenant.models import GROUP_DOWNGRADE_REASON, BookingState, RankedWindow, RowStatus
+from teetime.tenant.notify import UserEventKind
 from teetime.tenant.watch_runner import WatchReport, run_tenant_watch
 
 from .runner_builders import KEYRING, POLICIES, TARGET, WINDOW
@@ -105,3 +107,54 @@ async def test_watch_dry_run_collapses_nothing() -> None:
 
 
 _ = time
+
+
+async def test_watch_tells_the_user_once_about_a_manual_double_booking() -> None:
+    """§16.4 step 2: A holds a MANUAL worse booking and B the better one. Nothing is cancelled,
+    and the user gets ONE double-held notice across repeated runs."""
+    store = new_store()
+    group = uuid4()
+    a = await seed(store, n=1, group_id=group, options=_opt(3))
+    b = await seed(store, n=2, group_id=group, options=_opt(1))
+    await book_row(store, a, raw_id="A-RAW", tee=BETTER, owned=False)
+    await book_row(store, b, raw_id="B-RAW", tee=BETTER)
+    a_fake = WatchFake()
+    factory = FakeFactory(adapters={a.account.id: a_fake, b.account.id: WatchFake()})
+    notifier = RecordingNotifier()
+
+    for _ in range(2):
+        await run_tenant_watch(
+            policies=POLICIES,
+            store=store,
+            clock=FakeClock(start=WATCH_NOW),
+            scheduler=watch_scheduler(),
+            booking_policy=POLICY_ON,
+            cutoff=CUTOFF,
+            keyring=KEYRING,
+            adapter_factory=factory,
+            notifier=notifier,
+            dry_run=False,
+        )
+
+    assert a_fake.cancel_call_count == 0
+    notices = [e for e in notifier.events if e.kind is UserEventKind.DOUBLE_HELD]
+    assert [e.row_id for e in notices] == [a.row.id]
+
+
+async def test_watch_rate_limit_during_collapse_aborts_the_run() -> None:
+    """A 429 while cancelling the worse booking aborts the run (exit 0, rate_limited) instead of
+    being swallowed and followed by more calls."""
+    store = new_store()
+    group = uuid4()
+    a = await seed(store, n=1, group_id=group, options=_opt(3))
+    b = await seed(store, n=2, group_id=group, options=_opt(1))
+    await book_row(store, a, raw_id="A-RAW", tee=BETTER)
+    await book_row(store, b, raw_id="B-RAW", tee=BETTER)
+    a_fake = WatchFake()
+    a_fake.set_cancel_to_raise(RateLimitError("slow down", retry_after_s=60))
+    factory = FakeFactory(adapters={a.account.id: a_fake, b.account.id: WatchFake()})
+
+    report = await _watch(store, factory)
+
+    assert report.rate_limited is True
+    assert (await stored_row(store, a)).status is RowStatus.BOOKED

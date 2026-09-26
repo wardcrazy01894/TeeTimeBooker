@@ -492,6 +492,14 @@ class _Run:
                     dry_run=self.dry_run,
                 )
                 log.info("tenant-watch: group collapse %s", report)
+                for row in report.notify:
+                    account = await self.store.get_account_unscoped(row.course_account_id)
+                    await self._notify(
+                        UserEventKind.DOUBLE_HELD, row, account=account, detail="group collapse"
+                    )
+        except RateLimitError as exc:
+            log.warning("tenant-watch: rate-limited during the group collapse; aborting the run")
+            raise _RateLimitedError from exc
         except Exception as exc:
             log.critical("tenant-watch: group collapse failed (%s)", type(exc).__name__)
 
@@ -510,6 +518,8 @@ class _Run:
         self.tally.logins += 1
         try:
             await inner.authenticate(resolved[probe.row.id])
+        except RateLimitError:
+            raise  # never swallowed: collapse() turns it into a run abort
         except Exception as exc:
             log.warning(
                 "tenant-watch: collapse login failed for %s (%s)", account.id, type(exc).__name__

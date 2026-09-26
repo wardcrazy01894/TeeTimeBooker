@@ -42,6 +42,9 @@ class UserEventKind(StrEnum):
     CANCELLED = "cancelled"  # by the user via the site
     CANCELLED_EXTERNAL = "cancelled_external"  # vanished from 2 trusted snapshots (§7.5)
     AUTH_FAILED = "auth_failed"
+    # §16.4: the user holds two tee times for one date and the bot could not (manual booking) or
+    # did not yet (a failed cancel it keeps retrying) cancel the worse one. Sent once per row.
+    DOUBLE_HELD = "double_held"
     NEEDS_RECONCILE = "needs_reconcile"  # UNCERTAIN outcome (§4.5) — operator only
     OPERATOR_SUMMARY = "operator_summary"
 
@@ -57,6 +60,7 @@ USER_FACING_KINDS: frozenset[UserEventKind] = frozenset(
         UserEventKind.CANCELLED,
         UserEventKind.CANCELLED_EXTERNAL,
         UserEventKind.AUTH_FAILED,
+        UserEventKind.DOUBLE_HELD,
     }
 )
 
@@ -185,6 +189,12 @@ _USER_TEMPLATES: Mapping[UserEventKind, tuple[str, str]] = {
         "Your tee time at {course} on {when} is no longer on your course account, so it was "
         "cancelled outside this site. We won't re-book it; re-request the date if you still "
         "want to play.",
+    ),
+    UserEventKind.DOUBLE_HELD: (
+        "Two tee times on {day}",
+        "You're holding two tee times on {day}, one of them at {course} ({when}), and we couldn't "
+        "cancel the one you ranked lower. If it was booked by hand we never cancel it for you; "
+        "otherwise we'll keep trying. Cancel whichever you don't want at the course.",
     ),
     UserEventKind.AUTH_FAILED: (
         "Action needed: sign-in failed at {course}",

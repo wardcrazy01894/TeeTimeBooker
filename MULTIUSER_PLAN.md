@@ -1843,7 +1843,10 @@ callers):
 3. `cancel_reservation(raw_id)` through that account's adapter.
 4. On success, ONE `record_outcomes` batch: row → pending(`group_downgrade`), booking cleared,
    `booked_rank` cleared, `upgrade_started_at` cleared, ledger → `cancelled_group`.
-5. On failure: log CRITICAL, leave the row BOOKED with the marker set, and notify the user once. The
+5. On failure: log CRITICAL, leave the row BOOKED with the marker set, and notify the user once. (Implemented: the FIRST failure notifies — the marker set by it suppresses later notices — and a
+   manual worse booking notifies once via `last_outcome = group_double_held`; both use the
+   user-facing `DOUBLE_HELD` event. A 429 during the collapse aborts the watcher run and stops
+   the booker's pass, never swallowed.) The
    next watcher run (≤10 min) sees two BOOKED rows in the group and retries from step 1.
 
 **Who calls it and when (MF3).**
@@ -1851,8 +1854,8 @@ callers):
   runs strictly AFTER every §4.2 WRITE #2 has committed. WRITE #2 is unchanged: it still streams
   one write per row as each account returns, with that row's real outcome, and releases the row's
   lease. Collapse never edits a queued outcome, so there is exactly one outcome write per row and
-  nothing can re-assert `booked` over a downgrade. The pass then finds groups with two BOOKED rows
-  from the outcomes it just wrote (no read), re-acquires each losing row's lease through the normal
+  nothing can re-assert `booked` over a downgrade. The pass then re-reads the run's groups
+  (`rows_in_groups`: the rows' new versions are the fingerprints it leases with), re-acquires each losing row's lease through the normal
   fingerprinted path (fingerprint = the BOOKED state WRITE #2 wrote), and runs the collapse with
   that account's still-open, logged-in adapter (no extra login). If a lease cannot be acquired
   (the watcher holds it, or the row changed), the row is skipped and the watcher's backstop

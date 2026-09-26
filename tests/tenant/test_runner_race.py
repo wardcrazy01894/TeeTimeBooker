@@ -738,3 +738,29 @@ async def test_runner_without_groups_makes_no_group_read() -> None:
     spy = SpyStore(inner, clock)
     await _run(spy, clock, ScriptedFactory())
     assert "rows_in_groups" not in spy.names()
+
+
+async def test_runner_dry_run_never_collapses() -> None:
+    """§7.8: a dry-run booker cancels nothing, so the group collapse pass never runs (not even
+    its group read)."""
+    inner = new_store()
+    group = uuid4()
+    await seed_account(inner, n=1, group_id=group, options=(RankedWindow(3, *WINDOW),))
+    await seed_account(inner, n=2, group_id=group, options=(RankedWindow(1, *WINDOW),))
+    clock = race_clock()
+    spy = SpyStore(inner, clock)
+    await run_release_event(
+        event=EVENT,
+        policies=POLICIES,
+        store=spy,
+        clock=clock,
+        scheduler=scheduler(),
+        keyring=KEYRING,
+        adapter_factory=ScriptedFactory(),
+        notifier=NullUserNotifier(),
+        dry_run=True,
+        wait=True,
+    )
+    # the pre-claim group-floor read is allowed; a post-race collapse read is not
+    assert spy.names().count("rows_in_groups") <= 1
+    assert all(n != "set_upgrade_marker" for n in spy.names())

@@ -5,11 +5,15 @@ ordering the plan relies on: lease -> upgrade marker -> cancel -> ONE outcome wr
 from __future__ import annotations
 
 from datetime import datetime, time
+from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from teetime.core.adapter import CancelError
+import pytest
+
+from teetime.core.adapter import CancelError, RateLimitError
 from teetime.core.clock import FakeClock
+from teetime.core.config import BookingCutoffConfig
 from teetime.core.models import BookingOutcome, BookingResult
 from teetime.tenant.groups import collapse_group
 from teetime.tenant.in_memory_store import InMemoryTenantStore
@@ -26,7 +30,7 @@ from teetime.tenant.models import (
 )
 from teetime.tenant.store import RowOutcome
 
-from .runner_builders import SETUP_NOW, TARGET, TZ, new_store, seed_account
+from .runner_builders import MB, SETUP_NOW, TARGET, TZ, new_store, seed_account
 
 BOOKER = "booker-setup"
 A_OPTS = (RankedWindow(1, time(9), time(10)), RankedWindow(3, time(8), time(9)))
@@ -204,3 +208,88 @@ async def test_collapse_does_nothing_in_dry_run() -> None:
     assert report.downgraded == ()
     assert report.skipped == (a_row.id,)
     assert spies[a_row.course_account_id].cancelled == []
+
+
+class FailingWriteStore(InMemoryTenantStore):
+    """``record_outcomes`` raises for the collapse write only (the booking writes before it are
+    made on the parent class directly)."""
+
+    fail_outcomes = False
+
+    async def record_outcomes(self, outcomes: Any) -> None:  # type: ignore[override]
+        if self.fail_outcomes:
+            raise RuntimeError("store down")
+        await super().record_outcomes(outcomes)
+
+
+class RateLimitedCancel(CancelSpy):
+    async def cancel_reservation(self, confirmation_code: str) -> None:
+        raise RateLimitError("slow down", retry_after_s=30)
+
+
+async def _run(store: Any, rows: list[RequestRow], spies: dict[Any, Any]) -> Any:
+    return await collapse_group(
+        rows,
+        store=store,
+        adapters=spies,
+        actor=Actor.WATCHER,
+        owner="watch-1",
+        clock=FakeClock(start=SETUP_NOW),
+    )
+
+
+async def test_manual_worse_booking_is_reported_once() -> None:
+    """§16.4 step 2: a manual worse booking is left alone AND the user is told, ONCE: the row is
+    marked so the next watcher run does not re-notify."""
+    store, a_row, b_row = await _group(a_owned=False)
+    spies = {a_row.course_account_id: CancelSpy(), b_row.course_account_id: CancelSpy()}
+    first = await _run(store, [a_row, b_row], spies)
+    assert [r.id for r in first.notify] == [a_row.id]
+    again = await store.rows_for_account_date(a_row.course_account_id, TARGET)
+    b_again = await store.rows_for_account_date(b_row.course_account_id, TARGET)
+    second = await _run(store, [*again, *b_again], spies)
+    assert second.notify == ()
+    assert second.manual == (a_row.id,)
+
+
+async def test_failed_cancel_is_reported_once() -> None:
+    """§16.4 step 5: the FIRST failed collapse cancel notifies; the retry on the next run (the
+    marker is already set) does not."""
+    store, a_row, b_row = await _group()
+    spies = {a_row.course_account_id: CancelSpy(fail=True), b_row.course_account_id: CancelSpy()}
+    first = await _run(store, [a_row, b_row], spies)
+    assert (first.failed, [r.id for r in first.notify]) == ((a_row.id,), [a_row.id])
+    again = await store.rows_for_account_date(a_row.course_account_id, TARGET)
+    b_again = await store.rows_for_account_date(b_row.course_account_id, TARGET)
+    second = await _run(store, [*again, *b_again], spies)
+    assert (second.failed, second.notify) == ((a_row.id,), ())
+
+
+async def test_cancel_lands_but_write_fails_keeps_the_marker() -> None:
+    """The ordering the marker exists for: the course cancel succeeded, the outcome write failed.
+    The row stays BOOKED with the marker set, so the next run reads the vanish as bot-caused."""
+    store = FailingWriteStore(course_timezones={MB: TZ}, cutoff=BookingCutoffConfig())
+    group = uuid4()
+    a = await seed_account(store, n=1, group_id=group, options=A_OPTS)
+    b = await seed_account(store, n=2, group_id=group, options=B_OPTS)
+    a_row = await _book(store, a.row, "A3", time(8, 30))
+    b_row = await _book(store, b.row, "B2", time(9, 15))
+    store.fail_outcomes = True
+    spies = {a_row.course_account_id: CancelSpy(), b_row.course_account_id: CancelSpy()}
+    report = await _run(store, [a_row, b_row], spies)
+    assert report.failed == (a_row.id,)
+    assert spies[a_row.course_account_id].cancelled == ["A3"]
+    (after,) = await store.rows_for_account_date(a_row.course_account_id, TARGET)
+    assert after.status is RowStatus.BOOKED
+    assert after.upgrade_started_at is not None
+    assert after.lease_owner is None
+
+
+async def test_rate_limited_cancel_propagates() -> None:
+    """A 429 is never swallowed by the collapse: the caller aborts (watcher) or stops (booker)."""
+    store, a_row, b_row = await _group()
+    spies = {a_row.course_account_id: RateLimitedCancel(), b_row.course_account_id: CancelSpy()}
+    with pytest.raises(RateLimitError):
+        await _run(store, [a_row, b_row], spies)
+    (after,) = await store.rows_for_account_date(a_row.course_account_id, TARGET)
+    assert after.lease_owner is None  # released on the way out

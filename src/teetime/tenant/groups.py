@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
+from ..core.adapter import RateLimitError
 from ..core.clock import Clock
 from .models import (
     GROUP_DOWNGRADE_REASON,
@@ -135,6 +136,15 @@ class CollapseReport:
     manual: tuple[RowId, ...] = ()  # left in place and reported (never auto-cancelled)
     skipped: tuple[RowId, ...] = ()  # lease or marker not obtained, or dry-run
     failed: tuple[RowId, ...] = ()  # cancel or write failed: retried by the next watcher run
+    # Rows whose user must be told NOW that they hold two tee times (§16.4 steps 2 and 5): a
+    # manual worse booking seen for the first time, or the FIRST failed collapse cancel. Each is
+    # reported once: the manual row is marked `last_outcome = group_double_held`, and a failed
+    # cancel leaves the upgrade marker set, so later runs do not re-notify.
+    notify: tuple[RequestRow, ...] = ()
+
+
+# `last_outcome` written on a row whose manual worse booking the user has been told about.
+DOUBLE_HELD_OUTCOME = "group_double_held"
 
 
 _HELD = frozenset({BookingState.HELD, BookingState.HELD_EXTRA})
@@ -185,10 +195,14 @@ async def collapse_group(
     downgraded: list[RowId] = []
     skipped: list[RowId] = []
     failed: list[RowId] = []
+    notify: list[RequestRow] = []
     for row in plan.leave_manual:
         log.warning(
             "group %s: row %s holds a MANUAL worse booking; left alone", row.group_id, row.id
         )
+        first_notice = not dry_run and row.last_outcome != DOUBLE_HELD_OUTCOME
+        if first_notice and await _mark_double_held(row, store=store, actor=actor, clock=clock):
+            notify.append(row)
     for row in plan.cancel:
         if dry_run:
             log.info("group %s: dry-run, would cancel row %s's booking", row.group_id, row.id)
@@ -205,12 +219,43 @@ async def collapse_group(
             lease_seconds=lease_seconds,
         )
         {"downgraded": downgraded, "skipped": skipped, "failed": failed}[outcome].append(row.id)
+        if outcome == "failed" and row.upgrade_started_at is None:
+            notify.append(row)  # the first failure; the marker now set suppresses the rest
     return CollapseReport(
         downgraded=tuple(downgraded),
         manual=tuple(r.id for r in plan.leave_manual),
         skipped=tuple(skipped),
         failed=tuple(failed),
+        notify=tuple(notify),
     )
+
+
+async def _mark_double_held(
+    row: RequestRow, *, store: CollapseStore, actor: Actor, clock: Clock
+) -> bool:
+    """Record that the user was told about this row's manual double booking (no status change),
+    so the notice goes out once. A failed mark skips the notice this run rather than risk a
+    notice on every run."""
+    try:
+        await store.record_outcomes(
+            [
+                RowOutcome(
+                    row_id=row.id,
+                    course_account_id=row.course_account_id,
+                    target_date=row.target_date,
+                    actor=actor,
+                    to_status=None,
+                    last_outcome=DOUBLE_HELD_OUTCOME,
+                    at=clock.now_utc(),
+                )
+            ]
+        )
+    except Exception as exc:
+        log.warning(
+            "group %s: could not mark row %s (%s)", row.group_id, row.id, type(exc).__name__
+        )
+        return False
+    return True
 
 
 async def _downgrade(
@@ -246,6 +291,8 @@ async def _downgrade(
             return "skipped"
         try:
             await adapter.cancel_reservation(raw)
+        except RateLimitError:
+            raise  # a 429 is never swallowed: the caller stops acting on the platform
         except Exception as exc:
             log.critical(
                 "group %s: cancelling row %s's worse booking failed (%s); retried next run",
