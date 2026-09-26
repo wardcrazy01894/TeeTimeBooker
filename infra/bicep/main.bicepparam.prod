@@ -67,3 +67,24 @@ param enableKillswitch = true
 // prod deploy never creates a killswitch — this value is unused in prod, set only for parity.
 // See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
 param killswitchRbacRoleId = '3e2d5a14-96bd-4469-9f96-b9c3270aa9e6'
+
+// --- MU-15a (MULTIUSER_PLAN §12): infra without the tenant DB ------------------------------
+// Prod stays 'toml' — UNCHANGED behaviour. Prod is frozen until the operator explicitly cuts
+// over (MULTIUSER_PLAN §11 steps 5-7), which is its OWN PR with its own tag, not this one.
+param bookingMode = 'toml'
+param watchMode = 'toml'
+
+// Prod watch cadence is UNCHANGED (every 10 min, year-round — AZURE_PLAN §5.4). Only dev's
+// param file (above) goes hourly; this value must stay the pre-MU-15a default.
+param watchCron = '*/10 * * * *'
+
+// Tenant Cosmos/ACS values stay empty — toml mode never reads them (MULTIUSER_PLAN §10.1).
+param tenantCosmosEndpoint = ''
+param acsEmailSender = ''
+
+// Web app + ACS: OFF by default in prod, same reasoning as dev (the KV secrets do not exist
+// yet). Prod behaviour is otherwise completely unaffected by this PR.
+param deployWebApp = false
+param deployAcsEmail = false
+param webPublicBaseUrl = ''
+param operatorEmail = ''

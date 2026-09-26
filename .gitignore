@@ -225,6 +225,9 @@ __marimo__/
 infra/bicep/**/*.json
 # bicepconfig.json is a Bicep linter config (NOT a build artifact) — must be tracked.
 !infra/bicep/bicepconfig.json
+# release_events.json is a hand-authored SOURCE file (MULTIUSER_PLAN §6.2, MU-15a — the
+# release-event table compute.bicep/killswitch.bicep loadJsonContent), NOT a build artifact.
+!infra/bicep/release_events.json
 
 # Claude Code per-user local settings (machine-specific permission grants — never shared)
 .claude/settings.local.json

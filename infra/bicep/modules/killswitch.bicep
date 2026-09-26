@@ -2,8 +2,9 @@
 //
 // When the $50 monthly budget threshold (Actual >= 100%) fires, the Azure Monitor
 // Action Group triggers this Logic App via its HTTP trigger. The Logic App issues
-// TWELVE HTTP calls — 3 job names per env × 2 envs (dev + prod) = 6 jobs, each
-// getting 2 actions (PATCH + POST /stop):
+// FOURTEEN HTTP calls (MULTIUSER_PLAN §10.1/§10.3, MU-15a) — 3 ACA Job names per env
+// × 2 envs (dev + prod) = 6 jobs, each getting 2 actions (PATCH + POST /stop) = 12, PLUS
+// lever (c): 1 POST /stop per env's `teetime-web-<env>` Container App = 2 more:
 //
 //   LEVER (a) — 6 PATCH calls to Microsoft.App/jobs (api-version 2024-03-01):
 //     Sets triggerType=Manual on each ACA Job so FUTURE scheduled fires are suppressed.
@@ -21,22 +22,36 @@
 //     executions (empty list = no-op, not an error).
 //     Source: https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/jobs/stop-multiple-executions?view=rest-resource-manager-containerapps-2024-03-01
 //
-// RBAC (VERIFIED — see infra/COST_KILLSWITCH_PLAN.md §2/Item4):
+//   LEVER (c) — 2 POST calls to Microsoft.App/containerApps/{name}/stop (api-version 2024-03-01,
+//   MU-15a): stops the `teetime-web-<env>` Container App's running replica(s) for dev + prod.
+//   Idempotent — a Container App with 0 replicas answers the same 200. This lever matters only
+//   once `deployWebApp=true` somewhere; while it is false in both envs (this PR's default) the
+//   target resource does not exist and the call 404s, which is a benign no-op the killswitch
+//   already tolerates for a deleted/never-created job (see the "Idempotency" note below).
+//     Source: https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/container-apps/stop?view=rest-resource-manager-containerapps-2024-03-01
+//
+// RBAC (VERIFIED — see infra/COST_KILLSWITCH_PLAN.md §2/Item4; extended MU-15a for lever c):
 //   Logic App system-assigned MI gets a custom role ("ACA Job Schedule Manager")
-//   with ONLY Microsoft.App/jobs/read + Microsoft.App/jobs/write + Microsoft.App/jobs/stop/action,
+//   with Microsoft.App/jobs/read + Microsoft.App/jobs/write + Microsoft.App/jobs/stop/action
+//   PLUS (MU-15a) Microsoft.App/containerApps/read + Microsoft.App/containerApps/stop/action,
 //   scoped to each target RG. Two role assignments: one for rg-teetime-dev (inline) and one for
 //   rg-teetime-prod (via nested module with cross-RG scope). The role definition itself must be
-//   created MANUALLY by the operator (requires subscription-level
+//   updated MANUALLY by the operator (requires subscription-level
 //   Microsoft.Authorization/roleDefinitions/write, which the CI service principal does NOT have).
-//   Pass the resulting GUID as killswitchRbacRoleId.
+//   The GUID (killswitchRbacRoleId) is UNCHANGED by an action-list update — `az role definition
+//   update` mutates the existing role in place. See the PR body for the exact command (an agent
+//   must not run it — infra/CLAUDE.md deploy-safety rules).
 //
-//   Custom role definition (create manually before deploying killswitch.bicep):
+//   Custom role definition, UPDATED for MU-15a (apply via `az role definition update`, not create
+//   — the role already exists with GUID 3e2d5a14-96bd-4469-9f96-b9c3270aa9e6):
 //   {
 //     "Name": "ACA Job Schedule Manager",
 //     "Actions": [
 //       "Microsoft.App/jobs/read",
 //       "Microsoft.App/jobs/write",
-//       "Microsoft.App/jobs/stop/action"
+//       "Microsoft.App/jobs/stop/action",
+//       "Microsoft.App/containerApps/read",
+//       "Microsoft.App/containerApps/stop/action"
 //     ],
 //     "AssignableScopes": ["/subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d"]
 //   }
@@ -129,6 +144,12 @@ var bookingJobEdt  = 'teetime-job-${envName}-edt'
 var bookingJobEst  = 'teetime-job-${envName}-est'
 var watchJob          = 'teetime-watch-job-${envName}'
 
+// Lever (c), MU-15a: the web Container App name per env (webapp.bicep). NOT an ACA Job — a
+// separate resource type (Microsoft.App/containerApps, not Microsoft.App/jobs) with its own
+// stop action. Present even when deployWebApp=false in both envs (the target then 404s, a
+// benign no-op — see the module header).
+var webApp = 'teetime-web-${envName}'
+
 // Both envs' resource group names. The Logic App patches jobs in the SAME RG it is
 // deployed in (rg-teetime-dev) plus the prod RG. The dev killswitch handles both
 // envs because the $50 budget covers both. See COST_KILLSWITCH_PLAN §Item3.
@@ -138,6 +159,7 @@ var devRgName = resourceGroup().name
 var bookingJobEdtProd  = 'teetime-job-prod-edt'
 var bookingJobEstProd  = 'teetime-job-prod-est'
 var watchJobProd          = 'teetime-watch-job-prod'
+var webAppProd            = 'teetime-web-prod'
 
 // Resource tags applied to all resources in this module.
 var tags = {
@@ -388,6 +410,37 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
           inputs: {
             method: 'POST'
             uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/jobs/${watchJobProd}/stop?api-version=2024-03-01'
+            body: {}
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        // Lever (c), MU-15a: stop the web Container App's running replica(s). Distinct
+        // resource type from the 12 job actions above (Microsoft.App/containerApps, not
+        // Microsoft.App/jobs) but the SAME stop semantics: idempotent, 200 even with 0
+        // replicas running, and a 404 (deployWebApp=false, resource never created) is a
+        // benign no-op — the killswitch already tolerates a missing/deleted target.
+        Stop_webapp_dev: {
+          type: 'Http'
+          inputs: {
+            method: 'POST'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${devRgName}/providers/Microsoft.App/containerApps/${webApp}/stop?api-version=2024-03-01'
+            body: {}
+            authentication: {
+              type: 'ManagedServiceIdentity'
+              audience: 'https://management.azure.com/'
+            }
+          }
+          runAfter: {}
+        }
+        Stop_webapp_prod: {
+          type: 'Http'
+          inputs: {
+            method: 'POST'
+            uri: 'https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${prodRgName}/providers/Microsoft.App/containerApps/${webAppProd}/stop?api-version=2024-03-01'
             body: {}
             authentication: {
               type: 'ManagedServiceIdentity'

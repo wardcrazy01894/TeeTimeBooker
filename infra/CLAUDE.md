@@ -22,6 +22,12 @@ infra/
     main.bicep               # entry point (RG-scoped); dryRun param defaults true
     main.bicepparam.dev      # dev parameter values (dryRun=true, enablePurgeProtection=false)
     main.bicepparam.prod     # prod parameter values (dryRun=false, enablePurgeProtection=true)
+    release_events.json      # MU-15a: release-event table (MULTIUSER_PLAN §6.2) — single source
+                             #   of truth for booking-job derivation, read via loadJsonContent by
+                             #   BOTH compute.bicep and killswitch.bicep. v1 ships exactly one
+                             #   event (mb0600et, Mangrove Bay); Sydney Marovitz is data-only
+                             #   (hosted_booking=False, no ACA job). Pinned to
+                             #   core/release_policy.py::cron_pair by test_release_events_parity.py.
     modules/
       identity.bicep         # user-assigned MI for all ACA Jobs
       registry.bicep         # ACR Basic; weekly `acr purge` task (keep last 10 tags PER repo: teetime + teetime-dev)
@@ -32,15 +38,34 @@ infra/
                              #   dev: enablePurgeProtection=false
                              #   prod: enablePurgeProtection=true
       logs.bicep             # Log Analytics Workspace + App Insights
-      compute.bicep          # ACA Environment + 2× booking ACA Jobs (DST crons)
-                             #   + 1× watch ACA Job (*/10 * * * *)
+      compute.bicep          # ACA Environment + booking ACA Jobs derived from ../release_events.json
+                             #   (v1: 2 jobs, DST crons, legacy teetime-job-<env>-edt/-est names)
+                             #   + 1× watch ACA Job (watchCron param: prod */10 * * * *, dev hourly)
                              #   all jobs: --dry-run passed via dryRun param
+                             #   bookingMode/watchMode params (default 'toml' in both envs, MU-15a):
+                             #   select `run --config .../container.toml` vs `tenant-run --event
+                             #   <key>`/`tenant-watch`; tenant-only secretRefs/env vars are added
+                             #   ONLY inside a mode=='tenant' branch, so the default toml mode
+                             #   never references a KV secret the operator has not created.
+      webapp.bicep           # NEW (MU-15a): Container App teetime-web-<env> (`teetime web`),
+                             #   scale-to-zero, same ACA environment as the jobs. Gated on
+                             #   deployWebApp (default false, both envs) — the Google OAuth /
+                             #   session KV secrets do not exist yet. Ingress + max-replicas
+                             #   latched to effectiveEnableSchedules (killswitch lever (c) target).
+      email.bicep            # NEW (MU-15a): ACS Communication Service + Email Service +
+                             #   Azure-managed domain; writes KV secret ACS-EMAIL-CONNECTION via
+                             #   listKeys() at deploy time. Gated on deployAcsEmail (default false,
+                             #   both envs). Requires Microsoft.Communication RP registration +
+                             #   "Key Vault Secrets Officer" for the CI deploy identity (operator,
+                             #   one-time — see the module header).
       budget.bicep           # Cost Management budget (subscription-scoped)
       killswitch.bicep       # Cost killswitch: Logic App (Consumption) + Action Group + RBAC
                              #   DEPLOYED TO rg-teetime-dev ONLY (envName=='dev' gate in main.bicep)
-                             #   manages BOTH envs via 12 HTTP actions: 6 PATCH + 6 POST /stop
+                             #   manages BOTH envs via 14 HTTP actions (MU-15a): 6 PATCH + 6 job
+                             #   POST /stop + 2 web-app POST /stop (lever c, teetime-web-<env>)
                              #   cross-RG RBAC for rg-teetime-prod via nested module below
-                             #   requires operator to pre-create "ACA Job Schedule Manager" custom role
+                             #   requires operator to pre-create/update "ACA Job Schedule Manager"
+                             #   custom role (MU-15a added containerApps/read + .../stop/action)
                              #   gate: enableKillswitch && !empty(killswitchRbacRoleId) && envName=='dev'
       killswitch-rbac-prod.bicep  # companion: Microsoft.Authorization/roleAssignments in rg-teetime-prod
                              #   deployed as nested module by killswitch.bicep

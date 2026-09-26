@@ -90,3 +90,37 @@ def test_web_port_falls_back_to_env_then_8000(served: dict[str, Any]) -> None:
     result = CliRunner().invoke(entry.cli, ["web"], env=GOOD_ENV)
     assert result.exit_code == 0, result.output
     assert served["port"] == 8000
+
+
+def test_serve_web_scopes_forwarded_allow_ips_to_localhost_not_wildcard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BACKLOG "scope forwarded_allow_ips": ACA's ingress sidecar talks to the container over
+    localhost within the same pod, so trusting X-Forwarded-* from "*" (any peer) would let a
+    request that reached the container by some OTHER path (e.g. a future VNet integration)
+    spoof its scheme/host. `_serve_web` must hand uvicorn an explicit, non-wildcard value."""
+    captured: dict[str, Any] = {}
+
+    def fake_run(app: FastAPI, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(entry.uvicorn, "run", fake_run)
+    entry._serve_web(FastAPI(), host="0.0.0.0", port=8000)
+    assert "forwarded_allow_ips" in captured
+    assert captured["forwarded_allow_ips"] != "*"
+    assert captured["forwarded_allow_ips"] == "127.0.0.1"
+    assert captured["proxy_headers"] is True
+
+
+def test_serve_web_forwarded_allow_ips_overridable_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An operator can widen the trusted range (e.g. a future VNet-integrated ACA revision)
+    without a code change, via WEB_FORWARDED_ALLOW_IPS — but the DEFAULT stays localhost-only."""
+    captured: dict[str, Any] = {}
+
+    def fake_run(app: FastAPI, **kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(entry.uvicorn, "run", fake_run)
+    monkeypatch.setenv("WEB_FORWARDED_ALLOW_IPS", "10.0.0.0/16")
+    entry._serve_web(FastAPI(), host="0.0.0.0", port=8000)
+    assert captured["forwarded_allow_ips"] == "10.0.0.0/16"

@@ -1,0 +1,11 @@
+[
+  {
+    "key": "mb0600et",
+    "timezone": "America/New_York",
+    "releaseTime": "06:00",
+    "courses": ["foreup:mangrove_bay"],
+    "cronDst": "50 9 * * *",
+    "cronStd": "50 10 * * *",
+    "jobNamePrefix": "teetime-job"
+  }
+]

@@ -28,9 +28,11 @@ def killswitch() -> str:
 
 
 def test_compute_uses_edt_est_job_names(compute: str) -> None:
-    # The post-rename job-name suffixes (no -sun).
-    assert "'${jobName}-edt'" in compute
-    assert "'${jobName}-est'" in compute
+    # The post-rename job-name suffixes (no -sun). Since MU-15a the names are derived from
+    # release_events.json's jobNamePrefix (MB's legacy prefix 'teetime-job'), not a hand-written
+    # '${jobName}-edt' literal — tests/test_release_events_parity.py pins the JSON itself.
+    assert "'${event.jobNamePrefix}-${envName}-edt'" in compute
+    assert "'${event.jobNamePrefix}-${envName}-est'" in compute
 
 
 def test_killswitch_targets_match_compute_job_suffixes(killswitch: str) -> None:

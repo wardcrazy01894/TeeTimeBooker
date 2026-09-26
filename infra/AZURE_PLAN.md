@@ -139,17 +139,27 @@ infra/
     main.bicep                 # entry point; orchestrates all modules; accepts envName + location params
     main.bicepparam.dev        # dev environment parameter values
     main.bicepparam.prod       # prod environment parameter values
+    release_events.json        # MU-15a: release-event table (MULTIUSER_PLAN §6.2), loadJsonContent'd
+                               #   by compute.bicep + killswitch.bicep. v1: one event (mb0600et)
     modules/
       identity.bicep           # user-assigned managed identity for the Container Apps Jobs
       registry.bicep           # ACR Basic; grants AcrPull to the job MI. SHARED: deployed standalone to the dedicated rg-teetime-shared (envName=shared), NOT by either env's main.bicep — see §2.1
       acr-pull-cross-rg.bicep  # BOTH envs (non-owners): cross-RG AcrPull on the shared ACR in rg-teetime-shared for the job MI (§2.1)
       keyvault.bicep           # Key Vault Standard; grants Key Vault Secrets User to the job MI; soft-delete 90d
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
-      compute.bicep            # ACA Environment (Consumption) + 2× booking ACA Jobs (DST crons) + watch ACA Job
+      compute.bicep            # ACA Environment (Consumption) + booking ACA Jobs derived from
+                               #   ../release_events.json (v1: 2 jobs, DST crons) + watch ACA Job.
+                               #   bookingMode/watchMode params (MU-15a, default 'toml' both envs)
+                               #   select toml vs tenant CLI args/env/secrets per job.
+      webapp.bicep             # NEW (MU-15a): Container App teetime-web-<env> (`teetime web`).
+                               #   Gated on deployWebApp (default false, both envs).
+      email.bicep              # NEW (MU-15a): ACS Communication Service + Email Service +
+                               #   Azure-managed domain. Gated on deployAcsEmail (default false).
       budget.bicep             # Cost Management budget ($20/mo, both RGs; Actual 80% + Forecasted 100%); subscription-scoped
                                #   also conditionally deploys budget-teetime-killswitch ($50 actual → killswitch Action Group) when killswitchActionGroupId is supplied
       killswitch.bicep         # Cost killswitch: Logic App (Consumption) + Action Group + RBAC; deployed to rg-teetime-dev only
-                               #   12 HTTP actions: 6 PATCH (Schedule→Manual) + 6 POST /stop; all 3 jobs × 2 envs
+                               #   14 HTTP actions (MU-15a): 6 PATCH (Schedule→Manual) + 6 job POST /stop
+                               #   + 2 web-app POST /stop (lever c); all 3 ACA jobs × 2 envs + both web apps
                                #   gated: enableKillswitch && !empty(killswitchRbacRoleId) && envName=='dev'
                                #   DONE 2026-05-31: custom role created (GUID 3e2d5a14-96bd-4469-9f96-b9c3270aa9e6 set in param files + azure-iac.yml); killswitch live in dev
       killswitch-rbac-prod.bicep  # companion: cross-RG role assignment for rg-teetime-prod
@@ -190,6 +200,9 @@ before module B references the resource.
 | `budgetAlertEmail` | string | operator email | operator email | Cost alert recipient |
 | `acrSku` | string | `Basic` | `Basic` | Allow upgrade to Standard later |
 | `kvSku` | string | `standard` | `standard` | Allow upgrade if HSM needed |
+| `bookingMode` / `watchMode` | string (`toml`\|`tenant`) | `toml` | `toml` | MU-15a: which code path the ACA jobs run. Default in BOTH envs — flipped only at the MULTIUSER_PLAN §11 cutover steps |
+| `watchCron` | string | `0 * * * *` (hourly) | `*/10 * * * *` (unchanged) | MU-15a operator directive: dev watch cadence cut to hourly; prod untouched |
+| `deployWebApp` / `deployAcsEmail` | bool | `false` | `false` | MU-15a: gate the web app + ACS resources off until the operator has pre-created their KV secrets |
 
 ### Hard-coded (architectural constants, not env-specific)
 
@@ -314,6 +327,12 @@ found), matching the booking jobs' in-process lock discipline. The
 `WatchOrchestrator.check_once` module docstring is the canonical reference for
 lock ownership rules.
 
+**Dev cadence change (MU-15a, operator directive):** dev's watch job runs `0 * * * *`
+(hourly) instead of `*/10 * * * *`, via `compute.bicep`'s `watchCron` param — a per-env
+value, so prod is untouched (`main.bicepparam.prod` keeps the original `*/10 * * * *`).
+Rationale: cuts dev Log Analytics/compute noise now that the watcher polls on every run
+regardless of time of day; dev is `dryRun=true` so this has no booking-behavior effect.
+
 `compute.bicep` includes the watch job `Microsoft.App/jobs` resource
 (implemented as part of M-azure-T1, now DONE).
 
@@ -361,6 +380,29 @@ involved.
 | `PLAYER1-MB-MEMBER` | Player 1 Mangrove Bay member number | Bot env var `PLAYER1_MB_MEMBER` |
 | `TWOCAPTCHA-API-KEY` | 2captcha.com API key for CAPTCHA solving | Bot env var `TWOCAPTCHA_API_KEY` |
 | `TEETIME-SKIP-DATES` | Comma/space ISO date list of days to NOT book (LEADTIME_SKIP_PLAN F2); `""` = no skips | Bot env var `TEETIME_SKIP_DATES` |
+
+**Tenant-mode-only secrets (MU-15a, MULTIUSER_PLAN §10.1) — referenced by compute.bicep ONLY
+inside a `bookingMode`/`watchMode == 'tenant'` branch, so the default `toml` mode never needs
+them to exist:**
+
+| Secret name | Contains | Used by |
+|---|---|---|
+| `TENANT-CREDS-KEYRING` | JSON keyring for AES-GCM account-password decryption (`tenant/crypto.py`) | Bot env var `TENANT_CREDS_KEYRING` |
+| `ACS-EMAIL-CONNECTION` | ACS Communication Service connection string — written by `email.bicep`'s `listKeys()` at deploy time, never an operator-typed value | Bot env var `ACS_EMAIL_CONNECTION` |
+| `OPERATOR-NOTIFY-EMAIL` | Operator's summary-notification recipient address | Bot env var `OPERATOR_NOTIFY_EMAIL` |
+
+**Web-app-only secrets (MU-15a) — referenced by `webapp.bicep` ONLY when `deployWebApp=true`
+(default false, both envs); the operator must pre-create all three (see the PR body for the
+exact Google Cloud Console + `az keyvault secret set` steps) before flipping that param:**
+
+| Secret name | Contains | Used by |
+|---|---|---|
+| `WEB-SESSION-SECRET` | Random signing key for session cookies (>= 32 chars) | Bot env var `WEB_SESSION_SECRET` |
+| `OAUTH-GOOGLE-CLIENT-ID` | Google OAuth 2.0 client ID | Bot env var `OAUTH_GOOGLE_CLIENT_ID` |
+| `OAUTH-GOOGLE-CLIENT-SECRET` | Google OAuth 2.0 client secret | Bot env var `OAUTH_GOOGLE_CLIENT_SECRET` |
+
+GitHub OAuth (`OAUTH-GITHUB-CLIENT-ID`/`SECRET`) is deliberately NOT provisioned — operator
+decision 2026-09-26: Google only for v1.
 
 **Only Player 1 needs secrets — guests do not.** The bot books a full foursome
 (4 player slots), but ForeUP's booking POST transmits only the player *count*,
@@ -676,6 +718,15 @@ in the parameter file and redeploy — this is the intended release workflow.
 | Application Insights | Pay-per-use | **~$0.00** | First 5 GB/month free. |
 | Network egress | — | **~$0.00** | First 100 GB/month free. Bot does <10 MB/run. |
 | **Total (dev or prod)** | | **~$5.01–$5.51/mo per env** | Well within the $20/mo budget ceiling (covers both envs). |
+
+**MU-15a additions (webapp.bicep, email.bicep): $0.00 while gated off.** Both modules are
+deployed only when `deployWebApp`/`deployAcsEmail` are `true` — default `false` in both envs'
+param files (see §3, §7.1). A scale-to-zero Container App with no traffic and an ACS Email
+service with no messages sent both cost nothing; this PR ships the modules but does not flip
+either gate, so the estimate above is unchanged. When eventually enabled: the web Container App
+is the same Consumption-plan free-tier math as the ACA Jobs above (near-zero for the low request
+volume of an invite-only site), and ACS Email's free tier covers 100 emails/month before
+per-message billing.
 
 ### 9.2 Budget alert
 
