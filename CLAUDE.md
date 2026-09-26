@@ -406,7 +406,30 @@ does not return — see the recorder bullet under the capability notes below, wh
 why it is one CONCRETE class per capability set and never a `__getattr__` proxy.
 `dev/blind_fake_adapter.py::BlindFakeAdapter` is the blind-capable `FakeAdapter` variant carrying
 the MU-3 allowlist hook (FakeAdapter's defaults are unchanged); it drives the recorder's race-path
-end-to-end test through the UNMODIFIED `Orchestrator`. Tenant store (decided 2026-09-25): a Cosmos DB
+end-to-end test through the UNMODIFIED `Orchestrator`. **MU-10a is DONE in
+code, UNWIRED** (`tenant/watcher.py`, the tenant watcher's PURE decision layer — no I/O, no store
+or adapter calls; nothing calls it until the MU-10b runner wiring): `group_rows_for_search`
+(one shared search per `(course, date, party_size)` — party is part of the key because MB
+`players=4` returns a SUBSET of `players=2`), `needs_login` (the §7.1 step-3 reasons
+first-match-wins: bookable in-window slot for a PENDING row, a strictly-closer-to-midpoint
+upgrade candidate for a BOOKED row **only when OWNED**, `needs_reconcile`, an expired unreleased
+lease, the reconcile cadence `(account_id.int + run_index) % 6 == 0` — the UUID integer, never a
+per-process-salted `hash()` — and a >90-min-stale snapshot backstop for booked rows),
+`ownership_of`/`is_owned` (OWNED iff the raw id is ledgered `held`/`held_extra`;
+ADOPTED_RECONCILE iff `needs_reconcile` AND an EXACT instant+party match with a recorded
+UNCERTAIN slot the caller passes — fail-safe UNOWNED when nothing is passed), `upgrade_allowed`
+(**the ownership gate MU-10b MUST apply before `_try_upgrade`**, since E5 does not guard the
+upgrade), `classify_missing_booking` (§7.5: only TRUSTED snapshots count, the last two must both
+miss the id and be >=10 min apart, then the M2 exclusions in plan order — upgrade marker or a
+ledgered `cancelled_upgrade`/`cancelled_extra` -> `BOT_CAUSED`, a same-(date, party) replacement
+-> `ADOPT_REPLACEMENT`, else `EXTERNAL_CANCEL`; `cancelled_user` is deliberately NOT an
+exclusion, see the inline note), `dry_run_gate` (§7.8: never upgrade / reconcile-cancel / mark
+`cancelled(external)` in dry-run) and the `SearchSnapshotAdapter` family +
+`make_search_snapshot_adapter` (serves `search()` from the shared group result, delegates the
+rest; ONE concrete class per inner capability set — 16 — with NO `__getattr__`, so
+`runtime_checkable` `isinstance`, which is `getattr_static`-based on >=3.12, reads the proxy
+exactly like the inner). Wall-clock comparisons convert to the row's course timezone first.
+Tests: `tests/tenant/test_watcher_{login,ownership,proxy}.py`. Tenant store (decided 2026-09-25): a Cosmos DB
 free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
 "no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path
 is unaffected.
