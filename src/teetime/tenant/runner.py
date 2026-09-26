@@ -25,7 +25,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from enum import IntEnum
 from typing import Any, Protocol
 from uuid import uuid4
@@ -217,6 +217,15 @@ class WatchReport:
     systemic_error: str | None
 
 
+def tenant_scheduler() -> SchedulerConfig:
+    """The tenant booking job's race knobs: EXACTLY today's booking job's (the shipped
+    ``config/container.toml`` [scheduler] — burst 3, reserve 2, stagger (-500, -250, 0), early
+    arrival 500 ms, lead 120 s; parity-pinned by
+    ``test_tenant_scheduler_matches_the_shipped_toml_scheduler``). The runner copies each
+    event's fire time + zone over it per account (§4.2 S')."""
+    return SchedulerConfig()
+
+
 def exit_code_for(report: RunReport | WatchReport) -> ExitStatus:
     """Map a report to the §4.5 exit contract: non-zero only for systemic causes (DB, keyring,
     any decrypt failure, any CaptchaError/OtpChallengeError — including one the blind burst
@@ -354,6 +363,8 @@ async def _book_event(
     and builds the pools. ``LeasedBookingStore`` is MU-9c; the booker never needs it (its lease
     is held from the claim)."""
     started = clock.now_utc()
+    stamps: list[datetime] = []  # every store call + the decrypt, for the §11.2 self-check
+    stamped = _StampedStore(store, clock=clock, stamps=stamps)
     if wait and not should_proceed(clock, timezone=event.timezone, fire_time=event.release_time):
         log.info(
             "tenant-run %s: wrong-season cron (DST gate) — exiting before any store call",
@@ -365,7 +376,7 @@ async def _book_event(
     phase = await _read_and_claim(
         event,
         policies=policies,
-        store=store,
+        store=stamped,
         clock=clock,
         started=started,
         t0=t0,
@@ -377,6 +388,7 @@ async def _book_event(
     if isinstance(phase, RunReport):
         return phase, []
     loaded, claimed, claimed_rows = phase
+    stamps.append(clock.now_utc())
     creds, decrypt_failed = resolve_credentials(claimed_rows, keyring=keyring)
     runnable = [r for r in claimed_rows if r.row.id in creds]
     pools: dict[CourseId, SharedCaptchaPool | None] = {}
@@ -396,18 +408,26 @@ async def _book_event(
         )
     except Exception as exc:
         # A systemic pre-T0 failure (e.g. round-2 SF1): nothing raced, so hand the rows back.
-        await _release_leases(store, claimed, owner=owner)
+        await _release_leases(stamped, claimed, owner=owner)
         await _close_pools(pools)
         report = _systemic(event, "prepare", exc, rows_loaded=loaded, rows_claimed=len(claimed))
         return report, []
     finished, write_failures, deadline_hit = await _race(
         accounts,
         [r for r in claimed_rows if r.row.id in decrypt_failed],
-        store=store,
+        store=stamped,
         clock=clock,
         write_from=t0 + timedelta(seconds=post_burst_quiet_s),
         deadline=started + timedelta(seconds=replica_timeout_s - SELF_DEADLINE_MARGIN_S),
         owner=owner,
+    )
+    _log_fills(pools, reserve=scheduler.blind_post_fallback_token_reserve)
+    _check_race_window(
+        stamps,
+        t0=t0,
+        lead_s=scheduler.captcha_prefetch_lead_s,
+        quiet_s=post_burst_quiet_s,
+        started=started,
     )
     await _close_adapters(accounts)
     await _close_pools(pools)
@@ -591,7 +611,7 @@ async def _read_and_claim(
     event: ReleaseEvent,
     *,
     policies: Mapping[CourseId, ReleasePolicy],
-    store: TenantStore,
+    store: _RunnerStore,
     clock: Clock,
     started: datetime,
     t0: datetime,
@@ -629,6 +649,13 @@ async def _read_and_claim(
         # A timed-out claim may have landed: those leases (ours) expire at ``until``.
         return _systemic(event, "claim_rows", exc, rows_loaded=len(loaded))
     claimed_rows = [r for r in rows if r.row.id in claimed]
+    log.info(
+        "tenant-run: claimed %d/%d row(s) for %s target=%s",
+        len(claimed_rows),
+        len(rows),
+        event.key,
+        ",".join(sorted({r.row.target_date.isoformat() for r in rows})),
+    )
     if not claimed_rows:
         return _report(event, rows_loaded=len(loaded))
     log.info(
@@ -660,7 +687,7 @@ def _claim_give_up_at(t0: datetime, scheduler: SchedulerConfig) -> datetime:
 
 
 async def _claim(
-    store: TenantStore,
+    store: _RunnerStore,
     row_ids: Sequence[RowId],
     *,
     owner: str,
@@ -723,7 +750,7 @@ async def _store_call[T](
     return task.result()
 
 
-async def _release_leases(store: TenantStore, row_ids: frozenset[RowId], *, owner: str) -> None:
+async def _release_leases(store: _RunnerStore, row_ids: frozenset[RowId], *, owner: str) -> None:
     for row_id in row_ids:
         try:
             await store.release_row_lease(row_id, owner=owner)
@@ -845,11 +872,23 @@ def _allocate(accounts: Sequence[_Account], *, burst: int) -> dict[CourseId, tup
             account.search_only = row_id in allocation.search_only
             recorder.set_blind_allowlist(account.allowlist)
         orders[course_id] = allocation.order
+        allowed = " ".join(
+            f"allowlist[{row_id}]=["
+            + ",".join(
+                s.tee_time.strftime("%H:%M")
+                for s in ranked[row_id]
+                if s.slot_id in allocation.allowlists[row_id]
+            )
+            + "]"
+            for row_id in allocation.order
+            if row_id not in allocation.search_only
+        )
+        # §11.2 line 2: with one account the times equal the adapter's own blind-POST line.
         log.info(
-            "tenant-run: course %s draft order %s; search-only this drop: %s",
-            course_id,
-            [str(r) for r in allocation.order],
-            sorted(str(r) for r in allocation.search_only),
+            "tenant-run: allocation order=[%s] %s search_only=[%s]",
+            ",".join(str(r) for r in allocation.order),
+            allowed,
+            ",".join(sorted(str(r) for r in allocation.search_only)),
         )
     return orders
 
@@ -899,7 +938,7 @@ async def _race(
     accounts: Sequence[_Account],
     decrypt_failed: Sequence[EventRow],
     *,
-    store: TenantStore,
+    store: _RunnerStore,
     clock: Clock,
     write_from: datetime,
     deadline: datetime,
@@ -910,6 +949,7 @@ async def _race(
     finished: list[_Finished] = []
 
     def emit(item: _Finished) -> None:
+        _log_outcome(item)
         finished.append(item)
         queue.put_nowait(item)
 
@@ -943,6 +983,7 @@ async def _race(
     queue.put_nowait(None)
     writer_deadline = deadline + timedelta(seconds=WRITER_GRACE_S)
     failures = await _await_writer(writer, finished, ledger, clock=clock, deadline=writer_deadline)
+    log.info("tenant-run: wrote %d/%d outcome(s)", len(finished) - len(failures), len(finished))
     return finished, failures, deadline_hit
 
 
@@ -1035,7 +1076,7 @@ async def _await_accounts(
 async def _stream_outcomes(
     queue: asyncio.Queue[_Finished | None],
     *,
-    store: TenantStore,
+    store: _RunnerStore,
     clock: Clock,
     start_at: datetime,
     ledger: _WriteLedger,
@@ -1052,7 +1093,7 @@ async def _stream_outcomes(
             ledger.failed.append(item.row.row_id)
 
 
-async def _write_outcome(store: TenantStore, outcome: RowOutcome, *, clock: Clock) -> bool:
+async def _write_outcome(store: _RunnerStore, outcome: RowOutcome, *, clock: Clock) -> bool:
     give_up = clock.now_utc() + timedelta(seconds=_WRITE_RETRY_WINDOW_S)
     while True:
         try:
@@ -1229,6 +1270,115 @@ def _owned(account: _Account, book: RecordedBook, *, state: BookingState) -> Own
         party_size=row.party_size,
         source=BookingSource.BLIND if blind else BookingSource.SEARCH,
         state=state,
+    )
+
+
+# --- the §11.2 verification surface (MU-9b) ----------------------------------------------
+
+
+class _RunnerStore(Protocol):
+    """The four ``TenantStore`` calls the booking runner makes (READ #1, WRITE #1, WRITE #2,
+    lease hand-back)."""
+
+    async def load_event_rows(
+        self, *, targets: Mapping[CourseId, date], now: datetime
+    ) -> list[EventRow]: ...
+
+    async def claim_rows(
+        self, row_ids: Sequence[RowId], *, owner: str, until: datetime, now: datetime
+    ) -> frozenset[RowId]: ...
+
+    async def record_outcomes(self, outcomes: Sequence[RowOutcome]) -> None: ...
+
+    async def release_row_lease(self, row_id: RowId, *, owner: str) -> None: ...
+
+
+class _StampedStore:
+    """Delegates the runner's store calls, stamping each START with the run's clock so the run
+    can check itself against the race window (§11.2 line 7, the runtime mirror of §4.4 proof 1).
+    """
+
+    def __init__(self, inner: TenantStore, *, clock: Clock, stamps: list[datetime]) -> None:
+        self._inner = inner
+        self._clock = clock
+        self._stamps = stamps
+
+    async def load_event_rows(
+        self, *, targets: Mapping[CourseId, date], now: datetime
+    ) -> list[EventRow]:
+        self._stamps.append(self._clock.now_utc())
+        return await self._inner.load_event_rows(targets=targets, now=now)
+
+    async def claim_rows(
+        self, row_ids: Sequence[RowId], *, owner: str, until: datetime, now: datetime
+    ) -> frozenset[RowId]:
+        self._stamps.append(self._clock.now_utc())
+        return await self._inner.claim_rows(row_ids, owner=owner, until=until, now=now)
+
+    async def record_outcomes(self, outcomes: Sequence[RowOutcome]) -> None:
+        self._stamps.append(self._clock.now_utc())
+        await self._inner.record_outcomes(outcomes)
+
+    async def release_row_lease(self, row_id: RowId, *, owner: str) -> None:
+        self._stamps.append(self._clock.now_utc())
+        await self._inner.release_row_lease(row_id, owner=owner)
+
+
+def _check_race_window(
+    stamps: Sequence[datetime], *, t0: datetime, lead_s: int, quiet_s: float, started: datetime
+) -> None:
+    """§11.2 line 7: no store call and no decrypt in [T0 - lead - 1 s, T0 + quiet). Only
+    meaningful when the run started before that window (a manual re-run after it cannot)."""
+    lo = t0 - timedelta(seconds=lead_s + 1)
+    hi = t0 + timedelta(seconds=quiet_s)
+    window = f"[T0-{lead_s + 1}s, T0+{quiet_s:g}s]"
+    if started >= lo:
+        log.info("tenant-run: started inside the race window %s; self-check skipped", window)
+        return
+    inside = [s for s in stamps if lo <= s < hi]
+    if inside:
+        log.critical(
+            "tenant-run: %d store/credential call(s) INSIDE race window %s", len(inside), window
+        )
+    else:
+        log.info("tenant-run: no store/credential call inside race window %s", window)
+
+
+def _log_fills(pools: Mapping[CourseId, SharedCaptchaPool | None], *, reserve: int) -> None:
+    """§11.2 line 3, one per pooled course whose coordinated fill ran."""
+    for pool in pools.values():
+        fill = pool.report() if pool is not None else None
+        if fill is None:
+            continue
+        granted = ", ".join(f"{key}: {n}" for key, n in fill.granted.items())
+        log.info(
+            "pool: coordinated fill demanded=%d (burst=%d, reserve=%d) solved=%d granted={%s} "
+            "reserve=%d",
+            fill.demanded,
+            fill.demanded - reserve,
+            reserve,
+            fill.solved,
+            granted,
+            fill.reserve,
+        )
+
+
+def _log_outcome(item: _Finished) -> None:
+    """§11.2 line 6, as each account returns."""
+    out = item.account
+    if out.outcome is not None:
+        label = out.outcome.name
+    elif out.decrypt_failed:
+        label = "DECRYPT_FAILED"
+    else:
+        label = f"ERROR:{out.error}"
+    log.info(
+        "tenant-run: outcome row=%s outcome=%s held=%d cancelled_extra=%d held_extra=%d",
+        out.row_id,
+        label,
+        1 if item.row.booking is not None else 0,
+        len(item.row.cancelled_extras),
+        len(item.row.held_extras),
     )
 
 
