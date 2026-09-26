@@ -833,7 +833,13 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
 - **Vanish** needs the reservation absent from **two consecutive trusted** snapshots taken ≥ 10 min
   apart, **and** all of the following:
   - `upgrade_started_at` is NULL (no bot upgrade in flight or crashed; otherwise pending + `needs_reconcile`);
-  - the id is not ledgered `cancelled_upgrade` / `cancelled_extra` / `cancelled_user`;
+  - the id is not ledgered `cancelled_upgrade` / `cancelled_extra` (**MU-10a note:** `cancelled_user`
+    is deliberately NOT an exclusion in `classify_missing_booking`. The web cancel writes the row
+    CANCELLED(user) and the ledger entry in one batch, so a BOOKED row can never carry one in a
+    consistent store; if it ever did, the two remaining verdicts are BOT_CAUSED (-> pending +
+    `needs_reconcile`, i.e. the bot may RE-BOOK what the user just cancelled) or EXTERNAL_CANCEL
+    (no re-book) — the second is the safe direction, so the code lets it fall through to the
+    replacement / external legs rather than listing it here);
   - there is **no replacement** reservation for the same (date, party_size). If there is one, it is
     **adopted** as the row's booking: owned iff ledgered or it matches a recorded upgrade book;
     otherwise unowned. It is never read as an external cancel.

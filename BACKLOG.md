@@ -78,6 +78,15 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ---
 
+## Multi-user follow-ups
+
+- **Rule deletion must clear the `ruleday|<weekday>` pointer atomically** (surfaced in the MU-6
+  review). The store has no rule delete yet; when MU-8b (Cosmos) or MU-13 (web) adds one, it must
+  remove the rule doc and its weekday pointer in ONE batch, or that weekday is blocked to every new
+  rule forever. Rows of a vanished rule are already withdrawn `rule_deleted` by the tick sweep.
+
+---
+
 ## Frontend (single-user web UI)
 
 A full, ratified design already exists: **[FRONTEND_PLAN.md](./FRONTEND_PLAN.md)**
