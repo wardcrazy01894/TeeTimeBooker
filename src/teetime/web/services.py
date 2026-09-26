@@ -33,10 +33,16 @@ from ..core.adapter import (
 )
 from ..core.clock import Clock
 from ..core.config import BookingCutoffConfig
-from ..core.models import CourseCredentials, CourseId
+from ..core.models import MANAGED_BOOKING_TAG, CourseCredentials, CourseId, ExistingReservation
 from ..core.redaction import register_secret_literals
 from ..core.release_policy import ReleasePolicy
-from ..tenant.crypto import Keyring, credential_aad, encrypt_password
+from ..tenant.crypto import (
+    CredentialDecryptError,
+    Keyring,
+    credential_aad,
+    decrypt_password,
+    encrypt_password,
+)
 from ..tenant.materialize import (
     MIN_HORIZON_DAYS,
     MaterializeReport,
@@ -58,6 +64,7 @@ from ..tenant.models import (
     RowStatus,
     RuleId,
     RuleNoLongerCoversError,
+    SnapshotEntry,
     StandingRule,
     TransitionRefusedError,
     UserId,
@@ -938,6 +945,144 @@ async def reverify_account(
     )
 
 
+class RefreshCache:
+    """The in-process §8.6 TTL cache of live-refresh snapshots, keyed by account id. Coherent
+    because the web runs ONE replica (§8.1). Lookups happen only AFTER the user-scoped account
+    read, so a cached snapshot is never served to anyone but the account's owner."""
+
+    def __init__(self, *, ttl_s: float) -> None:
+        self._ttl = timedelta(seconds=ttl_s)
+        self._entries: dict[CourseAccountId, tuple[datetime, ReservationSnapshot]] = {}
+
+    def get(self, account_id: CourseAccountId, *, now: datetime) -> ReservationSnapshot | None:
+        entry = self._entries.get(account_id)
+        if entry is None or now - entry[0] >= self._ttl:
+            return None
+        return entry[1]
+
+    def put(self, snapshot: ReservationSnapshot, *, now: datetime) -> None:
+        self._entries[snapshot.course_account_id] = (now, snapshot)
+
+    def invalidate(self, account_id: CourseAccountId) -> None:
+        self._entries.pop(account_id, None)
+
+
+_REVERIFY_FIRST = (
+    "The course rejected this account's saved login: re-verify it with your password first."
+)
+_SNAPSHOT_UNTRUSTED = (
+    "We logged in but couldn't read your reservations from the course. Nothing was updated; "
+    "try again in a few minutes."
+)
+
+
+def _usable_account(account: CourseAccount) -> None:
+    """``auth_failed`` / ``disabled`` accounts never log in (PLAN §12: never hammer a login)."""
+    if account.status is AccountStatus.AUTH_FAILED:
+        raise ActionRefusedError(_REVERIFY_FIRST)
+    if account.status is not AccountStatus.ACTIVE:
+        raise ActionRefusedError("This course account is disabled.")
+
+
+def _decrypt_for_request(account: CourseAccount, keyring: Keyring) -> str:
+    """Decrypt in process and E7-register the plaintext before any use. A bad blob names the
+    account id and the error class only."""
+    try:
+        password = decrypt_password(
+            keyring, account.password_ciphertext, aad=credential_aad(account)
+        )
+    except CredentialDecryptError as exc:
+        log.error("web: account %s: credential decrypt failed (%s)", account.id, type(exc).__name__)
+        raise ActionRefusedError(
+            "This account's saved login can't be read. Please re-connect it."
+        ) from exc
+    _register_password(password)
+    return password
+
+
+def _snapshot_from(
+    account_id: CourseAccountId,
+    reservations: list[ExistingReservation],
+    *,
+    trusted: bool,
+    now: datetime,
+) -> ReservationSnapshot:
+    return ReservationSnapshot(
+        course_account_id=account_id,
+        observed_at=now,
+        source="refresh",
+        trusted=trusted,
+        entries=tuple(
+            SnapshotEntry(
+                raw_id=r.confirmation_code.removeprefix(MANAGED_BOOKING_TAG),
+                tee_time=r.tee_time,
+                party_size=r.party_size,
+            )
+            for r in reservations
+        ),
+    )
+
+
+async def _check_refresh_limits(
+    store: TenantStore, *, account: CourseAccount, limits: ProbeLimits, now: datetime
+) -> None:
+    since = now - _HOUR
+    mine = await store.count_login_probes(
+        user_id=None, username_hash=refresh_probe_hash(account.id), since=since
+    )
+    site = await store.count_login_probes(user_id=None, username_hash=None, since=since)
+    if mine >= limits.refreshes_per_account_per_hour or site >= limits.site_per_hour:
+        log.info("web: refresh of account %s refused by rate limit", account.id)
+        raise RateLimitedError(
+            "This account was refreshed too often in the last hour. Please try again later."
+        )
+
+
+async def _live_login(
+    store: TenantStore,
+    *,
+    account: CourseAccount,
+    password: str,
+    adapter_factory: AdapterFactory,
+    clock: Clock,
+) -> CourseAdapter:
+    """ONE authenticate for an existing account, recorded as a refresh probe. Returns the
+    (still open) adapter of an established session; a soft failure is
+    counted (§7.5). The caller closes the adapter. Never retried."""
+    adapter = adapter_factory(
+        course_id=account.course_id, account=account, pool=None, lease_key=None, dry_run=True
+    )
+    ok = False
+    try:
+        await adapter.authenticate(CourseCredentials(username=account.username, password=password))
+        ok = _login_established(adapter)
+    except RateLimitError as exc:
+        await _close(adapter)
+        raise RateLimitedError(
+            "The course is limiting logins right now. Please try again later."
+        ) from exc
+    except Exception as exc:
+        await _close(adapter)
+        log.warning("web: login for account %s failed (%s)", account.id, type(exc).__name__)
+        raise ActionRefusedError("We couldn't log in to the course. Nothing was changed.") from exc
+    finally:
+        await store.record_login_probe(
+            user_id=account.user_id,
+            course_id=account.course_id,
+            username_hash=refresh_probe_hash(account.id),
+            ok=ok,
+            at=clock.now_utc(),
+        )
+    if not ok:
+        await _close(adapter)
+        count = await store.record_soft_auth_failure(account.id)
+        log.warning("web: account %s: soft login failure #%d", account.id, count)
+        raise ActionRefusedError(
+            "We couldn't log in to the course with the saved login. Nothing was changed."
+        )
+    return adapter
+
+
 async def refresh_account(
     store: TenantStore,
     *,
@@ -946,10 +1091,36 @@ async def refresh_account(
     keyring: Keyring,
     adapter_factory: AdapterFactory,
     clock: Clock,
+    cache: RefreshCache,
+    limits: ProbeLimits,
 ) -> ReservationSnapshot:
     """Live login + list, persisted as a snapshot. Served from the in-process TTL cache inside
-    ``refresh_ttl_s``; hard-capped per account per hour (§8.6)."""
-    raise NotImplementedError(_MU14)
+    ``refresh_ttl_s``; hard-capped per account per hour (§8.6). Honours ``snapshot_trusted``
+    (§7.5): an untrusted list is neither persisted nor cached, so the dashboard keeps the last
+    trusted snapshot instead of showing a stale or empty one as fact."""
+    account = await _own_account(store, user_id=user_id, account_id=account_id)
+    now = clock.now_utc()
+    cached = cache.get(account.id, now=now)
+    if cached is not None:
+        return cached
+    _usable_account(account)
+    await _check_refresh_limits(store, account=account, limits=limits, now=now)
+    password = _decrypt_for_request(account, keyring)
+    adapter = await _live_login(
+        store, account=account, password=password, adapter_factory=adapter_factory, clock=clock
+    )
+    try:
+        reservations = await adapter.list_reservations()
+        trusted = _snapshot_trusted(adapter)
+    finally:
+        await _close(adapter)
+    if not trusted:
+        log.warning("web: account %s: UNTRUSTED reservation snapshot; not persisted", account.id)
+        raise ActionRefusedError(_SNAPSHOT_UNTRUSTED)
+    snapshot = _snapshot_from(account.id, reservations, trusted=True, now=clock.now_utc())
+    await store.save_snapshot(snapshot)
+    cache.put(snapshot, now=clock.now_utc())
+    return snapshot
 
 
 async def cancel_row(

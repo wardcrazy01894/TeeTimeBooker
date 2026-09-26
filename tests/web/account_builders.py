@@ -8,15 +8,21 @@ AND ``ReservationSnapshotHealth``, like ``ForeUpAdapter``) and records every bui
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
 from teetime.core.models import CourseId, ExistingReservation
 from teetime.courses.foreup.token_pool import LeaseKey, SharedCaptchaPool
 from teetime.dev.fake_adapter import FakeAdapter
-from teetime.tenant.crypto import Keyring
-from teetime.tenant.models import CourseAccount
+from teetime.tenant.crypto import Keyring, credential_aad, encrypt_password
+from teetime.tenant.models import (
+    AccountProvenance,
+    AccountStatus,
+    CourseAccount,
+    UserId,
+    derive_account_id,
+)
 
 from ..tenant.conformance import MB
 
@@ -78,3 +84,19 @@ def reservation(raw_id: str, tee_time: datetime, *, party: int = 2) -> ExistingR
     return ExistingReservation(
         course_id=MB, confirmation_code=raw_id, tee_time=tee_time, party_size=party
     )
+
+
+def stored_account(user_id: UserId, *, username: str = "turk@golf.example") -> CourseAccount:
+    """An ACTIVE account whose ciphertext really decrypts to ``PASSWORD`` under its AAD."""
+    account = CourseAccount(
+        id=derive_account_id(user_id, MB),
+        user_id=user_id,
+        course_id=MB,
+        provenance=AccountProvenance.USER_SUPPLIED,
+        username=username,
+        password_ciphertext="",
+        key_id=KEYRING.active_kid,
+        status=AccountStatus.ACTIVE,
+    )
+    blob = encrypt_password(KEYRING, PASSWORD, aad=credential_aad(account))
+    return replace(account, password_ciphertext=blob)
