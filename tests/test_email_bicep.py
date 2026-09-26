@@ -36,8 +36,9 @@ def test_deploy_acs_email_param_defaults_false(main_bicep: str) -> None:
     assert "param deployAcsEmail bool = false" in main_bicep
 
 
-def test_deploy_acs_email_defaults_false_in_both_param_files() -> None:
-    assert "param deployAcsEmail = false" in DEV_PARAMS.read_text()
+def test_deploy_acs_email_is_on_in_dev_only() -> None:
+    """MU-17 turns ACS on in dev; prod stays off until MU-18."""
+    assert "param deployAcsEmail = true" in DEV_PARAMS.read_text()
     assert "param deployAcsEmail = false" in PROD_PARAMS.read_text()
 
 

@@ -46,18 +46,18 @@ def test_booking_loop_reads_release_events_json(bicep: str) -> None:
 
 
 def test_compute_default_mode_is_toml() -> None:
-    """MULTIUSER_PLAN §12 MU-15a's named test: both compute.bicep AND both param files must
-    default/set bookingMode + watchMode to 'toml', so a plain merge of this PR changes nothing
-    about what either env's ACA jobs run."""
+    """MULTIUSER_PLAN §12 MU-15a's named test: compute.bicep defaults bookingMode + watchMode to
+    'toml' and PROD sets them to 'toml'. Dev was flipped to 'tenant' by the MU-17 cutover
+    (pinned in tests/test_dev_cutover_params.py); prod flips only at MU-18."""
     dev_params = (
         Path(__file__).resolve().parent.parent / "infra" / "bicep" / "main.bicepparam.dev"
     ).read_text()
     prod_params = (
         Path(__file__).resolve().parent.parent / "infra" / "bicep" / "main.bicepparam.prod"
     ).read_text()
-    for params in (dev_params, prod_params):
-        assert "param bookingMode = 'toml'" in params
-        assert "param watchMode = 'toml'" in params
+    assert "param bookingMode = 'toml'" in prod_params
+    assert "param watchMode = 'toml'" in prod_params
+    assert "param bookingMode = 'tenant'" in dev_params
 
 
 def test_toml_mode_booking_args_are_unchanged(parts: tuple[str, str]) -> None:
