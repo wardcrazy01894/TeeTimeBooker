@@ -12,8 +12,6 @@ from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from uuid import uuid4
 
-from teetime.dev.blind_fake_adapter import BlindFakeAdapter
-
 from teetime.core.adapter import CourseAdapter
 from teetime.core.models import (
     BookingRequest,
@@ -24,6 +22,7 @@ from teetime.core.models import (
     TeeTimeSlot,
     TimeWindow,
 )
+from teetime.dev.blind_fake_adapter import BlindFakeAdapter
 from teetime.dev.fake_adapter import FakeAdapter
 
 CID = CourseId("fake:mb")
