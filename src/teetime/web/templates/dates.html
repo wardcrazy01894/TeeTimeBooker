@@ -41,7 +41,17 @@
             <button type="submit">Unskip</button>
           </form>
         {% elif r.row.status.value == "booked" %}
-          <button type="button" disabled title="Cancelling from the site is not available yet">Cancel (coming soon)</button>
+          {% if dry_run %}
+          <button type="button" disabled title="Cancelling is switched off in this dry-run environment">Cancel (off in dry-run)</button>
+          {% else %}
+          <form method="post" action="/rows/{{ r.row.id }}/cancel" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% if not r.owned %}
+            <label><input type="checkbox" name="confirm_unowned" value="on" required> This booking wasn't made by TeeTimeBooker; cancel it anyway</label>
+            {% endif %}
+            <button type="submit">Cancel tee time</button>
+          </form>
+          {% endif %}
         {% endif %}
         {% if r.can_rerequest %}
           {{ one_off_form(csrf_token, r.row.course_account_id, r.row.target_date, r.row.window_earliest, r.row.window_latest, r.row.party_size, "Re-request this date") }}

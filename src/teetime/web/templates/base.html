@@ -14,6 +14,7 @@
       <a href="/">Dashboard</a>
       <a href="/dates">Dates</a>
       <a href="/rules">Rules</a>
+      <a href="/accounts">Accounts</a>
       {% if is_operator is defined and is_operator %}<a href="/admin/users">Users</a>{% endif %}
       <span class="who">{{ user.display_name or user.email }}</span>
       <form method="post" action="/logout" class="inline">
