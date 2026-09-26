@@ -1553,9 +1553,18 @@ immediately after MU-0: MU-1, MU-2, MU-3, MU-4, MU-5, MU-7.
 
 1. ~~Database~~. **RESOLVED 2026-09-25:** Cosmos DB free tier for prod and dev (§10.2). SQL Basic is
    kept as the documented fallback. Operator action: `az provider register -n Microsoft.DocumentDB`.
-2. **OAuth provider:** GitHub, Google, or both? Does Turk have a GitHub account?
-3. **Email:** ACS Azure-managed domain (no domain needed, spam-folder risk), or Resend + a domain
-   you own?
+2. ~~OAuth provider~~. **RESOLVED 2026-09-26: Google only.** `webapp.bicep` wires
+   `OAUTH-GOOGLE-CLIENT-ID`/`OAUTH-GOOGLE-CLIENT-SECRET` as Key Vault secretRefs; the GitHub env
+   vars (`OAUTH_GITHUB_CLIENT_ID`/`SECRET`, already supported in code, MU-12) are left unset in
+   every deployed environment. Operator action: register a Google OAuth 2.0 client (Cloud Console
+   → APIs & Services → Credentials → OAuth client ID, Web application, redirect URI
+   `https://<web-fqdn>/auth/google/callback`) — see the PR body for the exact steps.
+3. ~~Email~~. **RESOLVED 2026-09-26: ACS Azure-managed domain.** `email.bicep` provisions a
+   Communication Service + Email Service + `AzureManagedDomain` (free, pre-verified, no DNS
+   records to manage, sender `DoNotReply@<generated>.azurecomm.net`) — accepting the spam-folder
+   risk that comes with an unfamiliar sending domain over a paid Resend + owned-domain
+   alternative, since v1 has at most two users and the notifications are transactional, not
+   marketing.
 4. **Fairness** for overlapping windows: rotating first pick (default), or operator-first priority?
 5. **Sydney Marovitz:** confirm hosted TeeItUp stays out (PAN). If it ever comes in, what is the
    daily release time (Spike S-M4)?
@@ -1573,7 +1582,11 @@ immediately after MU-0: MU-1, MU-2, MU-3, MU-4, MU-5, MU-7.
     §10.5 runbook** (decided 2026-09-25: CI never holds `sqlRoleAssignments/write`).
 11. Does dev's KV hold the **same** MB account as prod? (The concurrent-login evidence in §11
     depends on it.)
-12. Operator notify address for summaries (a new KV secret).
+12. ~~Operator notify address~~. **RESOLVED 2026-09-26:** `alanc3939@gmail.com`. KV secret
+    `OPERATOR-NOTIFY-EMAIL`, wired as `OPERATOR_NOTIFY_EMAIL` into the tenant jobs (tenant-mode
+    only, `compute.bicep`) and available for the web app's `TEETIME_OPERATOR_EMAIL` (a separate,
+    plain, non-secret value — the operator's SIGN-IN identity, not the notification recipient;
+    they happen to be the same address but serve different purposes, see `webapp.bicep`).
 13. Is the 16:00-day-before cutoff global for all users, or will per-user cutoffs be wanted? v1
     assumes global. Changing it later requires recomputing `cutoff_at`.
 14. ~~Rehearsal~~. **RESOLVED 2026-09-25:** no dev harness. The first coordinated-pool burst runs

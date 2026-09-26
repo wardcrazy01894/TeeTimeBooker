@@ -829,15 +829,34 @@ def _web_secret_literals(settings: WebSettings) -> list[str]:
     return literals
 
 
+_DEFAULT_FORWARDED_ALLOW_IPS = "127.0.0.1"
+
+
 def _serve_web(app: FastAPI, *, host: str, port: int) -> None:
     """Run uvicorn. `log_config=None` keeps the basicConfig + redaction filter above in charge
     (uvicorn would otherwise install its own handlers, which the filter is not attached to)."""
 
-    # proxy_headers=True with uvicorn's default forwarded_allow_ips trusts X-Forwarded-* from
-    # ANY peer. Accepted for now: nothing derives the scheme/host from the request (the OAuth
-    # redirect comes from TEETIME_PUBLIC_BASE_URL) and the app is not deployed. MU-15a must
-    # scope forwarded_allow_ips to the Container Apps ingress once its source range is known.
-    uvicorn.run(app, host=host, port=port, log_config=None, proxy_headers=True)
+    # proxy_headers=True trusts X-Forwarded-* headers (scheme/host/for) from a peer whose
+    # address is in forwarded_allow_ips (BACKLOG "scope forwarded_allow_ips", MU-15a). In Azure
+    # Container Apps the platform's ingress proxy sits in front of a sidecar that forwards to the
+    # container over LOOPBACK within the same pod, so the container's only real peer is
+    # 127.0.0.1 — trusting anything wider (a bare "*", uvicorn's own historical footgun) would
+    # let a request reaching the container by some OTHER path (e.g. a future VNet integration
+    # exposing it directly) spoof its scheme/host and defeat the app's own https:// checks
+    # (WebSettings.public_base_url, the OAuth redirect_uri). WEB_FORWARDED_ALLOW_IPS lets an
+    # operator widen this later (e.g. a VNet CIDR) without a code change; the default stays
+    # localhost-only.
+    forwarded_allow_ips = (
+        os.environ.get("WEB_FORWARDED_ALLOW_IPS", "").strip() or _DEFAULT_FORWARDED_ALLOW_IPS
+    )
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_config=None,
+        proxy_headers=True,
+        forwarded_allow_ips=forwarded_allow_ips,
+    )
 
 
 @cli.command(name="tenant-watch")

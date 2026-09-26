@@ -71,3 +71,31 @@ param enableKillswitch = true
 // module now ARMS on the next dev auto-deploy (Logic App + Action Group + cross-RG RBAC).
 // See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
 param killswitchRbacRoleId = '3e2d5a14-96bd-4469-9f96-b9c3270aa9e6'
+
+// --- MU-15a (MULTIUSER_PLAN §12): infra without the tenant DB ------------------------------
+// bookingMode/watchMode stay 'toml' in dev too — MU-17 flips this once Cosmos (MU-15b) and the
+// tenant runner/watcher are wired end-to-end. A plain merge of this PR changes NOTHING about
+// what the dev ACA jobs run.
+param bookingMode = 'toml'
+param watchMode = 'toml'
+
+// Dev-only cadence change (operator directive, MU-15a): the watch job runs HOURLY instead of
+// every 10 minutes, cutting dev Log Analytics/compute noise now that the watcher polls on every
+// run regardless of time of day. This is a per-env PARAM (compute.bicep's watchCron), so it
+// cannot touch prod — prod's param file below keeps the unchanged */10 * * * *.
+param watchCron = '0 * * * *'
+
+// Tenant Cosmos/ACS values stay empty — toml mode never reads them (MULTIUSER_PLAN §10.1).
+// MU-15b/17 set these once the shared Cosmos account + ACS domain exist.
+param tenantCosmosEndpoint = ''
+param acsEmailSender = ''
+
+// Web app + ACS: OFF by default in dev. The Google OAuth client (OAUTH-GOOGLE-CLIENT-ID/SECRET)
+// and WEB-SESSION-SECRET Key Vault secrets do not exist yet — flipping these true before the
+// operator creates them would fail the very next dev auto-deploy (ACA validates KV secret refs
+// at container-CREATE time). See the PR body for the exact secret-creation commands + the
+// Google Cloud Console steps.
+param deployWebApp = false
+param deployAcsEmail = false
+param webPublicBaseUrl = ''
+param operatorEmail = ''

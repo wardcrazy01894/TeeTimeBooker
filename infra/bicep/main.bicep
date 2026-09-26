@@ -71,6 +71,46 @@ param enableKillswitch bool = false
 @description('GUID of the pre-created "ACA Job Schedule Manager" custom role. Required when enableKillswitch=true. Must be created manually by the operator (subscription-level roleDefinitions/write required). See COST_KILLSWITCH_PLAN.md §2/Item4.')
 param killswitchRbacRoleId string = ''
 
+@description('Which code path the ACA booking jobs run: "toml" (default, byte-identical to pre-MU-15a) or "tenant". See compute.bicep and MULTIUSER_PLAN.md §6.2/§11. Flipped only at the cutover steps in that plan, never by a routine deploy.')
+@allowed(['toml', 'tenant'])
+param bookingMode string = 'toml'
+
+@description('Which code path the ACA watch job runs, mirroring bookingMode. See compute.bicep.')
+@allowed(['toml', 'tenant'])
+param watchMode string = 'toml'
+
+@description('Watch job cron expression (UTC). Prod stays */10 * * * * (AZURE_PLAN §5.4); dev may run hourly (operator directive, MULTIUSER_PLAN §12 MU-15a) — a per-env param, so this cannot touch prod.')
+param watchCron string = '*/10 * * * *'
+
+@description('Cosmos DB endpoint for the tenant store, wired into ACA jobs ONLY when bookingMode/watchMode == "tenant". Empty by default — MU-15a ships no Cosmos account (MU-15b); toml mode (the default) never reads it.')
+param tenantCosmosEndpoint string = ''
+
+@description('ACS Email "from" sender address, wired ONLY when bookingMode/watchMode == "tenant". Empty by default; see email.bicep\'s mailFromSenderDomain output once deployAcsEmail=true.')
+param acsEmailSender string = ''
+
+@description('''Deploy the `teetime-web-<env>` Container App (MULTIUSER_PLAN §8/§12 MU-15a).
+Defaults FALSE in both envs: the app\'s Key Vault secret refs (WEB-SESSION-SECRET,
+OAUTH-GOOGLE-CLIENT-ID, OAUTH-GOOGLE-CLIENT-SECRET) do not exist yet — the Google OAuth client
+has not been registered — and ACA validates KV secret refs at container-CREATE time, so
+deploying this unconditionally would break the very next dev auto-deploy. Flip true only after
+the operator has created those three secrets (see the PR body / webapp.bicep header).''')
+param deployWebApp bool = false
+
+@description('''Deploy the shared ACS Email resources (email.bicep: Communication Service +
+Email Service + Azure-managed domain). Defaults FALSE in both envs (operator decision, MU-15a —
+nothing consumes ACS_EMAIL_CONNECTION until bookingMode/watchMode or deployWebApp actually needs
+it). Requires the operator to `az provider register --namespace Microsoft.Communication` first
+(the CI service principal is RG-scoped and cannot self-register a provider) and to grant the CI
+deploy identity "Key Vault Secrets Officer" on the vault (see email.bicep header) — read-only
+`az provider show` can verify registration; the grant itself is an explicit operator action.''')
+param deployAcsEmail bool = false
+
+@description('Public base URL the web app is reachable at (only meaningful when deployWebApp=true) — see webapp.bicep header for why this is a param, not derived.')
+param webPublicBaseUrl string = ''
+
+@description('The operator\'s sign-in email for the web app (implicitly invited). Only meaningful when deployWebApp=true.')
+param operatorEmail string = ''
+
 // When the killswitch has fired, force schedules off regardless of enableSchedules.
 // This ensures that any CI deploy — even one that does not touch the killswitchFired
 // param — cannot silently re-arm the jobs. The enableSchedules param retains its value
@@ -161,12 +201,18 @@ module compute 'modules/compute.bicep' = {
     location: location
     containerImage: containerImage
     userAssignedIdentityResourceId: identity.outputs.identityResourceId
+    userAssignedIdentityClientId: identity.outputs.clientId
     keyVaultUri: keyvault.outputs.vaultUri
     logAnalyticsWorkspaceId: logs.outputs.workspaceId
     logAnalyticsWorkspaceKey: logs.outputs.workspaceKey
     dryRun: dryRun
     usePublicBootstrapImage: usePublicBootstrapImage
     enableSchedules: effectiveEnableSchedules
+    bookingMode: bookingMode
+    watchMode: watchMode
+    watchCron: watchCron
+    tenantCosmosEndpoint: tenantCosmosEndpoint
+    acsEmailSender: acsEmailSender
   }
   // keyvault and logs are already implicit dependencies via their outputs
   // consumed above (vaultUri, workspaceId/Key), so they are NOT listed here
@@ -198,6 +244,44 @@ module killswitch 'modules/killswitch.bicep' = if (enableKillswitch && !empty(ki
 }
 
 // ---------------------------------------------------------------------------
+// Module: webapp (optional — gated on deployWebApp, default false in both envs)
+// Container App `teetime-web-<env>` serving `teetime web` (MULTIUSER_PLAN §8/§12 MU-15a).
+// See webapp.bicep header for the exact gating rationale and the killswitch-latch coupling.
+// ---------------------------------------------------------------------------
+
+module webapp 'modules/webapp.bicep' = if (deployWebApp) {
+  name: 'webapp-${envName}'
+  params: {
+    envName: envName
+    location: location
+    containerImage: containerImage
+    userAssignedIdentityResourceId: identity.outputs.identityResourceId
+    keyVaultUri: keyvault.outputs.vaultUri
+    acaEnvironmentId: compute.outputs.acaEnvironmentId
+    usePublicBootstrapImage: usePublicBootstrapImage
+    enableIngress: effectiveEnableSchedules
+    webPublicBaseUrl: webPublicBaseUrl
+    operatorEmail: operatorEmail
+    dryRun: dryRun
+  }
+  dependsOn: [sharedAcrPull]
+}
+
+// ---------------------------------------------------------------------------
+// Module: email (optional — gated on deployAcsEmail, default false in both envs)
+// ACS Communication Service + Email Service + Azure-managed domain (MULTIUSER_PLAN §10.1).
+// See email.bicep header for the operator prerequisites (RP registration, KV RBAC).
+// ---------------------------------------------------------------------------
+
+module email 'modules/email.bicep' = if (deployAcsEmail) {
+  name: 'email-${envName}'
+  params: {
+    envName: envName
+    keyVaultName: keyvault.outputs.vaultName
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
@@ -220,3 +304,9 @@ output identityPrincipalId string = identity.outputs.principalId
 // `.value` unwrapping is preserved). The previous any()-cast approach returned the raw
 // {value,type} object and failed output evaluation at deploy time (DeploymentOutputEvaluationFailed).
 output killswitchActionGroupId string = killswitch.?outputs.actionGroupId ?? ''
+
+@description('Web app Container App FQDN. Empty string when deployWebApp=false. The operator reads this after first enabling the web app to fill in webPublicBaseUrl (see webapp.bicep header).')
+output webAppFqdn string = webapp.?outputs.fqdn ?? ''
+
+@description('ACS Email Azure-managed domain sender subdomain. Empty string when deployAcsEmail=false. The operator sets acsEmailSender to "DoNotReply@<this value>" once known (see email.bicep header).')
+output acsEmailDomain string = email.?outputs.mailFromSenderDomain ?? ''

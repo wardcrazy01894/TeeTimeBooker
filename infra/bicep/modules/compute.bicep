@@ -1,15 +1,25 @@
-// compute.bicep — Container Apps Environment (Consumption) + Container Apps Job.
+// compute.bicep — Container Apps Environment (Consumption) + Container Apps Jobs.
 //
-// Two scheduled triggers (identical job, one per DST half) fire DAILY at 05:50 ET
-// (multi-day re-arch — books wanted morning days, default Sat+Sun):
+// Booking jobs are derived from `../release_events.json` (MULTIUSER_PLAN §6.2, MU-15a): one
+// EDT + one STD job per release event (collapsed to one job when both DST halves land on the
+// same UTC instant, e.g. a no-DST zone — see `jobEntries` below). v1 ships exactly one event,
+// Mangrove Bay (`mb0600et`), whose job KEEPS the legacy `teetime-job-<env>-edt/-est` names (its
+// `jobNamePrefix`) so a future mode cutover (§11) flips ARGUMENTS on the existing resources
+// instead of creating parallel ones:
 //   50 9 * * *   = 09:50 UTC = 05:50 EDT, every day  (UTC-4, Mar-Nov)
 //   50 10 * * *  = 10:50 UTC = 05:50 EST, every day  (UTC-5, Nov-Mar)
 //
 // Both same-day crons fire; the bot's DST gate (core/dst_gate.py) makes the wrong-season
 // one exit 0, and the booking-day gate (core/booking_day_gate.py) fast-exits mornings whose
-// today+offset isn't a wanted weekday. Job names are -edt / -est (DST-half labels; the old
-// -sun suffix was dropped now that the crons fire daily — killswitch.bicep matches).
+// today+offset isn't a wanted weekday.
 // See: infra/AZURE_PLAN.md §5.3 (DST), §5.1 (jitter), §5.2 (cold-start)
+//
+// Mode (MULTIUSER_PLAN §6.2, §11): `bookingMode` / `watchMode` select which CLI subcommand +
+// env/secrets the SAME job resources run. DEFAULT is `toml` in both params — the day-0 wiring —
+// so a plain merge changes nothing. Tenant resources (Cosmos endpoint, ACS email, the tenant
+// creds keyring) are added to a job's env/secrets ONLY when its mode param is `tenant`, so the
+// toml-mode (default) dev auto-deploy can never fail on a Key Vault secret the operator has not
+// pre-created yet (TENANT-CREDS-KEYRING, ACS-EMAIL-CONNECTION, OPERATOR-NOTIFY-EMAIL — §10.1).
 //
 // Concurrency control:
 //   parallelism = 1            — one replica per execution (no concurrent replicas)
@@ -51,6 +61,9 @@ param containerImage string
 @description('Resource ID of the user-assigned managed identity (from identity.bicep). Assigned to both ACA job resources so KV/ACR RBAC covers both.')
 param userAssignedIdentityResourceId string
 
+@description('Client ID of the user-assigned managed identity (from identity.bicep). Wired as the AZURE_CLIENT_ID env var in tenant mode ONLY, so azure.identity.aio.ManagedIdentityCredential(client_id=...) resolves the right identity from the ACA identity endpoint (MULTIUSER_PLAN §10.2). Unused (not read) in toml mode.')
+param userAssignedIdentityClientId string
+
 @description('Key Vault URI for secret references (e.g. https://kv-teetime-dev-xxxx.vault.azure.net/).')
 param keyVaultUri string
 
@@ -70,21 +83,75 @@ param usePublicBootstrapImage bool = false
 @description('When true (default), the booking + watch jobs use Schedule triggers (crons). When false, they are created with a Manual trigger (no cron) so they NEVER auto-fire — used to silence a non-primary environment (e.g. dev) once prod is live, avoiding two environments hitting ForeUP with the same credentials / concurrent logins. See AZURE_PLAN.md §10.3.')
 param enableSchedules bool = true
 
+@description('''Which code path the booking jobs run (MULTIUSER_PLAN §6.2/§11). "toml" (default,
+byte-identical to pre-MU-15a): `teetime run --config /app/config/container.toml --wait --dry-run
+<x>` against the single-user credentials. "tenant": `teetime tenant-run --event <key> --wait
+--dry-run <x>` against the multi-user Cosmos store. Exactly one mode is active per env at a
+time — a structural guard against the TOML and tenant paths both acting for the same ForeUP
+account. Flipped only at the §11 cutover steps, never by this PR.''')
+@allowed(['toml', 'tenant'])
+param bookingMode string = 'toml'
+
+@description('Which code path the watch job runs, mirroring bookingMode: "toml" (default) runs `teetime watch --config ... --dry-run <x>`; "tenant" runs `teetime tenant-watch --dry-run <x>`.')
+@allowed(['toml', 'tenant'])
+param watchMode string = 'toml'
+
+@description('Watch job cron expression (UTC). Prod default */10 * * * * (every 10 min, year-round — AZURE_PLAN §5.4). Dev may run hourly instead (operator directive, MULTIUSER_PLAN §12 MU-15a) to cut dev Log Analytics/compute noise now that the watcher polls on every run; this is a per-env PARAM, not a hard-coded value, so prod is untouched by the dev change.')
+param watchCron string = '*/10 * * * *'
+
+@description('Cosmos DB endpoint URI for the tenant store (e.g. https://cosmos-teetime-shared.documents.azure.com:443/). Wired as TENANT_COSMOS_ENDPOINT ONLY when bookingMode/watchMode == "tenant". Empty by default — MU-15a ships no Cosmos account (that is MU-15b); the default toml mode never reads this value.')
+param tenantCosmosEndpoint string = ''
+
+@description('ACS Email "from" sender address (e.g. DoNotReply@<acs-managed-domain>). Wired as ACS_EMAIL_SENDER (a plain value, not a secret — it is not sensitive) ONLY when bookingMode/watchMode == "tenant". Empty by default; MU-15a\'s toml mode never reads this value.')
+param acsEmailSender string = ''
+
 // ---------------------------------------------------------------------------
 // Variables
 // ---------------------------------------------------------------------------
 
 var acaEnvName = 'cae-teetime-${envName}'
-var jobName = 'teetime-job-${envName}'
 var watchJobName = 'teetime-watch-job-${envName}'
 
-// DST cron expressions (UTC). Two crons, one per DST half, firing DAILY (multi-day re-arch).
-// The bot's DST gate (core/dst_gate.py) selects the correct season half; the booking-day
-// gate (core/booking_day_gate.py) then fast-exits on mornings whose today+offset isn't a
-// wanted weekday. So the crons fire every day but only book the wanted days (Sat+Sun).
-// See: infra/AZURE_PLAN.md §5.3
-var cronEdtDaily = '50 9 * * *'    // 09:50 UTC = 05:50 EDT, every day (gates select wanted days)
-var cronEstDaily = '50 10 * * *'   // 10:50 UTC = 05:50 EST, every day
+// The release-event table (MULTIUSER_PLAN §6.2). Single source of truth, shared with
+// killswitch.bicep (job-name derivation) and the pure `core/release_policy.py` helpers
+// (tests/test_release_events_parity.py pins this file to `cron_pair`).
+var releaseEvents = loadJsonContent('../release_events.json')
+
+// One EDT + one STD job entry per release event, FLATTENED into a single array the job-loop
+// below iterates once. A deduped event (both DST halves the same UTC instant — a no-DST zone,
+// e.g. America/Phoenix) collapses to ONE entry: deploying both would let two runners race the
+// same release instant with no lease in toml mode (core/release_policy.py CronPair.jobs).
+//
+// Naming (MULTIUSER_PLAN §6.2): an event with a non-empty `jobNamePrefix` (Mangrove Bay's
+// `mb0600et`, keeping the legacy names) gets `<prefix>-<env>-edt` / `-est`. Any OTHER event
+// (none ship in v1 — see release_events.json) gets the generic `teetime-rel-<key>-<env>-<half>`,
+// which the ACA 32-char job-name limit bounds to key<=11 chars for a realistic (<=4-char) env
+// name (tests/test_compute_bicep_tenant_mode.py::test_job_names_le_32_chars pins the arithmetic).
+// Bicep for-expressions may only be the direct value of a variable/resource/module/output
+// declaration (BCP138) — they cannot be nested inside a function call like flatten(). So the
+// per-event nested arrays are built as their own variable first, then flattened separately.
+var jobEntriesByEvent = [
+  for event in releaseEvents: concat(
+    [
+      {
+        eventKey: event.key
+        cron: event.cronDst
+        name: !empty(event.jobNamePrefix) ? '${event.jobNamePrefix}-${envName}-edt' : 'teetime-rel-${event.key}-${envName}-dst'
+      }
+    ],
+    event.cronDst == event.cronStd
+      ? []
+      : [
+          {
+            eventKey: event.key
+            cron: event.cronStd
+            name: !empty(event.jobNamePrefix) ? '${event.jobNamePrefix}-${envName}-est' : 'teetime-rel-${event.key}-${envName}-std'
+          }
+        ]
+  )
+]
+
+var bookingJobs = flatten(jobEntriesByEvent)
 
 // Hard-coded parallelism settings. See AZURE_PLAN.md §4.
 // The booking job busy-waits up to ~12 min to T0 (06:00:00 ET) INSIDE the replica
@@ -98,24 +165,12 @@ var replicaRetryLimit = 0     // bot handles retry; ACA retry would bypass idemp
 var parallelism = 1
 var replicaCompletionCount = 1
 
-// Watch job runs every 10 minutes year-round (no DST gate needed; the watcher polls on
-// every run — the time-of-day gate was removed in the multi-day re-arch). A normal run is one HTTP
-// round-trip (~30s), but the adapter now retries transient transport failures on
-// idempotent calls (warm-up/login/search; base.py _send_with_retry). 300s gives
-// headroom so a slow-upstream run that retries can never hit the replica cap and
-// turn a recovered run into a Failure. See AZURE_PLAN.md §5.4.
-var watchCron = '*/10 * * * *'
+// Watch job replica timeout. A normal run is one HTTP round-trip (~30s), but the adapter
+// retries transient transport failures on idempotent calls (warm-up/login/search;
+// base.py _send_with_retry). 300s gives headroom so a slow-upstream run that retries can
+// never hit the replica cap and turn a recovered run into a Failure. See AZURE_PLAN.md §5.4.
+// (The cron ITSELF is the `watchCron` param above, not a hard-coded var — see its @description.)
 var watchReplicaTimeout = 300
-
-// Booking-job cron table. A single array + loop avoids two copy-pasted job
-// resources. Each entry pairs a resource-name suffix with its UTC cron.
-// One job resource per cron => independent execution history; any one cron-half
-// can be disabled without touching the others (a single job with multiple
-// scheduleTriggerConfigs is NOT supported by the ACA ARM/Bicep API — see stub).
-var bookingJobs = [
-  { name: '${jobName}-edt', cron: cronEdtDaily }
-  { name: '${jobName}-est', cron: cronEstDaily }
-]
 
 // Derive the ACR login server from the container image reference. The image is
 // '<registry>.azurecr.io/teetime:<tag>'; the registries[].server entry needs
@@ -141,9 +196,10 @@ var acrLoginServer = split(containerImage, '/')[0]
 // (tests/test_container_config_parity.py) that fails CI if container.toml ever
 // references an env var not wired below.
 //
-// No SMTP-* secrets: the bot sends no email (M4/email was cut — the golf course
-// sends booking confirmations directly). The notifier is 'console' only.
-// See AZURE_PLAN.md §12 Q10.
+// This array is used UNCONDITIONALLY (both modes) until MU-19 retires the toml wiring —
+// see MULTIUSER_PLAN §11 step 9. It must never grow a tenant-only secret (see jobSecretsTenant
+// below), or the default toml-mode dev auto-deploy would fail at job-CREATE on a KV secret the
+// operator has not pre-created.
 var jobSecrets = [
   { name: 'mb-username',        keyVaultUrl: '${keyVaultUri}secrets/MB-USERNAME',        identity: userAssignedIdentityResourceId }
   { name: 'mb-password',        keyVaultUrl: '${keyVaultUri}secrets/MB-PASSWORD',        identity: userAssignedIdentityResourceId }
@@ -157,6 +213,18 @@ var jobSecrets = [
   // the value in the Portal later with no redeploy. The bot reads it fail-open, so a blank/garbage
   // value never crashes a run.
   { name: 'teetime-skip-dates', keyVaultUrl: '${keyVaultUri}secrets/TEETIME-SKIP-DATES', identity: userAssignedIdentityResourceId }
+]
+
+// Tenant-mode-only KV secret refs (MULTIUSER_PLAN §10.1). These are appended to `secrets:`
+// ONLY inside a `bookingMode/watchMode == 'tenant'` ternary branch below — NEVER unconditionally
+// — because ACA validates every KV secret ref at job-CREATE time, and these three secrets do
+// not exist until the operator pre-creates them (§10.1: TENANT-CREDS-KEYRING, ACS-EMAIL-
+// CONNECTION written by email.bicep, OPERATOR-NOTIFY-EMAIL). Default toml mode in both envs
+// never evaluates this array, so a plain merge of this PR cannot break the dev auto-deploy.
+var jobSecretsTenant = [
+  { name: 'tenant-creds-keyring',  keyVaultUrl: '${keyVaultUri}secrets/TENANT-CREDS-KEYRING',  identity: userAssignedIdentityResourceId }
+  { name: 'acs-email-connection',  keyVaultUrl: '${keyVaultUri}secrets/ACS-EMAIL-CONNECTION',  identity: userAssignedIdentityResourceId }
+  { name: 'operator-notify-email', keyVaultUrl: '${keyVaultUri}secrets/OPERATOR-NOTIFY-EMAIL', identity: userAssignedIdentityResourceId }
 ]
 
 // Registry block: the job pulls the image from ACR using the user-assigned MI
@@ -173,11 +241,9 @@ var jobRegistries = usePublicBootstrapImage ? [] : [
   { server: acrLoginServer, identity: userAssignedIdentityResourceId }
 ]
 
-// Common container env vars shared by booking + watch jobs. The secretRef
-// entries point at the jobSecrets names above; the value entries are plain
-// (non-secret) config. The bot makes no authenticated Azure SDK calls at
-// runtime (state is in-process; no Blob Storage), so no AZURE_CLIENT_ID is
-// needed — Key Vault secret resolution uses the job's identity block directly.
+// Common container env vars shared by booking + watch jobs, both modes. The secretRef
+// entries point at the jobSecrets names above; the value entries are plain (non-secret)
+// config. TEETIME_ENV is also read by the tenant CLI commands (dry-run defaults, logging).
 var commonEnv = [
   { name: 'MB_USERNAME',                secretRef: 'mb-username' }
   { name: 'MB_PASSWORD',                secretRef: 'mb-password' }
@@ -187,6 +253,21 @@ var commonEnv = [
   { name: 'TWOCAPTCHA_API_KEY',         secretRef: 'twocaptcha-api-key' }
   { name: 'TEETIME_SKIP_DATES',         secretRef: 'teetime-skip-dates' }
   { name: 'TEETIME_ENV',                value: envName }
+]
+
+// Tenant-mode-only env vars (MULTIUSER_PLAN §10.1/§10.2). Appended to `env:` ONLY inside a
+// `== 'tenant'` ternary branch, mirroring jobSecretsTenant above — retires "no Azure SDK calls
+// at runtime" for the tenant path only (§10.2), never evaluated by the default toml mode.
+// TENANT_COSMOS_DATABASE is the env name itself ('dev'/'prod' — §10.2's two Cosmos databases).
+// There is no DB secret: Cosmos auth is MI + RBAC, not a connection string (§10.2).
+var tenantEnv = [
+  { name: 'TENANT_COSMOS_ENDPOINT',  value: tenantCosmosEndpoint }
+  { name: 'TENANT_COSMOS_DATABASE',  value: envName }
+  { name: 'AZURE_CLIENT_ID',         value: userAssignedIdentityClientId }
+  { name: 'TENANT_CREDS_KEYRING',    secretRef: 'tenant-creds-keyring' }
+  { name: 'ACS_EMAIL_CONNECTION',    secretRef: 'acs-email-connection' }
+  { name: 'ACS_EMAIL_SENDER',        value: acsEmailSender }
+  { name: 'OPERATOR_NOTIFY_EMAIL',   secretRef: 'operator-notify-email' }
 ]
 
 // Resource tags applied to every resource in this module.
@@ -219,9 +300,9 @@ resource acaEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
   }
 }
 
-// Two booking jobs (EDT, EST — daily crons) via a loop over the bookingJobs table.
-// Each is an independent Microsoft.App/jobs resource sharing the same image,
-// identity, registries, secrets, and env — only name + cron vary.
+// One booking job per jobEntries row (§6.2), each an independent Microsoft.App/jobs resource
+// sharing the same image, identity, registries — only name, cron, and mode-selected args/
+// secrets/env vary.
 //
 // @batchSize(1) serializes their creation (one at a time, not both at once).
 // On a freshly-created Consumption environment the ACA control plane times out
@@ -256,7 +337,7 @@ resource bookingJob 'Microsoft.App/jobs@2024-03-01' = [for job in bookingJobs: {
       replicaRetryLimit: replicaRetryLimit
       replicaTimeout: bookingReplicaTimeout
       registries: jobRegistries
-      secrets: jobSecrets
+      secrets: bookingMode == 'tenant' ? concat(jobSecrets, jobSecretsTenant) : jobSecrets
     }
     template: {
       containers: [
@@ -270,7 +351,14 @@ resource bookingJob 'Microsoft.App/jobs@2024-03-01' = [for job in bookingJobs: {
           command: [
             'teetime'
           ]
-          args: [
+          args: bookingMode == 'tenant' ? [
+            'tenant-run'
+            '--event'
+            job.eventKey
+            '--wait' // the real-timing busy-wait (DST gate + release-instant race), same as toml mode
+            '--dry-run'
+            dryRun ? 'true' : 'false'
+          ] : [
             'run'
             '--config'
             '/app/config/container.toml'
@@ -278,15 +366,16 @@ resource bookingJob 'Microsoft.App/jobs@2024-03-01' = [for job in bookingJobs: {
             '--dry-run'
             dryRun ? 'true' : 'false'
           ]
-          env: commonEnv
+          env: bookingMode == 'tenant' ? concat(commonEnv, tenantEnv) : commonEnv
         }
       ]
     }
   }
 }]
 
-// Watch job (M-feature-1): polls every 10 minutes for cancellation slots.
-// Same identity / registries / secrets / env as the booking jobs.
+// Watch job (M-feature-1): polls on a `watchCron` schedule for cancellation slots.
+// Same identity / registries as the booking jobs; secrets/env/args are mode-selected the
+// same way (watchMode, mirroring bookingMode).
 // Safety: the watcher is ENABLED (watcher.enabled = true) and polls on every run —
 // the time-of-day polling gate was removed in the multi-day re-arch. It is safe to run
 // unconditionally because (a) in dev dryRun=true suppresses every booking POST, and
@@ -296,7 +385,7 @@ resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
   name: watchJobName
   location: location
   tags: tags
-  // Provision the watch job AFTER the two booking jobs (not concurrently) for
+  // Provision the watch job AFTER the booking jobs (not concurrently) for
   // the same cold-environment reason as @batchSize(1) above — avoids the
   // "Operation expired" control-plane timeout on first deploy.
   dependsOn: [bookingJob]
@@ -322,7 +411,7 @@ resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
       replicaRetryLimit: replicaRetryLimit
       replicaTimeout: watchReplicaTimeout
       registries: jobRegistries
-      secrets: jobSecrets
+      secrets: watchMode == 'tenant' ? concat(jobSecrets, jobSecretsTenant) : jobSecrets
     }
     template: {
       containers: [
@@ -336,14 +425,18 @@ resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
           command: [
             'teetime'
           ]
-          args: [
+          args: watchMode == 'tenant' ? [
+            'tenant-watch'
+            '--dry-run'
+            dryRun ? 'true' : 'false'
+          ] : [
             'watch'
             '--config'
             '/app/config/container.toml'
             '--dry-run'
             dryRun ? 'true' : 'false'
           ]
-          env: commonEnv
+          env: watchMode == 'tenant' ? concat(commonEnv, tenantEnv) : commonEnv
         }
       ]
     }
@@ -354,7 +447,7 @@ resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
 // Outputs
 // ---------------------------------------------------------------------------
 
-@description('Container Apps Job base name. Two jobs are created: -edt, -est (daily crons; DST-half labels). This output is index 0 (-edt). For az containerapp job start, target a specific job by appending the suffix.')
+@description('Container Apps Job base name of the first release event\'s daylight-half job (index 0). For az containerapp job start, target a specific job by its full name (see jobEntries/bookingJobs above).')
 output jobName string = bookingJob[0].name
 
 @description('Container Apps Environment resource ID.')

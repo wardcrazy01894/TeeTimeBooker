@@ -96,9 +96,20 @@ if async; HTTP 200 with empty list if no executions were running (no error).
 with an empty `value` array — not an error. The Logic App can call this
 unconditionally without checking for running executions first.
 
-### Combined action: 12 HTTP calls per killswitch fire (6 + 6)
+### Combined action: 14 HTTP calls per killswitch fire (6 PATCH + 6 job-stop + 2 web-app-stop)
 
-The Logic App issues **12 calls total** per trigger activation (6 PATCHes + 6 POSTs):
+**Updated MU-15a (MULTIUSER_PLAN §10.1/§10.3):** the Logic App gained **lever (c)** — one
+`POST .../containerApps/teetime-web-<env>/stop` per env, stopping the `teetime web` Container
+App's running replica(s) alongside the ACA Jobs. This is a DIFFERENT resource type
+(`Microsoft.App/containerApps`, not `Microsoft.App/jobs`) with the same idempotent stop
+semantics; while `deployWebApp=false` in both envs (this PR's default) the target does not
+exist and the call 404s — a benign no-op, same as calling `/stop` on a job with zero running
+executions. The custom role's Actions list gained `Microsoft.App/containerApps/read` +
+`Microsoft.App/containerApps/stop/action` (applied via `az role definition update`, not
+`create` — same GUID `3e2d5a14-96bd-4469-9f96-b9c3270aa9e6`).
+
+The Logic App issues **14 calls total** per trigger activation (6 PATCHes + 6 job POSTs + 2
+web-app POSTs):
 
 **Dev env (`rg-teetime-dev`):**
 - `PATCH .../jobs/teetime-job-dev-edt?api-version=2024-03-01` — set triggerType=Manual
@@ -116,10 +127,14 @@ The Logic App issues **12 calls total** per trigger activation (6 PATCHes + 6 PO
 - `POST .../jobs/teetime-job-prod-est/stop?api-version=2024-03-01` — stop running replicas
 - `POST .../jobs/teetime-watch-job-prod/stop?api-version=2024-03-01` — stop running replicas
 
+**Lever (c), MU-15a — both envs:**
+- `POST .../containerApps/teetime-web-dev/stop?api-version=2024-03-01` — stop running replicas
+- `POST .../containerApps/teetime-web-prod/stop?api-version=2024-03-01` — stop running replicas
+
 The PATCH calls can run in parallel with each other; same for the POSTs.
 The PATCHes and POSTs can also run in parallel (disabling future fires and
 stopping current ones are independent operations). The Logic App workflow
-runs all 12 as parallel branches for speed.
+runs all 14 as parallel branches for speed.
 
 ---
 
@@ -465,9 +480,10 @@ The chain can be validated end-to-end without real billing spend:
 that, built-in actions (HTTP) cost $0.000025 each.
 
 The Logic App fires AT MOST once per budget evaluation cycle (typically once
-per day while spend is over threshold) and executes **12 HTTP action calls**
-per run (6 PATCH + 6 POST). In the absolute worst case (fires daily for a full
-30-day month) that is 360 actions — well inside the 4,000-action free tier.
+per day while spend is over threshold) and executes **14 HTTP action calls**
+per run (6 PATCH + 6 job-stop POST + 2 web-app-stop POST, MU-15a). In the
+absolute worst case (fires daily for a full 30-day month) that is 420 actions
+— well inside the 4,000-action free tier.
 
 **Action Group billing:** Action groups themselves have no base fee. Logic App
 notification delivery via action group costs $0.00 (it is the Logic App

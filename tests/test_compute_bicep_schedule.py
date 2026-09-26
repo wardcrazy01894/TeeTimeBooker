@@ -8,6 +8,7 @@ selects the season and the booking-day gate selects the wanted weekdays (default
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 COMPUTE_BICEP = (
     Path(__file__).resolve().parent.parent / "infra" / "bicep" / "modules" / "compute.bicep"
 )
+RELEASE_EVENTS = Path(__file__).resolve().parent.parent / "infra" / "bicep" / "release_events.json"
 
 
 @pytest.fixture(scope="module")
@@ -41,10 +43,14 @@ def test_watch_cron_is_daily_every_10_min(bicep: str) -> None:
 
 
 def test_exactly_two_booking_jobs_for_killswitch_parity(bicep: str) -> None:
-    # The killswitch hardcodes 3 jobs/env (edt + est + watch). The booking job COUNT must
-    # stay 2 so the killswitch's "12 HTTP calls" invariant holds.
-    assert bicep.count("{ name: '${jobName}-edt', cron:") == 1
-    assert bicep.count("{ name: '${jobName}-est', cron:") == 1
+    # The killswitch hardcodes the MB event's 2 jobs/env (edt + est) + watch + web. Job COUNT
+    # for MB must stay 2, which holds iff release_events.json's single event is NOT deduped
+    # (both DST halves differ) — MU-15a derives the loop from that JSON, not a hand-written pair.
+    assert "loadJsonContent('../release_events.json')" in bicep
+    events = json.loads(RELEASE_EVENTS.read_text())
+    assert len(events) == 1
+    (event,) = events
+    assert event["cronDst"] != event["cronStd"], "MB event must not be deduped (2 jobs expected)"
 
 
 def test_jobname_output_index_zero_is_a_real_job(bicep: str) -> None:
