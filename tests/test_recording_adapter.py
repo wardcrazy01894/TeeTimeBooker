@@ -263,6 +263,24 @@ def test_recording_adapter_refuses_blind_inner_without_allowlist_hook() -> None:
         make_recording_adapter(inner, clock=FakeClock(start=T0))
 
 
+class _BlindNoAllowlistProperty(FakeAdapter):
+    """Blind-capable, ships the SETTER but not the ``blind_allowlist`` property."""
+
+    def __init__(self) -> None:
+        super().__init__(course_id=CID, supports_blind_post=True)
+
+    def set_blind_allowlist(self, allowlist: frozenset[SlotId] | None) -> None:
+        del allowlist
+
+
+def test_recording_adapter_refuses_blind_inner_without_allowlist_property() -> None:
+    """Review round 1: the wrap-time refusal must cover the ``blind_allowlist`` PROPERTY too,
+    or an inner with only the setter passes the check and fails lazily on first access —
+    contradicting "refused at wrap time"."""
+    with pytest.raises(TypeError, match="blind_allowlist"):
+        make_recording_adapter(_BlindNoAllowlistProperty(), clock=FakeClock(start=T0))
+
+
 # --- pass-through + recording of the core members ------------------------
 
 
