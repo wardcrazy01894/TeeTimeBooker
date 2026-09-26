@@ -14,6 +14,9 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 import respx
+
+from teetime.core.clock import FakeClock
+from teetime.core.redaction import redact_text
 from teetime.tenant.acs_email import (
     ACS_API_VERSION,
     ACS_EMAIL_CONNECTION_ENV,
@@ -26,9 +29,6 @@ from teetime.tenant.acs_email import (
     sign_request,
     string_to_sign,
 )
-
-from teetime.core.clock import FakeClock
-from teetime.core.redaction import redact_text
 from teetime.tenant.notify import EmailMessage, EmailSender
 
 # Known-answer vector (computed independently from ACS's documented HMAC scheme).
