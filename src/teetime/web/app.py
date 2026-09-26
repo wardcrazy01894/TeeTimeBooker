@@ -263,6 +263,10 @@ def _current_user(ctx: _Ctx) -> Callable[[Request], Awaitable[User]]:
         ident = auth.read_session(request.session)
         if ident is None:
             raise LoginRequiredError
+        now = ctx.clock.now_utc()
+        if auth.is_expired(ident, now=now, max_age_s=ctx.settings.session_max_age_s):
+            request.session.clear()
+            raise LoginRequiredError
         user = await ctx.store.get_user_by_subject(ident.provider, ident.subject)
         if user is None or user.id != ident.user_id or user.status is not UserStatus.ACTIVE:
             request.session.clear()

@@ -12,17 +12,15 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from ..tenant.models import User, UserId, UserRole
+from ..tenant.models import User, UserId, UserRole, UserStatus
 from ..tenant.store import TenantStore
 from .oauth import ProviderIdentity
 from .security import issue_csrf_token
 
 SESSION_KEY = "ttb"
 CSRF_KEY = "csrf"
-
-_MU12 = "MULTIUSER_PLAN.md MU-12"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,4 +84,29 @@ async def resolve_identity(
     INVITED row matched ONLY against a provider-VERIFIED email; else the implicit operator
     invite (``operator_email``); else None.
     """
-    raise NotImplementedError(_MU12)
+    bound = await store.get_user_by_subject(identity.provider, identity.subject)
+    if bound is not None:
+        return bound
+    for email in identity.verified_emails:
+        user = await store.bind_invited_user(
+            email=email, provider=identity.provider, subject=identity.subject
+        )
+        if user is not None:
+            return user
+    if operator_email is not None and any(
+        e.casefold() == operator_email.casefold() for e in identity.verified_emails
+    ):
+        # Bootstrap: the configured operator needs no prior invite row (an empty site would
+        # otherwise be unenterable). Bound + ACTIVE in one write, no INVITED intermediate.
+        operator = User(
+            id=UserId(uuid4()),
+            oauth_provider=identity.provider,
+            oauth_subject=identity.subject,
+            email=operator_email,
+            display_name=identity.display_name or operator_email,
+            role=UserRole.OPERATOR,
+            status=UserStatus.ACTIVE,
+        )
+        await store.upsert_user(operator)
+        return operator
+    return None
