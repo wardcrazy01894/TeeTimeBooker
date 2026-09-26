@@ -3,9 +3,9 @@
 One scale-to-zero Azure Container App (``teetime web``: uvicorn, max 1 replica) serves the pages
 and the HTMX endpoints. ``create_app`` returns the ASGI app: session middleware (``Secure``,
 ``HttpOnly``, ``SameSite=Lax``), CSRF verification on every non-GET, security headers on every
-response, the OAuth routes with invite-only binding, the operator's ``/admin/users``, and the
-MU-13 dashboard / rules / dates pages (``web/pages.py``). No DB besides the injected
-``TenantStore``; ``/healthz`` never touches it.
+response, the OAuth routes with invite-only binding, the operator's ``/admin/users``, the MU-13
+dashboard / rules / dates pages and the MU-14 accounts page + cancel (``web/pages.py``). No DB
+besides the injected ``TenantStore``; ``/healthz`` never touches it.
 
 Logging is configured by the ``teetime web`` entrypoint (``basicConfig`` THEN
 ``install_log_redaction()``), never here: a factory must not reconfigure the process logger.
@@ -42,6 +42,7 @@ from ..core.release_policy import ReleasePolicy
 from ..tenant.crypto import Keyring
 from ..tenant.models import User, UserId, UserRole, UserStatus
 from ..tenant.notify import UserNotifier
+from ..tenant.runner import AdapterFactory
 from ..tenant.store import TenantStore
 from . import auth
 from .oauth import (
@@ -53,6 +54,7 @@ from .oauth import (
 )
 from .pages import register_page_routes
 from .security import CookiePolicy, security_headers, verify_csrf_token
+from .services import ProbeLimits, RefreshCache
 
 log = logging.getLogger(__name__)
 
@@ -235,6 +237,13 @@ class _Ctx:
     # MU-13: the rule materializer's inputs, keyed by ``str(course_id)`` (as ``materialize_tick``).
     policies: Mapping[str, ReleasePolicy] = field(default_factory=dict)
     cutoff: BookingCutoffConfig = field(default_factory=BookingCutoffConfig)
+    # MU-14: connect / refresh / cancel. ``None`` keyring or factory = those actions are
+    # refused with a message (an app wired only for MU-12/13).
+    keyring: Keyring | None = None
+    adapter_factory: AdapterFactory | None = None
+    notifier: UserNotifier | None = None
+    refresh_cache: RefreshCache = field(default_factory=lambda: RefreshCache(ttl_s=120))
+    probe_limits: ProbeLimits = field(default_factory=ProbeLimits)
 
     def page(
         self, request: Request, name: str, context: dict[str, Any], *, status_code: int = 200
@@ -468,12 +477,15 @@ def create_app(
     notifier: UserNotifier | None = None,
     policies: Mapping[str, ReleasePolicy] | None = None,
     cutoff: BookingCutoffConfig | None = None,
+    adapter_factory: AdapterFactory | None = None,
 ) -> FastAPI:
-    """Build the ASGI app. ``keyring`` / ``notifier`` are accepted now so MU-14 (connect,
-    refresh, cancel) and MU-11 wiring do not change the factory's signature; MU-12/13 use
-    neither. ``policies`` (``str(course_id)`` -> ``ReleasePolicy``) and ``cutoff`` feed the
-    synchronous rule materialize (MU-13, §7.7): a course with no policy cannot take a standing
-    rule (one-off dates still work)."""
+    """Build the ASGI app. MU-14 (connect, refresh, cancel) needs ``keyring`` (decrypt /
+    encrypt the course passwords) and ``adapter_factory`` (one throwaway ForeUP adapter per
+    live login); without either those actions are refused with a message. ``notifier`` emails
+    the user after a cancel (best-effort). ``policies`` (``str(course_id)`` ->
+    ``ReleasePolicy``) and ``cutoff`` feed the synchronous rule materialize (MU-13, §7.7): a
+    course with no policy cannot take a standing rule (one-off dates still work), and the
+    policies' courses are the ones an account can be connected to (MU-14)."""
     ctx = _Ctx(
         settings=settings,
         store=store,
@@ -482,6 +494,16 @@ def create_app(
         templates=Jinja2Templates(directory=str(_HERE / "templates")),
         policies=dict(policies or {}),
         cutoff=cutoff if cutoff is not None else BookingCutoffConfig(),
+        keyring=keyring,
+        adapter_factory=adapter_factory,
+        notifier=notifier,
+        refresh_cache=RefreshCache(ttl_s=settings.refresh_ttl_s),
+        probe_limits=ProbeLimits(
+            per_user_per_hour=settings.max_probes_per_user_per_hour,
+            per_username_per_hour=settings.max_probes_per_username_per_hour,
+            site_per_hour=settings.max_probes_site_per_hour,
+            refreshes_per_account_per_hour=settings.max_refreshes_per_account_per_hour,
+        ),
     )
     cookie = CookiePolicy()
     app = FastAPI(

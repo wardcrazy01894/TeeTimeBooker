@@ -80,6 +80,12 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Multi-user follow-ups
 
+- **Web cancel: test the 60 s lease expiring mid-cancel** (MU-14 review): a slow ForeUP login
+  or DELETE could outlive `WEB_LEASE_SECONDS`, and `record_outcomes` should then refuse the write
+  (lease no longer held). Pin it with a FakeClock that advances past the lease inside the adapter.
+- **Strict probe limits** (MU-14 review): the login-probe caps are count-then-act, so a burst of
+  simultaneous requests can overshoot by N-1. A per-bucket counter doc with IfMatch would make it
+  exact; not worth it at invite-only scale.
 - **Cosmos: the "no user-terminal row" guard is a query outside the batch** (MU-8b review): a user
   cancel landing in the same round-trip as a rule-row reactivate could be missed. Cheap fix: a
   `terminal|<date>` pointer doc upserted on every user-terminal write, whose ETag the guard asserts
@@ -101,9 +107,6 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   `RowOutcome`, the Cosmos mapping and `_uncertain_times`, with a round-trip test.
 - **`needs_reconcile` on a PENDING row cannot be cleared via `record_outcomes`**, so that account
   logs in on every watch run (6/hour) until the row books or freezes. Add a flag-clear outcome.
-- **Pin that the OAuth token exchange never logs a secret** (MU-12 review should-fix): capture
-  logs across a `sign_in()` round-trip and assert the mocked bearer token / client secret never
-  appear, like `tests/test_log_redaction.py` pins the 2captcha case. Do it in MU-14.
 - **Scope uvicorn `forwarded_allow_ips` to the ACA ingress** in MU-15a (today it trusts any peer).
 - **MU-15b: the Cosmos index policy must cover `CosmosTenantStore.QUERIED_PATHS`** (MU-8b). The
   §3.2 list (`/type`, `/courseId`, `/targetDate`, `/status`, `/cutoffAt`, `/userId`) is too short:

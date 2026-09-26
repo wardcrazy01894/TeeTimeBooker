@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "_macros.html" import error_block %}
+{% block title %}Accounts · TeeTimeBooker{% endblock %}
+{% block content %}
+<h1>Course accounts</h1>
+<p class="hint">The bot books with your own course login. Connecting checks it with ONE live login at the course; the password is stored encrypted and never shown again. A failed login is never retried automatically.</p>
+{{ error_block(error, none, csrf_token) }}
+
+{% for v in views %}
+<section class="account">
+  <h2>{{ v.account.course_id }}</h2>
+  <p>Login <strong>{{ v.account.username }}</strong> · status <span class="status status-{{ v.account.status.value }}">{{ v.account.status.value.replace("_", " ") }}</span>{% if v.account.verified_at %} · verified {{ v.account.verified_at.strftime('%Y-%m-%d') }}{% endif %}</p>
+  <p>Reservations {{ v.snapshot_label }}</p>
+  {% if v.account.status.value == "active" %}
+  <form method="post" action="/accounts/{{ v.account.id }}/refresh" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Refresh from course</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/accounts/{{ v.account.id }}/reverify">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>{% if v.account.status.value == "auth_failed" %}The course rejected the saved login. Re-enter the password to re-verify{% else %}Changed your course password? Re-verify{% endif %}
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit">Re-verify</button>
+  </form>
+</section>
+{% endfor %}
+
+<section>
+  <h2>Connect a course account</h2>
+  {% if courses %}
+  <form method="post" action="/accounts/connect">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Course
+      <select name="course_id">
+        {% for c in courses %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Course username <input type="text" name="username" autocomplete="username" required></label>
+    <label>Course password <input type="password" name="password" autocomplete="current-password" required></label>
+    <button type="submit">Connect</button>
+  </form>
+  {% else %}
+  <p class="placeholder">No course is available to connect yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

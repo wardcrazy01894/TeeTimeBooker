@@ -5,10 +5,12 @@ Every test drives the REAL app over ASGI; only the provider's HTTP is mocked (re
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+import pytest
 import respx
 
 from teetime.core.clock import FakeClock
@@ -290,3 +292,34 @@ async def test_oauth_redirect_uses_configured_base_url(
         assert q["redirect_uri"] == [f"{BASE_URL}/auth/{provider}/callback"]
         assert q["state"] and q["client_id"]
         assert q.get("code_challenge_method") == ["S256"]
+
+
+# --- secrets never logged (BACKLOG, MU-12 review should-fix; done in MU-14) --------------------
+
+_OAUTH_SECRETS = ("gho_test", "ya29.test", "gh-secret-0123456789", "gg-secret-0123456789")
+
+
+@pytest.mark.parametrize("provider", ["github", "google"])
+async def test_oauth_exchange_never_logs_secret(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    provider_mock: respx.MockRouter,
+    caplog: pytest.LogCaptureFixture,
+    provider: str,
+) -> None:
+    """A full sign-in round-trip (authorize redirect, token exchange, userinfo) at DEBUG never
+    logs the mocked bearer token or the OAuth client secret, raw, from ANY logger (authlib,
+    httpx, httpcore, ours). Like ``tests/test_log_redaction.py`` pins the 2captcha key: the
+    redaction filter is depth, not the control, so the raw records themselves must be clean."""
+    await _add_invite(store)
+    if provider == "github":
+        mock_github(provider_mock, GitHubIdentity(subject="42", emails=[(INVITED, True)]))
+    else:
+        mock_google(provider_mock, GoogleIdentity())
+    caplog.set_level(logging.DEBUG)
+    assert (await sign_in(client, provider=provider)).status_code == 303
+    assert caplog.records, "nothing was captured: the pin would be vacuous"
+    for record in caplog.records:
+        rendered = f"{record.getMessage()} {record.args!r} {record.exc_text or ''}"
+        for secret in _OAUTH_SECRETS:
+            assert secret not in rendered, (record.name, secret)
