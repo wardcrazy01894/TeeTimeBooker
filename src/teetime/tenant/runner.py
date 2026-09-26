@@ -248,11 +248,10 @@ async def run_release_event(
     loaded, claimed, claimed_rows = phase
     creds, decrypt_failed = resolve_credentials(claimed_rows, keyring=keyring)
     runnable = [r for r in claimed_rows if r.row.id in creds]
-    pools = {
-        cid: pool_factory(cid) if pool_factory is not None else None
-        for cid in {r.row.course_id for r in runnable}
-    }
+    pools: dict[CourseId, SharedCaptchaPool | None] = {}
     try:
+        for cid in sorted({r.row.course_id for r in runnable}):
+            pools[cid] = pool_factory(cid) if pool_factory is not None else None
         accounts = await _prepare_accounts(
             runnable,
             creds,

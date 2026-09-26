@@ -562,6 +562,22 @@ async def test_runner_refuses_blind_adapter_missing_blind_methods() -> None:
     assert clock.now_utc() < T0  # refused before the race, not at it
 
 
+async def test_runner_pool_factory_failure_is_systemic_and_releases_leases() -> None:
+    """A pool that cannot be built (e.g. the MU-9b site-key pre-flight failed) is a systemic
+    pre-T0 failure: nothing races and the claimed rows are handed back, not held to T0+1200 s."""
+    store = new_store()
+    a = await seed_account(store, n=1)
+
+    def pool_factory(course: CourseId) -> SharedCaptchaPool:
+        raise RuntimeError("site key pre-flight failed")
+
+    report = await _run(store, race_clock(), ScriptedFactory(), pool_factory=pool_factory)
+
+    assert report.systemic_error == "prepare: RuntimeError"
+    assert report.outcomes == ()
+    assert (await _row(store, a)).lease_owner is None
+
+
 # --- decrypt failure, claim, DST gate, self-deadline ------------------------------------------
 
 
