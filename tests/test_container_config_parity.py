@@ -278,3 +278,10 @@ def test_container_and_example_party_size_match() -> None:
         f"party-size drift: example.toml has {n_example} players, container.toml "
         f"has {n_container}. Keep them in sync so Azure books the intended party."
     )
+
+
+def test_prod_green_fee_cap_is_100() -> None:
+    """Operator directive 2026-09-26: the single-user prod bot's green-fee cap is $100 per
+    player (was $60). The multi-user site gets its own per-account cap (MU-P1), default $100."""
+    cfg = _load(_CONTAINER_TOML)
+    assert cfg["request"]["max_price_per_player"] == "100.00"

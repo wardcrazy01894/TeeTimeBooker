@@ -16,7 +16,7 @@ target_offsets       = [7]
 # (per-day windows, PERDAY_WINDOWS_PLAN). The booking job books `today + 7` only when that
 # date's weekday has a window; the watcher checks each such weekday, one reservation per day.
 holes                = 18
-max_price_per_player = "60.00"
+max_price_per_player = "100.00"
 cart                 = "either"
 course_preferences   = ["foreup:mangrove_bay"]
 # Hard booking cutoff (LEADTIME_SKIP_PLAN F1): freeze a target date (no new booking AND no
