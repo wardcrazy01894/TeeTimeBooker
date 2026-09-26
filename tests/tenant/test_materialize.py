@@ -406,14 +406,21 @@ async def test_materialize_skips_frozen_dates() -> None:
     expected = (TARGET, date(2026, 10, 10), date(2026, 10, 17))
     assert set(report.inserted) == {rule_row_id(rule.id, d) for d in expected}
     assert report.materialized_through == date(2026, 10, 17)
-    # Past the cutoff of 10/3 (16:00 EDT on 10/2 = 20:00Z): 10/3 is frozen; a later run never
-    # creates a row for it, and the existing row is left exactly as it is.
+    # Fri 10/2 16:00 EDT (= 20:00Z): a PAST date (Sun 9/27) is never walked at all, and Sun 10/4
+    # is NOT frozen yet (its cutoff is 10/3 16:00 EDT), so the walk is 10/4, 10/11, 10/18.
     later = datetime(2026, 10, 2, 20, 0, tzinfo=UTC)
     fresh = await s.upsert_rule(_rule(t, weekday=SUN), user_id=t.user.id)
     report = await _materialize(s, fresh, now=later)
-    assert date(2026, 10, 4) not in report.skipped_frozen  # Sunday 10/4 freezes 10/3 16:00
-    assert report.skipped_frozen == (date(2026, 9, 27),)  # only the passed Sunday
+    assert report.skipped_frozen == ()
     assert await _own_row_or_none(s, t, fresh, date(2026, 9, 27)) is None
+    sundays = (date(2026, 10, 4), date(2026, 10, 11), date(2026, 10, 18))
+    assert set(report.inserted) == {rule_row_id(fresh.id, d) for d in sundays}
+    assert report.materialized_through == date(2026, 10, 23)
+    # ...and at exactly 10/4's cutoff instant (inclusive, Edge E8) 10/4 IS frozen.
+    at_cutoff = datetime(2026, 10, 3, 20, 0, tzinfo=UTC)
+    report = await _materialize(s, await _stored_rule(s, fresh), now=at_cutoff)
+    assert report.skipped_frozen == (date(2026, 10, 4),)
+    assert (await _own_row(s, t, fresh, date(2026, 10, 4))).status is RowStatus.PENDING
 
 
 async def test_materialize_creates_superseded_when_one_off_holds_the_date() -> None:
