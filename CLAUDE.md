@@ -358,7 +358,8 @@ implemented per-milestone (`core/release_policy.py`, MU-1; `tenant/allocation.py
 `tenant/crypto.py`, MU-7; `tenant/models.py`, the `TenantStore` Protocol and
 `tenant/in_memory_store.py` with the `tests/tenant/conformance.py` suite, MU-5;
 `dev/virtual_clock.py` + `tenant/recording.py` + `dev/blind_fake_adapter.py`, MU-9a0;
-`tenant/cosmos/documents.py`, MU-8a; the `tenant/runner.py` booking-runner core, MU-9a;
+`tenant/cosmos/documents.py`, MU-8a; `tenant/cosmos/store.py` + `tenant/semantics.py`, MU-8b;
+the `tenant/runner.py` booking-runner core, MU-9a;
 `tenant/notify.py` + `tenant/acs_email.py`, MU-11; `tenant.store.LeasedBookingStore`, MU-9c) are covered by
 their own tests. **Nothing imports them from the production path.**
 (`src/teetime/courses/foreup/token_pool.py` is IMPLEMENTED (MU-2) and backs `ForeUpAdapter`'s
@@ -527,8 +528,7 @@ FULL `[local_today, local_today + max(21, advance_days + 7)]` horizon every call
 and `materialize_tick` (due rules + the `rows_no_longer_covered` sweep). It needed two read-only
 `TenantStore` additions — `get_rule_unscoped` / `get_account_unscoped`, system reads with no
 `user_id` (the web never calls them) — conformance-pinned. See the materializer bullet below. **MU-8a is DONE in code, UNWIRED**
-(`tenant/cosmos/documents.py`, pure, no Azure SDK import — MU-8b adds `azure-cosmos`/`azure-identity`
-and the store): `to_*_doc`/`from_*_doc` per persisted type plus `to_doc`/`from_doc` dispatchers,
+(`tenant/cosmos/documents.py`, pure, no Azure SDK import; MU-8b's store sits on top): `to_*_doc`/`from_*_doc` per persisted type plus `to_doc`/`from_doc` dispatchers,
 returning `Stored(item, etag)` with Cosmos `_etag` read through (never written) for IfMatch.
 Deterministic ids per §3.1 (`account`, `rule|<id>`, `row|rule|<rule_id>|<date>` — a rule row whose
 `RowId` is not `rule_row_id(...)` is refused — `row|x|<uuid>`, `slot|<date>`, `ruleday|<weekday>`,
@@ -541,7 +541,30 @@ required one is refused); `row_fingerprint_of` / `event_row_from_docs` are the r
 Tests: `tests/tenant/cosmos/test_documents.py`. Tenant store (decided 2026-09-25): a Cosmos DB
 free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
 "no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path
-is unaffected.
+is unaffected. **MU-8b is DONE in code, UNWIRED** (`tenant/cosmos/store.py::CosmosTenantStore`; no
+command constructs it until MU-16, and the account itself is MU-15b): the full `TenantStore` on the
+async `azure-cosmos` SDK (+ `azure-identity`, `aiohttp` as the async transport), with the in-memory
+store's semantics reached through the SAME pure functions (`tenant/semantics.py`, extracted from
+`InMemoryTenantStore` behaviour-preserving). Every multi-doc write is ONE single-partition
+transactional batch with per-op IfMatch: row creates/replaces, the `slot|<date>` ops derived from the
+status change, the `ruleday|<weekday>` pointer asserted by an IfMatch self-replace whenever a rule
+row becomes bookable (the §3.2 rule IfMatch — a concurrent deactivation or weekday move aborts the
+row write), and ledger upserts; `_Batch` refuses an op for another partition. Mapping: 409 row create
+→ exists (`insert_rule_row_if_absent` returns None), 409 slot create → date taken, 412/404 →
+`TransitionRefusedError`, a lost lease race → not acquired, a rule 412 → re-read, then
+`VersionConflictError` only if the version really moved. Cross-partition uniqueness is the §3.2
+claim protocol (pending → write → IfMatch bind; a lost bind deletes/restores what it wrote; a
+PENDING claim is reclaimable only if older than 10 min AND its owner does not hold the key, a BOUND
+one only as a rename orphan) plus an IfMatch `max_accounts_per_course` counter. Auth is an Entra
+token only (`DefaultAzureCredential`; a key-shaped credential is refused), and the `tenant-ci` /
+`global-ci` containers are selected ONLY by `TENANT_COSMOS_CONTAINER_SUFFIX=-ci`. `QUERIED_PATHS`
+lists every path the queries filter on — **MU-15b's index policy must include all of them** (Cosmos
+rejects a filter on an unindexed path; the §3.2 list is too short). Tests: the whole conformance
+suite in CI over `tests/tenant/cosmos/fake_container.py` (a fake of the SDK container API, never
+the store) and `integration`-marked against the real `dev` CI containers (README), plus unit
+tests in `tests/tenant/cosmos/test_cosmos_store.py`. Known residual (documented in the module):
+the user-terminal half of the may-become-active guard is a partition query the batch cannot assert.
+The integration leg has NOT run yet (no Cosmos account exists).
 
 ## Package layout
 
@@ -1006,7 +1029,8 @@ in `core/` — never directly. This is the cut line for parallel work.
   `request_lock` IS the fingerprinted durable row lease (refusal → `ConcurrentRunError`, the
   engine's existing defer); the booker never uses it (its lease is held from `claim_rows`). **The contract is
   the conformance suite `tests/tenant/conformance.py`, not a docstring**: any `TenantStore`
-  (the future `CosmosTenantStore`, MU-8b) must pass `TenantStoreConformance` unchanged; subclass it
+  (`CosmosTenantStore`, MU-8b, runs it over a fake container in CI) must pass
+  `TenantStoreConformance` unchanged; subclass it
   with a `harness` fixture, as `tests/tenant/test_in_memory_store.py` does.
 - **The materializer walks the FULL horizon every call and decides by HISTORY, never by an id
   collision (MULTIUSER_PLAN §7.7, MU-6 — unwired).** `tenant/materialize.py` turns each active
@@ -1428,6 +1452,17 @@ checks — they run on push/tags, not PRs.
 
 **Current required checks:** `test / lint / typecheck`, `docker build`,
 `docker smoke`, `bicep lint`, `secret scan`.
+
+**Local pre-push gate (`.githooks/pre-push`).** Runs every command CI's `test / lint /
+typecheck` job runs (`uv lock --locked`, `ruff check .`, `ruff format --check .`, `mypy`,
+`pytest -m "not integration"`; pip-audit stays CI-only) with `set -euo pipefail`, and BLOCKS the
+push on the first failure. Enable once per clone — worktrees share it:
+`git config core.hooksPath .githooks`. **Why:** PRs kept opening with a failing lint check because
+local checks were read through an output filter (`rtk pipe`) or `| tail -1`, which hide a
+non-zero exit code — a failing `ruff check` looked clean. The hook decides by EXIT CODE only.
+Rules for agents: never `git push --no-verify` for normal work; when YOU run a gate, judge it by
+its exit code, never by filtered/tailed output. `tests/test_prepush_hook.py` fails CI if the hook
+drifts from ci.yml.
 
 ## When in doubt
 
