@@ -169,6 +169,7 @@ _GUEST = Player(first_name="Guest", last_name="Player", email="")
 _LIVE_LEDGER_STATES = frozenset({BookingState.HELD, BookingState.HELD_EXTRA})
 _RUN_BUCKET_S = 600  # the watch cron cadence: one run_index per 10-minute bucket
 _UPGRADED = "watch:upgraded"
+_RECONCILED = "watch:reconciled"
 
 
 def watch_run_index(now: datetime) -> int:
@@ -662,7 +663,7 @@ class _Run:
             return
         try:
             if pre is _Pre.ENGINE:
-                await self._engine(work, inner, creds, fingerprint=fingerprint)
+                await self._engine(work, inner, creds, fingerprint=fingerprint, live=snapshot)
             else:
                 await self._snapshot_outcome(work, pre, snapshot=snapshot)
         finally:
@@ -754,6 +755,7 @@ class _Run:
         creds: CourseCredentials,
         *,
         fingerprint: RowFingerprint,
+        live: ReservationSnapshot,
     ) -> None:
         """The UNMODIFIED ``WatchOrchestrator`` for one row, gated on ownership (§7.6)."""
         row = work.row
@@ -807,6 +809,7 @@ class _Run:
             recorder.log(),
             result=result,
             owned=work.owned,
+            live_ids=frozenset(e.raw_id for e in live.entries),
             base=self._base(row, clear_marker=marker),
         )
         if await self._write(outcome):
@@ -844,7 +847,15 @@ class _Run:
                 row.id,
             )
             self.tally.uncertain.append(row.id)
-        if outcome.last_outcome == _UPGRADED:
+        if outcome.last_outcome == _RECONCILED:
+            log.warning(
+                "tenant-watch: row %s: the duplicate reconcile kept owned %s and cancelled the "
+                "row's %s; the row follows the survivor",
+                row.id,
+                outcome.booking.raw_reservation_id if outcome.booking else None,
+                row.booked_raw_id,
+            )
+        elif outcome.last_outcome == _UPGRADED:
             self.tally.upgraded.append(row.id)
             await self._notify(UserEventKind.UPGRADED, row, account=work.account, detail="watcher")
         elif outcome.to_status is RowStatus.BOOKED:
@@ -1114,6 +1125,7 @@ def _engine_outcome(
     *,
     result: BookingResult | None,
     owned: Sequence[OwnedBooking],
+    live_ids: frozenset[str],
     base: RowOutcome,
 ) -> RowOutcome:
     """The row's outcome from the RECORDER (M2), never from the engine's return value: an
@@ -1121,7 +1133,10 @@ def _engine_outcome(
 
     BOOKED row: old id cancelled OK + a new booking -> BOOKED (upgraded; old ledgered
     ``cancelled_upgrade``, new ``held``/upgrade); old id cancelled and nothing new -> PENDING +
-    ``needs_reconcile`` (a bot-caused loss, re-book allowed); otherwise unchanged. Owned extras
+    ``needs_reconcile`` (a bot-caused loss, re-book allowed) UNLESS an owned ledgered
+    reservation still live in the trusted snapshot (``live_ids``) survived — the duplicate
+    reconcile kept it over the row's own — in which case the row follows it (old id ledgered
+    ``cancelled_extra``); otherwise unchanged. Owned extras
     the reconcile cancelled OK -> ``cancelled_extra``. PENDING row: a new booking -> BOOKED
     (``held``/watch). Any UNCERTAIN book (a non-SlotGone, non-captcha raise, or BOOKED with no
     confirmation) -> ``needs_reconcile``."""
@@ -1159,6 +1174,19 @@ def _engine_outcome(
             base, last_outcome="watch:held", cancelled_extras=extras, needs_reconcile=uncertain
         )
     if not books:
+        survivor = next(
+            (
+                o
+                for o in owned
+                if o.state in _LIVE_LEDGER_STATES
+                and o.raw_reservation_id not in cancelled_ok
+                and o.raw_reservation_id != old
+                and o.raw_reservation_id in live_ids
+            ),
+            None,
+        )
+        if survivor is not None:
+            return _follow_survivor(row, survivor, owned, extras=extras, base=base)
         return replace(
             base,
             to_status=RowStatus.PENDING,
@@ -1180,4 +1208,41 @@ def _engine_outcome(
         cancelled_upgrade_raw_id=old,
         cancelled_extras=extras,
         needs_reconcile=uncertain,
+    )
+
+
+def _follow_survivor(
+    row: RequestRow,
+    survivor: OwnedBooking,
+    owned: Sequence[OwnedBooking],
+    *,
+    extras: tuple[OwnedBooking, ...],
+    base: RowOutcome,
+) -> RowOutcome:
+    """BOOKED -> BOOKED on an owned reservation the duplicate reconcile kept over the row's own
+    (keep-best ranks by midpoint distance, so it may keep a ``held_extra``). The survivor becomes
+    ``held``; the row's cancelled reservation is ledgered ``cancelled_extra`` (ours, so a later
+    vanish check reads it as bot-caused, never external)."""
+    cancelled_own = tuple(
+        replace(o, state=BookingState.CANCELLED_EXTRA)
+        for o in owned
+        if o.raw_reservation_id == row.booked_raw_id
+    )
+    result = BookingResult(
+        request_id=row.request_id,
+        outcome=BookingOutcome.ALREADY_BOOKED,
+        course_id=row.course_id,
+        slot=_slot(row, survivor.raw_reservation_id, survivor.tee_time),
+        confirmation_code=f"{MANAGED_BOOKING_TAG}{survivor.raw_reservation_id}",
+        booked_at=None,
+        attempts=0,
+    )
+    return replace(
+        base,
+        to_status=RowStatus.BOOKED,
+        last_outcome=_RECONCILED,
+        result=result,
+        booking=replace(survivor, state=BookingState.HELD),
+        cancelled_extras=extras + cancelled_own,
+        needs_reconcile=False,
     )

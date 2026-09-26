@@ -161,25 +161,26 @@ async def test_watch_respects_booker_lease() -> None:
 
 
 class _SkipOnLeaseStore:
-    """Collaborator spy: the user skips the row between the watcher's read and its lease (M5)."""
+    """Collaborator spy: the user skips the row (and optionally unskips it again) between the
+    watcher's read and its lease acquire (M5)."""
 
-    def __init__(self, inner: InMemoryTenantStore, *, user_id: Any, now: datetime) -> None:
+    def __init__(
+        self, inner: InMemoryTenantStore, *, user_id: Any, now: datetime, unskip: bool = False
+    ) -> None:
         self._inner = inner
         self._user_id = user_id
         self._now = now
+        self._unskip = unskip
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
     async def acquire_row_lease(self, row_id: Any, **kwargs: Any) -> bool:
-        await self._inner.transition_row(
-            row_id,
-            user_id=self._user_id,
-            to=RowStatus.SKIPPED,
-            actor=Actor.WEB,
-            reason=None,
-            now=self._now,
-        )
+        targets = [RowStatus.SKIPPED, RowStatus.PENDING] if self._unskip else [RowStatus.SKIPPED]
+        for to in targets:
+            await self._inner.transition_row(
+                row_id, user_id=self._user_id, to=to, actor=Actor.WEB, reason=None, now=self._now
+            )
         return await self._inner.acquire_row_lease(row_id, **kwargs)
 
 
@@ -195,6 +196,23 @@ async def test_watch_skipped_between_read_and_lock_not_booked() -> None:
     assert (await stored_row(store, s)).status is RowStatus.SKIPPED
     assert fake.book_call_count == 0
     assert report.booked == ()
+
+
+async def test_watch_row_edited_between_read_and_lock_not_booked() -> None:
+    """Still PENDING, but the row CHANGED since the read (skip + unskip bumped its version): the
+    fingerprinted lease acquire refuses, so the watcher never acts on what it did not read."""
+    store = new_store()
+    s = await seed(store, n=1)
+    fake = WatchFake()
+    factory = FakeFactory(adapters={s.account.id: fake})
+    spy = _SkipOnLeaseStore(store, user_id=s.user.id, now=WATCH_NOW, unskip=True)
+
+    report = await _watch(spy, factory)
+
+    row = await stored_row(store, s)
+    assert (row.status, row.lease_owner) == (RowStatus.PENDING, None)
+    assert fake.book_call_count == 0
+    assert report.skipped_leased == (s.row.id,)
 
 
 # --- finalizer + materializer (§7.1 step 1, §7.7) ---------------------------------------------
