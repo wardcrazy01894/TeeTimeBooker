@@ -16,34 +16,63 @@ import pytest
 
 from teetime.core.models import CourseId
 from teetime.tenant.cosmos.documents import (
+    AUDIT_TTL_S,
     CI_CONTAINER_DEFAULT_TTL_S,
     GLOBAL_CONTAINER,
+    GLOBAL_PK_PREFIXES,
+    PROBE_TTL_S,
     SCHEMA_VERSION,
     TENANT_CONTAINER,
+    AuditRecord,
+    ClaimKind,
+    ClaimState,
     DocumentError,
+    LoginProbe,
     RuleDayPointer,
     SlotPointer,
+    UniquenessClaim,
     account_doc_id,
+    audit_doc_id,
+    audit_pk,
     booking_doc_id,
+    claim_doc_id,
+    claim_key_hash,
+    container_of,
+    course_count_claim_key,
     from_account_doc,
+    from_audit_doc,
     from_booking_doc,
+    from_claim_doc,
+    from_probe_doc,
     from_row_doc,
     from_rule_doc,
     from_ruleday_doc,
     from_slot_doc,
     from_snapshot_doc,
+    from_user_doc,
+    identity_claim_key,
+    invite_claim_key,
+    partition_key_of,
+    probe_bucket,
+    probe_doc_id,
     row_doc_id,
     rule_doc_id,
     ruleday_doc_id,
     slot_doc_id,
     snapshot_doc_id,
     to_account_doc,
+    to_audit_doc,
     to_booking_doc,
+    to_claim_doc,
+    to_probe_doc,
     to_row_doc,
     to_rule_doc,
     to_ruleday_doc,
     to_slot_doc,
     to_snapshot_doc,
+    to_user_doc,
+    user_doc_id,
+    username_claim_key,
 )
 from teetime.tenant.models import (
     AccountProvenance,
@@ -62,7 +91,10 @@ from teetime.tenant.models import (
     RuleId,
     SnapshotEntry,
     StandingRule,
+    User,
     UserId,
+    UserRole,
+    UserStatus,
     derive_account_id,
     row_request_id,
     rule_row_id,
@@ -360,3 +392,182 @@ class TestIds:
         assert SCHEMA_VERSION == 1
         assert uuid5(USER, str(MB)) == ACCOUNT  # the §3.1 derivation the partition rests on
         assert isinstance(CourseAccountId(ACCOUNT), UUID)
+
+
+# --- the global container ----------------------------------------------------------------------
+
+
+def _user() -> User:
+    return User(
+        id=USER,
+        oauth_provider="google",
+        oauth_subject="Sub-123",
+        email="Golfer@Example.com",
+        display_name="Golfer",
+        role=UserRole.MEMBER,
+        status=UserStatus.ACTIVE,
+    )
+
+
+def _claim(kind: ClaimKind = ClaimKind.USERNAME) -> UniquenessClaim:
+    return UniquenessClaim(
+        kind=kind,
+        key_hash=claim_key_hash(kind, username_claim_key(MB, "Golfer@Example.com")),
+        state=ClaimState.PENDING,
+        created_at=NOW,
+        owner_id=ACCOUNT,
+        count=0,
+    )
+
+
+def _probe() -> LoginProbe:
+    return LoginProbe(
+        id=UUID("66666666-6666-4666-8666-666666666666"),
+        user_id=USER,
+        course_id=MB,
+        username_hash="a" * 64,
+        ok=False,
+        at=datetime(2026, 11, 1, 1, 59, 59, tzinfo=ET, fold=1),  # inside the DST fold
+    )
+
+
+def _audit() -> AuditRecord:
+    return AuditRecord(
+        id=UUID("77777777-7777-4777-8777-777777777777"),
+        user_id=USER,
+        action="row.skip",
+        row_id=_explicit_row().id,
+        detail={"from": "pending", "to": "skipped", "nested": {"n": 1, "flag": True}},
+        at=NOW,
+    )
+
+
+class TestRoundtripGlobal:
+    def test_roundtrip_user(self) -> None:
+        user = _user()
+        assert from_user_doc(to_user_doc(user)).item == user
+        invited = replace(
+            user, oauth_subject=None, status=UserStatus.INVITED, role=UserRole.OPERATOR
+        )
+        assert from_user_doc(to_user_doc(invited)).item == invited
+
+    @pytest.mark.parametrize("kind", list(ClaimKind))
+    def test_roundtrip_uniqueness_claim(self, kind: ClaimKind) -> None:
+        claim = _claim(kind)
+        assert from_claim_doc(to_claim_doc(claim)).item == claim
+        bound = replace(claim, state=ClaimState.BOUND, owner_id=None, count=3)
+        assert from_claim_doc(to_claim_doc(bound)).item == bound
+
+    def test_roundtrip_login_probe(self) -> None:
+        probe = _probe()
+        stored = from_probe_doc(to_probe_doc(probe)).item
+        assert replace(stored, at=NOW) == replace(probe, at=NOW)
+        assert stored.at == datetime(2026, 11, 1, 6, 59, 59, tzinfo=UTC)  # fold=1 → EST
+
+    def test_roundtrip_audit_record(self) -> None:
+        audit = _audit()
+        assert from_audit_doc(to_audit_doc(audit)).item == audit
+        system = replace(audit, user_id=None, row_id=None, detail={})
+        assert from_audit_doc(to_audit_doc(system)).item == system
+
+
+class TestGlobalKeys:
+    def test_global_pk_prefixes_never_collide(self) -> None:
+        prefixes = GLOBAL_PK_PREFIXES
+        assert set(prefixes) == {"user", "claim", "probe", "audit"}
+        values = list(prefixes.values())
+        assert len(set(values)) == len(values)
+        for a in values:
+            for b in values:
+                assert a == b or not b.startswith(a), (a, b)
+        docs = {
+            "user": to_user_doc(_user()),
+            "claim": to_claim_doc(_claim()),
+            "probe": to_probe_doc(_probe()),
+            "audit": to_audit_doc(_audit()),
+        }
+        for doc_type, doc in docs.items():
+            assert doc["type"] == doc_type
+            pk = doc["pk"]
+            assert isinstance(pk, str) and pk.startswith(prefixes[doc_type]), (doc_type, pk)
+            assert "accountId" not in doc
+
+    def test_user_and_claim_ids_are_their_partition_keys(self) -> None:
+        user_doc = to_user_doc(_user())
+        assert user_doc["id"] == user_doc["pk"] == f"user:{USER}" == user_doc_id(_user())
+        claim_doc = to_claim_doc(_claim())
+        expected = f"claim:{_claim().key_hash}"
+        assert claim_doc["id"] == claim_doc["pk"] == expected == claim_doc_id(_claim())
+
+    def test_probe_partitions_by_utc_hour_bucket(self) -> None:
+        probe = _probe()
+        assert probe_bucket(probe.at) == "2026-11-01T06"
+        doc = to_probe_doc(probe)
+        assert doc["pk"] == "probe:2026-11-01T06"
+        assert doc["id"] == probe_doc_id(probe) == f"probe|2026-11-01T06:59:59+00:00|{probe.id}"
+
+    def test_audit_partitions_by_user_or_system(self) -> None:
+        audit = _audit()
+        assert audit_pk(audit) == f"audit:{USER}"
+        assert audit_pk(replace(audit, user_id=None)) == "audit:system"
+        assert audit_doc_id(audit) == f"audit|{NOW.isoformat()}|{audit.id}"
+
+    def test_ttl_only_on_ttl_types(self) -> None:
+        assert PROBE_TTL_S == 2 * 3600
+        assert AUDIT_TTL_S == 400 * 86400
+        assert to_probe_doc(_probe())["ttl"] == PROBE_TTL_S
+        assert to_audit_doc(_audit())["ttl"] == AUDIT_TTL_S
+        no_ttl = [
+            to_user_doc(_user()),
+            to_claim_doc(_claim()),
+            to_account_doc(_account()),
+            to_rule_doc(_rule()),
+            to_row_doc(_rule_row()),
+            to_slot_doc(_slot()),
+            to_ruleday_doc(_ruleday()),
+            to_booking_doc(_booking()),
+            to_snapshot_doc(_snapshot()),
+        ]
+        for doc in no_ttl:
+            assert "ttl" not in doc, doc["type"]
+
+    def test_claim_key_hash_is_deterministic_and_canonical(self) -> None:
+        h = claim_key_hash(ClaimKind.USERNAME, username_claim_key(MB, "Golfer@Example.com"))
+        assert len(h) == 64 and int(h, 16) >= 0
+        # UNIQUE(course, username) is case-insensitive (the in-memory store casefolds).
+        assert h == claim_key_hash(ClaimKind.USERNAME, username_claim_key(MB, "golfer@example.com"))
+        assert h != claim_key_hash(
+            ClaimKind.USERNAME, username_claim_key(CourseId("x:1:1"), "golfer@example.com")
+        )
+        # Invite emails are matched case-insensitively too (bind_invited_user casefolds).
+        assert invite_claim_key(" Golfer@Example.com ") == invite_claim_key("golfer@example.com")
+        # OAuth subjects are opaque and case-SENSITIVE; providers are namespaced in.
+        assert identity_claim_key("google", "Sub-123") != identity_claim_key("google", "sub-123")
+        assert identity_claim_key("google", "s") != identity_claim_key("github", "s")
+        assert course_count_claim_key(MB) == str(MB)
+        # The kind is hashed in, so the same key text under two kinds never collides.
+        assert claim_key_hash(ClaimKind.INVITE, "k") != claim_key_hash(ClaimKind.IDENTITY, "k")
+
+    def test_container_and_partition_key_of_every_doc(self) -> None:
+        tenant_docs = [
+            to_account_doc(_account()),
+            to_rule_doc(_rule()),
+            to_row_doc(_rule_row()),
+            to_slot_doc(_slot()),
+            to_ruleday_doc(_ruleday()),
+            to_booking_doc(_booking()),
+            to_snapshot_doc(_snapshot()),
+        ]
+        for doc in tenant_docs:
+            assert container_of(doc) == TENANT_CONTAINER
+            assert partition_key_of(doc) == str(ACCOUNT)
+        for doc in [
+            to_user_doc(_user()),
+            to_claim_doc(_claim()),
+            to_probe_doc(_probe()),
+            to_audit_doc(_audit()),
+        ]:
+            assert container_of(doc) == GLOBAL_CONTAINER
+            assert partition_key_of(doc) == doc["pk"]
+        with pytest.raises(DocumentError):
+            container_of({"type": "mystery"})
