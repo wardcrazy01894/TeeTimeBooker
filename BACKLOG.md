@@ -80,6 +80,9 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Multi-user follow-ups
 
+- **`LeasedBookingStore` fingerprint is single-read** (MU-9c review): add a regression test pinning
+  that a version-bumping write between two same-row `request_lock`s on one instance makes the
+  second defer, before any refactor moves the watcher onto it.
 - **Durable uncertain-slot carrier for PENDING rows** (PR #235 review must-fix, taken as a
   documented gap): an UNCERTAIN watcher book on a PENDING row records `needs_reconcile` but no
   slot (`booked_tee_time` is BOOKED-only), so a POST that actually landed is adopted UNOWNED on
