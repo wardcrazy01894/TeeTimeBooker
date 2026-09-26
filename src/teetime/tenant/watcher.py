@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from ..core.adapter import AdapterCapabilities, CourseAdapter
 from ..core.models import (
+    MANAGED_BOOKING_TAG,
     BookingRequest,
     BookingResult,
     CourseCredentials,
@@ -223,7 +224,14 @@ def ownership_of(
     ``uncertain_tee_times`` — the slots the recorder logged as UNCERTAIN (§4.6; stricter than
     "in window"), which the runner passes along with ``row.booked_tee_time`` (the durable carrier
     of an UNCERTAIN slot across runs); else UNOWNED. Fail-safe: nothing passed -> UNOWNED."""
-    raise NotImplementedError(_MU10)
+    raw = reservation.confirmation_code.removeprefix(MANAGED_BOOKING_TAG)
+    if any(o.raw_reservation_id == raw and o.state in _LIVE_LEDGER_STATES for o in owned):
+        return Ownership.OWNED
+    # Aware datetimes compare by INSTANT, so a UTC-stored slot matches a course-local one.
+    exact = row.needs_reconcile and any(reservation.tee_time == t for t in uncertain_tee_times)
+    if exact and reservation.party_size == row.party_size:
+        return Ownership.ADOPTED_RECONCILE
+    return Ownership.UNOWNED
 
 
 def is_owned(
@@ -236,7 +244,10 @@ def is_owned(
     """Ownership predicate fed to ``WatchOrchestrator(reconcile_eligible=...)`` (engine hook E5)
     and to adoption (§7.6): ``ownership_of(...) is not Ownership.UNOWNED``. A dry-run
     environment passes ``lambda _: False`` instead (§7.8)."""
-    raise NotImplementedError(_MU10)
+    return (
+        ownership_of(reservation, row=row, owned=owned, uncertain_tee_times=uncertain_tee_times)
+        is not Ownership.UNOWNED
+    )
 
 
 def upgrade_allowed(
@@ -249,7 +260,9 @@ def upgrade_allowed(
     """The ownership gate MU-10 MUST apply before ``_try_upgrade`` (E5 does not guard the
     upgrade, §7.6): True iff ``row`` is BOOKED and ``reservation`` is owned per
     ``ownership_of``. An unowned (manual) match never reaches the engine's upgrade."""
-    raise NotImplementedError(_MU10)
+    return row.status is RowStatus.BOOKED and is_owned(
+        reservation, row=row, owned=owned, uncertain_tee_times=uncertain_tee_times
+    )
 
 
 class MissingBookingVerdict(StrEnum):
@@ -272,7 +285,56 @@ def classify_missing_booking(
     input order does not matter. BOT_CAUSED -> PENDING + needs_reconcile; EXTERNAL_CANCEL ->
     CANCELLED(external) + slot freed + email. Raises ``ValueError`` for a non-BOOKED row or a
     snapshot of another account; a BOOKED row with no raw id is NOT_YET (adoption resolves it)."""
-    raise NotImplementedError(_MU10)
+    if row.status is not RowStatus.BOOKED:
+        raise ValueError(f"classify_missing_booking needs a BOOKED row, got {row.status}")
+    if any(s.course_account_id != row.course_account_id for s in snapshots):
+        raise ValueError("snapshot belongs to another account")
+    raw = row.booked_raw_id
+    if raw is None:
+        return MissingBookingVerdict.NOT_YET
+    newest = _newest_trusted_miss(raw, snapshots)
+    if newest is None:
+        return MissingBookingVerdict.NOT_YET
+    cancelled_by_us = any(
+        o.raw_reservation_id == raw and o.state in _CANCELLED_BY_US for o in owned
+    )
+    replaced = any(
+        e.raw_id != raw
+        and e.party_size == row.party_size
+        and _local(e.tee_time, row).date() == row.target_date
+        for e in newest.entries
+    )
+    # M2 exclusions in §7.5 order: the marker / our own cancel first (the reconcile, not the
+    # vanish path, decides what a replacement means then), then a same-(date, party) replacement.
+    legs: tuple[tuple[bool, MissingBookingVerdict], ...] = (
+        (row.upgrade_started_at is not None or cancelled_by_us, MissingBookingVerdict.BOT_CAUSED),
+        (replaced, MissingBookingVerdict.ADOPT_REPLACEMENT),
+    )
+    return next((verdict for hit, verdict in legs if hit), MissingBookingVerdict.EXTERNAL_CANCEL)
+
+
+# Ledger states that mean WE removed the reservation (§7.5 M2). ``cancelled_user`` is deliberately
+# absent: a web cancel writes the row CANCELLED(user) in the same batch, so a BOOKED row can never
+# carry one in a consistent store; if it did, EXTERNAL_CANCEL (no re-book) is the safe direction,
+# whereas BOT_CAUSED would re-book what the user just cancelled.
+_CANCELLED_BY_US: frozenset[BookingState] = frozenset(
+    {BookingState.CANCELLED_UPGRADE, BookingState.CANCELLED_EXTRA}
+)
+
+
+def _newest_trusted_miss(
+    raw: str, snapshots: Sequence[ReservationSnapshot]
+) -> ReservationSnapshot | None:
+    """The newest TRUSTED snapshot iff the last ``VANISH_CONSECUTIVE_TRUSTED_SNAPSHOTS`` trusted
+    snapshots all miss ``raw`` and span at least ``VANISH_MIN_SNAPSHOT_GAP``; else None. Untrusted
+    snapshots are skipped entirely (neither a miss nor a sighting)."""
+    trusted = sorted((s for s in snapshots if s.trusted), key=lambda s: s.observed_at, reverse=True)
+    recent = trusted[:VANISH_CONSECUTIVE_TRUSTED_SNAPSHOTS]
+    if len(recent) < VANISH_CONSECUTIVE_TRUSTED_SNAPSHOTS:
+        return None
+    seen = any(e.raw_id == raw for s in recent for e in s.entries)
+    too_close = recent[0].observed_at - recent[-1].observed_at < VANISH_MIN_SNAPSHOT_GAP
+    return None if seen or too_close else recent[0]
 
 
 class WatchAction(StrEnum):
@@ -291,7 +353,12 @@ def dry_run_gate(*, dry_run: bool, action: WatchAction) -> bool:
     """§7.8 (SF2): True iff ``action`` may proceed. In a dry-run environment the watcher never
     reconcile-cancels, never upgrades and never writes booked -> cancelled(external); a
     read-only login, snapshot persistence and every DB-only action stay enabled."""
-    raise NotImplementedError(_MU10)
+    return not (dry_run and action in _DRY_RUN_FORBIDDEN)
+
+
+_DRY_RUN_FORBIDDEN: frozenset[WatchAction] = frozenset(
+    {WatchAction.UPGRADE, WatchAction.RECONCILE_CANCEL, WatchAction.MARK_CANCELLED_EXTERNAL}
+)
 
 
 class SearchSnapshotAdapter:
