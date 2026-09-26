@@ -162,6 +162,18 @@ uniqueness keys:
 | snapshot | `snapshot` | one latest per account |
 | rule-weekday pointer | `ruleday|<weekday>` | **one ACTIVE rule per (account, weekday)** (round-4, MU-5 review SF6), see §3.2 |
 
+**Pinned by MU-8a** (`tenant/cosmos/documents.py`; choices the tables above left open): a standing
+rule's id is `rule|<rule_id>`; `weekday` is `date.weekday()` (Mon=0..Sun=6). In `global`, `user` and
+`claim` docs are alone in their partition, so `id == pk`; a claim's `<sha256>` is the SHA-256 of
+`<kind>|<key>` (kind hashed in, so two kinds never share an id), with `username` keys
+`<course_id>|<casefolded username>`, `invite` keys the stripped+casefolded email and `identity` keys
+`<provider>|<subject>` verbatim (subjects are case-sensitive); the claim's owner (accountId or
+userId) is `ownerId`. A `probe`'s `<bucket>` is the UTC hour `YYYY-MM-DDTHH` (the 2 h TTL window spans
+at most three partitions, and `count_login_probes` filters by user OR username hash, so no id-keyed
+partition serves both), id `probe|<at UTC>|<uuid>`. An `audit` entry with no user goes to
+`audit:system`, id `audit|<at UTC>|<uuid>`. Document keys are camelCase (the §3.2 index paths),
+instants UTC ISO-8601, and the Cosmos `_etag` is read into `Stored.etag`, never written.
+
 `players` are **not stored**. ForeUP's book POST sends only the player count (root CLAUDE.md, and
 AZURE_PLAN §7.1). The tenant runner builds `Player("Guest","Player","")` × `party_size`. This
 retires the `PLAYER1-*` PII secrets for the tenant path (§9.3).
