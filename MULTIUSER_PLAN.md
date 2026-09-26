@@ -656,7 +656,7 @@ books B's rank-0, A cancels it seconds later but B's POST has already been rejec
 
 - **Input:** for each claimed row, the full ranked in-window candidate list from that account's
   `synthesize_blind_slots` (unfiltered, `max_count=grid size`).
-- **Draft order:** rows sorted by `row.id`, **rotated** by `target_date.toordinal() mod N`. Over a
+- **Draft order:** rows sorted by `row.id`, **rotated** by the week index `(target_date.toordinal() // 7) mod N` (the raw ordinal never rotates at N = 7, since one account's drops recur weekly; MU-9a). Over a
   season every account holds first pick equally often. The operator may prefer a fixed priority
   instead (§13 Q4).
 - **Snake draft:** in each round, walk the order (reversed on odd rounds). Each account takes its
