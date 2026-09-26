@@ -94,6 +94,12 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   logs across a `sign_in()` round-trip and assert the mocked bearer token / client secret never
   appear, like `tests/test_log_redaction.py` pins the 2captcha case. Do it in MU-14.
 - **Scope uvicorn `forwarded_allow_ips` to the ACA ingress** in MU-15a (today it trusts any peer).
+- **MU-15b: the Cosmos index policy must cover `CosmosTenantStore.QUERIED_PATHS`** (MU-8b). The
+  §3.2 list (`/type`, `/courseId`, `/targetDate`, `/status`, `/cutoffAt`, `/userId`) is too short:
+  the store also filters on `/source`, `/rowId`, `/ruleId`, `/active`, `/rawReservationId`,
+  `/oauthProvider`, `/oauthSubject`, `/usernameHash`, and Cosmos rejects a filter on an excluded
+  path. Then run the integration conformance leg (README) once the account exists: it has never
+  run against real Cosmos.
 - **Rule deletion must clear the `ruleday|<weekday>` pointer atomically** (surfaced in the MU-6
   review). The store has no rule delete yet; when MU-8b (Cosmos) or MU-13 (web) adds one, it must
   remove the rule doc and its weekday pointer in ONE batch, or that weekday is blocked to every new
