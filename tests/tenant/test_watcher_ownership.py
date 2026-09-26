@@ -262,7 +262,11 @@ def test_watch_vanish_excluded_when_upgrade_marker_set() -> None:
 def test_watch_vanish_excluded_when_ledgered_cancelled_by_us() -> None:
     r = _booked()
     misses = [_miss(T2), _miss(T1)]
-    for state in (BookingState.CANCELLED_UPGRADE, BookingState.CANCELLED_EXTRA):
+    for state in (
+        BookingState.CANCELLED_UPGRADE,
+        BookingState.CANCELLED_EXTRA,
+        BookingState.CANCELLED_GROUP,  # §16.4 collapse (MU-R2)
+    ):
         ledger = [owned(r, "R1", state=state)]
         assert (
             classify_missing_booking(r, snapshots=misses, owned=ledger)
