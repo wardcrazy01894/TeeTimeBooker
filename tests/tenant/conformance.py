@@ -22,7 +22,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
-from uuid import uuid4
+from decimal import Decimal
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -31,6 +32,7 @@ from teetime.core.models import BookingOutcome, BookingResult, CourseId
 from teetime.tenant.materialize import RuleConflictError
 from teetime.tenant.models import (
     ACTIVE_ROW_STATUSES,
+    GROUP_DOWNGRADE_REASON,
     USER_WITHDRAW_REASON,
     AccountProvenance,
     AccountStatus,
@@ -852,6 +854,75 @@ class TenantStoreConformance:
         )
         return rule, row
 
+    async def test_rule_rows_copy_price_and_group_from_the_rule(
+        self, harness: StoreHarness
+    ) -> None:
+        """MU-R1 review should-fix: a rule row carries its rule's options, party, price override
+        and group on create, on a rule-edit rewrite and on reactivation (§16.2), with REAL values
+        so a dropped or swapped field fails."""
+        s = harness.store
+        t = await _tenant(s)
+        g1, g2, g3 = uuid4(), uuid4(), uuid4()
+        rule = await s.upsert_rule(
+            replace(_rule(t), max_price=Decimal("85.00"), group_id=g1, group_rank=2),
+            user_id=t.user.id,
+        )
+        row = await s.insert_rule_row_if_absent(rule, TARGET, now=NOW)
+        assert row is not None
+        assert (row.max_price, row.group_id, row.group_rank) == (Decimal("85.00"), g1, 2)
+
+        rule = await s.upsert_rule(
+            replace(rule, max_price=Decimal("70.00"), group_id=g2, group_rank=3),
+            user_id=t.user.id,
+        )
+        row = await s.rewrite_pending_rule_row(
+            row.id, rule=rule, expected_version=row.version, now=NOW
+        )
+        assert (row.max_price, row.group_id, row.group_rank) == (Decimal("70.00"), g2, 3)
+
+        row = await s.transition_row(
+            row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_weekday_changed",
+            now=NOW,
+        )
+        rule = await s.upsert_rule(
+            replace(rule, max_price=None, group_id=g3, group_rank=1),
+            user_id=t.user.id,
+        )
+        back = await s.reactivate_rule_row(row, rule, now=NOW)
+        assert (back.max_price, back.group_id, back.group_rank) == (None, g3, 1)
+
+    async def test_transition_booked_pending_group_downgrade(self, harness: StoreHarness) -> None:
+        """MU-R1 review should-fix: the §16.4 collapse edge end-to-end through record_outcomes.
+        The runner writes it under its lease with needs_reconcile OFF; the row is pending again
+        and still holds its date."""
+        s = harness.store
+        t = await _tenant(s)
+        booked = await _book(s, await _explicit(s, t), raw_id="R1")
+        await _lease(s, booked, owner=BOOKER)
+        await s.record_outcomes(
+            [
+                _outcome(
+                    booked,
+                    actor=Actor.BOOKING_RUNNER,
+                    to_status=RowStatus.PENDING,
+                    status_reason=GROUP_DOWNGRADE_REASON,
+                    last_outcome="group_downgrade",
+                    release_lease_owner=BOOKER,
+                )
+            ]
+        )
+        after = await _get(s, booked)
+        assert (after.status, after.status_reason, after.needs_reconcile) == (
+            RowStatus.PENDING,
+            GROUP_DOWNGRADE_REASON,
+            False,
+        )
+        assert await harness.slot_pointer(t.account.id, TARGET) == booked.id
+
     async def test_transition_withdrawn_pending(self, harness: StoreHarness) -> None:
         s = harness.store
         t = await _tenant(s)
@@ -1484,6 +1555,35 @@ class TenantStoreConformance:
         assert rows[0].account.id == a.account.id
         assert await s.load_event_rows(targets={MB: TARGET}, now=TARGET_CUTOFF) == []
         assert pb.id not in {er.row.id for er in rows}
+
+    async def test_rows_in_groups_reads_across_accounts(self, harness: StoreHarness) -> None:
+        """MU-R2 (§16.3): the group floor and the collapse need every row of a (group, date)
+        pair, which lives in several account partitions. A system read, any status."""
+        s = harness.store
+        a = await _tenant(s, n=1)
+        b = await _tenant(s, n=2)
+        group, other = uuid4(), uuid4()
+
+        async def row(t: Tenant, g: UUID, target: date = TARGET) -> RequestRow:
+            return await s.create_explicit_row(
+                user_id=t.user.id,
+                account_id=t.account.id,
+                target_date=target,
+                options=(RankedWindow(1, time(9, 0), time(11, 0)),),
+                party_size=2,
+                now=NOW,
+                group_id=g,
+                group_rank=1,
+            )
+
+        ra = await row(a, group)
+        rb = await _book(s, await row(b, group))
+        await row(a, other, TARGET + timedelta(days=7))
+        await row(b, group, TARGET + timedelta(days=7))
+        found = await s.rows_in_groups({(group, TARGET)})
+        assert sorted(r.id for r in found) == sorted([ra.id, rb.id])
+        assert {r.status for r in found} == {RowStatus.PENDING, RowStatus.BOOKED}
+        assert await s.rows_in_groups(set()) == []
 
     async def test_load_event_rows_ordered_by_row_id(self, harness: StoreHarness) -> None:
         s = harness.store

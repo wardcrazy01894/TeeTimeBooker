@@ -38,6 +38,7 @@ from ..core.models import (
 from ..core.slot_utils import midpoint_distance_minutes, rank_slots_for_request
 from .models import (
     BookingState,
+    CourseAccount,
     EventRow,
     OwnedBooking,
     RequestRow,
@@ -45,6 +46,7 @@ from .models import (
     RowStatus,
     achieved_rank,
     options_time_windows,
+    row_max_price,
 )
 
 # Per-account reconcile cadence: log in when (hash(account_id) + run_index) % N == 0, i.e.
@@ -108,7 +110,7 @@ def _local(value: datetime, row: RequestRow) -> datetime:
     return value.astimezone(ZoneInfo(row.timezone))
 
 
-def _ranking_request(row: RequestRow) -> BookingRequest:
+def _ranking_request(row: RequestRow, account: CourseAccount) -> BookingRequest:
     """The row as a ``BookingRequest`` for ``rank_slots_for_request`` ONLY (never sent to an
     adapter): synthesized players sized to the party and the row's single window. ``holes=0``
     (any) is the only sensible value: ``RequestRow`` has no ``holes`` field, so there is nothing
@@ -123,6 +125,7 @@ def _ranking_request(row: RequestRow) -> BookingRequest:
         ),
         course_preferences=(row.course_id,),
         holes=0,
+        max_price_per_player=row_max_price(row, account),
     )
 
 
@@ -210,7 +213,7 @@ def needs_login(
     r, acct = row.row, row.account
     if snapshot is not None and snapshot.course_account_id != acct.id:
         raise ValueError("snapshot belongs to another account")
-    ranked = rank_slots_for_request(list(group_slots), _ranking_request(r))
+    ranked = rank_slots_for_request(list(group_slots), _ranking_request(r, acct))
     booked = r.status is RowStatus.BOOKED
     snapshot_stale = snapshot is None or now - snapshot.observed_at > timedelta(
         seconds=MAX_BOOKED_SNAPSHOT_AGE_S

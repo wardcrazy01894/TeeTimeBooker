@@ -22,6 +22,8 @@ from teetime.tenant.models import (
     SYSTEM_WITHDRAW_REASONS,
     USER_TERMINAL,
     USER_WITHDRAW_REASON,
+    AccountProvenance,
+    AccountStatus,
     Actor,
     BookingState,
     CourseAccount,
@@ -43,6 +45,7 @@ from teetime.tenant.models import (
     lease_held,
     options_time_windows,
     row_is_frozen,
+    row_max_price,
     row_request_id,
     rule_row_id,
     validate_options,
@@ -429,3 +432,21 @@ def test_group_downgrade_edge_is_reason_scoped() -> None:
 
 def test_group_downgrade_is_a_record_outcomes_edge() -> None:
     assert Actor.BOOKING_RUNNER in LEASED_EDGES[(B, P)]
+
+
+def test_row_max_price_defaults_to_the_account_cap() -> None:
+    """§16.2: a row with no override books under its course account's default cap."""
+    acct = CourseAccount(
+        id=CourseAccountId(uuid4()),
+        user_id=UserId(uuid4()),
+        course_id=MB,
+        provenance=AccountProvenance.USER_SUPPLIED,
+        username="u@example.com",
+        password_ciphertext="v1:k:n:c",
+        key_id="k",
+        status=AccountStatus.ACTIVE,
+        default_max_price=Decimal("80.00"),
+    )
+    row = _row(P)
+    assert row_max_price(row, acct) == Decimal("80.00")
+    assert row_max_price(replace(row, max_price=Decimal("55")), acct) == Decimal("55")

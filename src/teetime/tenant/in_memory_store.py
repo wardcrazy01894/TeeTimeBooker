@@ -26,7 +26,7 @@ Not durable: state lives for the process. Production multi-user state is Cosmos 
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
@@ -309,6 +309,17 @@ class InMemoryTenantStore:
             ):
                 out.append(EventRow(row=row, account=account))
         return out
+
+    async def rows_in_groups(self, keys: Collection[tuple[UUID, date]]) -> list[RequestRow]:
+        wanted = set(keys)
+        return sorted(
+            (
+                r
+                for r in self._rows.values()
+                if r.group_id is not None and (r.group_id, r.target_date) in wanted
+            ),
+            key=lambda r: r.id,
+        )
 
     async def claim_rows(
         self,

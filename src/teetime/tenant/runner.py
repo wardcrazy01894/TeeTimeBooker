@@ -26,12 +26,12 @@ import asyncio
 import inspect
 import json
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from enum import IntEnum
 from typing import Any, Protocol
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from ..core.adapter import AuthError, CaptchaError, CourseAdapter
@@ -56,6 +56,7 @@ from ..courses.foreup.token_pool import LeaseKey, SharedCaptchaPool
 from ..persistence.in_memory_store import InMemoryStore
 from .allocation import allocate_blind_slots, draft_order
 from .crypto import Keyring, credential_aad, decrypt_password
+from .groups import group_floor
 from .models import (
     Actor,
     BookingSource,
@@ -71,6 +72,7 @@ from .models import (
     RowStatus,
     options_time_windows,
     row_is_frozen,
+    row_max_price,
 )
 from .notify import (
     USER_FACING_KINDS,
@@ -543,10 +545,13 @@ async def plan_release_event(
         store.load_event_rows(targets=targets, now=now), clock=clock, not_after=None
     )
     rows = [r for r in loaded if not row_is_frozen(r.row, now=now)]
+    rows = await _apply_group_floor(
+        rows, store=store, clock=clock, not_after=None, label="tenant-plan"
+    )
     accounts = [
         _Account(
             event_row=r,
-            request=_request_for(r.row, dry_run=True),
+            request=_request_for(r.row, r.account, dry_run=True),
             creds=CourseCredentials(username="", password=""),  # never used: no login
             recorder=make_recording_adapter(
                 adapter_factory(
@@ -736,6 +741,44 @@ def _event_t0(event: ReleaseEvent, now: datetime) -> datetime:
     return datetime.combine(local.date(), event.release_time, tzinfo=zone).astimezone(UTC)
 
 
+async def _apply_group_floor(
+    rows: list[EventRow],
+    *,
+    store: _RunnerStore,
+    clock: Clock,
+    not_after: datetime | None,
+    label: str,
+) -> list[EventRow]:
+    """§16.3 group floor, before the claim: a grouped row is attempted only for its options
+    ranked better than the best booking its group already holds at another account, and not at
+    all if none is. Rows with no group cost nothing (no read). The narrowed options live only in
+    this run's copy of the row: outcome writes are keyed by row id and never write options back.
+    A failed group read is FAIL-OPEN (all options, logged): the §16.4 collapse then keeps the
+    best booking, whereas fail-closed could miss the whole drop."""
+    keys = {(r.row.group_id, r.row.target_date) for r in rows if r.row.group_id is not None}
+    if not keys:
+        return rows
+    try:
+        siblings = await _store_call(store.rows_in_groups(keys), clock=clock, not_after=not_after)
+    except Exception as exc:
+        log.warning("%s: group read failed (%s); using every option", label, type(exc).__name__)
+        return rows
+    out: list[EventRow] = []
+    for r in rows:
+        floor = group_floor(r.row, siblings)
+        if not floor:
+            log.info(
+                "%s: row %s skipped: its group already holds a better booking", label, r.row.id
+            )
+            continue
+        out.append(
+            r
+            if floor == r.row.options
+            else EventRow(row=replace(r.row, options=floor), account=r.account)
+        )
+    return out
+
+
 async def _read_and_claim(
     event: ReleaseEvent,
     *,
@@ -761,6 +804,9 @@ async def _read_and_claim(
         return _systemic(event, "load_event_rows", exc)
     # Python re-checks the derived freeze (§4.2): the query filtered cutoff_at > now already.
     rows = [r for r in loaded if not row_is_frozen(r.row, now=started)]
+    rows = await _apply_group_floor(
+        rows, store=store, clock=clock, not_after=not_after, label=f"tenant-run {event.key}"
+    )
     if not rows:
         log.info("tenant-run %s: no pending rows for %s", event.key, targets)
         return _report(event, rows_loaded=len(loaded))
@@ -887,7 +933,7 @@ async def _release_leases(store: _RunnerStore, row_ids: frozenset[RowId], *, own
             log.warning("tenant-run: row %s: lease release failed (%s)", row_id, type(exc).__name__)
 
 
-def _request_for(row: RequestRow, *, dry_run: bool) -> BookingRequest:
+def _request_for(row: RequestRow, account: CourseAccount, *, dry_run: bool) -> BookingRequest:
     return BookingRequest(
         request_id=row.request_id,
         target_dates=(row.target_date,),
@@ -895,6 +941,7 @@ def _request_for(row: RequestRow, *, dry_run: bool) -> BookingRequest:
         players=(_GUEST,) * row.party_size,
         course_preferences=(row.course_id,),
         holes=_TENANT_HOLES,
+        max_price_per_player=row_max_price(row, account),
         dry_run=dry_run,
     )
 
@@ -930,7 +977,7 @@ async def _prepare_accounts(
             accounts.append(
                 _Account(
                     event_row=event_row,
-                    request=_request_for(row, dry_run=dry_run),
+                    request=_request_for(row, event_row.account, dry_run=dry_run),
                     creds=creds[row.id],
                     recorder=make_recording_adapter(inner, clock=clock),
                     lease_key=key,
@@ -1419,6 +1466,8 @@ class _RunnerStore(Protocol):
         self, row_ids: Sequence[RowId], *, owner: str, until: datetime, now: datetime
     ) -> frozenset[RowId]: ...
 
+    async def rows_in_groups(self, keys: Collection[tuple[UUID, date]]) -> list[RequestRow]: ...
+
     async def record_outcomes(self, outcomes: Sequence[RowOutcome]) -> None: ...
 
     async def release_row_lease(self, row_id: RowId, *, owner: str) -> None: ...
@@ -1445,6 +1494,10 @@ class _StampedStore:
     ) -> frozenset[RowId]:
         self._stamps.append(self._clock.now_utc())
         return await self._inner.claim_rows(row_ids, owner=owner, until=until, now=now)
+
+    async def rows_in_groups(self, keys: Collection[tuple[UUID, date]]) -> list[RequestRow]:
+        self._stamps.append(self._clock.now_utc())
+        return await self._inner.rows_in_groups(keys)
 
     async def record_outcomes(self, outcomes: Sequence[RowOutcome]) -> None:
         self._stamps.append(self._clock.now_utc())

@@ -297,6 +297,12 @@ class RequestRow:
         validate_options(self.options)
 
 
+def row_max_price(row: RequestRow, account: CourseAccount) -> Decimal:
+    """The per-player cap a row books under (§16.2): its own override, else its course account's
+    default. Never None, so the tenant path always books under a cap."""
+    return row.max_price if row.max_price is not None else account.default_max_price
+
+
 @dataclass(frozen=True, slots=True)
 class RowFingerprint:
     """What the reader saw. A lease acquire matches it in the same conditional UPDATE (M5):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import replace as dc_replace
 from datetime import datetime, time, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -390,4 +391,29 @@ def test_upgrade_candidate_honours_option_rank() -> None:
             owned=ledger_edge,
         )
         is None
+    )
+
+
+def test_over_price_slot_is_no_reason_to_log_in() -> None:
+    """MU-R2: the ranking request carries the row's price cap, so a slot above it never triggers
+    a login (the engine would refuse to book it anyway)."""
+    run_index = _off_cadence_run_index(0)
+    cheap = dc_replace(account(0), default_max_price=Decimal("40.00"))  # builder slots cost $42
+    pending = event(cheap)
+    assert (
+        needs_login(
+            pending, group_slots=[slot(time(9, 30))], snapshot=FRESH, run_index=run_index, now=NOW
+        )
+        is None
+    )
+    ok = dc_replace(cheap, default_max_price=Decimal("42.00"))
+    assert (
+        needs_login(
+            event(ok),
+            group_slots=[slot(time(9, 30))],
+            snapshot=FRESH,
+            run_index=run_index,
+            now=NOW,
+        )
+        is LoginReason.BOOKABLE_SLOT
     )

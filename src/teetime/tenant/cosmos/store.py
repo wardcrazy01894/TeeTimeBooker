@@ -46,7 +46,7 @@ Not wired into any command yet (MU-16).
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
@@ -191,6 +191,7 @@ QUERIED_PATHS = frozenset(
         "/oauthProvider",
         "/oauthSubject",
         "/usernameHash",
+        "/groupId",
     }
 )
 
@@ -868,6 +869,19 @@ class CosmosTenantStore:
         # Belt and braces for a non-atomic deactivation (§7.7): never offer the booker a row of
         # an inactive rule, even before the materializer withdrew it.
         return await self._event_rows(found, lambda row, covered: row.cutoff_at > now and covered)
+
+    async def rows_in_groups(self, keys: Collection[tuple[UUID, date]]) -> list[RequestRow]:
+        found: list[RequestRow] = []
+        for group_id, day in sorted(keys, key=lambda k: (str(k[0]), k[1])):
+            found += [
+                s.item
+                for s in await self._rows_where(
+                    "c.groupId = @group AND c.targetDate = @day",
+                    group=str(group_id),
+                    day=day.isoformat(),
+                )
+            ]
+        return sorted(found, key=lambda r: r.id)
 
     async def claim_rows(
         self,
