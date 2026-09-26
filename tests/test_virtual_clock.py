@@ -96,28 +96,36 @@ async def test_virtual_clock_ties_wake_in_registration_order() -> None:
 
 
 async def test_virtual_clock_n_concurrent_busy_waits_measure_correct_offsets() -> None:
-    """Proof obligation 3 (MULTIUSER_PLAN §4.4): three concurrent ``busy_wait_until`` loops
-    targeting T0-500 / T0-250 / T0+0 ms must each observe their wake at EXACTLY that offset.
-    Under FakeClock the three interleaved 1 ms sleeps advance one shared clock 3x fast and the
-    measured offsets are wrong; the contrast is pinned below so this test cannot pass vacuously.
+    """Proof obligation 3 (MULTIUSER_PLAN §4.4): three concurrent waiters targeting
+    T0-500 / T0-250 / T0+0 ms must each observe their wake at EXACTLY that offset, both for
+    the ``busy_wait_until`` loop (the pre-T0 wait) and for the stagger's single-read
+    ``sleep(delay)`` (``_fire_blind_post`` reads ``now_utc()`` ONCE, then sleeps the
+    difference). Under FakeClock the three single-read sleeps stack onto one shared ``_now``
+    (-500, then +29.75 s on top, then +30 s on top of THAT), so the measured offsets are
+    scrambled; that contrast is pinned so this test cannot pass vacuously.
     """
     t0 = START + timedelta(seconds=30)
     offsets_ms = (-500, -250, 0)
 
-    async def measure(clock: Clock) -> list[int]:
+    async def measure(clock: Clock, *, single_read: bool) -> list[int]:
         measured: list[int | None] = [None] * len(offsets_ms)
 
         async def wait(i: int, off: int) -> None:
-            await busy_wait_until(t0 + timedelta(milliseconds=off), clock)
+            target = t0 + timedelta(milliseconds=off)
+            if single_read:
+                await clock.sleep((target - clock.now_utc()).total_seconds())
+            else:
+                await busy_wait_until(target, clock)
             measured[i] = round((clock.now_utc() - t0).total_seconds() * 1000)
 
         await asyncio.gather(*(wait(i, off) for i, off in enumerate(offsets_ms)))
         assert all(m is not None for m in measured)
         return [m for m in measured if m is not None]
 
-    assert await measure(VirtualClock(start=START)) == list(offsets_ms)
-    # Non-vacuity: the shared-``_now`` FakeClock gets these WRONG for concurrent waiters.
-    assert await measure(FakeClock(start=START)) != list(offsets_ms)
+    assert await measure(VirtualClock(start=START), single_read=False) == list(offsets_ms)
+    assert await measure(VirtualClock(start=START), single_read=True) == list(offsets_ms)
+    # Non-vacuity: the shared-``_now`` FakeClock gets the stagger pattern WRONG.
+    assert await measure(FakeClock(start=START), single_read=True) != list(offsets_ms)
 
 
 async def test_virtual_clock_no_sleeper_advance_is_explicit() -> None:
