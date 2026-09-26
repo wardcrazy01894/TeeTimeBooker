@@ -3,8 +3,9 @@
 One scale-to-zero Azure Container App (``teetime web``: uvicorn, max 1 replica) serves the pages
 and the HTMX endpoints. ``create_app`` returns the ASGI app: session middleware (``Secure``,
 ``HttpOnly``, ``SameSite=Lax``), CSRF verification on every non-GET, security headers on every
-response, the OAuth routes with invite-only binding, and — until MU-13 — a placeholder
-dashboard. No DB besides the injected ``TenantStore``; ``/healthz`` never touches it.
+response, the OAuth routes with invite-only binding, the operator's ``/admin/users``, and the
+MU-13 dashboard / rules / dates pages (``web/pages.py``). No DB besides the injected
+``TenantStore``; ``/healthz`` never touches it.
 
 Logging is configured by the ``teetime web`` entrypoint (``basicConfig`` THEN
 ``install_log_redaction()``), never here: a factory must not reconfigure the process logger.
@@ -36,6 +37,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..core.clock import Clock
+from ..core.config import BookingCutoffConfig
+from ..core.release_policy import ReleasePolicy
 from ..tenant.crypto import Keyring
 from ..tenant.models import User, UserId, UserRole, UserStatus
 from ..tenant.notify import UserNotifier
@@ -48,6 +51,7 @@ from .oauth import (
     OAuthProviderSettings,
     ProviderIdentity,
 )
+from .pages import register_page_routes
 from .security import CookiePolicy, security_headers, verify_csrf_token
 
 log = logging.getLogger(__name__)
@@ -228,6 +232,9 @@ class _Ctx:
     clock: Clock
     oauth: OAuthProviders
     templates: Jinja2Templates
+    # MU-13: the rule materializer's inputs, keyed by ``str(course_id)`` (as ``materialize_tick``).
+    policies: Mapping[str, ReleasePolicy] = field(default_factory=dict)
+    cutoff: BookingCutoffConfig = field(default_factory=BookingCutoffConfig)
 
     def page(
         self, request: Request, name: str, context: dict[str, Any], *, status_code: int = 200
@@ -365,13 +372,6 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
 
-    @app.get("/", response_class=HTMLResponse)
-    async def dashboard(request: Request, user: CurrentUser) -> Response:
-        """Placeholder until MU-13 renders rows/rules; proves the session + CSRF plumbing."""
-        is_operator = auth.is_operator(user, operator_email=ctx.settings.operator_email)
-        context = {"user": user, "is_operator": is_operator, "dry_run": ctx.settings.dry_run}
-        return ctx.page(request, "dashboard.html", context)
-
     @app.get("/admin/users", response_class=HTMLResponse)
     async def admin_users(request: Request, operator: Operator) -> Response:
         notice = _ADMIN_NOTICES.get(request.query_params.get("notice", ""))
@@ -466,16 +466,22 @@ def create_app(
     clock: Clock,
     keyring: Keyring | None = None,
     notifier: UserNotifier | None = None,
+    policies: Mapping[str, ReleasePolicy] | None = None,
+    cutoff: BookingCutoffConfig | None = None,
 ) -> FastAPI:
     """Build the ASGI app. ``keyring`` / ``notifier`` are accepted now so MU-14 (connect,
-    refresh, cancel) and MU-11 wiring do not change the factory's signature; MU-12 uses
-    neither."""
+    refresh, cancel) and MU-11 wiring do not change the factory's signature; MU-12/13 use
+    neither. ``policies`` (``str(course_id)`` -> ``ReleasePolicy``) and ``cutoff`` feed the
+    synchronous rule materialize (MU-13, §7.7): a course with no policy cannot take a standing
+    rule (one-off dates still work)."""
     ctx = _Ctx(
         settings=settings,
         store=store,
         clock=clock,
         oauth=OAuthProviders({p: s for p in PROVIDERS if (s := settings.provider(p)) is not None}),
         templates=Jinja2Templates(directory=str(_HERE / "templates")),
+        policies=dict(policies or {}),
+        cutoff=cutoff if cutoff is not None else BookingCutoffConfig(),
     )
     cookie = CookiePolicy()
     app = FastAPI(
@@ -498,5 +504,7 @@ def create_app(
     app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
     _install_error_pages(app, ctx)
     _register_public_routes(app, ctx)
-    _register_user_routes(app, ctx, current_user=_current_user(ctx))
+    current_user = _current_user(ctx)
+    _register_user_routes(app, ctx, current_user=current_user)
+    register_page_routes(app, ctx, current_user=current_user)
     return app

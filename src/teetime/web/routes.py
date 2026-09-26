@@ -4,9 +4,11 @@
 the framework, and a test asserts every non-GET route has ``csrf=True`` and every ``user`` route
 has an IDOR test (``test_route_rejects_other_users_row``).
 
-The MU-12 rows are BOUND (``web/app.py``; ``tests/web/test_web_app.py`` pins that every MU-12
-row exists in the app with its method and that ``auth=NONE`` rows are exactly the public
-allowlist). The MU-13/MU-14 rows are still contract-only.
+The MU-12 and MU-13 rows are BOUND (``web/app.py``, ``web/pages.py``;
+``tests/web/test_web_app.py`` pins that every MU-12 row exists in the app with its method and that
+``auth=NONE`` rows are exactly the public allowlist, and ``tests/web/test_web_pages.py`` that every
+MU-13 row is bound, user-auth, CSRF on POST, IDOR-tested, and names a real ``web.services``
+function). The MU-14 rows are still contract-only.
 """
 
 from __future__ import annotations
@@ -37,16 +39,19 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("GET", "/login/{provider}", "login_start", AuthLevel.NONE, False, "MU-12"),
     RouteSpec("GET", "/auth/{provider}/callback", "login_callback", AuthLevel.NONE, False, "MU-12"),
     RouteSpec("POST", "/logout", "logout", AuthLevel.USER, True, "MU-12"),
-    # MU-12 serves a placeholder page here; MU-13 replaces it with the real dashboard.
-    RouteSpec("GET", "/", "dashboard", AuthLevel.USER, False, "MU-12"),
+    RouteSpec("GET", "/", "dashboard", AuthLevel.USER, False, "MU-13"),
     RouteSpec("GET", "/accounts", "list_accounts", AuthLevel.USER, False, "MU-14"),
     RouteSpec("POST", "/accounts/connect", "connect_account", AuthLevel.USER, True, "MU-14"),
     RouteSpec("POST", "/accounts/{id}/reverify", "reverify_account", AuthLevel.USER, True, "MU-14"),
     RouteSpec("POST", "/accounts/{id}/refresh", "refresh_account", AuthLevel.USER, True, "MU-14"),
     RouteSpec("GET", "/rules", "list_rules", AuthLevel.USER, False, "MU-13"),
-    RouteSpec("POST", "/rules", "upsert_rule", AuthLevel.USER, True, "MU-13"),
-    RouteSpec("POST", "/rules/{id}", "upsert_rule", AuthLevel.USER, True, "MU-13"),
-    RouteSpec("POST", "/rows", "create_explicit_row", AuthLevel.USER, True, "MU-13"),
+    RouteSpec("POST", "/rules", "create_rule", AuthLevel.USER, True, "MU-13"),
+    # form `action`: save (edit_rule) | deactivate / activate (set_rule_active)
+    RouteSpec("POST", "/rules/{id}", "edit_rule", AuthLevel.USER, True, "MU-13"),
+    # the dated-row list with its actions; the same read model as the dashboard
+    RouteSpec("GET", "/dates", "dashboard", AuthLevel.USER, False, "MU-13"),
+    # a one-off date; also "Re-request this date" and "add it as a one-off instead"
+    RouteSpec("POST", "/rows", "create_one_off", AuthLevel.USER, True, "MU-13"),
     RouteSpec("POST", "/rows/{id}/skip", "skip_row", AuthLevel.USER, True, "MU-13"),
     RouteSpec("POST", "/rows/{id}/unskip", "unskip_row", AuthLevel.USER, True, "MU-13"),
     RouteSpec("POST", "/rows/{id}/withdraw", "withdraw_row", AuthLevel.USER, True, "MU-13"),
