@@ -351,7 +351,8 @@ def classify_missing_booking(
 # carry one in a consistent store; if it did, EXTERNAL_CANCEL (no re-book) is the safe direction,
 # whereas BOT_CAUSED would re-book what the user just cancelled.
 _CANCELLED_BY_US: frozenset[BookingState] = frozenset(
-    {BookingState.CANCELLED_UPGRADE, BookingState.CANCELLED_EXTRA}
+    # CANCELLED_GROUP: the §16.4 collapse cancelled the group's worse booking (MU-R2).
+    {BookingState.CANCELLED_UPGRADE, BookingState.CANCELLED_EXTRA, BookingState.CANCELLED_GROUP}
 )
 
 
