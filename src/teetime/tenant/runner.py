@@ -152,6 +152,11 @@ class AccountOutcome:
     # swallowed (makes the exit non-zero).
     held_extra_raw_ids: tuple[str, ...] = ()
     swallowed_captcha_error: bool = False
+    # The operator-action error ``orch.run`` raised, by kind (§4.5): an AuthError is per-user
+    # (exit 0, account flagged); a CaptchaError / OtpChallengeError is systemic (the solver and
+    # pool are shared; OTP means ForeUP changed the API).
+    auth_error: bool = False
+    captcha_error: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,10 +186,33 @@ class WatchReport:
 
 
 def exit_code_for(report: RunReport | WatchReport) -> ExitStatus:
-    """Map a report to the §4.5 / §7.9 exit contract: non-zero only for systemic causes (DB,
-    keyring, any decrypt failure, any CaptchaError/OtpChallengeError, any UNCERTAIN, a failed
-    outcome write). A missed drop and a per-account AuthError exit 0."""
-    raise NotImplementedError(_MU9B)
+    """Map a report to the §4.5 exit contract: non-zero only for systemic causes (DB, keyring,
+    any decrypt failure, any CaptchaError/OtpChallengeError — including one the blind burst
+    swallowed — any UNCERTAIN, the self-deadline, a failed outcome write, a failed operator
+    summary). A missed drop and a per-account AuthError exit 0: they are per-user outcomes,
+    carried by the user email and the operator summary. Pure.
+
+    A ``WatchReport`` maps only its ``systemic_error`` here; the watcher's full §7.9 contract
+    is MU-10b's."""
+    if isinstance(report, WatchReport):
+        return ExitStatus.SYSTEMIC_FAILURE if report.systemic_error else ExitStatus.OK
+    systemic = (
+        report.systemic_error is not None
+        or report.summary_email_failed
+        or report.self_deadline_hit
+        or bool(report.outcome_write_failures)
+        or any(_outcome_is_systemic(o) for o in report.outcomes)
+    )
+    return ExitStatus.SYSTEMIC_FAILURE if systemic else ExitStatus.OK
+
+
+def _outcome_is_systemic(outcome: AccountOutcome) -> bool:
+    return (
+        outcome.decrypt_failed
+        or outcome.uncertain
+        or outcome.captcha_error
+        or outcome.swallowed_captcha_error
+    )
 
 
 async def run_release_event(
@@ -904,6 +932,8 @@ def _finish(
             search_only=account.search_only,
             held_extra_raw_ids=tuple(e.raw_reservation_id for e in extras),
             swallowed_captcha_error=swallowed,
+            auth_error=isinstance(error, AuthError),
+            captcha_error=isinstance(error, CaptchaError),
         ),
         row=RowOutcome(
             row_id=row.id,
