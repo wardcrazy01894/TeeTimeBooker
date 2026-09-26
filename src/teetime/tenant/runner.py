@@ -14,7 +14,7 @@ a self-deadline (start + replicaTimeout - 90 s) writes still-running rows ``need
 MU-9a (the runner core: ``run_release_event``, ``resolve_credentials``,
 ``assert_blind_methods_present``) is IMPLEMENTED and UNWIRED — nothing on the production path
 calls it. Still stubs: ``exit_code_for`` + the CLI + emails (MU-9b), ``LeasedBookingStore``
-(MU-9c), ``run_tenant_watch`` (MU-10b).
+(MU-9c). The tenant watcher (MU-10b) lives in ``tenant.watch_runner``.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from zoneinfo import ZoneInfo
 
 from ..core.adapter import AuthError, CaptchaError, CourseAdapter
 from ..core.clock import Clock
-from ..core.config import BookingCutoffConfig, OneBookingPolicyConfig, SchedulerConfig
+from ..core.config import SchedulerConfig
 from ..core.dst_gate import should_proceed
 from ..core.models import (
     MANAGED_BOOKING_TAG,
@@ -60,6 +60,7 @@ from .models import (
     BookingSource,
     BookingState,
     CourseAccount,
+    CourseAccountId,
     EventRow,
     OwnedBooking,
     OwnedBookingId,
@@ -80,7 +81,6 @@ from .store import RowOutcome, TenantStore
 
 _MU9 = "MULTIUSER_PLAN.md MU-9a"
 _MU9B = "MULTIUSER_PLAN.md MU-9b"
-_MU10 = "MULTIUSER_PLAN.md MU-10b"
 
 log = logging.getLogger(__name__)
 
@@ -170,6 +170,9 @@ class RunReport:
 
 @dataclass(frozen=True, slots=True)
 class WatchReport:
+    """One tenant-watcher run (§7.1, MU-10b ``tenant.watch_runner.run_tenant_watch``). The exit
+    status is ``watch_runner.watch_exit_status`` (§7.9)."""
+
     rows_loaded: int
     searches: int
     logins: int
@@ -178,6 +181,18 @@ class WatchReport:
     lost: tuple[RowId, ...]
     rate_limited: bool
     systemic_error: str | None
+    adopted: tuple[RowId, ...] = ()
+    cancelled_external: tuple[RowId, ...] = ()
+    # BOOKED -> PENDING + needs_reconcile (a bot-caused loss: failed upgrade rebook / vanish M2).
+    reconcile_flagged: tuple[RowId, ...] = ()
+    uncertain: tuple[RowId, ...] = ()  # a book() whose POST may have landed (needs_reconcile)
+    skipped_leased: tuple[RowId, ...] = ()  # another writer's lease, or the row moved (M5)
+    auth_failed_accounts: tuple[CourseAccountId, ...] = ()
+    decrypt_failures: tuple[CourseAccountId, ...] = ()
+    captcha_error: bool = False
+    outcome_write_failures: tuple[RowId, ...] = ()
+    # Owned (held / held_extra) ledger ids on a watched date whose row is not BOOKED (§7.6).
+    orphans: tuple[str, ...] = ()
 
 
 def exit_code_for(report: RunReport | WatchReport) -> ExitStatus:
@@ -990,22 +1005,3 @@ async def _close_pools(pools: Mapping[CourseId, SharedCaptchaPool | None]) -> No
     for pool in pools.values():
         if pool is not None:
             await pool.aclose()
-
-
-async def run_tenant_watch(
-    *,
-    policies: Mapping[CourseId, ReleasePolicy],
-    store: TenantStore,
-    clock: Clock,
-    scheduler: SchedulerConfig,
-    booking_policy: OneBookingPolicyConfig,
-    cutoff: BookingCutoffConfig,
-    keyring: Keyring,
-    adapter_factory: AdapterFactory,
-    notifier: UserNotifier,
-    dry_run: bool,
-) -> WatchReport:
-    """The tenant watcher (§7.1): one query + finalizer + materializer tick; one shared search per
-    (course, date, party_size); per-account login only when ``watcher.needs_login`` says so;
-    snapshot persistence; adoption; then an UNMODIFIED ``WatchOrchestrator`` per acting row."""
-    raise NotImplementedError(_MU10)
