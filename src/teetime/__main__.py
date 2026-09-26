@@ -6,6 +6,8 @@ Commands:
 - watch: perform one cancellation-availability check (M-feature-1).
 - web: serve the multi-user web app (MULTIUSER_PLAN §8; not deployed).
 - tenant-watch: one multi-user tenant-watcher run (MULTIUSER_PLAN §7; not deployed).
+- tenant-run: one multi-user booking run for a release event (MULTIUSER_PLAN §4; not deployed).
+- tenant-plan: print a release event's rows + blind-slot allocation, no ForeUP call.
 """
 
 from __future__ import annotations
@@ -66,6 +68,7 @@ from .courses.teeitup.sydney_marovitz import SydneyMarovitzAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
 from .persistence.in_memory_store import InMemoryStore
+from .tenant.booking_job import HOSTED_COURSES, event_for, plan_booking_event, run_booking_job
 from .tenant.crypto import KEYRING_ENV_VAR, KeyringError, load_keyring_from_env
 from .tenant.in_memory_store import InMemoryTenantStore
 from .tenant.models import CourseAccount
@@ -917,6 +920,101 @@ class _LoggingUserNotifier:
         logging.getLogger(__name__).info(
             "tenant-watch: notify %s for row %s", event.kind, event.row_id
         )
+
+
+@cli.command(name="tenant-run")
+@click.option(
+    "--event",
+    "event_key",
+    required=True,
+    help="Release-event key (e.g. mb0600et): one distinct course timezone + release time.",
+)
+@click.option(
+    "--dry-run",
+    type=bool,
+    default=True,
+    show_default=True,
+    help="If true, run everything except the final booking POSTs (no CAPTCHA solves).",
+)
+@click.option(
+    "--wait/--no-wait",
+    default=None,
+    help="--wait = the real cron path (NTP offset, DST gate, busy-wait to the release). "
+    "--no-wait (default; TEETIME_WAIT env fallback) skips the gate and the claim retry.",
+)
+def tenant_run_cmd(event_key: str, dry_run: bool, wait: bool | None) -> None:
+    """One multi-user booking run for a release event (MULTIUSER_PLAN §4, MU-9b).
+
+    Reads TENANT_CREDS_KEYRING (fail-closed), TWOCAPTCHA_API_KEY (unless dry-run) and the
+    ACS_EMAIL_CONNECTION / ACS_EMAIL_SENDER / OPERATOR_NOTIFY_EMAIL operator-summary settings.
+    Exits non-zero only for systemic causes (§4.5); a missed drop or one user's bad password
+    exits 0. MU-9b: the tenant store is IN-MEMORY (empty) — the Cosmos store is MU-16, the ACA
+    job MU-15a — so this command is not deployed.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+    install_log_redaction()
+    try:
+        event_for(event_key)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    logging.getLogger(__name__).warning(
+        "teetime tenant-run: tenant store is IN-MEMORY (MU-9b) — no rows, nothing is booked; "
+        "the Cosmos store is wired by MU-16. event=%s dry_run=%s",
+        event_key,
+        dry_run,
+    )
+    code = asyncio.run(
+        run_booking_job(
+            event_key=event_key,
+            dry_run=dry_run,
+            wait=_resolve_wait_mode(wait),
+            store=_tenant_store(),
+        )
+    )
+    if code:
+        raise SystemExit(code)
+
+
+@cli.command(name="tenant-plan")
+@click.option("--event", "event_key", required=True, help="Release-event key (e.g. mb0600et).")
+def tenant_plan_cmd(event_key: str) -> None:
+    """Print a release event's pending rows and blind-slot allocation (MU-9b).
+
+    Makes NO ForeUP call, claim, decrypt or CAPTCHA solve: one store read plus the same pure
+    allocation `tenant-run` performs. MU-9b: the tenant store is IN-MEMORY (empty).
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+    install_log_redaction()
+    try:
+        event_for(event_key)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    logging.getLogger(__name__).warning(
+        "teetime tenant-plan: tenant store is IN-MEMORY (MU-9b) — the Cosmos store is MU-16"
+    )
+    plan = asyncio.run(
+        plan_booking_event(event_key=event_key, store=_tenant_store(), clock=RealClock())
+    )
+    for line in plan.render():
+        click.echo(line)
+
+
+def _tenant_store() -> InMemoryTenantStore:
+    """The tenant store until MU-16 wires Cosmos: in memory, with the hosted courses' zones."""
+    return InMemoryTenantStore(
+        course_timezones={cid: cls.release_policy.timezone for cid, cls in HOSTED_COURSES.items()},
+        cutoff=BookingCutoffConfig(),
+    )
 
 
 def main() -> int:

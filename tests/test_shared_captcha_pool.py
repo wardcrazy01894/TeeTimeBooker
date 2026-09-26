@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json as stdlib_json
+import logging
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -591,3 +592,30 @@ async def test_adapter_rejects_pool_of_another_course() -> None:
     async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
         with pytest.raises(ValueError, match="foreup:other"):
             _adapter(client, _SeqProvider(), pool, A)
+
+
+@respx.mock
+async def test_adapter_pooled_token_log_names_the_lease(caplog: pytest.LogCaptureFixture) -> None:
+    """MULTIUSER_PLAN §11.2 line 4: each POST served from the account's lease logs
+    ``ForeUP: using pooled CAPTCHA token (lease <row>: N left)``; a reserve token says so."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(200, json={"id": "C"})
+    )
+    provider = _SeqProvider()
+    pool = _pool(provider)
+    pool.register(A, 3)
+    pool.set_reserve(1)
+    caplog.set_level(logging.INFO)
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client, provider, pool, A)
+        await adapter.prepare_book(None, _request(), count=3)
+        await _spin()
+        for _ in range(4):
+            await adapter.book(_slot(), _request())
+    lines = [m for r in caplog.records if "using pooled CAPTCHA" in (m := r.getMessage())]
+    assert lines == [
+        "ForeUP: using pooled CAPTCHA token (lease row-a: 2 left), posting booking...",
+        "ForeUP: using pooled CAPTCHA token (lease row-a: 1 left), posting booking...",
+        "ForeUP: using pooled CAPTCHA token (lease row-a: 0 left), posting booking...",
+        "ForeUP: using pooled CAPTCHA token (shared reserve), posting booking...",
+    ]

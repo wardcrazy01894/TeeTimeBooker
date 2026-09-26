@@ -1564,6 +1564,16 @@ class TenantStoreConformance:
         assert await s.get_account_unscoped(other.account.id) == other.account
         assert await s.get_account_unscoped(CourseAccountId(uuid4())) is None
 
+    async def test_get_user_unscoped_reads_any_user(self, harness: StoreHarness) -> None:
+        """MU-9b: after WRITE #2 the booking runner mails each row's user, whom it knows only by
+        the account's ``user_id`` — a system read with no session (the web never calls it)."""
+        s = harness.store
+        t = await _tenant(s)
+        other = await _tenant(s, n=1)
+        assert await s.get_user_unscoped(t.user.id) == t.user
+        assert await s.get_user_unscoped(other.user.id) == other.user
+        assert await s.get_user_unscoped(UserId(uuid4())) is None
+
     async def test_rules_needing_materialization(self, harness: StoreHarness) -> None:
         s = harness.store
         t = await _tenant(s)

@@ -791,14 +791,24 @@ class ForeUpAdapter(CourseAdapter):
         if self._captcha_provider is not None:
             # Pop the OLDEST pooled token (FIFO) — own lease, then a shared pool's reserve.
             # Single-use, never returned. Either source counts as pooled for MF1.
+            from_lease = self.captcha_pool_size() > 0
             pooled = self._captcha_pool.pop(self._captcha_lease_key)
             if pooled is not None:
                 body["captchaid"] = pooled
                 from_pool = True
-                _log.info(
-                    "ForeUP: using pooled CAPTCHA token (%d left in pool), posting booking...",
-                    self.captcha_pool_size(),
-                )
+                # Names the lease (MULTIUSER_PLAN §11.2 line 4: the first tenant drops are
+                # verified by one line per blind POST counting its lease down).
+                if from_lease:
+                    _log.info(
+                        "ForeUP: using pooled CAPTCHA token (lease %s: %d left), "
+                        "posting booking...",
+                        self._captcha_lease_key,
+                        self.captcha_pool_size(),
+                    )
+                else:
+                    _log.info(
+                        "ForeUP: using pooled CAPTCHA token (shared reserve), posting booking..."
+                    )
             else:
                 _log.info("ForeUP: requesting CAPTCHA token (this can take 15-30s)...")
                 body["captchaid"] = await self._solve_captcha_inline()

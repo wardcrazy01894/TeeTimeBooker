@@ -411,7 +411,7 @@ why it is one CONCRETE class per capability set and never a `__getattr__` proxy.
 the MU-3 allowlist hook (FakeAdapter's defaults are unchanged); it drives the recorder's race-path
 end-to-end test through the UNMODIFIED `Orchestrator`. **MU-9a is DONE in code, UNWIRED**
 (`tenant/runner.py::run_release_event` + `resolve_credentials` + `assert_blind_methods_present`;
-no CLI yet, nothing on the production path calls it; `exit_code_for`/CLI/emails are MU-9b; the
+nothing on the production path calls it; `exit_code_for`/CLI/emails are MU-9b (below); the
 booker never uses `LeasedBookingStore`): DST gate (pure, before ANY store call) → READ #1 `load_event_rows`
 (+ a Python freeze re-check) → WRITE #1 `claim_rows` (a row another writer leases is re-claimed
 every 15 s until T0−150 s, then skipped) → in-process decrypt with every password registered as an
@@ -433,7 +433,38 @@ the outcome JSON on stdout + `RunReport.outcome_write_failures`. A self-deadline
 replicaTimeout − 90 s) cancels still-running accounts and writes their rows `needs_reconcile`.
 `tenant.allocation.draft_order` now rotates by the WEEK index (`toordinal() // 7`): the raw ordinal
 never rotated at N = 7, because one account's drops recur weekly. Tests:
-`tests/tenant/test_runner{,_race}.py` (VirtualClock throughout). **MU-10a is DONE in
+`tests/tenant/test_runner{,_race}.py` (VirtualClock throughout). **MU-9b is DONE in code,
+UNWIRED to infra** (`teetime tenant-run --event <key> [--dry-run] [--wait/--no-wait]` and
+`teetime tenant-plan --event <key>` over `tenant/booking_job.py`; empty in-memory store with a
+loud WARNING until MU-16, no ACA job until MU-15a). **Exit contract** `runner.exit_code_for`
+(pure, one test per §4.5 row in `tests/tenant/test_runner_exit.py`): non-zero ONLY for systemic
+causes — `systemic_error` (store read/claim incl. a timeout, keyring, missing 2captcha key, a
+pre-T0 prepare failure), any decrypt failure, a `CaptchaError`/`OtpChallengeError` out of
+`orch.run` (`AccountOutcome.captcha_error`) or one the blind burst swallowed (recorder), any
+UNCERTAIN, the self-deadline, a failed WRITE #2, a failed operator summary (SF6). A miss and a
+per-account `AuthError` exit **0** (a deliberate change from the TOML `ClickException`: one user's
+miss must not mark the job Failed). **Notifications:** each account's `Orchestrator` gets a
+`BufferingNotifier` (no I/O near T0); after WRITE #2 `_row_events` maps rows to `UserEvent`s
+(BOOKED / MISSED_DROP / AUTH_FAILED to the user; decrypt / dry-run / NEEDS_RECONCILE / swallowed
+CAPTCHA / held_extra operator-only), `finish_run` sends the operator summary FIRST via
+`deliver_operator_summary` (its returned exit code is authoritative → `summary_email_failed`),
+then the user events through `StoreUserNotifier` (`TenantStore.get_user_unscoped`, a new
+conformance-pinned system read). An unconfigured `ACS_EMAIL_*`/`OPERATOR_NOTIFY_EMAIL` yields an
+`UnconfiguredEmailSender` whose every send fails, so a run with anything to report exits
+non-zero. The `AuthError` → account `auth_failed` flip has no store write yet:
+`RunReport.auth_failed_accounts` carries it (TODO MU-8b). **Bounds (#233 review):** every READ #1
+/ WRITE #1 store call is abandoned after `STORE_CALL_TIMEOUT_S` (20 s) and never runs into the
+race window (clamped to T0 − lead − 1 s when the run started before it); the WRITE #2 writer stops
+at self-deadline + `WRITER_GRACE_S` (30 s) and dumps anything unwritten to stdout. **Wiring:** the
+runner's `pool_factory` may be async — `HostedPoolFactory` runs the site-key pre-flight once per
+course AFTER the claim (a day with no rows never touches ForeUP) and builds a coordinated
+`SharedCaptchaPool` on the real 2captcha provider; `tenant_scheduler()` is the shipped
+`container.toml` scheduler (parity-pinned), and one account through the runner fires the same
+slots at the same offsets with the same 3 + 2 token budget as the TOML `run`
+(`test_single_account_run_matches_todays_burst`). The §11.2 first-drop lines are emitted verbatim
+(`test_first_drop_emits_section_11_2_log_lines`); line 4 required `ForeUpAdapter.book()`'s pooled-
+token INFO line to name the lease (`(lease <key>: N left)`, `(shared reserve)` for a reserve
+token) — a log-text change on the TOML path too, no behavior change. **MU-10a is DONE in
 code, UNWIRED** (`tenant/watcher.py`, the tenant watcher's PURE decision layer — no I/O, no store
 or adapter calls; nothing calls it until the MU-10b runner wiring): `group_rows_for_search`
 (one shared search per `(course, date, party_size)` — party is part of the key because MB
@@ -568,6 +599,8 @@ in `core/` — never directly. This is the cut line for parallel work.
 | `uv run teetime show-config --config config/local.toml` | Print resolved AppConfig (with secrets redacted). |
 | `uv run teetime web --port 8000` | Serve the multi-user web app (MU-12; in-memory store, not deployed; env vars in README). |
 | `uv run teetime tenant-watch --dry-run true` | One multi-user tenant-watcher run (MU-10b; needs `TENANT_CREDS_KEYRING`; empty in-memory store, not deployed). |
+| `uv run teetime tenant-run --event mb0600et --dry-run true --no-wait` | One multi-user booking run for a release event (MU-9b; needs `TENANT_CREDS_KEYRING`, `TWOCAPTCHA_API_KEY` unless dry-run; empty in-memory store, not deployed). Exit non-zero only for systemic causes (§4.5). |
+| `uv run teetime tenant-plan --event mb0600et` | Print a release event's pending rows + blind-slot allocation; no ForeUP call (MU-9b). |
 
 ## Architectural notes (non-obvious)
 
@@ -1419,6 +1452,17 @@ checks — they run on push/tags, not PRs.
 
 **Current required checks:** `test / lint / typecheck`, `docker build`,
 `docker smoke`, `bicep lint`, `secret scan`.
+
+**Local pre-push gate (`.githooks/pre-push`).** Runs every command CI's `test / lint /
+typecheck` job runs (`uv lock --locked`, `ruff check .`, `ruff format --check .`, `mypy`,
+`pytest -m "not integration"`; pip-audit stays CI-only) with `set -euo pipefail`, and BLOCKS the
+push on the first failure. Enable once per clone — worktrees share it:
+`git config core.hooksPath .githooks`. **Why:** PRs kept opening with a failing lint check because
+local checks were read through an output filter (`rtk pipe`) or `| tail -1`, which hide a
+non-zero exit code — a failing `ruff check` looked clean. The hook decides by EXIT CODE only.
+Rules for agents: never `git push --no-verify` for normal work; when YOU run a gate, judge it by
+its exit code, never by filtered/tailed output. `tests/test_prepush_hook.py` fails CI if the hook
+drifts from ci.yml.
 
 ## When in doubt
 

@@ -86,6 +86,11 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   in the batch (like the `ruleday` pointer).
 - **Cosmos `_write_account` create→409→blind upsert has no ETag** (MU-8b review): IfMatch-replace
   with retry, like the rest of the module.
+- **Runner: release leases claimed before a mid-retry claim failure** (MU-9b review should-fix):
+  today they expire at T0+1200 s, blocking the watcher ~20 min; a bounded release (outside the
+  race window) would free them on the next watch cycle.
+- **`summary_email_failed` unset when the run was already non-zero** (MU-9b review): exit code is
+  correct; add a test + set the flag for the double-failure case.
 - **`LeasedBookingStore` fingerprint is single-read** (MU-9c review): add a regression test pinning
   that a version-bumping write between two same-row `request_lock`s on one instance makes the
   second defer, before any refactor moves the watcher onto it.
