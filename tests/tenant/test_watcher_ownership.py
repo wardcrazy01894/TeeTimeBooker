@@ -286,6 +286,27 @@ def test_watch_vanish_excluded_for_ledgered_cancel() -> None:
     )
 
 
+def test_watch_vanish_not_excluded_by_cancelled_user_ledger() -> None:
+    """Pins the deliberate reading of §7.5 (MU-10a note): a same-raw-id ``cancelled_user`` ledger
+    entry does NOT exclude vanish. With no upgrade marker and no cancelled_upgrade/extra entry the
+    verdict stays EXTERNAL_CANCEL (never re-book), not BOT_CAUSED (which would re-book what the
+    user just cancelled). A BOOKED row cannot carry such an entry in a consistent store; if it
+    ever does, this is the safe direction."""
+    r = _booked()
+    misses = [_miss(T2), _miss(T1)]
+    ledger = [owned(r, "R1", state=BookingState.CANCELLED_USER)]
+    assert (
+        classify_missing_booking(r, snapshots=misses, owned=ledger)
+        is MissingBookingVerdict.EXTERNAL_CANCEL
+    )
+    # Alongside a held entry for the same id (the ordinary ledger shape), still external.
+    both = [owned(r, "R1"), owned(r, "R1", state=BookingState.CANCELLED_USER)]
+    assert (
+        classify_missing_booking(r, snapshots=misses, owned=both)
+        is MissingBookingVerdict.EXTERNAL_CANCEL
+    )
+
+
 def test_watch_replacement_is_adopted_not_external_cancel() -> None:
     """A reservation for the SAME (date, party) under another id replaced ours: adopt it (owned
     iff ledgered — the caller's ownership_of decides), never read as an external cancel."""

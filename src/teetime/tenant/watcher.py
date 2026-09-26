@@ -108,8 +108,10 @@ def _local(value: datetime, row: RequestRow) -> datetime:
 
 def _ranking_request(row: RequestRow) -> BookingRequest:
     """The row as a ``BookingRequest`` for ``rank_slots_for_request`` ONLY (never sent to an
-    adapter): synthesized players sized to the party, the row's single window, holes=0 (any) so
-    the pure decision is permissive — a wasted login is harmless, a missed opportunity is not."""
+    adapter): synthesized players sized to the party and the row's single window. ``holes=0``
+    (any) is the only sensible value: ``RequestRow`` has no ``holes`` field, so there is nothing
+    to filter on — and it keeps the pure decision permissive (a wasted login is harmless, a
+    missed opportunity is not)."""
     return BookingRequest(
         request_id=row.request_id,
         target_dates=(row.target_date,),
@@ -231,7 +233,11 @@ def ownership_of(
     ``row.needs_reconcile`` and the tee time EXACTLY matches (same instant, same party) one of
     ``uncertain_tee_times`` — the slots the recorder logged as UNCERTAIN (§4.6; stricter than
     "in window"), which the runner passes along with ``row.booked_tee_time`` (the durable carrier
-    of an UNCERTAIN slot across runs); else UNOWNED. Fail-safe: nothing passed -> UNOWNED."""
+    of an UNCERTAIN slot across runs); else UNOWNED. Fail-safe: nothing passed -> UNOWNED.
+
+    ``owned`` must already be scoped to the row's (account, date) — the ``list_owned_bookings
+    (account_id, target_date=...)`` result — so a raw id from another account or date can never
+    match; this function does not re-check either."""
     raw = reservation.confirmation_code.removeprefix(MANAGED_BOOKING_TAG)
     if any(o.raw_reservation_id == raw and o.state in _LIVE_LEDGER_STATES for o in owned):
         return Ownership.OWNED
