@@ -18,6 +18,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import click
+import uvicorn
+from fastapi import FastAPI
 
 from .core.adapter import CourseAdapter, RateLimitError
 from .core.booking_day_gate import should_book_today
@@ -25,6 +27,7 @@ from .core.clock import RealClock, measure_ntp_offset
 from .core.config import (
     SECRET_EXTRA_KEYS,
     AppConfig,
+    BookingCutoffConfig,
     MissingEnvVarError,
     SchedulerConfig,
     load,
@@ -41,7 +44,7 @@ from .core.models import (
     derive_request_id,
 )
 from .core.orchestrator import Orchestrator
-from .core.redaction import install_log_redaction
+from .core.redaction import install_log_redaction, register_secret_literals
 from .core.target_date import (
     next_occurrences_within_horizon,
     weekday_from_name,
@@ -58,6 +61,8 @@ from .courses.teeitup.sydney_marovitz import SydneyMarovitzAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
 from .persistence.in_memory_store import InMemoryStore
+from .tenant.in_memory_store import InMemoryTenantStore
+from .web.app import WebConfigError, WebSettings, create_app, load_web_settings
 
 # Registry mapping TOML adapter names to adapter classes.
 # _build_adapters() resolves every [[courses]] entry through this dict.
@@ -755,6 +760,67 @@ def _scope_request_to_date(
         target_dates=(target_date,),
         time_windows=_windows_for_date(cfg, target_date),
     )
+
+
+_WEB_DEFAULT_PORT = 8000
+
+
+@cli.command(name="web")
+@click.option("--host", default="0.0.0.0", show_default=True, help="Interface to bind.")
+@click.option(
+    "--port",
+    type=int,
+    default=None,
+    help=f"TCP port. Defaults to $PORT, else {_WEB_DEFAULT_PORT}.",
+)
+def web_cmd(host: str, port: int | None) -> None:
+    """Serve the multi-user web app (MULTIUSER_PLAN §8) with uvicorn.
+
+    Reads its settings from the environment (see `teetime.web.app.WEB_ENV_VARS`) and fails
+    closed on anything missing. MU-12: the tenant store is IN-MEMORY, so users and invites
+    do not survive a restart — the Cosmos store (MU-8b) is wired by MU-16, and this command
+    is not deployed until MU-15a.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+    install_log_redaction()
+    log = logging.getLogger(__name__)
+    try:
+        settings = load_web_settings()
+    except WebConfigError as e:
+        raise click.ClickException(str(e)) from e
+    # E7: exact-literal masking for the secrets that have no recognisable shape (§9.4).
+    register_secret_literals(_web_secret_literals(settings))
+    log.warning(
+        "teetime web: tenant store is IN-MEMORY (MU-12) — users/invites reset on restart; "
+        "providers=%s dry_run=%s",
+        ",".join(settings.enabled_providers),
+        settings.dry_run,
+    )
+    store = InMemoryTenantStore(course_timezones={}, cutoff=BookingCutoffConfig())
+    app = create_app(settings, store=store, clock=RealClock())
+    resolved_port = port if port is not None else int(os.environ.get("PORT") or _WEB_DEFAULT_PORT)
+    _serve_web(app, host=host, port=resolved_port)
+
+
+def _web_secret_literals(settings: WebSettings) -> list[str]:
+    literals = [settings.session_secret]
+    for provider in settings.enabled_providers:
+        cfg = settings.provider(provider)
+        if cfg is not None:
+            literals.append(cfg.client_secret)
+    return literals
+
+
+def _serve_web(app: FastAPI, *, host: str, port: int) -> None:
+    """Run uvicorn. `log_config=None` keeps the basicConfig + redaction filter above in charge
+    (uvicorn would otherwise install its own handlers, which the filter is not attached to)."""
+
+    uvicorn.run(app, host=host, port=port, log_config=None, proxy_headers=True)
 
 
 def main() -> int:

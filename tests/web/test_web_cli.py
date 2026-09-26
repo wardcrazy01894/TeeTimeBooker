@@ -27,7 +27,10 @@ def test_web_entrypoint_installs_redaction_after_basicconfig() -> None:
     """Source-position pin, like the CLI test in tests/test_log_redaction.py: the web command
     must call logging.basicConfig( and THEN install_log_redaction() — installing first attaches
     the filter to no handler and leaves the httpx/authlib request lines unredacted."""
-    src = inspect.getsource(entry.web_cmd)
+    # `web_cmd` is a click.Command; the decorated function body lives on `.callback`.
+    callback = entry.web_cmd.callback
+    assert callback is not None
+    src = inspect.getsource(callback)
     config = src.index("logging.basicConfig(")
     install = src.index("install_log_redaction()")
     assert config < install
