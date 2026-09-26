@@ -29,7 +29,8 @@ from ..core.models import CourseId
 from ..tenant.crypto import Keyring
 from ..tenant.models import CourseAccountId, RowId, RuleId, User
 from ..tenant.runner import AdapterFactory
-from . import auth, services
+from . import auth, group_services, services
+from .booking_form import MAX_OPTIONS, parse_ranked_form
 from .services import (
     RULE_EDIT_HINT,
     WEEKDAY_NAMES,
@@ -63,6 +64,9 @@ _NOTICES = {
     "account_verified": "Course account re-verified: the bot will log in with it again.",
     "refreshed": "Reservations refreshed from the course.",
     "cancelled": "Tee time cancelled.",
+    "group_saved": "Saved. The bot books the highest-ranked option that is available.",
+    "group_rule_saved": "Weekly booking saved and its dates added.",
+    "price_saved": "Default price saved.",
 }
 _STATUS_LABELS = {
     ("cancelled", "external"): "cancelled at the course",
@@ -89,6 +93,7 @@ class _Pages:
             "notice": _NOTICES.get(request.query_params.get("notice", "")),
             "weekdays": WEEKDAY_NAMES,
             "status_labels": _STATUS_LABELS,
+            "option_slots": range(1, MAX_OPTIONS + 1),
         }
 
     async def dashboard(self, request: Request, user: User) -> Response:
@@ -184,6 +189,7 @@ def register_page_routes(app: FastAPI, ctx: "_Ctx", *, current_user: _Dependency
     _register_rule_routes(app, pages, current_user=current_user)
     _register_row_routes(app, pages, current_user=current_user)
     _register_account_routes(app, pages, current_user=current_user)
+    _register_booking_routes(app, pages, current_user=current_user)
 
 
 def _register_read_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependency) -> None:
@@ -397,3 +403,80 @@ def _register_account_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
             return "/dates?notice=cancelled"
 
         return await pages.act(request, user, action, on_error=pages.dates)
+
+
+def _partial(
+    failures: tuple[group_services.GroupFailure, ...],
+    saved: int,
+    course_of: dict[CourseAccountId, CourseId],
+) -> ActionRefusedError:
+    """A group saved for SOME courses (§16.2: not one transaction) re-renders the page with what
+    was not saved; the saved rows show in the list."""
+    detail = "; ".join(f"{course_of.get(f.account_id, '?')}: {f.message}" for f in failures)
+    return ActionRefusedError(
+        f"Saved for {saved} of {saved + len(failures)} courses. Not saved: {detail}"
+    )
+
+
+def _register_booking_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependency) -> None:
+    """MU-R3 (§16.1): the ranked booking form (one date or every week) and the per-account
+    default price. Account ids in the form are resolved against the SESSION user's accounts."""
+    CurrentUser = Annotated[User, Depends(current_user)]  # noqa: N806 — type alias
+    ctx = pages.ctx
+
+    async def own_courses(user: User) -> dict[CourseAccountId, CourseId]:
+        accounts = await services.list_accounts(ctx.store, user_id=user.id)
+        return {a.id: a.course_id for a in accounts}
+
+    @app.post("/bookings/date")
+    async def book_date(request: Request, user: CurrentUser) -> Response:
+        async def action(form: dict[str, str]) -> str:
+            courses = await own_courses(user)
+            choice = parse_ranked_form(form, own_accounts=courses)
+            report = await group_services.create_group_one_off(
+                ctx.store,
+                user_id=user.id,
+                target_date=services.parse_date(form),
+                choice=choice,
+                clock=ctx.clock,
+            )
+            if report.failures:
+                raise _partial(report.failures, len(report.rows), courses)
+            return "/dates?notice=group_saved"
+
+        return await pages.act(request, user, action, on_error=pages.dates)
+
+    @app.post("/bookings/weekly")
+    async def book_weekly(request: Request, user: CurrentUser) -> Response:
+        async def action(form: dict[str, str]) -> str:
+            courses = await own_courses(user)
+            choice = parse_ranked_form(form, own_accounts=courses)
+            report = await group_services.create_group_rule(
+                ctx.store,
+                user_id=user.id,
+                weekday=services.parse_weekday(form),
+                choice=choice,
+                policies=ctx.policies,
+                cutoff=ctx.cutoff,
+                clock=ctx.clock,
+            )
+            if report.failures:
+                raise _partial(report.failures, len(report.rules), courses)
+            return "/rules?notice=group_rule_saved"
+
+        return await pages.act(request, user, action, on_error=pages.rules)
+
+    @app.post("/accounts/{id}/price")
+    async def set_default_price(request: Request, user: CurrentUser, id: str) -> Response:
+        aid = CourseAccountId(services.parse_id(id))
+
+        async def action(form: dict[str, str]) -> str:
+            await group_services.set_default_price(
+                ctx.store,
+                user_id=user.id,
+                account_id=aid,
+                raw_price=form.get("default_max_price", ""),
+            )
+            return "/accounts?notice=price_saved"
+
+        return await pages.act(request, user, action, on_error=pages.accounts)

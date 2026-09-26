@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, error_block %}
+{% from "_macros.html" import hhmm, error_block, ranked_form, windows %}
 {% block title %}Rules · TeeTimeBooker{% endblock %}
 
 {% macro rule_fields(weekday, earliest, latest, party) %}
@@ -21,6 +21,10 @@
 {% for v in rules %}
 <section class="rule{% if not v.rule.active %} inactive{% endif %}">
   <h2>{{ v.weekday_name }}s at {{ v.account.course_id }}{% if not v.rule.active %} (inactive){% endif %}</h2>
+  {% if v.rule.group_id or v.rule.options|length > 1 %}
+  <p>Options {{ windows(v.rule.options) }} (ranks {% for o in v.rule.options %}{{ o.rank }}{% if not loop.last %}, {% endif %}{% endfor %}) · party of {{ v.rule.party_size }}{% if v.rule.max_price is not none %} · up to ${{ v.rule.max_price }} per player{% endif %}</p>
+  <p class="hint">Part of a ranked weekly booking: deactivating it deactivates every course of that booking. To change the options, deactivate it and save a new weekly booking.</p>
+  {% else %}
   <form method="post" action="/rules/{{ v.rule.id }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="version" value="{{ v.rule.version }}">
@@ -28,6 +32,7 @@
     {{ rule_fields(v.rule.weekday, hhmm(v.rule.options[0].earliest), hhmm(v.rule.options[0].latest), v.rule.party_size) }}
     <button type="submit">Save</button>
   </form>
+  {% endif %}
   <form method="post" action="/rules/{{ v.rule.id }}" class="inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="version" value="{{ v.rule.version }}">
@@ -43,19 +48,10 @@
 {% endfor %}
 
 <section>
-  <h2>New rule</h2>
+  <h2>New weekly booking</h2>
   {% if accounts %}
-  <p class="hint">One active rule per day per course. The bot books each matching date when it opens.</p>
-  <form method="post" action="/rules">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>Course
-      <select name="account_id">
-        {% for a in accounts %}<option value="{{ a.id }}">{{ a.course_id }}</option>{% endfor %}
-      </select>
-    </label>
-    {{ rule_fields(5, "08:00", "10:00", 2) }}
-    <button type="submit">Create rule</button>
-  </form>
+  <p class="hint">One weekly booking per day per course. The bot books each matching date when it opens.</p>
+  {{ ranked_form(csrf_token, accounts, "/bookings/weekly", option_slots, weekdays, true) }}
   {% else %}
   <p class="placeholder">Connect a course account first.</p>
   {% endif %}

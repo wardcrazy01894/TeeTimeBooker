@@ -170,16 +170,25 @@ uv run teetime web --host 127.0.0.1 --port 8000
 
 Pages (MU-13, plain HTML forms, no JavaScript): **`/`** is the dashboard (your dates for the
 next 21 days with status, the booked tee time and when the course account was last checked:
-"as of 07:53"). **`/rules`** creates, edits and deactivates standing weekly rules (course, day,
-window, party size); edits apply from the next drop. **`/dates`** adds a one-off date, skips or
-unskips a rule's date, withdraws a one-off, re-requests a date after a cancel, and (MU-14)
+"as of 07:53"). **Booking form (MU-R3):** `/dates` ("Book a date") and `/rules`
+("New weekly booking") share ONE ranked form — party size, up to 6 (course, time window) options
+each with a rank (courses may repeat and interleave; ranks are renumbered 1..N), and a max price per
+player per course (blank = that course's default, $100 unless changed on `/accounts`). It saves one
+row (or rule) per course sharing a group; the bot books the best-ranked option available, holds one
+tee time per day, and moves to a better-ranked option if one opens. If a course cannot be saved
+(e.g. it already has a request for that date) the others are still saved and the page says which
+one was not. Skipping, withdrawing or deactivating acts on every course of the group, and a booked
+date shows which option it got. **`/rules`** lists standing weekly rules; a plain single-window rule
+can still be edited in place (edits apply from the next drop), a ranked one is changed by
+deactivating it and saving a new one. **`/dates`** skips or unskips a rule's date, withdraws a one-off, re-requests a date after a cancel, and (MU-14)
 **cancels a booked tee time**: the site takes a 60 s lease on that date (refused while the bot is
 booking it), logs in to the course once, requires a trustworthy reservation list, cancels, and
 records the cancel. A booking the bot didn't make needs an extra confirm tick, and a dry-run site
 never cancels. **`/accounts`** (MU-14) connects your course login: the site checks it with ONE
 live login (never retried; at most 5 attempts per user and 3 per login per hour, 30 site-wide,
 and a 15-minute pause after 2 attempts on one login), then stores the password AES-GCM-encrypted
-and never shows it again. It also re-verifies a login the course rejected, and **Refresh from
+and never shows it again. It also sets the account's default max price per player,
+re-verifies a login the course rejected, and **Refresh from
 course** re-reads your reservations live (cached for 2 minutes, at most 6 per account per hour;
 a list the course returned unreadably is never saved). Connect / refresh / cancel need the
 credential keyring: with `TENANT_CREDS_KEYRING` set `teetime web` wires it (plus the hosted-course

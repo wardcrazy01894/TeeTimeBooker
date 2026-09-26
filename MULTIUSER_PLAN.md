@@ -1551,7 +1551,7 @@ once their dependencies land.
 | **MU-20** | Remove the TOML CLI (if Q6 = remove) | `__main__`, `config/` | MU-19 + 4 weekends | – | README, CLAUDE.md |
 | **MU-R1** | Ranked options + per-course price: model, store, Cosmos mapping (§16.2, §16.5) | `tenant/models.py`, `tenant/store.py`, `tenant/in_memory_store.py`, `tenant/cosmos/**` | MU-8b, MU-14 | `test_options_rank_unique_and_contiguous`, `test_group_downgrade_edge_allowlisted`, `test_old_schema_row_reads_as_single_option`, conformance additions | CLAUDE.md tenant bullets |
 | **MU-R2** | Group floor, `achieved_rank`, `collapse_group`, cross-course upgrade (§16.3/§16.4) | `tenant/groups.py`, `tenant/runner.py`, `tenant/watch_runner.py`, `tenant/materialize.py` | MU-R1, MU-9b, MU-10b | `test_achieved_rank_matches_engine_first_match`, `test_runner_collapses_same_drop_group_post_race`, `test_watcher_collapse_retries_failed_cancel`, `test_cancelled_group_not_external_cancel`, `test_group_floor_blocks_worse_rebook` | CLAUDE.md, §16 status |
-| **MU-R3** | The §16.1 form, account default price, dashboard group view | `web/**` | MU-R1, MU-13 | `test_ranked_form_roundtrip`, `test_price_prefilled_from_account_default`, `test_group_action_partial_failure_reported` | README web section |
+| **MU-R3** ✅ | The §16.1 form, account default price, dashboard group view | `web/**` | MU-R1, MU-13 | built as `tests/web/test_booking_form.py`, `test_group_services.py`, `test_web_ranked_pages.py` (incl. `test_book_a_date_partial_save_says_which_course_was_not_saved`, `test_account_default_price_can_be_changed_from_the_accounts_page`) | README web section |
 
 Critical path: MU-5 → MU-9a → MU-9b → MU-10b → MU-15a → MU-15b → MU-16 → MU-17 → MU-18. MU-R1..R3 (§16) run beside MU-15a..MU-16 and should land before MU-17 so the dev cutover exercises them. **Only
 MU-8b and MU-15b depend on Spike S-M9** (async batch + IfMatch semantics). Everything else
@@ -1733,9 +1733,9 @@ DONE in code: price cap on every tenant engine request, `tenant/groups.py` (`boo
 the booker, `tenant-plan` and the watcher, the booker's post-WRITE #2 collapse pass, and the
 watcher's end-of-run collapse (which is also the second half of a cross-course upgrade: the
 better-ranked sibling books through the normal path, then the collapse cancels the worse one).
-MU-R3 (the web form) pending.** Build notes: `booked_rank` is COMPUTED (first match of the
+MU-R3 (the web form) DONE in code: `parse_ranked_form` + `web/group_services.py` (`create_group_one_off` / `create_group_rule` / `set_default_price`), group-wide skip / withdraw / deactivate, `booked_rank` on the dashboard. Deviation: the per-course price box is blank with the account default as its placeholder rather than pre-filled, because a pre-filled value would be stored as a frozen override and no longer follow the account default. No script is allowed (CSP), so ordering is a rank number per option instead of move up / down buttons.** Build notes: `booked_rank` is COMPUTED (first match of the
 course-local tee time), not stored, since a booked row's options never change; the group read is
-`TenantStore.rows_in_groups` (the plan's `list_group`); `create_group` lands with MU-R3. The
+`TenantStore.rows_in_groups` (the plan's `list_group`); `create_group` landed with MU-R3 as `web/group_services.py`. The
 booker's collapse pass re-reads the group after WRITE #2 (the rows' new versions are the lease
 fingerprints), so it is a read, not the "no read" the round-2 text says; it is off the T0 path.
 
