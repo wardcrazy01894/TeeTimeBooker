@@ -17,17 +17,26 @@ STUB — connect / refresh / cancel are MULTIUSER_PLAN MU-14.
 
 from __future__ import annotations
 
+import hashlib
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+from ..core.adapter import (
+    AuthStateReportable,
+    CourseAdapter,
+    RateLimitError,
+    ReservationSnapshotHealth,
+)
 from ..core.clock import Clock
 from ..core.config import BookingCutoffConfig
-from ..core.models import CourseId
+from ..core.models import CourseCredentials, CourseId
+from ..core.redaction import register_secret_literals
 from ..core.release_policy import ReleasePolicy
-from ..tenant.crypto import Keyring
+from ..tenant.crypto import Keyring, credential_aad, encrypt_password
 from ..tenant.materialize import (
     MIN_HORIZON_DAYS,
     MaterializeReport,
@@ -38,6 +47,8 @@ from ..tenant.materialize import (
 from ..tenant.models import (
     ACTIVE_ROW_STATUSES,
     USER_WITHDRAW_REASON,
+    AccountProvenance,
+    AccountStatus,
     Actor,
     CourseAccount,
     CourseAccountId,
@@ -50,6 +61,7 @@ from ..tenant.models import (
     StandingRule,
     TransitionRefusedError,
     UserId,
+    derive_account_id,
     row_is_frozen,
 )
 from ..tenant.runner import AdapterFactory
@@ -57,10 +69,12 @@ from ..tenant.store import (
     RowLeaseError,
     TenantNotFoundError,
     TenantStore,
+    UniquenessConflictError,
     VersionConflictError,
 )
 
 _MU14 = "MULTIUSER_PLAN.md MU-14"
+log = logging.getLogger(__name__)
 
 WEEKDAY_NAMES: tuple[str, ...] = (
     "Monday",
@@ -638,6 +652,217 @@ async def withdraw_row(
 # --- MU-14 --------------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class ProbeLimits:
+    """The §8.4 login-probe limits, all DB-backed (``probe`` docs, per-item TTL 2 h).
+
+    The lockout is the conservative form of "2 consecutive failures for a username -> 15 min
+    lockout": ANY ``lockout_probes`` probes of the username inside ``lockout_window_s`` lock it,
+    because ``count_login_probes`` counts probes and does not read their outcome. It can only
+    refuse MORE often than the plan's rule (never less), which is the safe direction while the
+    ForeUP lockout threshold is unknown (Spike S-M6). ``refreshes_per_account_per_hour`` is
+    the §8.6 hard cap on live refreshes."""
+
+    per_user_per_hour: int = 5
+    per_username_per_hour: int = 3
+    site_per_hour: int = 30
+    lockout_probes: int = 2
+    lockout_window_s: int = 15 * 60
+    refreshes_per_account_per_hour: int = 6
+
+
+class RateLimitedError(ActionRefusedError):
+    """A login-probe or refresh limit is reached (the web's 429). No ForeUP call was made."""
+
+
+_HOUR = timedelta(hours=1)
+_LOGIN_FAILED = (
+    "Login failed: the course did not accept that username and password. Nothing was saved."
+)
+_PROBE_THROTTLED = "Too many login attempts for now. Please try again later."
+
+
+def probe_username_hash(course_id: CourseId, username: str) -> str:
+    """The ``username_hash`` a probe is recorded under: SHA-256 of ``probe|<course>|<casefolded
+    username>``. The username itself is PII and is never stored on a probe doc (§9.3)."""
+    key = f"probe|{course_id}|{username.strip().casefold()}"
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def refresh_probe_hash(account_id: CourseAccountId) -> str:
+    """The probe key a live REFRESH is recorded under, so the §8.6 per-account cap is DB-backed
+    through the existing probe docs (no new store method) while staying apart from every
+    username's connect budget."""
+    return hashlib.sha256(f"refresh|{account_id}".encode()).hexdigest()
+
+
+async def _connect_probes_by_user(store: TenantStore, *, user_id: UserId, since: datetime) -> int:
+    """The user's CONNECT probes: every probe of theirs minus their accounts' refreshes."""
+    total = await store.count_login_probes(user_id=user_id, username_hash=None, since=since)
+    for account in await store.list_accounts_for_user(user_id):
+        total -= await store.count_login_probes(
+            user_id=user_id, username_hash=refresh_probe_hash(account.id), since=since
+        )
+    return total
+
+
+async def _check_probe_limits(
+    store: TenantStore,
+    *,
+    user_id: UserId,
+    username_hash: str,
+    limits: ProbeLimits,
+    now: datetime,
+) -> None:
+    """Rate-check FIRST (§8.4), before any adapter is built. Raises ``RateLimitedError``."""
+    since = now - _HOUR
+    lockout_since = now - timedelta(seconds=limits.lockout_window_s)
+    by_user = await _connect_probes_by_user(store, user_id=user_id, since=since)
+    by_username = await store.count_login_probes(
+        user_id=None, username_hash=username_hash, since=since
+    )
+    recent = await store.count_login_probes(
+        user_id=None, username_hash=username_hash, since=lockout_since
+    )
+    site = await store.count_login_probes(user_id=None, username_hash=None, since=since)
+    if (
+        by_user >= limits.per_user_per_hour
+        or by_username >= limits.per_username_per_hour
+        or recent >= limits.lockout_probes
+        or site >= limits.site_per_hour
+    ):
+        log.info("web: login probe refused by rate limit (user %s)", user_id)
+        raise RateLimitedError(_PROBE_THROTTLED)
+
+
+def _register_password(password: str) -> None:
+    """E7 (§9.4): mask the plaintext in every log line for the rest of the process."""
+    if register_secret_literals([password]) == 0:
+        log.warning("web: a submitted password is shorter than the log-mask floor")
+
+
+def _login_established(adapter: CourseAdapter) -> bool:
+    return adapter.is_authenticated if isinstance(adapter, AuthStateReportable) else True
+
+
+def _snapshot_trusted(adapter: CourseAdapter) -> bool:
+    return adapter.snapshot_trusted if isinstance(adapter, ReservationSnapshotHealth) else True
+
+
+async def _close(adapter: CourseAdapter) -> None:
+    try:
+        await adapter.aclose()
+    except Exception as exc:
+        log.warning("web: adapter close failed (%s)", type(exc).__name__)
+
+
+async def _probe_login(
+    *,
+    account: CourseAccount,
+    password: str,
+    adapter_factory: AdapterFactory,
+) -> bool:
+    """ONE live ``authenticate`` on a throwaway adapter (no shared CAPTCHA pool, ``dry_run``
+    so it can never book). NEVER retried (PLAN §8.1/§12): any exception is a failed probe.
+    Logs the exception CLASS only (a message could echo the login)."""
+    adapter = adapter_factory(
+        course_id=account.course_id, account=account, pool=None, lease_key=None, dry_run=True
+    )
+    try:
+        await adapter.authenticate(CourseCredentials(username=account.username, password=password))
+        return _login_established(adapter)
+    except RateLimitError as exc:
+        log.warning("web: login probe for account %s rate-limited by the course", account.id)
+        raise RateLimitedError(
+            "The course is limiting logins right now. Please try again later."
+        ) from exc
+    except Exception as exc:
+        log.warning("web: login probe for account %s failed (%s)", account.id, type(exc).__name__)
+        return False
+    finally:
+        await _close(adapter)
+
+
+async def _audit(
+    store: TenantStore,
+    *,
+    user_id: UserId,
+    action: str,
+    row_id: RowId | None,
+    detail: Mapping[str, object],
+    at: datetime,
+) -> None:
+    """Best-effort audit (the ``global`` partition can't join an account batch, §8.5 step 5):
+    a failure is logged at ERROR and never undoes or blocks what was already committed."""
+    try:
+        await store.append_audit(
+            user_id=user_id, action=action, row_id=row_id, detail=detail, at=at
+        )
+    except Exception as exc:
+        log.error("web: audit %s not written (%s)", action, type(exc).__name__)
+
+
+async def _probe_and_store(
+    store: TenantStore,
+    *,
+    user_id: UserId,
+    base: CourseAccount,
+    password: str,
+    keyring: Keyring,
+    adapter_factory: AdapterFactory,
+    clock: Clock,
+    limits: ProbeLimits,
+) -> CourseAccount:
+    """Shared by connect and re-verify: rate-check -> one probe -> record it -> on success
+    encrypt with AAD and upsert. The plaintext is registered (E7) before anything else."""
+    _register_password(password)
+    username_hash = probe_username_hash(base.course_id, base.username)
+    await _check_probe_limits(
+        store, user_id=user_id, username_hash=username_hash, limits=limits, now=clock.now_utc()
+    )
+    ok = False
+    try:
+        ok = await _probe_login(account=base, password=password, adapter_factory=adapter_factory)
+    finally:
+        await store.record_login_probe(
+            user_id=user_id,
+            course_id=base.course_id,
+            username_hash=username_hash,
+            ok=ok,
+            at=clock.now_utc(),
+        )
+    if not ok:
+        raise ActionRefusedError(_LOGIN_FAILED)
+    now = clock.now_utc()
+    verified = replace(
+        base,
+        key_id=keyring.active_kid,
+        status=AccountStatus.ACTIVE,
+        consecutive_soft_auth_failures=0,
+        verified_at=now,
+    )
+    account = replace(
+        verified,
+        password_ciphertext=encrypt_password(keyring, password, aad=credential_aad(verified)),
+    )
+    try:
+        await store.upsert_account(account)
+    except UniquenessConflictError as e:
+        raise ActionRefusedError(
+            "That course login can't be connected here: it is already connected, or this "
+            "course has no free account places."
+        ) from e
+    await _audit(
+        store,
+        user_id=user_id,
+        action="account_verified",
+        row_id=None,
+        detail={"course_account_id": str(account.id), "course_id": str(account.course_id)},
+        at=now,
+    )
+    return account
+
+
 async def connect_account(
     store: TenantStore,
     *,
@@ -648,11 +873,69 @@ async def connect_account(
     keyring: Keyring,
     adapter_factory: AdapterFactory,
     clock: Clock,
+    limits: ProbeLimits,
 ) -> CourseAccount:
     """Rate-check -> live ``authenticate`` on a throwaway adapter -> require
     ``is_authenticated`` -> encrypt with AAD -> store (``provenance=user_supplied``). On failure
-    nothing is stored and a generic error is shown (§8.4)."""
-    raise NotImplementedError(_MU14)
+    nothing is stored and a generic error is shown (§8.4). The account id is derived from the
+    SESSION user, so a connect can never write another user's account."""
+    username = username.strip()
+    if not username:
+        raise InvalidInputError("username is required")
+    if not password:
+        raise InvalidInputError("password is required")
+    account_id = derive_account_id(user_id, course_id)
+    existing = await store.get_account(account_id, user_id=user_id)
+    base = CourseAccount(
+        id=account_id,
+        user_id=user_id,
+        course_id=course_id,
+        provenance=AccountProvenance.USER_SUPPLIED,
+        username=username,
+        password_ciphertext="",
+        key_id=keyring.active_kid,
+        status=AccountStatus.ACTIVE,
+        otp_mailbox=existing.otp_mailbox if existing is not None else None,
+    )
+    return await _probe_and_store(
+        store,
+        user_id=user_id,
+        base=base,
+        password=password,
+        keyring=keyring,
+        adapter_factory=adapter_factory,
+        clock=clock,
+        limits=limits,
+    )
+
+
+async def reverify_account(
+    store: TenantStore,
+    *,
+    user_id: UserId,
+    account_id: CourseAccountId,
+    password: str,
+    keyring: Keyring,
+    adapter_factory: AdapterFactory,
+    clock: Clock,
+    limits: ProbeLimits,
+) -> CourseAccount:
+    """Re-probe an existing account (typically after ``auth_failed``, §7.5) with a freshly
+    typed password: the same limits and single probe as connect; on success the ciphertext is
+    replaced and the account is ACTIVE again with its soft-failure count reset."""
+    if not password:
+        raise InvalidInputError("password is required")
+    account = await _own_account(store, user_id=user_id, account_id=account_id)
+    return await _probe_and_store(
+        store,
+        user_id=user_id,
+        base=account,
+        password=password,
+        keyring=keyring,
+        adapter_factory=adapter_factory,
+        clock=clock,
+        limits=limits,
+    )
 
 
 async def refresh_account(
