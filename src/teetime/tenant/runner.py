@@ -24,7 +24,7 @@ import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, time, timedelta
 from enum import IntEnum
 from typing import Any, Protocol
@@ -51,7 +51,6 @@ from ..core.orchestrator import Orchestrator
 from ..core.redaction import register_secret_literals
 from ..core.release_policy import ReleasePolicy, target_date_for
 from ..courses.foreup.token_pool import LeaseKey, SharedCaptchaPool
-from ..notifications.notifier import NoopNotifier
 from ..persistence.in_memory_store import InMemoryStore
 from .allocation import allocate_blind_slots, draft_order
 from .crypto import Keyring, credential_aad, decrypt_password
@@ -60,6 +59,7 @@ from .models import (
     BookingSource,
     BookingState,
     CourseAccount,
+    CourseAccountId,
     EventRow,
     OwnedBooking,
     OwnedBookingId,
@@ -68,7 +68,15 @@ from .models import (
     RowStatus,
     row_is_frozen,
 )
-from .notify import UserNotifier
+from .notify import (
+    USER_FACING_KINDS,
+    BufferingNotifier,
+    EmailSender,
+    UserEvent,
+    UserEventKind,
+    UserNotifier,
+    deliver_operator_summary,
+)
 from .recording import (
     BlindCapableRecordingAdapter,
     RecordedBook,
@@ -182,6 +190,19 @@ class RunReport:
     # Rows whose WRITE #2 was refused or failed after retries (§4.5: non-zero exit, MU-9b). Their
     # outcome JSON was printed to stdout and the watcher reconciles them from live.
     outcome_write_failures: tuple[RowId, ...] = ()
+    # Accounts whose login raised AuthError this run. §4.5 flips them to ``auth_failed``, but no
+    # TenantStore write does that yet — TODO(MU-8b): add the account-status write and call it
+    # from ``run_release_event``; until then the operator summary carries these ids.
+    auth_failed_accounts: tuple[CourseAccountId, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorSink:
+    """Where the operator summary goes (§8.7): ``OPERATOR-NOTIFY-EMAIL`` via an
+    ``EmailSender`` (ACS in the job)."""
+
+    sender: EmailSender
+    to: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,8 +263,79 @@ async def run_release_event(
     pool_factory: PoolFactory | None = None,
     replica_timeout_s: float = BOOKING_REPLICA_TIMEOUT_S,
     attempt_id: str | None = None,
+    operator: OperatorSink | None = None,
 ) -> RunReport:
-    """The tenant booking job (§4). ``scheduler`` supplies the race knobs
+    """The tenant booking job (§4): ``_book_event`` (the race + WRITE #2), then the emails.
+
+    After the writes, every row becomes ``UserEvent``s (``_row_events``, from what its
+    ``BufferingNotifier`` collected): the operator summary (all of them plus the operator-only
+    lines) is delivered FIRST via ``deliver_operator_summary`` — its returned exit code is
+    authoritative, so a failed send marks ``summary_email_failed`` (SF6) — then the user-facing
+    ones go through ``notifier``. The summary goes first so a slow mail backend can never let
+    the replica timeout eat it; user sends are concurrent and a failure is logged and dropped
+    (it never masks an outcome). ``operator=None`` (tests) sends no summary."""
+    report, events = await _book_event(
+        event=event,
+        policies=policies,
+        store=store,
+        clock=clock,
+        scheduler=scheduler,
+        keyring=keyring,
+        adapter_factory=adapter_factory,
+        dry_run=dry_run,
+        wait=wait,
+        post_burst_quiet_s=post_burst_quiet_s,
+        pool_factory=pool_factory,
+        replica_timeout_s=replica_timeout_s,
+        attempt_id=attempt_id,
+    )
+    return await finish_run(report, events, notifier=notifier, operator=operator, clock=clock)
+
+
+async def finish_run(
+    report: RunReport,
+    events: Sequence[UserEvent],
+    *,
+    notifier: UserNotifier,
+    operator: OperatorSink | None,
+    clock: Clock,
+) -> RunReport:
+    """Operator summary (authoritative exit code, SF6), then the user-facing events. Also used
+    by the CLI for a run that failed before ``run_release_event`` (e.g. the keyring)."""
+    at = clock.now_utc()
+    if operator is not None:
+        before = exit_code_for(report)
+        final = await deliver_operator_summary(
+            operator.sender,
+            to=operator.to,
+            events=[*events, *_report_lines(report, at=at)],
+            exit_code=int(before),
+            at=at,
+        )
+        if final != before:
+            report = replace(report, summary_email_failed=True)
+    user_events = [e for e in events if e.kind in USER_FACING_KINDS]
+    await asyncio.gather(*(_send_user_event(notifier, e) for e in user_events))
+    return report
+
+
+async def _book_event(
+    *,
+    event: ReleaseEvent,
+    policies: Mapping[CourseId, ReleasePolicy],
+    store: TenantStore,
+    clock: Clock,
+    scheduler: SchedulerConfig,
+    keyring: Keyring,
+    adapter_factory: AdapterFactory,
+    dry_run: bool,
+    wait: bool,
+    post_burst_quiet_s: float,
+    pool_factory: PoolFactory | None,
+    replica_timeout_s: float,
+    attempt_id: str | None,
+) -> tuple[RunReport, list[UserEvent]]:
+    """The booking half of the tenant job (§4). ``scheduler`` supplies the race knobs
     (``early_arrival_ms``, ``blind_post_stagger_ms``, ``blind_post_max_count``, lead, ...). The
     runner derives per-account copies (reserve -> 0 because the pool holds it; overflow accounts
     -> ``blind_post_max_count=0``, still registered with the pool at k=0) and passes
@@ -257,18 +349,17 @@ async def run_release_event(
     15 s until the give-up point. ``wait=False`` (manual) skips both; the orchestrators still
     busy-wait to today's release instant (firing at once if it has passed).
 
-    Not done here (MU-9b): the exit-code mapping (``exit_code_for``), per-user / operator emails
-    through ``notifier``, the account ``auth_failed`` flip, and the CLI (which measures the NTP
-    offset, builds the pools after the site-key pre-flight, and closes the Cosmos client after
-    the claim). ``LeasedBookingStore`` is MU-9c; the booker never needs it (its lease is held
-    from the claim)."""
+    Returns the report and each row's ``UserEvent``s (empty on every early return). The emails
+    are ``run_release_event``'s; the CLI measures the NTP offset, runs the site-key pre-flight
+    and builds the pools. ``LeasedBookingStore`` is MU-9c; the booker never needs it (its lease
+    is held from the claim)."""
     started = clock.now_utc()
     if wait and not should_proceed(clock, timezone=event.timezone, fire_time=event.release_time):
         log.info(
             "tenant-run %s: wrong-season cron (DST gate) — exiting before any store call",
             event.key,
         )
-        return _report(event)
+        return _report(event), []
     t0 = _event_t0(event, started)
     owner = attempt_id or f"booker:{event.key}:{uuid4().hex[:12]}"
     phase = await _read_and_claim(
@@ -284,7 +375,7 @@ async def run_release_event(
         not_after=_race_window_start(t0, scheduler, started=started),
     )
     if isinstance(phase, RunReport):
-        return phase
+        return phase, []
     loaded, claimed, claimed_rows = phase
     creds, decrypt_failed = resolve_credentials(claimed_rows, keyring=keyring)
     runnable = [r for r in claimed_rows if r.row.id in creds]
@@ -307,7 +398,8 @@ async def run_release_event(
         # A systemic pre-T0 failure (e.g. round-2 SF1): nothing raced, so hand the rows back.
         await _release_leases(store, claimed, owner=owner)
         await _close_pools(pools)
-        return _systemic(event, "prepare", exc, rows_loaded=loaded, rows_claimed=len(claimed))
+        report = _systemic(event, "prepare", exc, rows_loaded=loaded, rows_claimed=len(claimed))
+        return report, []
     finished, write_failures, deadline_hit = await _race(
         accounts,
         [r for r in claimed_rows if r.row.id in decrypt_failed],
@@ -319,7 +411,19 @@ async def run_release_event(
     )
     await _close_adapters(accounts)
     await _close_pools(pools)
-    return _report(
+    by_row = {r.row.id: r for r in claimed_rows}
+    buffered = {a.row.id: a.buffer.flush() for a in accounts}
+    at = clock.now_utc()
+    events = [
+        e
+        for f in finished
+        for e in _row_events(f, by_row[f.account.row_id], buffered.get(f.account.row_id, ()), at=at)
+    ]
+    # TODO(MU-8b): flip these accounts to auth_failed in the store (§4.5, PLAN §12).
+    auth_failed = tuple(
+        by_row[f.account.row_id].account.id for f in finished if f.account.auth_error
+    )
+    report = _report(
         event,
         rows_loaded=loaded,
         rows_claimed=len(claimed),
@@ -327,6 +431,7 @@ async def run_release_event(
         self_deadline_hit=deadline_hit,
         outcome_write_failures=tuple(write_failures),
     )
+    return replace(report, auth_failed_accounts=auth_failed), events
 
 
 def assert_blind_methods_present(adapters: Sequence[CourseAdapter]) -> None:
@@ -420,6 +525,8 @@ class _Account:
     allowlist: frozenset[SlotId] | None = None
     search_only: bool = False
     orchestrator: Orchestrator | None = None
+    # The engine notifier: collect only, no I/O in the race (§8.7); drained after WRITE #2.
+    buffer: BufferingNotifier = field(default_factory=BufferingNotifier)
 
     @property
     def row(self) -> RequestRow:
@@ -430,6 +537,7 @@ class _Account:
 class _Finished:
     account: AccountOutcome
     row: RowOutcome
+    result: BookingResult | None = None
 
 
 def _report(
@@ -686,7 +794,7 @@ async def _prepare_accounts(
         account.orchestrator = Orchestrator(
             adapters={account.row.course_id: account.recorder},
             store=store,
-            notifier=NoopNotifier(),  # nothing is sent during the race; results are returned
+            notifier=account.buffer,  # collect only: nothing is sent during the race
             clock=clock,
             scheduler=_account_scheduler(scheduler, event=event, account=account),
             creds={account.row.course_id: account.creds},
@@ -1065,6 +1173,7 @@ def _finish(
             needs_reconcile=uncertain,
             release_lease_owner=owner,
         ),
+        result=result,
     )
 
 
@@ -1121,6 +1230,110 @@ def _owned(account: _Account, book: RecordedBook, *, state: BookingState) -> Own
         source=BookingSource.BLIND if blind else BookingSource.SEARCH,
         state=state,
     )
+
+
+# --- notifications (MU-9b, §4.5 "Notify" column) --------------------------------------------
+
+
+def _row_events(
+    item: _Finished, event_row: EventRow, buffered: Sequence[BookingResult], *, at: datetime
+) -> list[UserEvent]:
+    """One row's ``UserEvent``s. The result is what the account's ``BufferingNotifier``
+    collected (the engine's terminal), else the returned one. User-facing: BOOKED (also for an
+    ALREADY_BOOKED guard hit), MISSED_DROP (any other outcome, or a Captcha/OTP error — the row
+    stays pending and the watcher keeps trying), AUTH_FAILED. Operator-only: a decrypt failure,
+    a dry run, UNCERTAIN (NEEDS_RECONCILE, no user mail unless a sibling booked), a swallowed
+    blind Captcha/OTP error, surplus reservations still held. Details carry class names and
+    outcome values only — never an exception message."""
+    out = item.account
+    row = event_row.row
+    result = buffered[-1] if buffered else item.result
+
+    def event(kind: UserEventKind, detail: str, *, with_slot: bool = False) -> UserEvent:
+        slot = result.slot if with_slot and result is not None else None
+        return UserEvent(
+            kind=kind,
+            user_id=event_row.account.user_id,
+            row_id=row.id,
+            course_id=row.course_id,
+            target_date=row.target_date,
+            tee_time=slot.tee_time if slot is not None else None,
+            confirmation=result.confirmation_code if with_slot and result is not None else None,
+            detail=detail,
+            at=at,
+        )
+
+    if out.decrypt_failed:
+        return [event(UserEventKind.OPERATOR_SUMMARY, "credential decrypt failed; row skipped")]
+    outcome = result.outcome if result is not None else out.outcome
+    events: list[UserEvent] = []
+    if outcome is BookingOutcome.BOOKED:
+        events.append(event(UserEventKind.BOOKED, "", with_slot=True))
+    elif outcome is BookingOutcome.ALREADY_BOOKED:
+        events.append(event(UserEventKind.BOOKED, "already on your course account", with_slot=True))
+    elif outcome is BookingOutcome.DRY_RUN:
+        events.append(event(UserEventKind.OPERATOR_SUMMARY, "dry run: nothing booked"))
+    elif out.auth_error:
+        events.append(event(UserEventKind.AUTH_FAILED, "course login rejected"))
+    elif out.captcha_error:
+        events.append(event(UserEventKind.MISSED_DROP, f"booking service error ({out.error})"))
+    elif outcome is not None:
+        events.append(event(UserEventKind.MISSED_DROP, outcome.value))
+    if out.uncertain:
+        cause = out.error or "a blind POST that may have landed"
+        events.append(event(UserEventKind.NEEDS_RECONCILE, f"uncertain ({cause})"))
+    if out.swallowed_captcha_error:
+        events.append(
+            event(UserEventKind.OPERATOR_SUMMARY, "CAPTCHA/OTP error swallowed on a blind POST")
+        )
+    if out.held_extra_raw_ids:
+        events.append(
+            event(
+                UserEventKind.OPERATOR_SUMMARY,
+                f"{len(out.held_extra_raw_ids)} surplus reservation(s) still held (held_extra)",
+            )
+        )
+    return events
+
+
+def _report_lines(report: RunReport, *, at: datetime) -> list[UserEvent]:
+    """Run-level operator lines no row carries: a systemic failure, the self-deadline, and each
+    outcome whose WRITE #2 did not land."""
+    details: list[str] = []
+    if report.systemic_error is not None:
+        details.append(f"systemic: {report.systemic_error}")
+    if report.self_deadline_hit:
+        details.append("self-deadline reached; unfinished rows written needs_reconcile")
+    details += [
+        f"row {row_id}: outcome NOT written (JSON on stdout)"
+        for row_id in report.outcome_write_failures
+    ]
+    return [
+        UserEvent(
+            kind=UserEventKind.OPERATOR_SUMMARY,
+            user_id=None,
+            row_id=None,
+            course_id=None,
+            target_date=None,
+            tee_time=None,
+            confirmation=None,
+            detail=detail,
+            at=at,
+        )
+        for detail in details
+    ]
+
+
+async def _send_user_event(notifier: UserNotifier, event: UserEvent) -> None:
+    try:
+        await notifier.send(event)
+    except Exception as exc:  # a mail failure never masks the outcome it reports
+        log.warning(
+            "tenant-run: row %s: %s notification failed (%s)",
+            event.row_id,
+            event.kind.value,
+            type(exc).__name__,
+        )
 
 
 async def _close_adapters(accounts: Sequence[_Account]) -> None:
