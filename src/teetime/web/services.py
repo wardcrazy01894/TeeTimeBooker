@@ -257,6 +257,10 @@ def _window(form: Mapping[str, str]) -> tuple[time, time]:
     return earliest, latest
 
 
+def parse_party_size(form: Mapping[str, str]) -> int:
+    return _int_in(form, "party_size", MIN_PARTY, MAX_PARTY)
+
+
 def parse_rule_form(form: Mapping[str, str]) -> RuleInput:
     earliest, latest = _window(form)
     return RuleInput(
