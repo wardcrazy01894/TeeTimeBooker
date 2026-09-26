@@ -1,18 +1,28 @@
-"""Tenant-watcher helpers (MULTIUSER_PLAN §7). Pure decision functions + one adapter proxy.
+"""Tenant-watcher helpers (MULTIUSER_PLAN §7, MU-10a). Pure decision functions + one adapter proxy.
 
-STUB — implemented in MULTIUSER_PLAN MU-10a (pure decisions + proxy factory).
+No I/O, no store, no adapter calls in the decisions: every function takes plain data and returns
+a decision. The runner wiring (MU-10b) is the only caller.
 """
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
+from typing import cast
 from zoneinfo import ZoneInfo
 
-from ..core.adapter import AdapterCapabilities, CourseAdapter
+from ..core.adapter import (
+    AdapterCapabilities,
+    AuthStateReportable,
+    BlindPostCapable,
+    CourseAdapter,
+    ReservationCacheRefreshable,
+    ReservationSnapshotHealth,
+)
 from ..core.models import (
     MANAGED_BOOKING_TAG,
     BookingRequest,
@@ -34,8 +44,6 @@ from .models import (
     ReservationSnapshot,
     RowStatus,
 )
-
-_MU10 = "MULTIUSER_PLAN.md MU-10a"
 
 # Per-account reconcile cadence: log in when (hash(account_id) + run_index) % N == 0, i.e.
 # ~hourly per account at a 10-min cron, spread across runs, no stored state (§7.1).
@@ -363,8 +371,9 @@ _DRY_RUN_FORBIDDEN: frozenset[WatchAction] = frozenset(
 
 class SearchSnapshotAdapter:
     """``CourseAdapter`` proxy that serves ``search()`` from the run's shared group result and
-    delegates everything else live to ``inner``. Base class only: build it with
-    ``make_search_snapshot_adapter``.
+    delegates everything else live to ``inner``. This base class IS the zero-capability variant;
+    always build through ``make_search_snapshot_adapter``, which picks the variant that mirrors
+    ``inner``.
 
     Capability fidelity (round-1 SF1): on Python >= 3.12 ``runtime_checkable`` ``isinstance`` uses
     ``inspect.getattr_static``, so ``__getattr__`` forwarding does NOT make
@@ -372,45 +381,204 @@ class SearchSnapshotAdapter:
     reguard would then silently use the idempotent ``authenticate()`` and could double-book.
     The factory therefore returns a CONCRETE subclass per inner capability set, which DEFINES
     exactly ``inner``'s opt-in members (``refresh_reservations`` / ``is_authenticated`` /
-    ``snapshot_trusted``) and nothing more. ``capabilities`` is forwarded unchanged. Pinned by
-    ``test_snapshot_proxy_capabilities_mirror_inner`` (MU-10).
+    ``snapshot_trusted``, plus the ``BlindPostCapable`` pair the orchestrator only ``cast``s to)
+    and nothing more. ``capabilities`` is forwarded unchanged. Pinned by
+    ``test_snapshot_proxy_capabilities_mirror_inner`` (MU-10a).
     """
 
     course_id: CourseId
     capabilities: AdapterCapabilities
 
     def __init__(self, *, inner: CourseAdapter, slots: Sequence[TeeTimeSlot]) -> None:
-        raise NotImplementedError(_MU10)
+        self._inner = inner
+        self._slots: tuple[TeeTimeSlot, ...] = tuple(slots)
+        self.course_id = inner.course_id
+        self.capabilities = inner.capabilities
 
     async def authenticate(self, creds: CourseCredentials) -> None:
-        raise NotImplementedError(_MU10)
+        await self._inner.authenticate(creds)
 
     async def search(
         self, request: BookingRequest, *, skip_initial_spacing: bool = False
     ) -> list[TeeTimeSlot]:
-        raise NotImplementedError(_MU10)
+        """The shared group result, as a FRESH list per call (the engine may mutate its copy).
+        Never touches ``inner`` — the run's one search per group already happened."""
+        return list(self._slots)
 
     async def prepare_book(
         self, slot: TeeTimeSlot | None, request: BookingRequest, *, count: int = 1
     ) -> None:
-        raise NotImplementedError(_MU10)
+        await self._inner.prepare_book(slot, request, count=count)
 
     async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
-        raise NotImplementedError(_MU10)
+        return await self._inner.book(slot, request)
 
     async def list_reservations(self) -> list[ExistingReservation]:
-        raise NotImplementedError(_MU10)
+        return await self._inner.list_reservations()
 
     async def cancel_reservation(self, confirmation_code: str) -> None:
-        raise NotImplementedError(_MU10)
+        await self._inner.cancel_reservation(confirmation_code)
 
     async def aclose(self) -> None:
-        raise NotImplementedError(_MU10)
+        await self._inner.aclose()
+
+
+# --- opt-in member mixins: each DEFINES the member statically (no __getattr__) ------------------
+
+
+class _RefreshableProxy:
+    _inner: CourseAdapter
+
+    async def refresh_reservations(self, creds: CourseCredentials) -> None:
+        await cast(ReservationCacheRefreshable, self._inner).refresh_reservations(creds)
+
+
+class _AuthStateProxy:
+    _inner: CourseAdapter
+
+    @property
+    def is_authenticated(self) -> bool:
+        return cast(AuthStateReportable, self._inner).is_authenticated
+
+
+class _SnapshotHealthProxy:
+    _inner: CourseAdapter
+
+    @property
+    def snapshot_trusted(self) -> bool:
+        return cast(ReservationSnapshotHealth, self._inner).snapshot_trusted
+
+
+class _BlindProxy:
+    """The ``BlindPostCapable`` pair as pure pass-throughs. The orchestrator ``cast``s (never
+    ``isinstance``-checks) for these, so a missing method fails late and silently — mirroring
+    them keeps the proxy honest even though the watch path never calls them."""
+
+    _inner: CourseAdapter
+
+    def captcha_pool_size(self) -> int:
+        return cast(BlindPostCapable, self._inner).captcha_pool_size()
+
+    def synthesize_blind_slots(
+        self, request: BookingRequest, target_date: date, *, max_count: int
+    ) -> list[TeeTimeSlot]:
+        return cast(BlindPostCapable, self._inner).synthesize_blind_slots(
+            request, target_date, max_count=max_count
+        )
+
+
+# One concrete class per capability set. Suffix letters: R refresh_reservations,
+# A is_authenticated, S snapshot_trusted, B the blind pair. The base is the empty set.
+class _SnapR(_RefreshableProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapA(_AuthStateProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapS(_SnapshotHealthProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapB(_BlindProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapRA(_RefreshableProxy, _AuthStateProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapRS(_RefreshableProxy, _SnapshotHealthProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapRB(_RefreshableProxy, _BlindProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapAS(_AuthStateProxy, _SnapshotHealthProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapAB(_AuthStateProxy, _BlindProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapSB(_SnapshotHealthProxy, _BlindProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapRAS(_RefreshableProxy, _AuthStateProxy, _SnapshotHealthProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapRAB(_RefreshableProxy, _AuthStateProxy, _BlindProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapRSB(_RefreshableProxy, _SnapshotHealthProxy, _BlindProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapASB(_AuthStateProxy, _SnapshotHealthProxy, _BlindProxy, SearchSnapshotAdapter): ...
+
+
+class _SnapRASB(
+    _RefreshableProxy, _AuthStateProxy, _SnapshotHealthProxy, _BlindProxy, SearchSnapshotAdapter
+): ...
+
+
+# (refresh, auth, health, blind) -> the concrete class that defines exactly those members.
+_CapabilityKey = tuple[bool, bool, bool, bool]
+
+
+def _variant_key(cls: type[SearchSnapshotAdapter]) -> _CapabilityKey:
+    return (
+        issubclass(cls, _RefreshableProxy),
+        issubclass(cls, _AuthStateProxy),
+        issubclass(cls, _SnapshotHealthProxy),
+        issubclass(cls, _BlindProxy),
+    )
+
+
+_VARIANTS: dict[_CapabilityKey, type[SearchSnapshotAdapter]] = {
+    _variant_key(cls): cls
+    for cls in (
+        SearchSnapshotAdapter,
+        _SnapR,
+        _SnapA,
+        _SnapS,
+        _SnapB,
+        _SnapRA,
+        _SnapRS,
+        _SnapRB,
+        _SnapAS,
+        _SnapAB,
+        _SnapSB,
+        _SnapRAS,
+        _SnapRAB,
+        _SnapRSB,
+        _SnapASB,
+        _SnapRASB,
+    )
+}
+# 2 ** 4 capability sets: every combination of the four mixins must map to its own class.
+_VARIANT_COUNT = 2 ** len(_variant_key(SearchSnapshotAdapter))
+if len(_VARIANTS) != _VARIANT_COUNT:  # pragma: no cover - import-time guard vs a duplicated variant
+    raise RuntimeError(
+        f"SearchSnapshotAdapter variants must cover {_VARIANT_COUNT} sets, got {len(_VARIANTS)}"
+    )
+
+_MISSING = object()
+
+
+def _defines(obj: object, name: str) -> bool:
+    """``getattr_static`` presence — the same reading ``runtime_checkable`` makes on >= 3.12."""
+    return inspect.getattr_static(obj, name, _MISSING) is not _MISSING
 
 
 def make_search_snapshot_adapter(
     inner: CourseAdapter, *, slots: Sequence[TeeTimeSlot]
 ) -> SearchSnapshotAdapter:
     """Return a ``SearchSnapshotAdapter`` whose CONCRETE class mirrors ``inner``'s opt-in capability
-    members (see the class docstring). ``inner`` is normally a ``tenant.recording`` recorder."""
-    raise NotImplementedError(_MU10)
+    members (see the class docstring). ``inner`` is normally a ``tenant.recording`` recorder.
+
+    The three Protocols are read with ``isinstance`` (``runtime_checkable``); the blind pair by
+    static presence of BOTH methods rather than ``capabilities.blind_post`` — the contract is
+    "define exactly what inner defines", and e.g. ``FakeAdapter`` carries the methods even when
+    its flag is False."""
+    key: _CapabilityKey = (
+        isinstance(inner, ReservationCacheRefreshable),
+        isinstance(inner, AuthStateReportable),
+        isinstance(inner, ReservationSnapshotHealth),
+        _defines(inner, "captcha_pool_size") and _defines(inner, "synthesize_blind_slots"),
+    )
+    return _VARIANTS[key](inner=inner, slots=slots)
