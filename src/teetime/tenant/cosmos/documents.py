@@ -23,13 +23,15 @@ The Cosmos system property ``_etag`` is never WRITTEN (``to_*_doc`` omits it) an
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import MISSING, dataclass, fields
 from datetime import UTC, date, datetime, time
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from ...core.models import CourseId
 from ..models import (
     AccountProvenance,
     AccountStatus,
@@ -46,6 +48,10 @@ from ..models import (
     RuleId,
     SnapshotEntry,
     StandingRule,
+    User,
+    UserId,
+    UserRole,
+    UserStatus,
     rule_row_id,
 )
 
@@ -62,10 +68,25 @@ TENANT_CONTAINER = "tenant"
 GLOBAL_CONTAINER = "global"
 TENANT_PARTITION_KEY_PATH = "/accountId"
 GLOBAL_PARTITION_KEY_PATH = "/pk"
+# ``global`` partition-key prefixes (§3.1): ``user:<userId>``, ``claim:<sha256>``,
+# ``probe:<bucket>``, ``audit:<userId>``. Each doc type owns one prefix, so two types can never
+# share a logical partition, let alone an id.
+GLOBAL_PK_PREFIXES: Mapping[str, str] = {
+    "user": "user:",
+    "claim": "claim:",
+    "probe": "probe:",
+    "audit": "audit:",
+}
+# Per-item TTLs (§3.1/§10.2): the ``global`` container default is -1 (on, no default), so ONLY
+# these two document types expire.
+PROBE_TTL_S = 2 * 3_600
+AUDIT_TTL_S = 400 * 86_400
 # The ``tenant-ci`` / ``global-ci`` containers carry a CONTAINER default TTL (Bicep-owned,
 # §10.2) that sweeps what a crashed integration run left behind. It is not a per-item field:
 # documents written there inherit it by carrying no ``ttl`` of their own.
 CI_CONTAINER_DEFAULT_TTL_S = 7 * 86_400
+_TENANT_DOC_TYPES = frozenset({"account", "rule", "row", "slot", "ruleday", "booking", "snapshot"})
+_GLOBAL_DOC_TYPES = frozenset(GLOBAL_PK_PREFIXES)
 
 # Cosmos forbids these in ``id`` (and caps it at 255 characters).
 _FORBIDDEN_ID_CHARS = frozenset("/\\?#")
@@ -549,3 +570,293 @@ def from_snapshot_doc(doc: Mapping[str, object]) -> Stored[ReservationSnapshot]:
     snapshot = _decode_fields(doc, ReservationSnapshot, _SNAPSHOT_FIELDS)
     _check_identity(doc, doc_id=snapshot_doc_id(snapshot), account_id=snapshot.course_account_id)
     return Stored(snapshot, _etag_of(doc))
+
+
+# =============================================================================================
+# The ``global`` container (partition key ``/pk``, prefixed per type)
+# =============================================================================================
+
+
+def _global_envelope(
+    *, doc_id: str, pk: str, doc_type: str, ttl_s: int | None = None
+) -> dict[str, object]:
+    prefix = GLOBAL_PK_PREFIXES[doc_type]
+    if not pk.startswith(prefix):
+        raise DocumentError(f"{doc_type} pk {pk!r} must start with {prefix!r}")
+    doc: dict[str, object] = {
+        "id": _checked_id(doc_id),
+        "pk": pk,
+        "type": doc_type,
+        "schemaVersion": SCHEMA_VERSION,
+    }
+    if ttl_s is not None:
+        doc["ttl"] = ttl_s
+    return doc
+
+
+def _check_global_identity(doc: Mapping[str, object], *, doc_id: str, pk: str) -> None:
+    if doc.get("id") != doc_id:
+        raise DocumentError(f"document id {doc.get('id')!r} does not match its body ({doc_id!r})")
+    if doc.get("pk") != pk:
+        raise DocumentError("document pk does not match its body")
+
+
+# --- users -------------------------------------------------------------------------------------
+
+_USER_FIELDS: tuple[_Field, ...] = (
+    _Field("id", "userId", _UUID),
+    _Field("oauth_provider", "oauthProvider", _STR),
+    _Field("oauth_subject", "oauthSubject", _optional(_STR)),
+    _Field("email", "email", _STR),
+    _Field("display_name", "displayName", _STR),
+    _Field("role", "role", _enum(UserRole)),
+    _Field("status", "status", _enum(UserStatus)),
+)
+
+
+def user_pk(user: User) -> str:
+    return f"{GLOBAL_PK_PREFIXES['user']}{user.id}"
+
+
+def user_doc_id(user: User) -> str:
+    """``user:<userId>``: the user is alone in its partition, so id == pk."""
+    return _checked_id(user_pk(user))
+
+
+def to_user_doc(user: User) -> dict[str, object]:
+    envelope = _global_envelope(doc_id=user_doc_id(user), pk=user_pk(user), doc_type="user")
+    return envelope | _encode_fields(user, _USER_FIELDS)
+
+
+def from_user_doc(doc: Mapping[str, object]) -> Stored[User]:
+    _open(doc, doc_type="user")
+    user = _decode_fields(doc, User, _USER_FIELDS)
+    _check_global_identity(doc, doc_id=user_doc_id(user), pk=user_pk(user))
+    return Stored(user, _etag_of(doc))
+
+
+# --- uniqueness claims (§3.2) ------------------------------------------------------------------
+
+
+class ClaimKind(StrEnum):
+    """The cross-partition uniqueness keys held as claim docs (§3.1)."""
+
+    IDENTITY = "identity"  # UNIQUE(provider, subject)
+    INVITE = "invite"  # a verified-email invite, matched case-insensitively
+    USERNAME = "username"  # UNIQUE(course, username)
+    COURSE_COUNT = "course-count"  # the ``max_accounts_per_course`` IfMatch counter
+
+
+class ClaimState(StrEnum):
+    PENDING = "pending"
+    BOUND = "bound"
+
+
+@dataclass(frozen=True, slots=True)
+class UniquenessClaim:
+    """A ``claim`` doc. ``key_hash`` is ``claim_key_hash(kind, key)``: the raw key (an email, a
+    course login) is NOT stored, the SHA-256 is the id. ``owner_id`` is the accountId (username)
+    or userId (identity, invite) the claim is for; None for a counter. ``count`` is the
+    ``course-count`` value (0 otherwise). The pending -> bound protocol is §3.2 (round-2 SF5)."""
+
+    kind: ClaimKind
+    key_hash: str
+    state: ClaimState
+    created_at: datetime
+    owner_id: UUID | None = None
+    count: int = 0
+
+
+def claim_key_hash(kind: ClaimKind, key: str) -> str:
+    """SHA-256 hex of ``<kind>|<key>``: the kind is hashed in so the same key text under two
+    kinds can never share an id."""
+    return hashlib.sha256(f"{kind.value}|{key}".encode()).hexdigest()
+
+
+def identity_claim_key(provider: str, subject: str) -> str:
+    """``<provider>|<subject>``: OAuth subjects are opaque and case-sensitive, kept verbatim."""
+    return f"{provider}|{subject}"
+
+
+def invite_claim_key(email: str) -> str:
+    """Casefolded + stripped, matching ``bind_invited_user``'s case-insensitive email match."""
+    return email.strip().casefold()
+
+
+def username_claim_key(course_id: CourseId, username: str) -> str:
+    """``<course_id>|<casefolded username>``: UNIQUE(course, username) is case-insensitive in
+    the in-memory reference (``upsert_account`` casefolds)."""
+    return f"{course_id}|{username.casefold()}"
+
+
+def course_count_claim_key(course_id: CourseId) -> str:
+    return str(course_id)
+
+
+_CLAIM_FIELDS: tuple[_Field, ...] = (
+    _Field("kind", "kind", _enum(ClaimKind)),
+    _Field("key_hash", "keyHash", _STR),
+    _Field("state", "state", _enum(ClaimState)),
+    _Field("created_at", "createdAt", _DATETIME),
+    _Field("owner_id", "ownerId", _optional(_UUID)),
+    _Field("count", "count", _INT),
+)
+
+
+def claim_pk(claim: UniquenessClaim) -> str:
+    return f"{GLOBAL_PK_PREFIXES['claim']}{claim.key_hash}"
+
+
+def claim_doc_id(claim: UniquenessClaim) -> str:
+    """``claim:<sha256>`` (§3.1): one claim per partition, so id == pk and a second create of
+    the same key is a 409."""
+    return _checked_id(claim_pk(claim))
+
+
+def to_claim_doc(claim: UniquenessClaim) -> dict[str, object]:
+    envelope = _global_envelope(doc_id=claim_doc_id(claim), pk=claim_pk(claim), doc_type="claim")
+    return envelope | _encode_fields(claim, _CLAIM_FIELDS)
+
+
+def from_claim_doc(doc: Mapping[str, object]) -> Stored[UniquenessClaim]:
+    _open(doc, doc_type="claim")
+    claim = _decode_fields(doc, UniquenessClaim, _CLAIM_FIELDS)
+    _check_global_identity(doc, doc_id=claim_doc_id(claim), pk=claim_pk(claim))
+    return Stored(claim, _etag_of(doc))
+
+
+# --- login probes (TTL 2 h) --------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class LoginProbe:
+    """One ``record_login_probe`` call (the in-memory store's ``_Probe`` plus an id)."""
+
+    id: UUID
+    user_id: UserId
+    course_id: CourseId
+    username_hash: str
+    ok: bool
+    at: datetime
+
+
+_PROBE_FIELDS: tuple[_Field, ...] = (
+    _Field("id", "probeId", _UUID),
+    _Field("user_id", "userId", _UUID),
+    _Field("course_id", "courseId", _STR),
+    _Field("username_hash", "usernameHash", _STR),
+    _Field("ok", "ok", _BOOL),
+    _Field("at", "at", _DATETIME),
+)
+
+
+def probe_bucket(at: datetime) -> str:
+    """The UTC hour the probe landed in, ``YYYY-MM-DDTHH``. ``count_login_probes`` filters by
+    ``since`` with EITHER ``user_id`` or ``username_hash`` (or both), so no single id-keyed
+    partition serves both; an hour bucket keeps the 2 h TTL window to at most three partitions
+    for either filter. MU-8a choice (§3.1 says only ``probe:<bucket>``)."""
+    return _expect(datetime, at).astimezone(UTC).strftime("%Y-%m-%dT%H")
+
+
+def probe_pk(probe: LoginProbe) -> str:
+    return f"{GLOBAL_PK_PREFIXES['probe']}{probe_bucket(probe.at)}"
+
+
+def probe_doc_id(probe: LoginProbe) -> str:
+    """``probe|<at UTC>|<uuid>``: time-sortable within the bucket, unique by the uuid."""
+    return _checked_id(f"probe|{_encode_datetime(probe.at)}|{probe.id}")
+
+
+def to_probe_doc(probe: LoginProbe) -> dict[str, object]:
+    envelope = _global_envelope(
+        doc_id=probe_doc_id(probe), pk=probe_pk(probe), doc_type="probe", ttl_s=PROBE_TTL_S
+    )
+    return envelope | _encode_fields(probe, _PROBE_FIELDS)
+
+
+def from_probe_doc(doc: Mapping[str, object]) -> Stored[LoginProbe]:
+    _open(doc, doc_type="probe")
+    probe = _decode_fields(doc, LoginProbe, _PROBE_FIELDS)
+    _check_global_identity(doc, doc_id=probe_doc_id(probe), pk=probe_pk(probe))
+    return Stored(probe, _etag_of(doc))
+
+
+# --- audit log (TTL 400 days) ------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AuditRecord:
+    """One ``append_audit`` call (the in-memory store's ``AuditEntry`` plus an id). ``detail``
+    must already be redacted (``core.redaction.redact_payload``) and JSON-plain; the mapping
+    passes it through untouched."""
+
+    id: UUID
+    user_id: UserId | None
+    action: str
+    row_id: RowId | None
+    detail: Mapping[str, object]
+    at: datetime
+
+
+def _encode_detail(value: object) -> object:
+    return dict(_expect(dict, value))
+
+
+_DETAIL = _Codec(encode=_encode_detail, decode=_encode_detail)
+_AUDIT_FIELDS: tuple[_Field, ...] = (
+    _Field("id", "auditId", _UUID),
+    _Field("user_id", "userId", _optional(_UUID)),
+    _Field("action", "action", _STR),
+    _Field("row_id", "rowId", _optional(_UUID)),
+    _Field("detail", "detail", _DETAIL),
+    _Field("at", "at", _DATETIME),
+)
+_SYSTEM_AUDIT_ACTOR = "system"
+
+
+def audit_pk(audit: AuditRecord) -> str:
+    """``audit:<userId>`` (§3.1), or ``audit:system`` for an entry with no user."""
+    actor = _SYSTEM_AUDIT_ACTOR if audit.user_id is None else str(audit.user_id)
+    return f"{GLOBAL_PK_PREFIXES['audit']}{actor}"
+
+
+def audit_doc_id(audit: AuditRecord) -> str:
+    """``audit|<at UTC>|<uuid>``: time-sortable within the user's partition."""
+    return _checked_id(f"audit|{_encode_datetime(audit.at)}|{audit.id}")
+
+
+def to_audit_doc(audit: AuditRecord) -> dict[str, object]:
+    envelope = _global_envelope(
+        doc_id=audit_doc_id(audit), pk=audit_pk(audit), doc_type="audit", ttl_s=AUDIT_TTL_S
+    )
+    return envelope | _encode_fields(audit, _AUDIT_FIELDS)
+
+
+def from_audit_doc(doc: Mapping[str, object]) -> Stored[AuditRecord]:
+    _open(doc, doc_type="audit")
+    audit = _decode_fields(doc, AuditRecord, _AUDIT_FIELDS)
+    _check_global_identity(doc, doc_id=audit_doc_id(audit), pk=audit_pk(audit))
+    return Stored(audit, _etag_of(doc))
+
+
+# --- routing -----------------------------------------------------------------------------------
+
+
+def container_of(doc: Mapping[str, object]) -> str:
+    """Which container a document belongs in, by its ``type``."""
+    doc_type = doc.get("type")
+    if doc_type in _TENANT_DOC_TYPES:
+        return TENANT_CONTAINER
+    if doc_type in _GLOBAL_DOC_TYPES:
+        return GLOBAL_CONTAINER
+    raise DocumentError(f"unknown document type {doc_type!r}")
+
+
+def partition_key_of(doc: Mapping[str, object]) -> str:
+    """The partition-key VALUE the store passes alongside the document (``accountId`` for the
+    ``tenant`` container, ``pk`` for ``global``)."""
+    key = "accountId" if container_of(doc) == TENANT_CONTAINER else "pk"
+    try:
+        return _expect(str, doc[key])
+    except KeyError as exc:
+        raise DocumentError(f"document has no {key!r}") from exc
