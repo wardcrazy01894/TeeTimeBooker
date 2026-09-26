@@ -15,7 +15,14 @@ from teetime.core.adapter import AdapterError
 from teetime.core.clock import FakeClock
 from teetime.core.models import MANAGED_BOOKING_TAG
 from teetime.tenant.in_memory_store import InMemoryTenantStore
-from teetime.tenant.models import Actor, BookingSource, BookingState, RowFingerprint, RowStatus
+from teetime.tenant.models import (
+    Actor,
+    BookingSource,
+    BookingState,
+    RankedWindow,
+    RowFingerprint,
+    RowStatus,
+)
 from teetime.tenant.notify import UserEventKind
 from teetime.tenant.runner import WatchReport
 from teetime.tenant.store import RowOutcome
@@ -228,8 +235,7 @@ async def test_external_cancel_frees_slot_for_explicit_rerequest() -> None:
         user_id=s.user.id,
         account_id=s.account.id,
         target_date=TARGET,
-        window_earliest=WINDOW[0],
-        window_latest=WINDOW[1],
+        options=(RankedWindow(1, WINDOW[0], WINDOW[1]),),
         party_size=2,
         now=WATCH_NOW + timedelta(minutes=1),
     )

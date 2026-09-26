@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, status, one_off_form, error_block %}
+{% from "_macros.html" import hhmm, status, one_off_form, error_block, windows %}
 {% block title %}Dates · TeeTimeBooker{% endblock %}
 {% block content %}
 <h1>Dates</h1>
@@ -15,7 +15,7 @@
     <tr>
       <td>{{ weekdays[r.row.target_date.weekday()][:3] }} {{ r.row.target_date.isoformat() }}</td>
       <td>{{ r.row.course_id }}</td>
-      <td>{{ hhmm(r.row.window_earliest) }}–{{ hhmm(r.row.window_latest) }}</td>
+      <td>{{ windows(r.row.options) }}</td>
       <td>{{ r.row.party_size }}</td>
       <td>{{ "rule" if r.row.source.value == "rule" else "one-off" }}</td>
       <td>
@@ -54,7 +54,7 @@
           {% endif %}
         {% endif %}
         {% if r.can_rerequest %}
-          {{ one_off_form(csrf_token, r.row.course_account_id, r.row.target_date, r.row.window_earliest, r.row.window_latest, r.row.party_size, "Re-request this date") }}
+          {{ one_off_form(csrf_token, r.row.course_account_id, r.row.target_date, r.row.options[0].earliest, r.row.options[0].latest, r.row.party_size, "Re-request this date") }}
         {% endif %}
       </td>
     </tr>

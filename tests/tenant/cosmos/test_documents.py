@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from enum import Enum
 from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
@@ -92,6 +93,7 @@ from teetime.tenant.models import (
     EventRow,
     OwnedBooking,
     OwnedBookingId,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -131,8 +133,13 @@ def _rule_row(target: date = DST_END_DATE) -> RequestRow:
         course_id=MB,
         target_date=target,
         timezone=TZ,
-        window_earliest=time(8, 45),
-        window_latest=time(10, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(8, 45),
+                time(10, 0),
+            ),
+        ),
         party_size=2,
         status=RowStatus.BOOKED,
         source=RowSource.RULE,
@@ -154,6 +161,7 @@ def _rule_row(target: date = DST_END_DATE) -> RequestRow:
         last_outcome_at=datetime(2026, 10, 25, 10, 0, 1, tzinfo=UTC),
         group_id=UUID("33333333-3333-4333-8333-333333333333"),
         group_rank=1,
+        max_price=Decimal("85.50"),
     )
 
 
@@ -166,8 +174,13 @@ def _explicit_row(target: date = DST_START_DATE) -> RequestRow:
         course_id=MB,
         target_date=target,
         timezone=TZ,
-        window_earliest=time(7, 0),
-        window_latest=time(12, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(7, 0),
+                time(12, 0),
+            ),
+        ),
         party_size=4,
         status=RowStatus.PENDING,
         source=RowSource.EXPLICIT,
@@ -190,6 +203,7 @@ def _account() -> CourseAccount:
         otp_mailbox="otp+golfer@example.com",
         consecutive_soft_auth_failures=2,
         verified_at=datetime(2026, 9, 1, 15, 30, tzinfo=ET),
+        default_max_price=Decimal("120.00"),
     )
 
 
@@ -198,12 +212,20 @@ def _rule() -> StandingRule:
         id=RULE,
         course_account_id=ACCOUNT,
         weekday=5,
-        window_earliest=time(8, 45),
-        window_latest=time(10, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(8, 45),
+                time(10, 0),
+            ),
+        ),
         party_size=2,
         active=True,
         materialized_through=date(2026, 10, 17),
         version=4,
+        max_price=Decimal("75"),
+        group_id=UUID("55555555-5555-4555-8555-555555555555"),
+        group_rank=2,
     )
 
 
@@ -399,7 +421,7 @@ class TestIds:
         assert TENANT_CONTAINER == "tenant"
         assert GLOBAL_CONTAINER == "global"
         assert CI_CONTAINER_DEFAULT_TTL_S == 7 * 86400
-        assert SCHEMA_VERSION == 1
+        assert SCHEMA_VERSION == 2  # MU-R1: ranked options
         assert uuid5(USER, str(MB)) == ACCOUNT  # the §3.1 derivation the partition rests on
         assert isinstance(CourseAccountId(ACCOUNT), UUID)
 
@@ -626,8 +648,7 @@ _REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "ruleId",
         "accountId",
         "weekday",
-        "windowEarliest",
-        "windowLatest",
+        "options",
         "partySize",
         "active",
         "materializedThrough",
@@ -639,8 +660,7 @@ _REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "courseId",
         "targetDate",
         "timezone",
-        "windowEarliest",
-        "windowLatest",
+        "options",
         "partySize",
         "status",
         "source",
@@ -720,7 +740,7 @@ class TestDispatch:
 
 
 class TestEnvelopeValidation:
-    @pytest.mark.parametrize("version", [0, 2, 99, -1, "1", 1.0, True, None])
+    @pytest.mark.parametrize("version", [0, 3, 99, -1, "1", 1.0, True, None])
     def test_unknown_schema_version_rejected(self, version: object) -> None:
         for doc in _every_doc():
             with pytest.raises(DocumentError, match="schemaVersion"):
@@ -750,6 +770,59 @@ class TestEnvelopeValidation:
         for key in ("needsReconcile", "supersededFrom", "groupRank", "leaseOwner"):
             del doc[key]
         assert from_doc(doc).item == _explicit_row()
+
+    def test_price_fields_absent_read_as_defaults(self) -> None:
+        """MU-R1 read-compat (§16.5): documents written before the price and rule-group fields
+        existed read back with the account default $100 and no per-request override."""
+        account_doc = to_doc(_account())
+        del account_doc["defaultMaxPrice"]
+        assert from_doc(account_doc).item.default_max_price == Decimal("100.00")
+        rule_doc = to_doc(_rule())
+        for key in ("maxPrice", "groupId", "groupRank"):
+            del rule_doc[key]
+        rule = from_doc(rule_doc).item
+        assert (rule.max_price, rule.group_id, rule.group_rank) == (None, None, None)
+        row_doc = to_doc(_rule_row())
+        del row_doc["maxPrice"]
+        assert from_doc(row_doc).item.max_price is None
+
+    def test_old_schema_row_reads_as_single_option(self) -> None:
+        """§16.5 read-compat: a schemaVersion-1 row or rule stored ONE window as
+        windowEarliest/windowLatest; it reads back as the single option of rank 1."""
+        for item in (_explicit_row(), _rule()):
+            doc = to_doc(item)
+            (option,) = item.options
+            del doc["options"]
+            doc |= {
+                "schemaVersion": 1,
+                "windowEarliest": option.earliest.isoformat(),
+                "windowLatest": option.latest.isoformat(),
+            }
+            assert from_doc(doc).item == item
+
+    def test_options_are_validated_on_read(self) -> None:
+        doc = to_doc(_explicit_row())
+        for bad in (
+            [],
+            [
+                {"rank": 2, "earliest": "09:00:00", "latest": "10:00:00"},
+                {"rank": 1, "earliest": "08:00:00", "latest": "09:00:00"},
+            ],
+            [{"rank": True, "earliest": "09:00:00", "latest": "10:00:00"}],
+            [{"rank": 1, "earliest": "09:00:00"}],
+        ):
+            with pytest.raises(DocumentError):
+                from_doc({**doc, "options": bad})
+
+    def test_prices_are_stored_as_exact_decimal_strings(self) -> None:
+        """Money never round-trips through a float: the document holds the decimal string."""
+        assert to_doc(_account())["defaultMaxPrice"] == "120.00"
+        assert to_doc(_rule_row())["maxPrice"] == "85.50"
+        assert to_doc(_explicit_row())["maxPrice"] is None
+        with pytest.raises(DocumentError):
+            from_doc({**to_doc(_rule_row()), "maxPrice": 85.5})
+        with pytest.raises(DocumentError):
+            from_doc({**to_doc(_rule_row()), "maxPrice": "NaN"})
 
     def test_wrong_value_types_rejected(self) -> None:
         doc = to_doc(_explicit_row())

@@ -9,8 +9,10 @@ a dict swap versus one Cosmos transactional batch with per-op IfMatch ETags.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
-from datetime import UTC, date, datetime, time
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from uuid import UUID
 
 from ..core.booking_cutoff import cutoff_instant
 from ..core.config import BookingCutoffConfig
@@ -21,6 +23,7 @@ from .models import (
     Actor,
     CourseAccount,
     OwnedBooking,
+    RankedWindow,
     RequestRow,
     RowFingerprint,
     RowId,
@@ -52,7 +55,8 @@ LEASABLE_STATUSES = frozenset({RowStatus.PENDING, RowStatus.BOOKED})
 LEASED_EDGES: dict[tuple[RowStatus, RowStatus], frozenset[Actor]] = {
     (RowStatus.PENDING, RowStatus.BOOKED): frozenset({Actor.BOOKING_RUNNER, Actor.WATCHER}),
     (RowStatus.BOOKED, RowStatus.BOOKED): frozenset({Actor.WATCHER}),  # upgrade
-    (RowStatus.BOOKED, RowStatus.PENDING): frozenset({Actor.WATCHER}),  # + needs_reconcile
+    # watcher: + needs_reconcile (M2); runner + watcher: group_downgrade (§16.4)
+    (RowStatus.BOOKED, RowStatus.PENDING): frozenset({Actor.WATCHER, Actor.BOOKING_RUNNER}),
     # watcher: external (vanish); web: the §8.5 managed cancel (user / already_gone)
     (RowStatus.BOOKED, RowStatus.CANCELLED): frozenset({Actor.WATCHER, Actor.WEB}),
 }
@@ -92,6 +96,28 @@ def cutoff_at(*, timezone: str, day: date, cutoff: BookingCutoffConfig) -> datet
     return cutoff_instant(day, timezone=timezone, cutoff=cutoff).astimezone(UTC)
 
 
+@dataclass(frozen=True, slots=True)
+class RowIntent:
+    """What a row asks for (§16.2): its ranked options at this course, party, price override and
+    group. A rule row copies it from its rule on create, reactivate and rule edit."""
+
+    options: tuple[RankedWindow, ...]
+    party_size: int
+    max_price: Decimal | None = None
+    group_id: UUID | None = None
+    group_rank: int | None = None
+
+
+def rule_intent(rule: StandingRule) -> RowIntent:
+    return RowIntent(
+        options=rule.options,
+        party_size=rule.party_size,
+        max_price=rule.max_price,
+        group_id=rule.group_id,
+        group_rank=rule.group_rank,
+    )
+
+
 def new_row(
     *,
     row_id: RowId,
@@ -99,8 +125,7 @@ def new_row(
     timezone: str,
     cutoff: BookingCutoffConfig,
     target_date: date,
-    window: tuple[time, time],
-    party_size: int,
+    intent: RowIntent,
     status: RowStatus,
     source: RowSource,
     rule_id: RuleId | None,
@@ -111,15 +136,17 @@ def new_row(
         course_id=account.course_id,
         target_date=target_date,
         timezone=timezone,
-        window_earliest=window[0],
-        window_latest=window[1],
-        party_size=party_size,
         status=status,
         source=source,
         cutoff_at=cutoff_at(timezone=timezone, day=target_date, cutoff=cutoff),
         request_id=row_request_id(row_id),
         version=1,
         rule_id=rule_id,
+        options=intent.options,
+        party_size=intent.party_size,
+        max_price=intent.max_price,
+        group_id=intent.group_id,
+        group_rank=intent.group_rank,
     )
 
 
@@ -204,9 +231,11 @@ def restorable_rule_row(
             check_transition(row, target, actor=Actor.MATERIALIZER, now=now)
             restored = replace(
                 restored,
-                window_earliest=rule.window_earliest,
-                window_latest=rule.window_latest,
+                options=rule.options,
                 party_size=rule.party_size,
+                max_price=rule.max_price,
+                group_id=rule.group_id,
+                group_rank=rule.group_rank,
             )
         return (row, restored)
     return None

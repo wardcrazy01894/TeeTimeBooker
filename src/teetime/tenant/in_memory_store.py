@@ -26,10 +26,11 @@ Not durable: state lives for the process. Production multi-user state is Cosmos 
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time
-from uuid import uuid4
+from datetime import date, datetime
+from decimal import Decimal
+from uuid import UUID, uuid4
 
 from ..core.config import BookingCutoffConfig
 from ..core.models import CourseId
@@ -44,6 +45,7 @@ from .models import (
     CourseAccountId,
     EventRow,
     OwnedBooking,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -69,6 +71,7 @@ from .semantics import (
     LEASABLE_STATUSES,
     NOT_FOUND,
     SOFT_AUTH_FAILURE_LIMIT,
+    RowIntent,
     RowWrite,
     becomes_bookable,
     fingerprint_matches,
@@ -77,6 +80,7 @@ from .semantics import (
     outcome_row,
     restorable_rule_row,
     rule_covers_row,
+    rule_intent,
     uncovered_reason,
     unleased_write,
     upserted_rule,
@@ -212,8 +216,7 @@ class InMemoryTenantStore:
         row_id: RowId,
         account: CourseAccount,
         target_date: date,
-        window: tuple[time, time],
-        party_size: int,
+        intent: RowIntent,
         status: RowStatus,
         source: RowSource,
         rule_id: RuleId | None,
@@ -224,8 +227,7 @@ class InMemoryTenantStore:
             timezone=self.course_timezone(account.course_id),
             cutoff=self._cutoff,
             target_date=target_date,
-            window=window,
-            party_size=party_size,
+            intent=intent,
             status=status,
             source=source,
             rule_id=rule_id,
@@ -307,6 +309,17 @@ class InMemoryTenantStore:
             ):
                 out.append(EventRow(row=row, account=account))
         return out
+
+    async def rows_in_groups(self, keys: Collection[tuple[UUID, date]]) -> list[RequestRow]:
+        wanted = set(keys)
+        return sorted(
+            (
+                r
+                for r in self._rows.values()
+                if r.group_id is not None and (r.group_id, r.target_date) in wanted
+            ),
+            key=lambda r: r.id,
+        )
 
     async def claim_rows(
         self,
@@ -556,8 +569,7 @@ class InMemoryTenantStore:
             row_id=row_id,
             account=account,
             target_date=target_date,
-            window=(rule.window_earliest, rule.window_latest),
-            party_size=rule.party_size,
+            intent=rule_intent(rule),
             status=RowStatus.SUPERSEDED if slot_held else RowStatus.PENDING,
             source=RowSource.RULE,
             rule_id=rule.id,
@@ -586,9 +598,11 @@ class InMemoryTenantStore:
             status=target,
             status_reason=None,
             superseded_from=None,
-            window_earliest=rule.window_earliest,
-            window_latest=rule.window_latest,
+            options=rule.options,
             party_size=rule.party_size,
+            max_price=rule.max_price,
+            group_id=rule.group_id,
+            group_rank=rule.group_rank,
             version=row.version + 1,
         )
         self._commit([(row, new)])
@@ -626,9 +640,11 @@ class InMemoryTenantStore:
         self._guard_rule_row_may_become_active(stored)
         new = replace(
             self._unleased_write(stored, now),
-            window_earliest=rule.window_earliest,
-            window_latest=rule.window_latest,
+            options=rule.options,
             party_size=rule.party_size,
+            max_price=rule.max_price,
+            group_id=rule.group_id,
+            group_rank=rule.group_rank,
             version=stored.version + 1,
         )
         self._commit([(stored, new)])
@@ -724,18 +740,25 @@ class InMemoryTenantStore:
         user_id: UserId,
         account_id: CourseAccountId,
         target_date: date,
-        window_earliest: time,
-        window_latest: time,
+        options: tuple[RankedWindow, ...],
         party_size: int,
         now: datetime,
+        max_price: Decimal | None = None,
+        group_id: UUID | None = None,
+        group_rank: int | None = None,
     ) -> RequestRow:
         account = self._account_for_user(account_id, user_id)
         row = self._new_row(
             row_id=RowId(uuid4()),
             account=account,
             target_date=target_date,
-            window=(window_earliest, window_latest),
-            party_size=party_size,
+            intent=RowIntent(
+                options=options,
+                party_size=party_size,
+                max_price=max_price,
+                group_id=group_id,
+                group_rank=group_rank,
+            ),
             status=RowStatus.PENDING,
             source=RowSource.EXPLICIT,
             rule_id=None,

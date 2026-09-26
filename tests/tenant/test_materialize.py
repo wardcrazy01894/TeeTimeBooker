@@ -38,6 +38,7 @@ from teetime.tenant.materialize import (
 from teetime.tenant.models import (
     USER_WITHDRAW_REASON,
     Actor,
+    RankedWindow,
     RequestRow,
     RowId,
     RowSource,
@@ -219,8 +220,13 @@ def _pure_row(
         course_id=MB,
         target_date=target,
         timezone=TZ,
-        window_earliest=time(8, 0),
-        window_latest=time(10, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(8, 0),
+                time(10, 0),
+            ),
+        ),
         party_size=2,
         status=status,
         source=source,
@@ -238,8 +244,13 @@ def _pure_rule(rule_id: RuleId | None = None) -> StandingRule:
         id=rule_id or RuleId(uuid4()),
         course_account_id=cast(Any, uuid4()),
         weekday=TARGET.weekday(),
-        window_earliest=time(8, 0),
-        window_latest=time(10, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(8, 0),
+                time(10, 0),
+            ),
+        ),
         party_size=2,
         active=True,
         materialized_through=None,
@@ -562,13 +573,15 @@ async def test_rule_window_edit_updates_pending_only() -> None:
     assert superseded.status is RowStatus.SUPERSEDED
 
     stored = await _stored_rule(s, rule)
-    edited = replace(stored, window_latest=time(11, 0), party_size=3)
+    edited = replace(
+        stored, options=(RankedWindow(1, stored.options[0].earliest, time(11, 0)),), party_size=3
+    )
     report = await _edit(s, stored, edited, t, policy=wide)
     assert report.rewritten == (plain.id,)
     assert report.skipped_leased == (leased.id,)
     assert report.inserted == ()  # the horizon was already full
     after = await _own_row(s, t, rule, days[3])
-    assert (after.window_latest, after.party_size, after.version) == (
+    assert (after.options[0].latest, after.party_size, after.version) == (
         time(11, 0),
         3,
         plain.version + 1,
@@ -577,7 +590,7 @@ async def test_rule_window_edit_updates_pending_only() -> None:
     for before in (booked, skipped, superseded):
         assert await _get(s, before) == before
     still_leased = await _get(s, leased)
-    assert (still_leased.window_latest, still_leased.party_size, still_leased.version) == (
+    assert (still_leased.options[0].latest, still_leased.party_size, still_leased.version) == (
         time(10, 0),
         2,
         leased.version,
@@ -730,12 +743,17 @@ async def test_deactivate_then_reactivate_rematerializes() -> None:
     stored = await _stored_rule(s, rule)
     await _edit(s, stored, replace(stored, active=False), t)
     inactive = await _stored_rule(s, rule)
-    revived = replace(inactive, active=True, window_earliest=time(7, 0), party_size=3)
+    revived = replace(
+        inactive,
+        active=True,
+        options=(RankedWindow(1, time(7, 0), inactive.options[0].latest),),
+        party_size=3,
+    )
     report = await _edit(s, inactive, revived, t)
     assert len(report.reactivated) == len(SATURDAYS)
     for day in SATURDAYS:
         own = await _own_row(s, t, rule, day)
-        assert (own.status, own.window_earliest, own.party_size) == (
+        assert (own.status, own.options[0].earliest, own.party_size) == (
             RowStatus.PENDING,
             time(7, 0),
             3,

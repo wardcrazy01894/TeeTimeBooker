@@ -36,6 +36,7 @@ from teetime.tenant.models import (
     CourseAccount,
     OwnedBooking,
     OwnedBookingId,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowSource,
@@ -185,8 +186,13 @@ async def _seed_rule(store: InMemoryTenantStore, m: Member, *, weekday: int = SA
             id=RuleId(uuid4()),
             course_account_id=m.account.id,
             weekday=weekday,
-            window_earliest=time(8, 0),
-            window_latest=time(10, 0),
+            options=(
+                RankedWindow(
+                    1,
+                    time(8, 0),
+                    time(10, 0),
+                ),
+            ),
             party_size=2,
             active=True,
             materialized_through=None,
@@ -419,7 +425,7 @@ async def test_rule_create_materializes(
     assert r.status_code == 303
     assert r.headers["location"].startswith("/rules")
     (rule,) = await _rules(store, member)
-    assert (rule.weekday, rule.window_earliest, rule.window_latest, rule.party_size) == (
+    assert (rule.weekday, rule.options[0].earliest, rule.options[0].latest, rule.party_size) == (
         SAT,
         time(8, 0),
         time(10, 0),
@@ -469,7 +475,7 @@ async def test_rule_window_edit_rewrites_pending_rows(
     r = await _post(client, f"/rules/{rule.id}", {**edit, "version": str(rule.version)})
     assert r.status_code == 303
     rows = await _rows(store, member)
-    assert {(r.window_earliest, r.window_latest, r.party_size) for r in rows} == {
+    assert {(r.options[0].earliest, r.options[0].latest, r.party_size) for r in rows} == {
         (time(9, 0), time(11, 0), 3)
     }
 
@@ -528,7 +534,7 @@ async def test_add_one_off_and_withdraw_it(
     )
     assert r.status_code == 303
     one_off = await _row_on(store, member, OCT10, source=RowSource.EXPLICIT)
-    assert (one_off.status, one_off.window_earliest, one_off.party_size) == (
+    assert (one_off.status, one_off.options[0].earliest, one_off.party_size) == (
         RowStatus.PENDING,
         time(7, 30),
         4,

@@ -46,10 +46,11 @@ Not wired into any command yet (MU-16).
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
@@ -73,6 +74,7 @@ from ..models import (
     CourseAccountId,
     EventRow,
     OwnedBooking,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -98,6 +100,7 @@ from ..semantics import (
     LEASABLE_STATUSES,
     NOT_FOUND,
     SOFT_AUTH_FAILURE_LIMIT,
+    RowIntent,
     becomes_bookable,
     fingerprint_matches,
     ledger_entries,
@@ -105,6 +108,7 @@ from ..semantics import (
     outcome_row,
     restorable_rule_row,
     rule_covers_row,
+    rule_intent,
     uncovered_reason,
     unleased_write,
     upserted_rule,
@@ -187,6 +191,7 @@ QUERIED_PATHS = frozenset(
         "/oauthProvider",
         "/oauthSubject",
         "/usernameHash",
+        "/groupId",
     }
 )
 
@@ -802,8 +807,7 @@ class CosmosTenantStore:
         row_id: RowId,
         account: CourseAccount,
         target_date: date,
-        window: tuple[time, time],
-        party_size: int,
+        intent: RowIntent,
         status: RowStatus,
         source: RowSource,
         rule_id: RuleId | None,
@@ -814,8 +818,7 @@ class CosmosTenantStore:
             timezone=self.course_timezone(account.course_id),
             cutoff=self._cutoff,
             target_date=target_date,
-            window=window,
-            party_size=party_size,
+            intent=intent,
             status=status,
             source=source,
             rule_id=rule_id,
@@ -866,6 +869,19 @@ class CosmosTenantStore:
         # Belt and braces for a non-atomic deactivation (§7.7): never offer the booker a row of
         # an inactive rule, even before the materializer withdrew it.
         return await self._event_rows(found, lambda row, covered: row.cutoff_at > now and covered)
+
+    async def rows_in_groups(self, keys: Collection[tuple[UUID, date]]) -> list[RequestRow]:
+        found: list[RequestRow] = []
+        for group_id, day in sorted(keys, key=lambda k: (str(k[0]), k[1])):
+            found += [
+                s.item
+                for s in await self._rows_where(
+                    "c.groupId = @group AND c.targetDate = @day",
+                    group=str(group_id),
+                    day=day.isoformat(),
+                )
+            ]
+        return sorted(found, key=lambda r: r.id)
 
     async def claim_rows(
         self,
@@ -1220,8 +1236,7 @@ class CosmosTenantStore:
             row_id=row_id,
             account=account,
             target_date=target_date,
-            window=(rule.window_earliest, rule.window_latest),
-            party_size=rule.party_size,
+            intent=rule_intent(rule),
             status=RowStatus.SUPERSEDED if slot_held else RowStatus.PENDING,
             source=RowSource.RULE,
             rule_id=rule.id,
@@ -1266,9 +1281,11 @@ class CosmosTenantStore:
             status=target,
             status_reason=None,
             superseded_from=None,
-            window_earliest=rule.window_earliest,
-            window_latest=rule.window_latest,
+            options=rule.options,
             party_size=rule.party_size,
+            max_price=rule.max_price,
+            group_id=rule.group_id,
+            group_rank=rule.group_rank,
             version=row.version + 1,
         )
         await self._commit([(stored, new)])
@@ -1299,9 +1316,11 @@ class CosmosTenantStore:
         rule = await self._stored_rule_matching(rule)
         new = replace(
             unleased_write(current, now),
-            window_earliest=rule.window_earliest,
-            window_latest=rule.window_latest,
+            options=rule.options,
             party_size=rule.party_size,
+            max_price=rule.max_price,
+            group_id=rule.group_id,
+            group_rank=rule.group_rank,
             version=current.version + 1,
         )
         # pending -> pending does not pass becomes_bookable, so the guard is applied here.
@@ -1680,18 +1699,25 @@ class CosmosTenantStore:
         user_id: UserId,
         account_id: CourseAccountId,
         target_date: date,
-        window_earliest: time,
-        window_latest: time,
+        options: tuple[RankedWindow, ...],
         party_size: int,
         now: datetime,
+        max_price: Decimal | None = None,
+        group_id: UUID | None = None,
+        group_rank: int | None = None,
     ) -> RequestRow:
         account = await self._account_for_user(account_id, user_id)
         row = self._new_row(
             row_id=RowId(uuid4()),
             account=account,
             target_date=target_date,
-            window=(window_earliest, window_latest),
-            party_size=party_size,
+            intent=RowIntent(
+                options=options,
+                party_size=party_size,
+                max_price=max_price,
+                group_id=group_id,
+                group_rank=group_rank,
+            ),
             status=RowStatus.PENDING,
             source=RowSource.EXPLICIT,
             rule_id=None,

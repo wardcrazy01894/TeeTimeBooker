@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from teetime.core.adapter import AdapterError, CourseAdapter
@@ -39,6 +39,7 @@ from teetime.tenant.models import (
     AccountProvenance,
     AccountStatus,
     CourseAccount,
+    RankedWindow,
     RequestRow,
     User,
     UserId,
@@ -117,6 +118,8 @@ async def seed_account(
     n: int,
     password: str | None = None,
     ciphertext: str | None = None,
+    options: tuple[RankedWindow, ...] | None = None,
+    group_id: UUID | None = None,
 ) -> Seeded:
     """A user + an MB account (password encrypted with AAD bound to the account) + an explicit
     PENDING row for TARGET in WINDOW."""
@@ -148,10 +151,11 @@ async def seed_account(
         user_id=user.id,
         account_id=account.id,
         target_date=TARGET,
-        window_earliest=WINDOW[0],
-        window_latest=WINDOW[1],
+        options=options if options is not None else (RankedWindow(1, WINDOW[0], WINDOW[1]),),
         party_size=2,
         now=SETUP_NOW,
+        group_id=group_id,
+        group_rank=None if group_id is None else 1,
     )
     return Seeded(user=user, account=account, row=row, password=pw)
 

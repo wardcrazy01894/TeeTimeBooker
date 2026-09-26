@@ -11,12 +11,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from decimal import Decimal
 from enum import StrEnum
 from typing import NewType
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
-from ..core.models import CourseId, RequestId, derive_request_id
+from ..core.models import CourseId, RequestId, TimeWindow, derive_request_id
 
 UserId = NewType("UserId", UUID)
 CourseAccountId = NewType("CourseAccountId", UUID)
@@ -133,6 +134,9 @@ class BookingState(StrEnum):
     CANCELLED_EXTRA = "cancelled_extra"
     CANCELLED_USER = "cancelled_user"
     CANCELLED_UPGRADE = "cancelled_upgrade"
+    # §16.4: the worse booking of a group, cancelled by the collapse. Like cancelled_upgrade its
+    # disappearance is bot-caused, never an external cancel (§7.5 exclusion).
+    CANCELLED_GROUP = "cancelled_group"
     VANISHED = "vanished"
 
 
@@ -145,6 +149,55 @@ class User:
     display_name: str
     role: UserRole
     status: UserStatus
+
+
+# §16.1: the per-player cap a new course account starts with (operator directive 2026-09-26).
+DEFAULT_MAX_PRICE = Decimal("100.00")
+
+
+# §16.4: the status_reason of the booked -> pending collapse of a group's worse booking.
+GROUP_DOWNGRADE_REASON = "group_downgrade"
+
+
+@dataclass(frozen=True, slots=True)
+class RankedWindow:
+    """One option of a user's ranked list at THIS course (§16.2). ``rank`` is its 1-based position
+    in the user's whole list, across courses, so a row's ranks are ascending but need not be
+    contiguous."""
+
+    rank: int
+    earliest: time
+    latest: time
+
+
+def validate_options(options: tuple[RankedWindow, ...]) -> tuple[RankedWindow, ...]:
+    """Non-empty, ranks >= 1 and strictly ascending, and each window earliest <= latest (the
+    engine's ``TimeWindow`` rule). Options may overlap; ``achieved_rank`` resolves an overlap."""
+    if not options:
+        raise ValueError("at least one time window is required")
+    previous = 0
+    for option in options:
+        if option.rank <= previous:
+            raise ValueError("option ranks must be >= 1, unique and in ascending order")
+        if option.earliest > option.latest:
+            raise ValueError("a time window's earliest must not be after its latest")
+        previous = option.rank
+    return options
+
+
+def options_time_windows(options: tuple[RankedWindow, ...]) -> tuple[TimeWindow, ...]:
+    """The engine request's windows, in rank order: ``rank_slots_for_request`` prefers
+    earlier-listed windows, so within one course the user's order is kept with no engine change."""
+    return tuple(TimeWindow(earliest=o.earliest, latest=o.latest) for o in options)
+
+
+def achieved_rank(options: tuple[RankedWindow, ...], tee_time: time) -> int | None:
+    """The rank a booked tee time achieved: the FIRST option in rank order whose window contains
+    it, exactly ``core.slot_utils._matching_window``'s first-match rule (review round 1, MF4)."""
+    for option in options:
+        if option.earliest <= tee_time <= option.latest:
+            return option.rank
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +218,9 @@ class CourseAccount:
     otp_mailbox: str | None = None
     consecutive_soft_auth_failures: int = 0
     verified_at: datetime | None = None
+    # §16.2 (MU-R1): the per-player green-fee cap used when a request sets no override. Shown
+    # pre-filled on the booking form; per person, per course.
+    default_max_price: Decimal = DEFAULT_MAX_PRICE
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,12 +230,19 @@ class StandingRule:
     id: RuleId
     course_account_id: CourseAccountId
     weekday: int  # Python date.weekday(): Mon=0 .. Sun=6
-    window_earliest: time
-    window_latest: time
+    options: tuple[RankedWindow, ...]  # §16.2: this course's options, ascending rank
     party_size: int
     active: bool
     materialized_through: date | None
     version: int
+    # §16.2 (MU-R1): None = the account's ``default_max_price`` at run time.
+    max_price: Decimal | None = None
+    # §16.2: one weekly group = one rule per course sharing ``group_id``; copied onto its rows.
+    group_id: UUID | None = None
+    group_rank: int | None = None
+
+    def __post_init__(self) -> None:
+        validate_options(self.options)
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,8 +261,7 @@ class RequestRow:
     course_id: CourseId
     target_date: date
     timezone: str
-    window_earliest: time
-    window_latest: time
+    options: tuple[RankedWindow, ...]  # §16.2: this course's options, ascending rank
     party_size: int
     status: RowStatus
     source: RowSource
@@ -228,6 +290,17 @@ class RequestRow:
     last_outcome_at: datetime | None = None
     group_id: UUID | None = None
     group_rank: int | None = None
+    # §16.2 (MU-R1): None = the account's ``default_max_price`` at run time.
+    max_price: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        validate_options(self.options)
+
+
+def row_max_price(row: RequestRow, account: CourseAccount) -> Decimal:
+    """The per-player cap a row books under (§16.2): its own override, else its course account's
+    default. Never None, so the tenant path always books under a cap."""
+    return row.max_price if row.max_price is not None else account.default_max_price
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,7 +442,9 @@ _TRANSITION_OWNERS: dict[tuple[RowStatus, RowStatus], frozenset[Actor]] = {
     (_W, _S): frozenset({Actor.MATERIALIZER}),
     (_B, _B): frozenset({Actor.WATCHER}),  # upgrade, via UpgradeOrchestrator under the lease
     (_B, RowStatus.CANCELLED): frozenset({Actor.WEB, Actor.WATCHER}),
-    (_B, _P): frozenset({Actor.WATCHER}),  # upgrade cancelled the old slot, rebook failed
+    # WATCHER: upgrade cancelled the old slot, rebook failed (+ needs_reconcile). BOOKING_RUNNER
+    # only for the §16.4 group_downgrade reason (reason-scoped in check_transition).
+    (_B, _P): frozenset({Actor.WATCHER, Actor.BOOKING_RUNNER}),
     (_P, RowStatus.LOST): frozenset({Actor.WATCHER}),  # the finalizer
 }
 # Edges back INTO the active set (other than creation) that require the date not frozen.
@@ -451,6 +526,23 @@ _GUARDS = {
 }
 
 
+def _check_booked_to_pending(actor: Actor, *, reason: str | None, needs_reconcile: bool) -> None:
+    """booked -> pending has two meanings: the M2 failed-rebook edge (watcher, needs_reconcile
+    required) and the §16.4 group_downgrade (runner or watcher, needs_reconcile forbidden)."""
+    if reason == GROUP_DOWNGRADE_REASON:
+        # §16.4: a known outcome (the bot cancelled its own worse booking of a group). The
+        # reconcile-adoption paths are for ambiguous outcomes, so the flag must stay off.
+        if needs_reconcile:
+            raise TransitionRefusedError("a group_downgrade must not set needs_reconcile")
+    else:
+        if actor is not Actor.WATCHER:
+            raise TransitionRefusedError(
+                f"{actor} may write booked -> pending only as a group_downgrade"
+            )
+        if not needs_reconcile:
+            raise TransitionRefusedError("booked -> pending must set needs_reconcile (M2)")
+
+
 def check_transition(
     row: RequestRow,
     to: RowStatus,
@@ -489,8 +581,8 @@ def check_transition(
         prior = row.superseded_from or _P
         if to is not prior:
             raise TransitionRefusedError(f"row was superseded from {prior}; it returns to {prior}")
-    if edge == (_B, _P) and not needs_reconcile:
-        raise TransitionRefusedError("booked -> pending must set needs_reconcile (M2)")
+    if edge == (_B, _P):
+        _check_booked_to_pending(actor, reason=reason, needs_reconcile=needs_reconcile)
     guard = _GUARDS.get(edge)
     if guard is not None:
         guard(row, actor, reason)

@@ -27,6 +27,7 @@ from teetime.tenant.models import (
     EventRow,
     OwnedBooking,
     OwnedBookingId,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowId,
@@ -85,6 +86,7 @@ def row(
     upgrade_started_at: datetime | None = None,
     lease: tuple[str, datetime] | None = None,
     row_id: RowId | None = None,
+    options: tuple[RankedWindow, ...] | None = None,
 ) -> RequestRow:
     rid = row_id if row_id is not None else RowId(uuid4())
     if status is RowStatus.BOOKED and booked_tee is None:
@@ -95,8 +97,7 @@ def row(
         course_id=acct.course_id,
         target_date=target,
         timezone=TZ,
-        window_earliest=window[0],
-        window_latest=window[1],
+        options=options if options is not None else (RankedWindow(1, window[0], window[1]),),
         party_size=party_size,
         status=status,
         source=RowSource.EXPLICIT,

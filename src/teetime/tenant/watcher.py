@@ -38,11 +38,15 @@ from ..core.models import (
 from ..core.slot_utils import midpoint_distance_minutes, rank_slots_for_request
 from .models import (
     BookingState,
+    CourseAccount,
     EventRow,
     OwnedBooking,
     RequestRow,
     ReservationSnapshot,
     RowStatus,
+    achieved_rank,
+    options_time_windows,
+    row_max_price,
 )
 
 # Per-account reconcile cadence: log in when (hash(account_id) + run_index) % N == 0, i.e.
@@ -106,7 +110,7 @@ def _local(value: datetime, row: RequestRow) -> datetime:
     return value.astimezone(ZoneInfo(row.timezone))
 
 
-def _ranking_request(row: RequestRow) -> BookingRequest:
+def _ranking_request(row: RequestRow, account: CourseAccount) -> BookingRequest:
     """The row as a ``BookingRequest`` for ``rank_slots_for_request`` ONLY (never sent to an
     adapter): synthesized players sized to the party and the row's single window. ``holes=0``
     (any) is the only sensible value: ``RequestRow`` has no ``holes`` field, so there is nothing
@@ -115,12 +119,13 @@ def _ranking_request(row: RequestRow) -> BookingRequest:
     return BookingRequest(
         request_id=row.request_id,
         target_dates=(row.target_date,),
-        time_windows=(TimeWindow(earliest=row.window_earliest, latest=row.window_latest),),
+        time_windows=options_time_windows(row.options),
         players=tuple(
             Player(first_name=f"p{i}", last_name="tenant", email="") for i in range(row.party_size)
         ),
         course_preferences=(row.course_id,),
         holes=0,
+        max_price_per_player=row_max_price(row, account),
     )
 
 
@@ -156,15 +161,29 @@ def _held_slot(row: RequestRow, tee_time: datetime) -> TeeTimeSlot:
 
 
 def _has_upgrade_candidate(row: RequestRow, ranked: Sequence[TeeTimeSlot]) -> bool:
-    """The ``UpgradeOrchestrator`` within-window rule: a candidate STRICTLY closer to the row
-    window's midpoint than the held tee time. Ties never upgrade (the cancel-before-book
-    no-booking window is not worth an equal slot). Tenant rows carry ONE window, so the
-    higher-tier leg of that rule has nothing to compare."""
+    """The ``UpgradeOrchestrator`` rule over the row's ranked options (§16.2): a candidate in a
+    BETTER-ranked option always beats the held tee time (the higher-tier leg); one in the SAME
+    option must be STRICTLY closer to that option's midpoint (ties never upgrade: the
+    cancel-before-book no-booking window is not worth an equal slot); a worse option never does.
+    Ranks are resolved first-match in rank order, exactly as the engine ranks windows."""
     if row.booked_tee_time is None:
         return False
-    window = TimeWindow(earliest=row.window_earliest, latest=row.window_latest)
-    held = midpoint_distance_minutes(_held_slot(row, row.booked_tee_time), window)
-    return any(midpoint_distance_minutes(c, window) < held for c in ranked)
+    held_slot = _held_slot(row, row.booked_tee_time)
+    held_rank = achieved_rank(row.options, held_slot.tee_time.time())
+    for candidate in ranked:
+        rank = achieved_rank(row.options, candidate.tee_time.time())
+        if rank is None:
+            continue
+        if held_rank is None or rank < held_rank:
+            return True
+        if rank == held_rank:
+            (option,) = [o for o in row.options if o.rank == rank]
+            window = TimeWindow(earliest=option.earliest, latest=option.latest)
+            if midpoint_distance_minutes(candidate, window) < midpoint_distance_minutes(
+                held_slot, window
+            ):
+                return True
+    return False
 
 
 def needs_login(
@@ -194,7 +213,7 @@ def needs_login(
     r, acct = row.row, row.account
     if snapshot is not None and snapshot.course_account_id != acct.id:
         raise ValueError("snapshot belongs to another account")
-    ranked = rank_slots_for_request(list(group_slots), _ranking_request(r))
+    ranked = rank_slots_for_request(list(group_slots), _ranking_request(r, acct))
     booked = r.status is RowStatus.BOOKED
     snapshot_stale = snapshot is None or now - snapshot.observed_at > timedelta(
         seconds=MAX_BOOKED_SNAPSHOT_AGE_S

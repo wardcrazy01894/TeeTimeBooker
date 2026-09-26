@@ -26,6 +26,7 @@ from teetime.tenant.models import (
     CourseAccount,
     OwnedBooking,
     OwnedBookingId,
+    RankedWindow,
     RequestRow,
     RowStatus,
     RuleId,
@@ -114,8 +115,13 @@ async def _booked(
             id=RuleId(uuid4()),
             course_account_id=account.id,
             weekday=OCT3.weekday(),
-            window_earliest=time(8, 0),
-            window_latest=time(10, 0),
+            options=(
+                RankedWindow(
+                    1,
+                    time(8, 0),
+                    time(10, 0),
+                ),
+            ),
             party_size=2,
             active=True,
             materialized_through=None,

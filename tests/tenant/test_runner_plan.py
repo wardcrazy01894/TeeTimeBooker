@@ -7,12 +7,16 @@ claim, decrypt or CAPTCHA solve: one read, then the same pure allocation the run
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import datetime, time, timedelta
 from typing import Any
+from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from teetime.core.models import BookingRequest, BookingResult, CourseId, TeeTimeSlot
 from teetime.courses.foreup.token_pool import SharedCaptchaPool
 from teetime.dev.blind_fake_adapter import BlindFakeAdapter
+from teetime.tenant.models import RankedWindow, RowStatus
 from teetime.tenant.runner import plan_release_event, run_release_event, tenant_scheduler
 
 from .runner_builders import (
@@ -23,6 +27,7 @@ from .runner_builders import (
     POLICIES,
     T0,
     TARGET,
+    TZ,
     WINDOW,
     CountingProvider,
     NullUserNotifier,
@@ -97,7 +102,11 @@ async def test_tenant_plan_makes_no_foreup_call() -> None:
     assert first.allowlist_times[0] == "08:15"  # rank-0 goes to the week's first pick
     assert len(first.allowlist_times) == len(second.allowlist_times) == 3
     assert not set(first.allowlist_times) & set(second.allowlist_times)  # disjoint (§5.4)
-    assert (first.window, first.party_size, first.search_only) == (WINDOW, 2, False)
+    assert (first.options, first.party_size, first.search_only) == (
+        (RankedWindow(1, *WINDOW),),
+        2,
+        False,
+    )
     lines = plan.render()
     assert lines[0].startswith("tenant-plan mb0600et: release 06:00 America/New_York")
     assert any(f"row {a.row.id}" in line for line in lines)
@@ -153,3 +162,63 @@ async def test_runner_accepts_an_async_pool_factory_called_after_the_claim() -> 
     assert names_before == ["load_event_rows", "claim_rows"]
     assert at < T0 - timedelta(seconds=121)
     assert provider.calls == 5
+
+
+# --- MU-R2 group floor (§16.3) -------------------------------------------------------------
+
+
+def _book_in_memory(store: Any, seeded: Any, tee: datetime) -> None:
+    """Test-only: mark a seeded row BOOKED directly in the reference store (the booking path
+    itself is covered elsewhere); only its status and tee time matter to the floor."""
+    row = store._rows[seeded.row.id]
+    store._rows[row.id] = replace(row, status=RowStatus.BOOKED, booked_tee_time=tee)
+
+
+async def test_plan_applies_group_floor_from_a_sibling_booking() -> None:
+    """The operator's example: A 9-10 (rank 1) > B 9-10 (rank 2) > A 8-9 (rank 3). With B booked
+    at rank 2, A is attempted ONLY for its rank-1 window; with a rank-1 booking, not at all."""
+    inner = new_store()
+    group = uuid4()
+    a = await seed_account(
+        inner,
+        n=1,
+        group_id=group,
+        options=(RankedWindow(1, time(9), time(10)), RankedWindow(3, time(8), time(9))),
+    )
+    b = await seed_account(
+        inner, n=2, group_id=group, options=(RankedWindow(2, time(9), time(10)),)
+    )
+    _book_in_memory(inner, b, datetime.combine(TARGET, time(9, 15), tzinfo=ZoneInfo(TZ)))
+    clock = race_clock(before_t0_s=9 * 60)
+    factory = ScriptedFactory(adapters={a.account.id: NoNetworkBlindAdapter()})  # type: ignore[dict-item]
+
+    plan = await plan_release_event(
+        event=EVENT,
+        policies=POLICIES,
+        store=inner,
+        clock=clock,
+        scheduler=tenant_scheduler(),
+        adapter_factory=factory,
+    )
+    (planned,) = plan.rows
+    assert planned.row_id == a.row.id
+    assert planned.options == (RankedWindow(1, time(9), time(10)),)
+
+
+async def test_plan_skips_a_row_no_option_of_which_beats_the_sibling() -> None:
+    inner = new_store()
+    group = uuid4()
+    a = await seed_account(
+        inner, n=1, group_id=group, options=(RankedWindow(2, time(9), time(10)),)
+    )
+    b = await seed_account(inner, n=2, group_id=group, options=(RankedWindow(1, time(8), time(9)),))
+    _book_in_memory(inner, b, datetime.combine(TARGET, time(8, 30), tzinfo=ZoneInfo(TZ)))
+    plan = await plan_release_event(
+        event=EVENT,
+        policies=POLICIES,
+        store=inner,
+        clock=race_clock(before_t0_s=9 * 60),
+        scheduler=tenant_scheduler(),
+        adapter_factory=ScriptedFactory(adapters={a.account.id: NoNetworkBlindAdapter()}),  # type: ignore[dict-item]
+    )
+    assert plan.rows == ()
