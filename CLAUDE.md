@@ -429,7 +429,7 @@ exclusion, see the inline note), `dry_run_gate` (§7.8: never upgrade / reconcil
 rest; ONE concrete class per inner capability set — 16 — with NO `__getattr__`, so
 `runtime_checkable` `isinstance`, which is `getattr_static`-based on >=3.12, reads the proxy
 exactly like the inner). Wall-clock comparisons convert to the row's course timezone first.
-Tests: `tests/tenant/test_watcher_{login,ownership,proxy}.py`. **MU-6 is DONE in code,
+Tests: `tests/tenant/test_watcher_{login,ownership,proxy}.py`. **MU-12 is DONE in code, UNWIRED to infra** (`src/teetime/web/`: FastAPI app factory, OAuth sign-in for Google and/or GitHub, INVITE-ONLY — the first sign-in binds the provider subject to a pre-invited user matched only on a VERIFIED email, `users.status` re-read on every request, 12 h absolute signed sessions, CSRF on every POST, CSP/HSTS/frame headers, `/healthz` with no store call, operator-only `/admin/users`; `teetime web` runs it with `basicConfig` then `install_log_redaction()` and registers the session/OAuth secrets as E7 literals; tenant store in memory until MU-16). **MU-6 is DONE in code,
 UNWIRED** (`tenant/materialize.py` is real; nothing calls it yet — the web (MU-13) and the tenant
 watcher tick (MU-10b) are its owners): `classify_date_history` (pure), `materialize_rule` (walks the
 FULL `[local_today, local_today + max(21, advance_days + 7)]` horizon every call), `apply_rule_edit`
@@ -472,6 +472,7 @@ in `core/` — never directly. This is the cut line for parallel work.
 | `uv run ruff format .`                   | Format.                                  |
 | `uv run teetime run --config config/local.toml --dry-run true` | One-shot booking attempt, no final POST. |
 | `uv run teetime show-config --config config/local.toml` | Print resolved AppConfig (with secrets redacted). |
+| `uv run teetime web --port 8000` | Serve the multi-user web app (MU-12; in-memory store, not deployed; env vars in README). |
 
 ## Architectural notes (non-obvious)
 

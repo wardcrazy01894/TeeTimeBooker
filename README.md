@@ -139,6 +139,27 @@ and `config/local.toml`, `watcher.enabled = true`). With `--dry-run true` it doe
 looking/ranking/logging but never books. When disabled, the command logs a warning and
 exits 0. `one_booking_policy` (cancel + rebook to a closer-to-midpoint slot) is **enabled** — the watcher upgrades a booked day if a better slot opens (per date — Sat and Sun independent). Real effect is prod-only (dry-run suppresses the cancel/book POSTs).
 
+### Multi-user web app (in development — MULTIUSER_PLAN.md)
+
+`teetime web` serves the invite-only website (FastAPI) with uvicorn. It is **not deployed yet**
+(the Container App lands in MU-15a) and, until the Cosmos store is wired (MU-16), keeps users and
+invites **in memory** — they reset on restart. Sign-in is OAuth only (Google and/or GitHub), and
+only an email the operator has invited on `/admin/users` can sign in. It fails closed if a
+required setting is missing:
+
+| Env var | Purpose |
+|---------|---------|
+| `TEETIME_PUBLIC_BASE_URL` | Public origin used to build the OAuth callback URL (one setting, so a custom domain later is one value) |
+| `WEB_SESSION_SECRET` | Signs the session cookie |
+| `OAUTH_GOOGLE_CLIENT_ID` / `OAUTH_GOOGLE_CLIENT_SECRET` | Google sign-in (optional; at least one provider is required) |
+| `OAUTH_GITHUB_CLIENT_ID` / `OAUTH_GITHUB_CLIENT_SECRET` | GitHub sign-in (optional; at least one provider is required) |
+| `TEETIME_OPERATOR_EMAIL` | The operator's email — the only account that can use `/admin/users` |
+| `TEETIME_WEB_DRY_RUN` | `true` (default) or `false`; in dry-run the site never cancels a real reservation |
+
+```bash
+uv run teetime web --host 127.0.0.1 --port 8000
+```
+
 ---
 
 ## Docker (v1)

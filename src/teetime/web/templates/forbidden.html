@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Not allowed · TeeTimeBooker{% endblock %}
+{% block content %}
+<h1>Not allowed</h1>
+<p class="reason">{{ reason }}</p>
+<p>If you were expecting access, ask the operator to invite the email address your sign-in provider has verified.</p>
+<p><a href="/login">Back to sign in</a></p>
+{% endblock %}

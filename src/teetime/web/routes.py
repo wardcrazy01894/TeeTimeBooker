@@ -4,7 +4,9 @@
 the framework, and a test asserts every non-GET route has ``csrf=True`` and every ``user`` route
 has an IDOR test (``test_route_rejects_other_users_row``).
 
-STUB — bound in MULTIUSER_PLAN MU-12..MU-14.
+The MU-12 rows are BOUND (``web/app.py``; ``tests/web/test_web_app.py`` pins that every MU-12
+row exists in the app with its method and that ``auth=NONE`` rows are exactly the public
+allowlist). The MU-13/MU-14 rows are still contract-only.
 """
 
 from __future__ import annotations
@@ -31,10 +33,12 @@ class RouteSpec:
 
 ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("GET", "/healthz", "healthz", AuthLevel.NONE, False, "MU-12"),
-    RouteSpec("GET", "/login", "login_start", AuthLevel.NONE, False, "MU-12"),
+    RouteSpec("GET", "/login", "login_page", AuthLevel.NONE, False, "MU-12"),
+    RouteSpec("GET", "/login/{provider}", "login_start", AuthLevel.NONE, False, "MU-12"),
     RouteSpec("GET", "/auth/{provider}/callback", "login_callback", AuthLevel.NONE, False, "MU-12"),
     RouteSpec("POST", "/logout", "logout", AuthLevel.USER, True, "MU-12"),
-    RouteSpec("GET", "/", "dashboard", AuthLevel.USER, False, "MU-13"),
+    # MU-12 serves a placeholder page here; MU-13 replaces it with the real dashboard.
+    RouteSpec("GET", "/", "dashboard", AuthLevel.USER, False, "MU-12"),
     RouteSpec("GET", "/accounts", "list_accounts", AuthLevel.USER, False, "MU-14"),
     RouteSpec("POST", "/accounts/connect", "connect_account", AuthLevel.USER, True, "MU-14"),
     RouteSpec("POST", "/accounts/{id}/reverify", "reverify_account", AuthLevel.USER, True, "MU-14"),
@@ -47,6 +51,7 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("POST", "/rows/{id}/unskip", "unskip_row", AuthLevel.USER, True, "MU-13"),
     RouteSpec("POST", "/rows/{id}/withdraw", "withdraw_row", AuthLevel.USER, True, "MU-13"),
     RouteSpec("POST", "/rows/{id}/cancel", "cancel_row", AuthLevel.USER, True, "MU-14"),
-    RouteSpec("GET", "/admin/users", "list_users", AuthLevel.OPERATOR, False, "MU-13"),
-    RouteSpec("POST", "/admin/users", "invite_user", AuthLevel.OPERATOR, True, "MU-13"),
+    # MU-12: invite by email + disable/enable by (provider, subject). MU-13 adds the listing.
+    RouteSpec("GET", "/admin/users", "admin_users", AuthLevel.OPERATOR, False, "MU-12"),
+    RouteSpec("POST", "/admin/users", "admin_users_action", AuthLevel.OPERATOR, True, "MU-12"),
 )
