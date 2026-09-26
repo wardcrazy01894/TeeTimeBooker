@@ -39,9 +39,11 @@ from ..models import (
     BookingState,
     CourseAccount,
     CourseAccountId,
+    EventRow,
     OwnedBooking,
     RequestRow,
     ReservationSnapshot,
+    RowFingerprint,
     RowId,
     RowSource,
     RowStatus,
@@ -860,3 +862,42 @@ def partition_key_of(doc: Mapping[str, object]) -> str:
         return _expect(str, doc[key])
     except KeyError as exc:
         raise DocumentError(f"document has no {key!r}") from exc
+
+
+# --- dispatch ----------------------------------------------------------------------------------
+
+type Persisted = (
+    CourseAccount
+    | StandingRule
+    | RequestRow
+    | SlotPointer
+    | RuleDayPointer
+    | OwnedBooking
+    | ReservationSnapshot
+    | User
+    | UniquenessClaim
+    | LoginProbe
+    | AuditRecord
+)
+
+
+def to_doc(obj: Persisted) -> dict[str, object]:
+    """The document for any persisted domain object (dispatch on its type)."""
+    raise NotImplementedError("MU-8a")
+
+
+def from_doc(doc: Mapping[str, object]) -> Stored[Persisted]:
+    """Read any document back (dispatch on its ``type`` discriminator)."""
+    raise NotImplementedError("MU-8a")
+
+
+def row_fingerprint_of(doc: Mapping[str, object]) -> RowFingerprint:
+    """The ``RowFingerprint`` (M5) of a stored ``row`` document."""
+    raise NotImplementedError("MU-8a")
+
+
+def event_row_from_docs(
+    row_doc: Mapping[str, object], account_doc: Mapping[str, object]
+) -> EventRow:
+    """Join a ``row`` and its ``account`` document into an ``EventRow`` (§4.2/§7.1)."""
+    raise NotImplementedError("MU-8a")

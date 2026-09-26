@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 from datetime import UTC, date, datetime, time, timedelta
+from enum import Enum
 from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
@@ -39,10 +40,12 @@ from teetime.tenant.cosmos.documents import (
     claim_key_hash,
     container_of,
     course_count_claim_key,
+    event_row_from_docs,
     from_account_doc,
     from_audit_doc,
     from_booking_doc,
     from_claim_doc,
+    from_doc,
     from_probe_doc,
     from_row_doc,
     from_rule_doc,
@@ -56,6 +59,7 @@ from teetime.tenant.cosmos.documents import (
     probe_bucket,
     probe_doc_id,
     row_doc_id,
+    row_fingerprint_of,
     rule_doc_id,
     ruleday_doc_id,
     slot_doc_id,
@@ -64,6 +68,7 @@ from teetime.tenant.cosmos.documents import (
     to_audit_doc,
     to_booking_doc,
     to_claim_doc,
+    to_doc,
     to_probe_doc,
     to_row_doc,
     to_rule_doc,
@@ -75,16 +80,21 @@ from teetime.tenant.cosmos.documents import (
     username_claim_key,
 )
 from teetime.tenant.models import (
+    CANCEL_REASONS,
+    SYSTEM_WITHDRAW_REASONS,
+    USER_WITHDRAW_REASON,
     AccountProvenance,
     AccountStatus,
     BookingSource,
     BookingState,
     CourseAccount,
     CourseAccountId,
+    EventRow,
     OwnedBooking,
     OwnedBookingId,
     RequestRow,
     ReservationSnapshot,
+    RowFingerprint,
     RowId,
     RowSource,
     RowStatus,
@@ -571,3 +581,270 @@ class TestGlobalKeys:
             assert partition_key_of(doc) == doc["pk"]
         with pytest.raises(DocumentError):
             container_of({"type": "mystery"})
+
+
+# --- dispatch, envelope validation, etag -------------------------------------------------------
+
+
+def _every_object() -> list[object]:
+    """One instance of EVERY persisted type (both row sources, every claim kind)."""
+    return [
+        _account(),
+        _rule(),
+        _rule_row(),
+        _explicit_row(),
+        _slot(),
+        _ruleday(),
+        _booking(),
+        _snapshot(),
+        _user(),
+        *(_claim(kind) for kind in ClaimKind),
+        _probe(),
+        _audit(),
+    ]
+
+
+def _every_doc() -> list[dict[str, object]]:
+    return [to_doc(obj) for obj in _every_object()]  # type: ignore[arg-type]
+
+
+# Keys whose absence must be refused (dataclass fields with no default, plus the envelope).
+# A defaulted field may be absent (a document written before the field existed, N-1 §10.2).
+_ENVELOPE = ("id", "type", "schemaVersion")
+_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
+    "account": (
+        "accountId",
+        "userId",
+        "courseId",
+        "provenance",
+        "username",
+        "passwordCiphertext",
+        "keyId",
+        "status",
+    ),
+    "rule": (
+        "ruleId",
+        "accountId",
+        "weekday",
+        "windowEarliest",
+        "windowLatest",
+        "partySize",
+        "active",
+        "materializedThrough",
+        "version",
+    ),
+    "row": (
+        "rowId",
+        "accountId",
+        "courseId",
+        "targetDate",
+        "timezone",
+        "windowEarliest",
+        "windowLatest",
+        "partySize",
+        "status",
+        "source",
+        "cutoffAt",
+        "requestId",
+        "version",
+    ),
+    "slot": ("accountId", "targetDate", "activeRowId"),
+    "ruleday": ("accountId", "weekday", "activeRuleId"),
+    "booking": (
+        "bookingId",
+        "rowId",
+        "accountId",
+        "courseId",
+        "targetDate",
+        "rawReservationId",
+        "teeTime",
+        "partySize",
+        "source",
+        "state",
+    ),
+    "snapshot": ("accountId", "observedAt", "source", "trusted", "entries"),
+    "user": ("userId", "oauthProvider", "oauthSubject", "email", "displayName", "role", "status"),
+    "claim": ("kind", "keyHash", "state", "createdAt"),
+    "probe": ("probeId", "userId", "courseId", "usernameHash", "ok", "at"),
+    "audit": ("auditId", "userId", "action", "rowId", "detail", "at"),
+}
+
+
+class TestDispatch:
+    def test_to_doc_dispatches_to_the_typed_mapper(self) -> None:
+        assert to_doc(_rule_row()) == to_row_doc(_rule_row())
+        assert to_doc(_account()) == to_account_doc(_account())
+        assert to_doc(_audit()) == to_audit_doc(_audit())
+        fingerprint = RowFingerprint(status=RowStatus.PENDING, version=1, booked_raw_id=None)
+        for not_persisted in (object(), fingerprint):
+            with pytest.raises(DocumentError, match="not a persisted"):
+                to_doc(not_persisted)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("obj", _every_object(), ids=lambda o: type(o).__name__)
+    def test_from_doc_roundtrips_every_type(self, obj: object) -> None:
+        stored = from_doc(to_doc(obj))  # type: ignore[arg-type]
+        item = stored.item
+        if isinstance(obj, RequestRow) and obj.booked_tee_time is not None:
+            # DST-fold instants compare as instants (see test_roundtrip_request_row_all_fields).
+            assert isinstance(item, RequestRow)
+            assert replace(item, booked_tee_time=None) == replace(obj, booked_tee_time=None)
+        elif isinstance(obj, LoginProbe):
+            assert isinstance(item, LoginProbe)
+            assert item.at.timestamp() == obj.at.timestamp()
+            assert replace(item, at=NOW) == replace(obj, at=NOW)
+        else:
+            assert item == obj
+        assert stored.etag is None
+
+    def test_from_doc_rejects_unknown_type(self) -> None:
+        doc = to_doc(_account())
+        for bad in ("mystery", None, 7, "Account"):
+            with pytest.raises(DocumentError, match="type"):
+                from_doc({**doc, "type": bad})
+        missing = dict(doc)
+        del missing["type"]
+        with pytest.raises(DocumentError, match="type"):
+            from_doc(missing)
+
+    def test_doc_type_discriminator_present(self) -> None:
+        seen = set()
+        for doc in _every_doc():
+            assert isinstance(doc["type"], str)
+            assert doc["schemaVersion"] == SCHEMA_VERSION
+            assert container_of(doc) in {TENANT_CONTAINER, GLOBAL_CONTAINER}
+            seen.add(doc["type"])
+        assert seen == set(_REQUIRED_KEYS)
+        # A typed reader refuses another type's document even when the fields would parse.
+        with pytest.raises(DocumentError, match="expected a 'slot' document"):
+            from_slot_doc({**to_slot_doc(_slot()), "type": "ruleday"})
+
+
+class TestEnvelopeValidation:
+    @pytest.mark.parametrize("version", [0, 2, 99, -1, "1", 1.0, True, None])
+    def test_unknown_schema_version_rejected(self, version: object) -> None:
+        for doc in _every_doc():
+            with pytest.raises(DocumentError, match="schemaVersion"):
+                from_doc({**doc, "schemaVersion": version})
+
+    def test_missing_schema_version_rejected(self) -> None:
+        for doc in _every_doc():
+            bare = dict(doc)
+            del bare["schemaVersion"]
+            with pytest.raises(DocumentError, match="schemaVersion"):
+                from_doc(bare)
+
+    def test_from_doc_rejects_missing_required_field(self) -> None:
+        for doc in _every_doc():
+            doc_type = doc["type"]
+            assert isinstance(doc_type, str)
+            for key in (*_ENVELOPE, *_REQUIRED_KEYS[doc_type]):
+                assert key in doc, (doc_type, key)
+                broken = {k: v for k, v in doc.items() if k != key}
+                with pytest.raises(DocumentError):
+                    from_doc(broken)
+
+    def test_defaulted_fields_may_be_absent(self) -> None:
+        """An N-1 document written before a defaulted field existed reads back with the
+        dataclass default (expand/contract, §10.2)."""
+        doc = to_doc(_explicit_row())
+        for key in ("needsReconcile", "supersededFrom", "groupRank", "leaseOwner"):
+            del doc[key]
+        assert from_doc(doc).item == _explicit_row()
+
+    def test_wrong_value_types_rejected(self) -> None:
+        doc = to_doc(_explicit_row())
+        for key, bad in (
+            ("partySize", "2"),
+            ("partySize", True),
+            ("needsReconcile", 1),
+            ("status", "frozen"),
+            ("targetDate", "2026-13-01"),
+            ("cutoffAt", "2026-03-07T16:00:00"),  # naive instant
+            ("rowId", "not-a-uuid"),
+        ):
+            with pytest.raises(DocumentError):
+                from_doc({**doc, key: bad})
+
+    def test_identity_mismatch_rejected(self) -> None:
+        for doc in _every_doc():
+            with pytest.raises(DocumentError, match="id"):
+                from_doc({**doc, "id": "row|x|00000000-0000-4000-8000-000000000000"})
+
+
+_ETAG = '"00000a00-0000-0000-0000-000000000000"'
+_SYSTEM_PROPS = {"_rid": "abc==", "_self": "dbs/x", "_ts": 1_790_000_000, "_attachments": ""}
+
+
+class TestEtag:
+    def test_etag_passthrough(self) -> None:
+        for doc in _every_doc():
+            assert "_etag" not in doc, doc["type"]  # never WRITTEN
+            stored = from_doc({**doc, **_SYSTEM_PROPS, "_etag": _ETAG})
+            assert stored.etag == _ETAG
+            assert from_doc(doc).etag is None
+            # Re-writing a read item never echoes the etag or the system properties back.
+            rewritten = to_doc(stored.item)
+            assert not any(k.startswith("_") for k in rewritten), rewritten
+
+    def test_non_string_etag_rejected(self) -> None:
+        with pytest.raises(DocumentError):
+            from_doc({**to_doc(_account()), "_etag": 12})
+
+
+# --- vocabularies survive the round trip ------------------------------------------------------
+
+_ALL_REASONS = sorted(SYSTEM_WITHDRAW_REASONS | CANCEL_REASONS | {USER_WITHDRAW_REASON})
+
+
+class TestVocabularies:
+    @pytest.mark.parametrize("reason", [None, *_ALL_REASONS])
+    @pytest.mark.parametrize("status", list(RowStatus))
+    def test_every_status_and_reason_roundtrips(
+        self, status: RowStatus, reason: str | None
+    ) -> None:
+        row = replace(_explicit_row(), status=status, status_reason=reason, superseded_from=status)
+        doc = to_doc(row)
+        assert doc["status"] == status.value
+        assert doc["statusReason"] == reason
+        assert doc["supersededFrom"] == status.value
+        assert from_doc(doc).item == row
+
+    def test_every_enum_value_roundtrips(self) -> None:
+        cases: list[object] = []
+        cases += [replace(_booking(), source=s) for s in BookingSource]
+        cases += [replace(_booking(), state=s) for s in BookingState]
+        cases += [replace(_account(), status=s) for s in AccountStatus]
+        cases += [replace(_account(), provenance=p) for p in AccountProvenance]
+        cases += [replace(_user(), role=r) for r in UserRole]
+        cases += [replace(_user(), status=s) for s in UserStatus]
+        cases += [replace(_claim(), state=s) for s in ClaimState]
+        for obj in cases:
+            doc = to_doc(obj)  # type: ignore[arg-type]
+            assert all(not isinstance(v, Enum) for v in doc.values()), doc
+            assert from_doc(doc).item == obj
+
+
+# --- read-side projections: RowFingerprint and EventRow ---------------------------------------
+
+
+class TestProjections:
+    def test_row_fingerprint_of_a_stored_row(self) -> None:
+        fp = row_fingerprint_of(to_row_doc(_rule_row()))
+        assert fp == RowFingerprint(status=RowStatus.BOOKED, version=3, booked_raw_id="12345")
+        explicit = row_fingerprint_of(to_row_doc(_explicit_row()))
+        assert explicit == RowFingerprint(status=RowStatus.PENDING, version=1, booked_raw_id=None)
+        with pytest.raises(DocumentError, match="'row'"):
+            row_fingerprint_of(to_account_doc(_account()))
+
+    def test_event_row_from_docs(self) -> None:
+        row, account = _explicit_row(), _account()
+        event = event_row_from_docs(to_row_doc(row), to_account_doc(account))
+        assert event == EventRow(row=row, account=account)
+
+    def test_event_row_refuses_a_foreign_account(self) -> None:
+        other_user = UserId(UUID("88888888-8888-4888-8888-888888888888"))
+        other = replace(_account(), id=derive_account_id(other_user, MB), user_id=other_user)
+        with pytest.raises(DocumentError, match="account"):
+            event_row_from_docs(to_row_doc(_explicit_row()), to_account_doc(other))
+        with pytest.raises(DocumentError, match="'account'"):
+            event_row_from_docs(to_row_doc(_explicit_row()), to_row_doc(_explicit_row()))
