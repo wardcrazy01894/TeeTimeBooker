@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -24,7 +25,14 @@ from teetime.tenant import runner as runner_module
 from teetime.tenant.allocation import draft_order
 from teetime.tenant.crypto import Keyring
 from teetime.tenant.in_memory_store import InMemoryTenantStore
-from teetime.tenant.models import BookingSource, BookingState, RequestRow, RowStatus
+from teetime.tenant.models import (
+    GROUP_DOWNGRADE_REASON,
+    BookingSource,
+    BookingState,
+    RankedWindow,
+    RequestRow,
+    RowStatus,
+)
 from teetime.tenant.recording import RecordingAdapter
 from teetime.tenant.runner import RunReport, run_release_event
 
@@ -36,6 +44,7 @@ from .runner_builders import (
     POLICIES,
     T0,
     TARGET,
+    WINDOW,
     CountingProvider,
     FakeAdapterNonBlind,
     LandedButUncertainAdapter,
@@ -689,3 +698,43 @@ async def test_runner_no_pending_rows_is_a_clean_empty_report() -> None:
     report = await _run(new_store(), race_clock(), ScriptedFactory())
     assert (report.rows_loaded, report.rows_claimed, report.outcomes) == (0, 0, ())
     assert report.systemic_error is None
+
+
+# --- MU-R2 §16.4: same-drop group collapse, strictly after WRITE #2 -----------------------
+
+
+async def test_runner_collapses_a_same_drop_group_after_the_writes() -> None:
+    """Two accounts of one group both win the drop. After every WRITE #2 has committed, the
+    runner keeps the better-ranked booking and downgrades the other: its course reservation is
+    cancelled, the row is PENDING(group_downgrade) and its ledger entry is cancelled_group."""
+    store = new_store()
+    group = uuid4()
+    worse = await seed_account(store, n=1, group_id=group, options=(RankedWindow(3, *WINDOW),))
+    better = await seed_account(store, n=2, group_id=group, options=(RankedWindow(1, *WINDOW),))
+    clock = race_clock()
+
+    await _run(store, clock, ScriptedFactory())
+
+    kept = await _row(store, better)
+    assert kept.status is RowStatus.BOOKED
+    dropped = await _row(store, worse)
+    assert (dropped.status, dropped.status_reason, dropped.needs_reconcile) == (
+        RowStatus.PENDING,
+        GROUP_DOWNGRADE_REASON,
+        False,
+    )
+    ledger = await store.list_owned_bookings(worse.account.id, target_date=TARGET)
+    # The allocator gives the two accounts distinct slots; exactly one (the kept booking of the
+    # worse row) is now cancelled_group, and nothing of the worse row is still held.
+    assert [e.state for e in ledger].count(BookingState.CANCELLED_GROUP) == 1
+    assert BookingState.HELD not in {e.state for e in ledger}
+
+
+async def test_runner_without_groups_makes_no_group_read() -> None:
+    inner = new_store()
+    await seed_account(inner, n=1)
+    await seed_account(inner, n=2)
+    clock = race_clock()
+    spy = SpyStore(inner, clock)
+    await _run(spy, clock, ScriptedFactory())
+    assert "rows_in_groups" not in spy.names()

@@ -226,10 +226,10 @@ async def _downgrade(
 ) -> str:
     raw = row.booked_raw_id
     if adapter is None or raw is None:
-        log.critical(
-            "group %s: no adapter/raw id for row %s; cannot collapse", row.group_id, row.id
-        )
-        return "failed"
+        # No open session for this account here (e.g. it was not part of this booking run):
+        # the watcher, which logs in per account, collapses it on its next run.
+        log.info("group %s: no session for row %s here; left for the watcher", row.group_id, row.id)
+        return "skipped"
     now = clock.now_utc()
     expected = RowFingerprint(status=row.status, version=row.version, booked_raw_id=raw)
     if not await store.acquire_row_lease(
