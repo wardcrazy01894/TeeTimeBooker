@@ -12,9 +12,11 @@ a time from T0 + ``post_burst_quiet_s`` -> emails -> exit code. NO store call an
 a self-deadline (start + replicaTimeout - 90 s) writes still-running rows ``needs_reconcile``.
 
 MU-9a (the runner core: ``run_release_event``, ``resolve_credentials``,
-``assert_blind_methods_present``) is IMPLEMENTED and UNWIRED — nothing on the production path
-calls it. Still stubs: ``exit_code_for`` + the CLI + emails (MU-9b), ``LeasedBookingStore``
-(MU-9c). The tenant watcher (MU-10b) lives in ``tenant.watch_runner``.
+``assert_blind_methods_present``) and MU-9b (``exit_code_for``, the post-race emails
+``finish_run``, ``plan_release_event``, the §11.2 log lines, the store-call / writer bounds) are
+IMPLEMENTED; ``teetime tenant-run`` / ``tenant-plan`` (``tenant.booking_job``) run them over an
+in-memory store — nothing on the production path calls them until MU-15a/MU-16. Still a stub:
+``LeasedBookingStore`` (MU-9c). The tenant watcher (MU-10b) lives in ``tenant.watch_runner``.
 """
 
 from __future__ import annotations
@@ -87,7 +89,6 @@ from .recording import (
 from .store import RowOutcome, TenantStore
 
 _MU9 = "MULTIUSER_PLAN.md MU-9a"
-_MU9B = "MULTIUSER_PLAN.md MU-9b"
 
 log = logging.getLogger(__name__)
 

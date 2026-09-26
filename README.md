@@ -179,6 +179,21 @@ Communication Services, called over REST with no SDK. The tenant jobs will read 
 searches, logins only on an opportunity, snapshot trust, vanish/adoption, ownership-gated
 upgrades). It needs `TENANT_CREDS_KEYRING` and, until MU-16, runs over an empty in-memory store.
 
+`teetime tenant-run --event mb0600et [--dry-run true|false] [--wait/--no-wait]` is one
+multi-user booking run for a release event (MU-9b, not deployed; an empty in-memory store until
+MU-16). `--wait` is the cron path: NTP offset, DST gate, then the unchanged per-account race.
+The exit code is non-zero only for systemic causes (store, keyring, any decrypt failure,
+CAPTCHA/OTP, an UNCERTAIN booking, the self-deadline, a failed outcome write, or an operator
+summary that could not be sent); a missed drop or one user's bad password exits 0 and is carried
+by the emails. `teetime tenant-plan --event mb0600et` prints the event's pending rows and the
+blind-slot allocation without any ForeUP call. Env vars `tenant-run` reads:
+
+| Env var | Purpose |
+|---------|---------|
+| `TENANT_CREDS_KEYRING` | Credential keyring (required; a missing/invalid keyring exits non-zero) |
+| `TWOCAPTCHA_API_KEY` | 2captcha key for the shared per-course CAPTCHA pool (required unless `--dry-run true`) |
+| `OPERATOR_NOTIFY_EMAIL` | Operator-summary recipient; with `ACS_EMAIL_*` unset or this unset, every summary send fails, so a run with anything to report exits non-zero |
+
 ---
 
 ## Docker (v1)
