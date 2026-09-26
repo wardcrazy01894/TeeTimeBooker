@@ -431,7 +431,7 @@ finishes).
 | ~05:51 | NTP offset (the existing `core.clock.measure_ntp_offset` → `RealClock(offset=…)`, exactly as `_run` does at `__main__.py:211`); **DST gate** `should_proceed(clock, timezone=event.tz, fire_time=event.release_time)`, pure. A wrong-season cron exits 0 before any I/O | – | – | – |
 | ~05:51 | load env: `TENANT_COSMOS_ENDPOINT`, `TENANT_COSMOS_DATABASE`, `AZURE_CLIENT_ID`, keyring, `TWOCAPTCHA_API_KEY` | – | – | – |
 | ~05:51 | token via `ManagedIdentityCredential` (cached ~24 h, reused post-race; §10.2) | IMDS | – | – |
-| ~05:51 | **READ #1** (the only read phase): pending rows with `course_id ∈ event.courses`, `target_date = release_policy.target_date_for(now)` (course tz), `cutoff_at > now`, joined to active accounts (ciphertexts). Python re-checks `frozen_reason`. **This replaces the booking-day gate and the skip secret.** No rows means exit 0 | 2 queries (rows, then their account docs) | – | – |
+| ~05:51 | **READ #1** (the only read phase before T0; plus, ONLY when a loaded row carries a `group_id`, one conditional `rows_in_groups` read for the §16.3 group floor, still before the claim and bounded out of the race window like every READ #1 call): pending rows with `course_id ∈ event.courses`, `target_date = release_policy.target_date_for(now)` (course tz), `cutoff_at > now`, joined to active accounts (ciphertexts). Python re-checks `frozen_reason`. **This replaces the booking-day gate and the skip secret.** No rows means exit 0 | 2 queries (rows, then their account docs) | – | – |
 | ~05:51 | **WRITE #1** (claim): conditional lease update on those rows (`owner=attempt_id`, `until=T0+1200 s`). Rows whose lease is held (a watcher mid-act) are retried every 15 s until T0−150 s, then skipped with a WARNING (the watcher cannot book today+7 before 06:00, because inventory is unpublished) | 1 IfMatch replace per row | – | – |
 | ~05:51 | close the Cosmos client (no idle connection across the wait; the credential and its cached token are kept) | – | – | – |
 | ~05:51 | decrypt each account's password (AES-GCM, µs) and `register_secret_literals`; a per-row decrypt failure skips that row (§4.5) | – | – | – |
@@ -1711,15 +1711,17 @@ data-plane role assignments are created by hand by the operator.
 
 ## 16. Ranked preferences: one ranked list of course + time options, price per course (operator request 2026-09-26)
 
-Status: **RATIFIED 2026-09-26 (3 review rounds, #239). MU-R1 (#243) DONE in code. MU-R2 part 1
-(price cap on every tenant engine request, `tenant/groups.py` pure rules, `rows_in_groups`, the
-booker/tenant-plan group floor) DONE in code; part 2 (post-WRITE #2 collapse, watcher floor +
-collapse + cross-course upgrade, §7.5 `cancelled_group`) and MU-R3 pending.** Build notes:
-`booked_rank` is COMPUTED (`groups.booked_rank`, first match of the course-local tee time), not
-stored — a booked row's options never change, so it is stable; the group read is
-`TenantStore.rows_in_groups` (the plan's `list_group`); `create_group` lands with the MU-R3 form. Supersedes
-MU-P1 (the per-account price cap is folded in here) and promotes the §3.6 cross-course hook from
-"designed only" to built.
+Status: **RATIFIED 2026-09-26 (3 review rounds, #239). MU-R1 (#243) and MU-R2 (#244 + part 2)
+DONE in code: price cap on every tenant engine request, `tenant/groups.py` (`booked_rank`,
+`group_floor`, `plan_collapse`, the `collapse_group` executor), `rows_in_groups`, the group floor in
+the booker, `tenant-plan` and the watcher, the booker's post-WRITE #2 collapse pass, and the
+watcher's end-of-run collapse (which is also the second half of a cross-course upgrade: the
+better-ranked sibling books through the normal path, then the collapse cancels the worse one).
+MU-R3 (the web form) pending.** Build notes: `booked_rank` is COMPUTED (first match of the
+course-local tee time), not stored, since a booked row's options never change; the group read is
+`TenantStore.rows_in_groups` (the plan's `list_group`); `create_group` lands with MU-R3. The
+booker's collapse pass re-reads the group after WRITE #2 (the rows' new versions are the lease
+fingerprints), so it is a read, not the "no read" the round-2 text says; it is off the T0 path.
 
 ### 16.1 What the user sees
 
@@ -1816,7 +1818,7 @@ winner holds, the group floor keeps it from re-booking. The ledger entry of the 
 a new state `cancelled_group`, added to the §7.5 exclusion list beside `cancelled_upgrade` /
 `cancelled_extra`, so its disappearance is never read as an external cancel.
 
-**Collapse procedure** (one shared function, `tenant/groups.py::collapse_group`, used by both
+**Collapse procedure** (one shared function, `tenant/groups.py::collapse_group`, used by both callers; the pure keep/cancel decision inside it is `plan_collapse`,
 callers):
 1. Pick the keeper: the BOOKED row with the lowest `booked_rank`. Ties cannot happen, because option
    ranks are unique across the group.
