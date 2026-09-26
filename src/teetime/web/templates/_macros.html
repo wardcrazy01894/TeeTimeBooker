@@ -1,0 +1,31 @@
+{# Shared page fragments (MU-13). No script and no inline style anywhere: the CSP forbids both. #}
+
+{% macro hhmm(t) %}{{ t.strftime('%H:%M') }}{% endmacro %}
+
+{% macro status(r, status_labels) -%}
+{{ status_labels.get((r.row.status.value, r.row.status_reason), r.row.status.value) }}
+{%- endmacro %}
+
+{# A plain POST form with the CSRF token and the one-off fields as hidden inputs. #}
+{% macro one_off_form(csrf_token, account_id, target_date, earliest, latest, party, label) %}
+<form method="post" action="/rows" class="inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="account_id" value="{{ account_id }}">
+  <input type="hidden" name="target_date" value="{{ target_date.isoformat() }}">
+  <input type="hidden" name="window_earliest" value="{{ hhmm(earliest) }}">
+  <input type="hidden" name="window_latest" value="{{ hhmm(latest) }}">
+  <input type="hidden" name="party_size" value="{{ party }}">
+  <button type="submit">{{ label }}</button>
+</form>
+{% endmacro %}
+
+{% macro error_block(error, one_off, csrf_token) %}
+{% if error %}
+<div class="error" role="alert">
+  <p>{{ error }}</p>
+  {% if one_off %}
+  {{ one_off_form(csrf_token, one_off.account_id, one_off.target_date, one_off.window_earliest, one_off.window_latest, one_off.party_size, "Add " ~ one_off.target_date.isoformat() ~ " as a one-off") }}
+  {% endif %}
+</div>
+{% endif %}
+{% endmacro %}

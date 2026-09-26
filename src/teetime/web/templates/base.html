@@ -11,8 +11,11 @@
     <a class="brand" href="/">TeeTimeBooker</a>
     {% if user is defined and user %}
     <nav>
-      <span class="who">{{ user.display_name or user.email }}</span>
+      <a href="/">Dashboard</a>
+      <a href="/dates">Dates</a>
+      <a href="/rules">Rules</a>
       {% if is_operator is defined and is_operator %}<a href="/admin/users">Users</a>{% endif %}
+      <span class="who">{{ user.display_name or user.email }}</span>
       <form method="post" action="/logout" class="inline">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit">Sign out</button>
@@ -21,6 +24,8 @@
     {% endif %}
   </header>
   <main>
+    {% if dry_run is defined and dry_run %}<p class="banner">Dry-run environment: nothing here books or cancels a real tee time.</p>{% endif %}
+    {% if notice is defined and notice %}<p class="notice">{{ notice }}</p>{% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>
