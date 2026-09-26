@@ -30,7 +30,7 @@ from teetime.tenant.models import (
 )
 from teetime.web import group_services as services
 from teetime.web.booking_form import RankedChoice
-from teetime.web.services import ActionRefusedError
+from teetime.web.services import ActionRefusedError, InvalidInputError, WebNotFoundError
 
 from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE, TZ
 from .conftest import T0, new_store
@@ -45,8 +45,8 @@ async def _member(store: InMemoryTenantStore) -> tuple[UserId, CourseAccount, Co
     user = User(
         id=UserId(uuid4()),
         oauth_provider="google",
-        oauth_subject="g-1",
-        email="turk@example.test",
+        oauth_subject=f"g-{uuid4().hex}",
+        email=f"{uuid4().hex[:8]}@example.test",
         display_name="Turk",
         role=UserRole.MEMBER,
         status=UserStatus.ACTIVE,
@@ -196,3 +196,35 @@ async def test_rule_group_second_rule_on_the_weekday_is_reported_not_raised(
     assert [r.course_account_id for r in report.rules] == [a.id]
     assert [f.account_id for f in report.failures] == [b.id]
     assert "Saturday" in report.failures[0].message
+
+
+async def test_set_default_price_updates_only_the_users_own_account(
+    store: InMemoryTenantStore,
+) -> None:
+    user_id, a, _ = await _member(store)
+    updated = await services.set_default_price(
+        store, user_id=user_id, account_id=a.id, raw_price="72.5"
+    )
+    assert updated.default_max_price == Decimal("72.50")
+    stored = await store.get_account(a.id, user_id=user_id)
+    assert stored is not None
+    assert stored.default_max_price == Decimal("72.50")
+    assert stored.password_ciphertext == a.password_ciphertext
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "-1", "5000"])
+async def test_set_default_price_refuses_a_bad_value(store: InMemoryTenantStore, raw: str) -> None:
+    user_id, a, _ = await _member(store)
+    with pytest.raises(InvalidInputError):
+        await services.set_default_price(store, user_id=user_id, account_id=a.id, raw_price=raw)
+
+
+async def test_set_default_price_on_a_foreign_account_is_not_found(
+    store: InMemoryTenantStore,
+) -> None:
+    user_id, _, _ = await _member(store)
+    _, stranger, _ = await _member(store)
+    with pytest.raises(WebNotFoundError):
+        await services.set_default_price(
+            store, user_id=user_id, account_id=stranger.id, raw_price="50"
+        )

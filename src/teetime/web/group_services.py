@@ -12,7 +12,7 @@ on one course is REPORTED, not raised, leaving a smaller, still-valid group the 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from uuid import uuid4
 
@@ -21,6 +21,7 @@ from ..core.config import BookingCutoffConfig
 from ..core.release_policy import ReleasePolicy
 from ..tenant.materialize import RuleConflictError, materialize_rule
 from ..tenant.models import (
+    CourseAccount,
     CourseAccountId,
     RankedWindow,
     RequestRow,
@@ -30,9 +31,10 @@ from ..tenant.models import (
     UserId,
 )
 from ..tenant.store import RowLeaseError, TenantNotFoundError, TenantStore
-from .booking_form import RankedChoice
+from .booking_form import RankedChoice, parse_price
 from .services import (
     ActionRefusedError,
+    InvalidInputError,
     WebNotFoundError,
     _conflict,
     _own_account,
@@ -46,6 +48,7 @@ __all__ = [
     "GroupRulesReport",
     "create_group_one_off",
     "create_group_rule",
+    "set_default_price",
 ]
 
 
@@ -167,3 +170,17 @@ async def create_group_rule(
     if not rules:
         raise _nothing_saved(failures)
     return GroupRulesReport(rules=tuple(rules), failures=tuple(failures))
+
+
+async def set_default_price(
+    store: TenantStore, *, user_id: UserId, account_id: CourseAccountId, raw_price: str
+) -> CourseAccount:
+    """The account's default per-player price cap (§16.1: $100 until changed), used by every
+    row and rule of this course that has no override."""
+    price = parse_price(raw_price)
+    if price is None:
+        raise InvalidInputError("enter a price like 85 or 85.50")
+    account = await _own_account(store, user_id=user_id, account_id=account_id)
+    updated = replace(account, default_max_price=price)
+    await store.upsert_account(updated)
+    return updated

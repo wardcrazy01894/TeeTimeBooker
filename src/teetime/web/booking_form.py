@@ -50,7 +50,8 @@ def _account(raw: str, own_accounts: Collection[CourseAccountId]) -> CourseAccou
     return account
 
 
-def _price(raw: str) -> Decimal | None:
+def parse_price(raw: str) -> Decimal | None:
+    """A per-player price in dollars, or None for a blank field."""
     raw = raw.strip()
     if not raw:
         return None
@@ -95,7 +96,7 @@ def parse_ranked_form(
         per_account.setdefault(account, []).append(RankedWindow(new_rank, earliest, latest))
     prices: dict[CourseAccountId, Decimal] = {}
     for account in per_account:
-        price = _price(form.get(f"price_{account}", ""))
+        price = parse_price(form.get(f"price_{account}", ""))
         if price is not None:
             prices[account] = price
     return RankedChoice(
