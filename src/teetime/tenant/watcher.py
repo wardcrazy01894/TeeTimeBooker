@@ -41,8 +41,10 @@ _MU10 = "MULTIUSER_PLAN.md MU-10a"
 RECONCILE_EVERY_N_RUNS = 6
 # Backstop: an account holding a BOOKED row is re-listed if its snapshot is older than this.
 MAX_BOOKED_SNAPSHOT_AGE_S = 90 * 60
-# Vanish inference needs this many consecutive TRUSTED snapshots without the reservation (§7.5).
+# Vanish inference needs this many consecutive TRUSTED snapshots without the reservation (§7.5),
+# taken at least VANISH_MIN_SNAPSHOT_GAP apart (two logins in one run are ONE observation).
 VANISH_CONSECUTIVE_TRUSTED_SNAPSHOTS = 2
+VANISH_MIN_SNAPSHOT_GAP = timedelta(minutes=10)
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,17 +203,52 @@ def needs_login(
     return next((reason for hit, reason in legs if hit), None)
 
 
+class Ownership(StrEnum):
+    """Who made a live reservation (§7.6). Only OWNED / ADOPTED_RECONCILE are the bot's."""
+
+    OWNED = "owned"  # raw id ledgered held / held_extra
+    ADOPTED_RECONCILE = "adopted_reconcile"  # needs_reconcile + exact recorded UNCERTAIN slot
+    UNOWNED = "unowned"  # manual: never upgraded, never a reconcile-cancel candidate
+
+
+def ownership_of(
+    reservation: ExistingReservation,
+    *,
+    row: RequestRow,
+    owned: Sequence[OwnedBooking],
+    uncertain_tee_times: Sequence[datetime] = (),
+) -> Ownership:
+    """§7.6: OWNED iff the raw id is ledgered held / held_extra; ADOPTED_RECONCILE iff
+    ``row.needs_reconcile`` and the tee time EXACTLY matches (same instant, same party) one of
+    ``uncertain_tee_times`` — the slots the recorder logged as UNCERTAIN (§4.6; stricter than
+    "in window"), which the runner passes along with ``row.booked_tee_time`` (the durable carrier
+    of an UNCERTAIN slot across runs); else UNOWNED. Fail-safe: nothing passed -> UNOWNED."""
+    raise NotImplementedError(_MU10)
+
+
 def is_owned(
     reservation: ExistingReservation,
     *,
     row: RequestRow,
     owned: Sequence[OwnedBooking],
+    uncertain_tee_times: Sequence[datetime] = (),
 ) -> bool:
     """Ownership predicate fed to ``WatchOrchestrator(reconcile_eligible=...)`` (engine hook E5)
-    and to adoption (§7.6): True iff the raw id is in the ledger (states held / held_extra), OR
-    ``row.needs_reconcile`` and the tee time EXACTLY matches a slot the recorder logged as
-    UNCERTAIN (§4.6; stricter than "in window"). A dry-run environment passes
-    ``lambda _: False`` instead (§7.8)."""
+    and to adoption (§7.6): ``ownership_of(...) is not Ownership.UNOWNED``. A dry-run
+    environment passes ``lambda _: False`` instead (§7.8)."""
+    raise NotImplementedError(_MU10)
+
+
+def upgrade_allowed(
+    row: RequestRow,
+    reservation: ExistingReservation,
+    *,
+    owned: Sequence[OwnedBooking],
+    uncertain_tee_times: Sequence[datetime] = (),
+) -> bool:
+    """The ownership gate MU-10 MUST apply before ``_try_upgrade`` (E5 does not guard the
+    upgrade, §7.6): True iff ``row`` is BOOKED and ``reservation`` is owned per
+    ``ownership_of``. An unowned (manual) match never reaches the engine's upgrade."""
     raise NotImplementedError(_MU10)
 
 
@@ -230,9 +267,30 @@ def classify_missing_booking(
     snapshots: Sequence[ReservationSnapshot],
     owned: Sequence[OwnedBooking],
 ) -> MissingBookingVerdict:
-    """Pure (round-1 M2 exclusions + operator decision Q7). ``snapshots`` are newest-first; only
-    trusted ones count. BOT_CAUSED -> PENDING + needs_reconcile; EXTERNAL_CANCEL ->
-    CANCELLED(external) + slot freed + email."""
+    """Pure (round-1 M2 exclusions + operator decision Q7). Only TRUSTED snapshots count (an
+    untrusted one is neither a miss nor a sighting); they are ordered by ``observed_at`` here, so
+    input order does not matter. BOT_CAUSED -> PENDING + needs_reconcile; EXTERNAL_CANCEL ->
+    CANCELLED(external) + slot freed + email. Raises ``ValueError`` for a non-BOOKED row or a
+    snapshot of another account; a BOOKED row with no raw id is NOT_YET (adoption resolves it)."""
+    raise NotImplementedError(_MU10)
+
+
+class WatchAction(StrEnum):
+    """What the tenant watcher is about to do, for the §7.8 dry-run gate."""
+
+    LOGIN = "login"  # read-only authenticate + list_reservations
+    PERSIST_SNAPSHOT = "persist_snapshot"
+    ADOPT = "adopt"  # DB-only: a pending row becomes booked from a trusted snapshot
+    BOOK = "book"  # the engine's own dry_run suppresses the POST
+    UPGRADE = "upgrade"
+    RECONCILE_CANCEL = "reconcile_cancel"
+    MARK_CANCELLED_EXTERNAL = "mark_cancelled_external"
+
+
+def dry_run_gate(*, dry_run: bool, action: WatchAction) -> bool:
+    """§7.8 (SF2): True iff ``action`` may proceed. In a dry-run environment the watcher never
+    reconcile-cancels, never upgrades and never writes booked -> cancelled(external); a
+    read-only login, snapshot persistence and every DB-only action stay enabled."""
     raise NotImplementedError(_MU10)
 
 
