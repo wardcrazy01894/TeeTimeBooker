@@ -7,7 +7,11 @@ title = "TeeTimeBooker gitleaks config"
 # Start from the default ruleset.
 useDefault = true
 
-[[allowlists]]
+# NOTE: the SINGULAR `[allowlist]` table on purpose. CI pins gitleaks 8.24.3 (gitleaks-action
+# v3.0.0); the plural `[[allowlists]]` array only exists from 8.25.0 and 8.24 IGNORES it
+# silently — this block was a no-op until MU-12's OAuth test fixtures tripped `generic-api-key`.
+# Newer gitleaks still accept the singular form.
+[allowlist]
 # Test fixtures (the canonical Visa test PAN 4111111111111111 and a test CVV) are allowlisted
 # ONLY by PATH — they may appear in tests/ but nowhere else. We deliberately do NOT add a
 # repo-wide `regexes` entry for the test PAN: that would allowlist it ANYWHERE (full-repo-scan

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Users · TeeTimeBooker{% endblock %}
+{% block content %}
+<h1>Users</h1>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+
+<section>
+  <h2>Invite</h2>
+  <p>The invite binds on the invitee's first sign-in, matched only against an email their provider has verified.</p>
+  <form method="post" action="/admin/users">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="invite">
+    <label>Email <input type="email" name="email" required></label>
+    <label>Role
+      <select name="role">
+        <option value="member" selected>member</option>
+        <option value="operator">operator</option>
+      </select>
+    </label>
+    <button type="submit">Invite</button>
+  </form>
+</section>
+
+<section>
+  <h2>Disable / enable</h2>
+  <p>Keyed by the bound sign-in identity (provider + subject), as shown on the user's dashboard and in the audit log. A disabled user is signed out on their next request.</p>
+  <form method="post" action="/admin/users">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Provider
+      <select name="provider">
+        <option value="github">github</option>
+        <option value="google">google</option>
+      </select>
+    </label>
+    <label>Subject <input type="text" name="subject" required></label>
+    <button type="submit" name="action" value="disable">Disable</button>
+    <button type="submit" name="action" value="enable">Enable</button>
+  </form>
+</section>
+{% endblock %}
