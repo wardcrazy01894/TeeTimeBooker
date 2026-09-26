@@ -35,7 +35,6 @@ from .booking_form import RankedChoice, parse_price
 from .services import (
     ActionRefusedError,
     InvalidInputError,
-    WebNotFoundError,
     _conflict,
     _own_account,
     _policy_for,
@@ -50,6 +49,9 @@ __all__ = [
     "create_group_rule",
     "set_default_price",
 ]
+
+
+_GONE = "this course account is no longer connected"
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,8 +111,10 @@ async def create_group_one_off(
                 group_id=group_id,
                 group_rank=options[0].rank,
             )
-        except TenantNotFoundError as e:
-            raise WebNotFoundError from e
+        except TenantNotFoundError:
+            # Ownership was checked when the form was parsed; the account vanished since.
+            failures.append(GroupFailure(account_id, _GONE))
+            continue
         except (RowLeaseError, TransitionRefusedError) as e:
             failures.append(GroupFailure(account_id, _refused(e).message))
             continue
@@ -157,8 +161,9 @@ async def create_group_rule(
         except RuleConflictError:
             failures.append(GroupFailure(account_id, _conflict(rule).message))
             continue
-        except TenantNotFoundError as e:
-            raise WebNotFoundError from e
+        except TenantNotFoundError:
+            failures.append(GroupFailure(account_id, _GONE))
+            continue
         rules.append(stored)
         try:
             await materialize_rule(

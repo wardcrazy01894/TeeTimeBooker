@@ -628,12 +628,13 @@ async def set_rule_active(
     report = await _edit(
         store, user_id=user_id, old=old, new=new, policies=policies, cutoff=cutoff, clock=clock
     )
-    if old.group_id is not None:
-        for sibling in await store.list_rules_for_user(user_id):
-            if sibling.group_id != old.group_id or sibling.id == old.id:
-                continue
-            if sibling.active is active:
-                continue
+    if old.group_id is None:
+        return report
+    failed: list[str] = []
+    for sibling in await store.list_rules_for_user(user_id):
+        if sibling.group_id != old.group_id or sibling.id == old.id or sibling.active is active:
+            continue
+        try:
             await _edit(
                 store,
                 user_id=user_id,
@@ -643,7 +644,22 @@ async def set_rule_active(
                 cutoff=cutoff,
                 clock=clock,
             )
+        except (ActionRefusedError, WebNotFoundError) as e:
+            course = await _course_of(store, user_id=user_id, account_id=sibling.course_account_id)
+            reason = e.message if isinstance(e, ActionRefusedError) else "not found"
+            failed.append(f"{course}: {reason}")
+    if failed:
+        account = await _own_account(store, user_id=user_id, account_id=old.course_account_id)
+        raise ActionRefusedError(
+            f"Done at {account.course_id}, but not at every course of this booking. "
+            + "; ".join(failed)
+        )
     return report
+
+
+async def _course_of(store: TenantStore, *, user_id: UserId, account_id: CourseAccountId) -> str:
+    account = await store.get_account(account_id, user_id=user_id)
+    return str(account.course_id) if account is not None else "another course"
 
 
 # --- dated rows -------------------------------------------------------------------------------
@@ -707,6 +723,8 @@ async def _transition(
             )
         except (RowLeaseError, TransitionRefusedError) as e:
             failed.append(f"{sibling.course_id}: {_refused(e, row=sibling).message}")
+        except TenantNotFoundError:
+            failed.append(f"{sibling.course_id}: not found")
     if failed:
         raise ActionRefusedError(
             f"Done at {row.course_id}, but not at every course of this booking. "

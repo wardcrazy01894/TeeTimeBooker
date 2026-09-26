@@ -28,13 +28,14 @@ from teetime.tenant.models import (
     UserStatus,
     derive_account_id,
 )
+from teetime.tenant.store import RowLeaseError, TenantNotFoundError, VersionConflictError
 from teetime.web import group_services as services
 from teetime.web import services as base
 from teetime.web.booking_form import RankedChoice
 from teetime.web.group_services import GroupRowsReport
 from teetime.web.services import ActionRefusedError, InvalidInputError, WebNotFoundError
 
-from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE, TZ
+from ..tenant.conformance import COURSE_TIMEZONES, CUTOFF, MB, OTHER_COURSE, TZ
 from .conftest import T0, new_store
 
 POLICY = ReleasePolicy(advance_days=7, release_time=time(6, 0), timezone=TZ)
@@ -334,3 +335,93 @@ async def test_a_ranked_rule_cannot_be_flattened_by_the_single_window_edit(
             cutoff=CUTOFF,
             clock=clock,
         )
+
+
+class _RefusingStore(InMemoryTenantStore):
+    """A real store that refuses writes to ONE row or rule (a sibling of the group under
+    test), the way a live lease or a concurrent edit would."""
+
+    refuse_row: object = None
+    refuse_rule: object = None
+
+    async def transition_row(self, row_id, **kwargs):  # type: ignore[no-untyped-def,override]
+        if row_id == self.refuse_row:
+            raise RowLeaseError("leased by the watcher")
+        return await super().transition_row(row_id, **kwargs)
+
+    async def upsert_rule(self, rule, *, user_id):  # type: ignore[no-untyped-def,override]
+        if rule.id == self.refuse_rule:
+            raise VersionConflictError("moved")
+        return await super().upsert_rule(rule, user_id=user_id)
+
+
+def _refusing_store() -> _RefusingStore:
+    return _RefusingStore(course_timezones=COURSE_TIMEZONES, cutoff=CUTOFF)
+
+
+async def test_a_refused_sibling_row_is_reported_and_the_others_still_change(
+    clock: FakeClock,
+) -> None:
+    store = _refusing_store()
+    user_id, a, b, report = await _group_on_oct3(store, clock)
+    store.refuse_row = report.rows[1].id  # B's row
+    with pytest.raises(ActionRefusedError, match="not at every course") as refused:
+        await base.withdraw_row(store, user_id=user_id, row_id=report.rows[0].id, clock=clock)
+    assert str(OTHER_COURSE) in refused.value.message
+    (row_a,) = await store.rows_for_account_date(a.id, OCT3)
+    (row_b,) = await store.rows_for_account_date(b.id, OCT3)
+    assert (row_a.status, row_b.status) == (RowStatus.WITHDRAWN, RowStatus.PENDING)
+
+
+async def test_a_refused_sibling_rule_is_reported_after_the_rest_ran(clock: FakeClock) -> None:
+    """Deactivating a weekly group whose second course refuses: the first course IS deactivated,
+    the user is told which course was not, and nothing is silently skipped."""
+    store = _refusing_store()
+    user_id, a, b = await _member(store)
+    report = await services.create_group_rule(
+        store,
+        user_id=user_id,
+        weekday=SAT,
+        choice=_choice(a, b),
+        policies=POLICIES,
+        cutoff=CUTOFF,
+        clock=clock,
+    )
+    first, second = report.rules
+    store.refuse_rule = second.id
+    with pytest.raises(ActionRefusedError, match="not at every course") as refused:
+        await base.set_rule_active(
+            store,
+            user_id=user_id,
+            rule_id=first.id,
+            active=False,
+            version=first.version,
+            policies=POLICIES,
+            cutoff=CUTOFF,
+            clock=clock,
+        )
+    assert str(OTHER_COURSE) in refused.value.message
+    rules = {r.id: r for r in await store.list_rules_for_user(user_id)}
+    assert (rules[first.id].active, rules[second.id].active) == (False, True)
+
+
+class _VanishingAccountStore(InMemoryTenantStore):
+    vanished: object = None
+
+    async def create_explicit_row(self, **kwargs):  # type: ignore[no-untyped-def,override]
+        if kwargs["account_id"] == self.vanished:
+            raise TenantNotFoundError("gone")
+        return await super().create_explicit_row(**kwargs)
+
+
+async def test_an_account_that_vanishes_mid_save_is_reported_not_a_404(clock: FakeClock) -> None:
+    """The ownership check passed, then course B's account disappeared before its write: A stays
+    saved and B is reported, instead of a 404 that hides what was saved."""
+    store = _VanishingAccountStore(course_timezones=COURSE_TIMEZONES, cutoff=CUTOFF)
+    user_id, a, b = await _member(store)
+    store.vanished = b.id
+    report = await services.create_group_one_off(
+        store, user_id=user_id, target_date=OCT3, choice=_choice(a, b), clock=clock
+    )
+    assert [r.course_account_id for r in report.rows] == [a.id]
+    assert [f.account_id for f in report.failures] == [b.id]

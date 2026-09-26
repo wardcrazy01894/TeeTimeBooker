@@ -19,6 +19,7 @@ from ..tenant.models import CourseAccountId, RankedWindow
 from .services import InvalidInputError, WebNotFoundError, parse_party_size
 
 MAX_OPTIONS = 6
+MAX_RANK = 99  # the form's own bound; ranks are renumbered 1..N anyway
 # A per-player green fee above this is a typo, not a preference.
 MAX_PRICE = Decimal("1000")
 
@@ -85,6 +86,8 @@ def parse_ranked_form(
             rank = int(form.get(f"opt{i}_rank", "").strip() or i)
         except ValueError as e:
             raise InvalidInputError(f"option {i}: rank must be a number") from e
+        if not 1 <= rank <= MAX_RANK:
+            raise InvalidInputError(f"option {i}: rank must be between 1 and {MAX_RANK}")
         picked.append((rank, account, earliest, latest))
     if not picked:
         raise InvalidInputError("add at least one course and time window")

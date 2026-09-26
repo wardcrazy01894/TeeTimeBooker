@@ -12,9 +12,9 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from teetime.web.booking_form import MAX_OPTIONS, RankedChoice, parse_ranked_form
 
 from teetime.tenant.models import CourseAccountId, RankedWindow
+from teetime.web.booking_form import MAX_OPTIONS, RankedChoice, parse_ranked_form
 from teetime.web.services import InvalidInputError, WebNotFoundError
 
 A = CourseAccountId(uuid4())
@@ -86,6 +86,8 @@ def test_prices_per_course_blank_means_account_default() -> None:
         ({**_row(1, A, "08:00", "09:00", 1), f"price_{A}": "-1"}, "price"),
         ({**_row(1, A, "08:00", "09:00", 1), f"price_{A}": "abc"}, "price"),
         ({**_row(1, A, "08:00", "09:00", 1), f"price_{A}": "5000"}, "price"),
+        ({**_row(1, A, "08:00", "09:00", 0)}, "rank"),
+        ({**_row(1, A, "08:00", "09:00", 10**30)}, "rank"),
     ],
 )
 def test_invalid_forms_are_refused(extra: dict[str, str], message: str) -> None:
