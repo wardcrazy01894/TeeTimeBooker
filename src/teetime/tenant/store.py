@@ -431,7 +431,8 @@ class TenantStore(Protocol):
         never moves backwards (a web edit from a copy read before the watcher tick keeps the
         tick's value), except that a stored None (a reset) wins, and a weekday change or a
         re-activation CLEARS it in the same write so the rule is due for the tick (round-5 SF-2).
-        Does not touch rows (the materializer does, §7.7)."""
+        Does not touch rows (the materializer does, §7.7).
+        A future rule DELETE must remove the rule doc and this pointer in the same batch."""
         ...
 
     async def count_login_probes(

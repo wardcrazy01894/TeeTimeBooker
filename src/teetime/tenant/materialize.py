@@ -28,6 +28,11 @@ pre-supersede status (``superseded_from``: SKIPPED stays SKIPPED, round-5) else 
 materializer NEVER writes superseded -> pending (only the web's one-off withdraw restores a
 superseded row, round-4 D2).
 
+Rule DELETION is not a store operation yet. When MU-8b/MU-13 add one, it MUST clear the rule doc
+AND its ``ruleday|<weekday>`` pointer in ONE batch — a dangling pointer blocks every new rule on
+that weekday forever (``RuleConflictError``). Until then a vanished rule's rows are withdrawn
+``rule_deleted`` by the tick sweep and ``finalize_lost``.
+
 Every entry point is a pure function of its arguments plus the store: ``now`` is the injected
 clock reading (tz-aware), course-local "today" and the frozen check come from the course's
 ``ReleasePolicy.timezone``. Store errors are SURFACED, never swallowed: ``RuleConflictError`` /
@@ -373,13 +378,15 @@ async def materialize_tick(
     if policies:
         farthest = max(_horizon_end(policy, now) for policy in policies.values())
         for rule in await store.rules_needing_materialization(through=farthest):
-            policy = await _policy_for(rule, store=store, policies=policies)
-            if policy is None:
-                continue
-            through = _horizon_end(policy, now)
-            if rule.materialized_through is not None and rule.materialized_through >= through:
-                continue  # the superset query returned it; its own horizon is covered
+            # The WHOLE per-rule body is isolated, including the policy lookup (a store read):
+            # a transient error on one rule must neither stop the others nor skip the sweep.
             try:
+                policy = await _policy_for(rule, store=store, policies=policies)
+                if policy is None:
+                    continue
+                through = _horizon_end(policy, now)
+                if rule.materialized_through is not None and rule.materialized_through >= through:
+                    continue  # the superset query returned it; its own horizon is covered
                 reports.append(
                     await materialize_rule(rule, store=store, policy=policy, cutoff=cutoff, now=now)
                 )
