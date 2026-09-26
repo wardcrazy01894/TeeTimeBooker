@@ -19,22 +19,25 @@ Logging is configured by the ``teetime web`` entrypoint (``basicConfig`` THEN
 
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.datastructures import MutableHeaders
+from starlette.datastructures import FormData, MutableHeaders
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..core.clock import Clock
 from ..tenant.crypto import Keyring
-from ..tenant.models import User, UserStatus
+from ..tenant.models import User, UserId, UserRole, UserStatus
 from ..tenant.notify import UserNotifier
 from ..tenant.store import TenantStore
 from . import auth
@@ -371,7 +374,89 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
 
     @app.get("/admin/users", response_class=HTMLResponse)
     async def admin_users(request: Request, operator: Operator) -> Response:
-        return ctx.page(request, "admin_users.html", {"user": operator, "notice": None})
+        notice = _ADMIN_NOTICES.get(request.query_params.get("notice", ""))
+        return ctx.page(request, "admin_users.html", {"user": operator, "notice": notice})
+
+    @app.post("/admin/users")
+    async def admin_users_action(request: Request, operator: Operator) -> Response:
+        form = await request.form()
+        action = _form_str(form, "action")
+        now = ctx.clock.now_utc()
+        if action == "invite":
+            return await _admin_invite(ctx, operator, form, now=now)
+        if action in ("disable", "enable"):
+            return await _admin_set_status(ctx, operator, form, enable=action == "enable", now=now)
+        raise HTTPException(status_code=400, detail="unknown action")
+
+
+# Fixed strings keyed by the `notice` query param: nothing user-supplied is ever reflected.
+_ADMIN_NOTICES = {
+    "invited": "Invite created. It binds on that person's first sign-in.",
+    "disabled": "User disabled. Their session is rejected on their next request.",
+    "enabled": "User enabled.",
+}
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _form_str(form: FormData, key: str) -> str:
+    value = form.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+async def _admin_invite(ctx: _Ctx, operator: User, form: FormData, *, now: datetime) -> Response:
+    """Create an INVITED row. The subject binds on first sign-in, matched only against a
+    provider-verified email (auth.resolve_identity); the store never sees a self-signup."""
+    email = _form_str(form, "email").casefold()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="invalid email")
+    try:
+        role = UserRole(_form_str(form, "role") or UserRole.MEMBER.value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid role") from e
+    invited = User(
+        id=UserId(uuid4()),
+        oauth_provider="",  # unknown until the invitee signs in; bind_invited_user sets it
+        oauth_subject=None,
+        email=email,
+        display_name=email.split("@", 1)[0],
+        role=role,
+        status=UserStatus.INVITED,
+    )
+    await ctx.store.upsert_user(invited)
+    await ctx.store.append_audit(
+        user_id=operator.id,
+        action="admin_invite",
+        row_id=None,
+        detail={"invited_user_id": str(invited.id), "role": role.value},
+        at=now,
+    )
+    return RedirectResponse("/admin/users?notice=invited", status_code=303)
+
+
+async def _admin_set_status(
+    ctx: _Ctx, operator: User, form: FormData, *, enable: bool, now: datetime
+) -> Response:
+    """Disable/enable by the bound (provider, subject) — the TenantStore Protocol has no user
+    listing or email lookup (MU-13's `list_users` owns that), and the identity is what the
+    audit log and the user's own dashboard show."""
+    provider, subject = _form_str(form, "provider"), _form_str(form, "subject")
+    if not provider or not subject:
+        raise HTTPException(status_code=400, detail="provider and subject are required")
+    target = await ctx.store.get_user_by_subject(provider, subject)
+    if target is None:
+        raise HTTPException(status_code=404, detail="no user is bound to that identity")
+    if not enable and target.id == operator.id:
+        raise HTTPException(status_code=400, detail="you cannot disable your own account")
+    status = UserStatus.ACTIVE if enable else UserStatus.DISABLED
+    await ctx.store.upsert_user(replace(target, status=status))
+    await ctx.store.append_audit(
+        user_id=operator.id,
+        action="admin_enable" if enable else "admin_disable",
+        row_id=None,
+        detail={"provider": provider, "subject": subject, "target_user_id": str(target.id)},
+        at=now,
+    )
+    return RedirectResponse(f"/admin/users?notice={status.value}", status_code=303)
 
 
 def create_app(

@@ -14,6 +14,7 @@ from starlette.routing import Mount, Route
 from teetime.core.clock import FakeClock
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.web.app import WebSettings, create_app
+from teetime.web.routes import ROUTES, AuthLevel
 from teetime.web.security import security_headers
 
 from .conftest import T0, new_store
@@ -96,6 +97,20 @@ async def test_no_route_serves_without_auth_except_allowlist(
                 assert r.headers["location"] == "/login"
     assert checked >= 3
     assert seen_public == PUBLIC_PATHS | PUBLIC_MOUNTS
+
+
+def test_routes_table_matches_app_for_mu12(app: FastAPI) -> None:
+    """`routes.ROUTES` is the contract; every MU-12 row must be bound with its method, its
+    public/non-public status must match the allowlist above, and every non-GET row is CSRF."""
+    bound = {(m, r.path) for r in app.routes if isinstance(r, Route) for m in (r.methods or set())}
+    mu12 = [spec for spec in ROUTES if spec.milestone == "MU-12"]
+    assert mu12, "the ROUTES table lost its MU-12 rows"
+    for spec in mu12:
+        assert (spec.method, spec.path) in bound, spec
+        assert (spec.auth is AuthLevel.NONE) == (spec.path in PUBLIC_PATHS), spec
+        if spec.method != "GET":
+            assert spec.csrf, spec
+    assert {s.path for s in mu12 if s.auth is AuthLevel.NONE} == PUBLIC_PATHS
 
 
 async def test_login_page_lists_only_enabled_providers(
