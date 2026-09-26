@@ -271,12 +271,20 @@ def parse_rule_form(form: Mapping[str, str]) -> RuleInput:
     )
 
 
-def parse_one_off_form(form: Mapping[str, str]) -> OneOffInput:
-    account_id = CourseAccountId(parse_id(form.get("account_id", "")))
+def parse_date(form: Mapping[str, str]) -> date:
     try:
-        target_date = date.fromisoformat(_field(form, "target_date"))
+        return date.fromisoformat(_field(form, "target_date"))
     except ValueError as e:
         raise InvalidInputError("date must look like 2026-10-03") from e
+
+
+def parse_weekday(form: Mapping[str, str]) -> int:
+    return _int_in(form, "weekday", 0, 6)
+
+
+def parse_one_off_form(form: Mapping[str, str]) -> OneOffInput:
+    account_id = CourseAccountId(parse_id(form.get("account_id", "")))
+    target_date = parse_date(form)
     earliest, latest = _window(form)
     return OneOffInput(
         account_id=account_id,

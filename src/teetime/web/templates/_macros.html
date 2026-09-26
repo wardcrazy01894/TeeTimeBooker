@@ -32,3 +32,48 @@
 </div>
 {% endif %}
 {% endmacro %}
+
+{# MU-R3 (§16.1): ONE ranked list of (course, time window) options, for a date or every week.
+   No script (CSP), so order is a rank number per option; blank course rows are ignored. #}
+{% macro ranked_form(csrf_token, accounts, action, option_slots, weekdays, weekly) %}
+<form method="post" action="{{ action }}" class="ranked">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% if weekly %}
+  <label>Every
+    <select name="weekday">
+      {% for name in weekdays %}<option value="{{ loop.index0 }}"{% if loop.index0 == 5 %} selected{% endif %}>{{ name }}</option>{% endfor %}
+    </select>
+  </label>
+  {% else %}
+  <label>Date <input type="date" name="target_date" required></label>
+  {% endif %}
+  <label>Party size <input type="number" name="party_size" min="1" max="4" value="2" required></label>
+  <table>
+    <thead><tr><th>Rank</th><th>Course</th><th>Earliest</th><th>Latest</th></tr></thead>
+    <tbody>
+      {% for i in option_slots %}
+      <tr>
+        <td><input type="number" name="opt{{ i }}_rank" min="1" max="99" value="{{ i }}" aria-label="Rank of option {{ i }}"></td>
+        <td>
+          <select name="opt{{ i }}_account" aria-label="Course of option {{ i }}">
+            {% if not loop.first %}<option value="">(none)</option>{% endif %}
+            {% for a in accounts %}<option value="{{ a.id }}">{{ a.course_id }}</option>{% endfor %}
+          </select>
+        </td>
+        <td><input type="time" name="opt{{ i }}_earliest" value="08:00" aria-label="Earliest time of option {{ i }}"></td>
+        <td><input type="time" name="opt{{ i }}_latest" value="10:00" aria-label="Latest time of option {{ i }}"></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <fieldset>
+    <legend>Max price per player</legend>
+    {% for a in accounts %}
+    <label>{{ a.course_id }} $<input type="number" name="price_{{ a.id }}" min="0" max="1000" step="0.01" placeholder="{{ a.default_max_price }}"></label>
+    {% endfor %}
+    <p class="hint">Blank uses the course's default (set on the Accounts page).</p>
+  </fieldset>
+  <p class="hint">The bot books the highest-ranked option that is available (inside one option, the time closest to the middle of the window). It holds at most one tee time per day, and moves to a better-ranked option if one opens later.</p>
+  <button type="submit">{% if weekly %}Save weekly booking{% else %}Book this date{% endif %}</button>
+</form>
+{% endmacro %}

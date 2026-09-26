@@ -44,6 +44,9 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("POST", "/accounts/connect", "connect_account", AuthLevel.USER, True, "MU-14"),
     RouteSpec("POST", "/accounts/{id}/reverify", "reverify_account", AuthLevel.USER, True, "MU-14"),
     RouteSpec("POST", "/accounts/{id}/refresh", "refresh_account", AuthLevel.USER, True, "MU-14"),
+    RouteSpec("POST", "/accounts/{id}/price", "set_default_price", AuthLevel.USER, True, "MU-R3"),
+    RouteSpec("POST", "/bookings/date", "book_date", AuthLevel.USER, True, "MU-R3"),
+    RouteSpec("POST", "/bookings/weekly", "book_weekly", AuthLevel.USER, True, "MU-R3"),
     RouteSpec("GET", "/rules", "list_rules", AuthLevel.USER, False, "MU-13"),
     RouteSpec("POST", "/rules", "create_rule", AuthLevel.USER, True, "MU-13"),
     # form `action`: save (edit_rule) | deactivate / activate (set_rule_active)
