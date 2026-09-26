@@ -80,6 +80,12 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Multi-user follow-ups
 
+- **Cosmos: the "no user-terminal row" guard is a query outside the batch** (MU-8b review): a user
+  cancel landing in the same round-trip as a rule-row reactivate could be missed. Cheap fix: a
+  `terminal|<date>` pointer doc upserted on every user-terminal write, whose ETag the guard asserts
+  in the batch (like the `ruleday` pointer).
+- **Cosmos `_write_account` create→409→blind upsert has no ETag** (MU-8b review): IfMatch-replace
+  with retry, like the rest of the module.
 - **`LeasedBookingStore` fingerprint is single-read** (MU-9c review): add a regression test pinning
   that a version-bumping write between two same-row `request_lock`s on one instance makes the
   second defer, before any refactor moves the watcher onto it.

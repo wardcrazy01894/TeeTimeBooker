@@ -219,6 +219,9 @@ class CosmosSettings:
                 f"container suffix must be one of {sorted(_ALLOWED_SUFFIXES)}, "
                 f"got {self.container_suffix!r}"
             )
+        if self.container_suffix == "-ci" and self.database != "dev":
+            # The CI containers exist only in `dev`, and the integration suite EMPTIES them.
+            raise ValueError("the -ci containers may only be used with the dev database")
 
     @property
     def container_names(self) -> tuple[str, str]:

@@ -515,3 +515,16 @@ def test_queried_paths_are_declared() -> None:
     used = {f"/{m}" for m in re.findall(r"(?<![\w.])c\.(\w+)", source)}
     assert used, "no query paths found; the scan is broken"
     assert used <= QUERIED_PATHS, sorted(used - QUERIED_PATHS)
+
+
+def test_ci_containers_refused_outside_the_dev_database() -> None:
+    """MU-8b review SF2: the `-ci` containers exist only in the `dev` database, and the integration
+    suite EMPTIES them — so a `-ci` suffix paired with any other database is refused outright."""
+    with pytest.raises(ValueError, match="dev"):
+        CosmosSettings(
+            endpoint="https://x.documents.azure.com:443/", database="prod", container_suffix="-ci"
+        )
+    ok = CosmosSettings(
+        endpoint="https://x.documents.azure.com:443/", database="dev", container_suffix="-ci"
+    )
+    assert ok.container_names == ("tenant-ci", "global-ci")
