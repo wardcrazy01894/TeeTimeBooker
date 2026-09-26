@@ -1190,6 +1190,33 @@ The prod re-point has a short cutover window (run off-peak, away from 05:50 ET).
 
 ---
 
+### 10.7 Multi-user DEV cutover (MU-17, MULTIUSER_PLAN §11/§12)
+
+A params-only change to `main.bicepparam.dev` (plus two small main/webapp wiring changes): dev's
+booking jobs run `tenant-run --event mb0600et`, the watcher runs `tenant-watch` (still hourly), the
+web app and ACS email are deployed, and the tenant store is the shared Cosmos account's `dev`
+database. **Dev stays `dryRun = true`; prod is untouched until MU-18.**
+
+- **Prerequisites (operator, all done 2026-09-26):** `cosmos.bicep` deployed to `rg-teetime-shared`
+  + the §7.2a data-plane role assignments; dev KV secrets `TENANT-CREDS-KEYRING`,
+  `WEB-SESSION-SECRET`, `OAUTH-GOOGLE-CLIENT-ID`, `OAUTH-GOOGLE-CLIENT-SECRET`,
+  `OPERATOR-NOTIFY-EMAIL`; Key Vault Secrets Officer for the CI SP on the dev vault (email.bicep
+  writes `ACS-EMAIL-CONNECTION`); `Microsoft.Communication` registered; the Google OAuth client
+  (project `teetimebooker`, Testing mode) with redirect URI
+  `https://teetime-web-dev.kindwave-5d7c992b.eastus2.azurecontainerapps.io/auth/google/callback`.
+- **No two-step for the ACS sender:** with `acsEmailSender = ''` main.bicep derives
+  `DoNotReply@<managed domain>` from the email module output (which also orders the jobs and web
+  after the module that writes `ACS-EMAIL-CONNECTION`).
+- **No email address in the (public) param files:** with `operatorEmail = ''` the web reads
+  `TEETIME_OPERATOR_EMAIL` from the `OPERATOR-NOTIFY-EMAIL` secret. Prod needs that secret before
+  its own `deployWebApp = true` (MU-18).
+- **Verify after the auto-deploy:** the migrate job ran (CI step after pass 2); the web answers
+  `/healthz`; the operator signs in with Google, connects the separate dev Mangrove Bay account on
+  `/accounts`, saves a ranked weekly booking; the next hourly `teetime-watch-job-dev` run and the
+  next 05:50 ET `teetime-job-dev-*` run log the tenant path (dry-run: no booking POST) with exit 0.
+- **Rollback:** set `bookingMode`/`watchMode` back to `'toml'` (and `deployWebApp = false` to stop
+  the site) and merge; the jobs return to `run`/`watch` on the TOML config.
+
 ## 11. Security checklist
 
 | Item | Status | Detail |

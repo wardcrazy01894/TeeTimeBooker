@@ -105,6 +105,15 @@ var webSecrets = [
   { name: 'oauth-google-client-secret', keyVaultUrl: '${keyVaultUri}secrets/OAUTH-GOOGLE-CLIENT-SECRET', identity: userAssignedIdentityResourceId }
 ]
 
+// MU-17: the repo is public, so the operator's address is not written into a param file. With
+// operatorEmail empty the web reads OPERATOR-NOTIFY-EMAIL, the secret the tenant jobs already use
+// for the operator summary (it must exist before deployWebApp=true).
+var operatorEmailFromVault = empty(operatorEmail)
+var operatorEmailSecrets = operatorEmailFromVault ? [
+  { name: 'operator-notify-email', keyVaultUrl: '${keyVaultUri}secrets/OPERATOR-NOTIFY-EMAIL', identity: userAssignedIdentityResourceId }
+] : []
+var operatorEmailEnv = operatorEmailFromVault ? { name: 'TEETIME_OPERATOR_EMAIL', secretRef: 'operator-notify-email' } : { name: 'TEETIME_OPERATOR_EMAIL', value: operatorEmail }
+
 // WEB_ENV_VARS (web/app.py) minus the GitHub pair (unset — Google only). TEETIME_PUBLIC_BASE_URL
 // and TEETIME_OPERATOR_EMAIL are plain values (not secrets); an empty publicBaseUrl fails the
 // container closed at startup (WebConfigError) rather than serving with a broken OAuth redirect.
@@ -113,7 +122,7 @@ var webEnv = [
   { name: 'WEB_SESSION_SECRET',            secretRef: 'web-session-secret' }
   { name: 'OAUTH_GOOGLE_CLIENT_ID',        secretRef: 'oauth-google-client-id' }
   { name: 'OAUTH_GOOGLE_CLIENT_SECRET',    secretRef: 'oauth-google-client-secret' }
-  { name: 'TEETIME_OPERATOR_EMAIL',        value: operatorEmail }
+  operatorEmailEnv
   { name: 'TEETIME_WEB_DRY_RUN',           value: dryRun ? 'true' : 'false' }
   { name: 'TEETIME_ENV',                   value: envName }
 ]
@@ -175,7 +184,7 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
         allowInsecure: false
       } : null
       registries: registries
-      secrets: tenantBackend ? concat(webSecrets, webTenantSecrets) : webSecrets
+      secrets: concat(webSecrets, operatorEmailSecrets, tenantBackend ? webTenantSecrets : [])
     }
     template: {
       containers: [
