@@ -72,30 +72,32 @@ param enableKillswitch = true
 // See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
 param killswitchRbacRoleId = '3e2d5a14-96bd-4469-9f96-b9c3270aa9e6'
 
-// --- MU-15a (MULTIUSER_PLAN §12): infra without the tenant DB ------------------------------
-// bookingMode/watchMode stay 'toml' in dev too — MU-17 flips this once Cosmos (MU-15b) and the
-// tenant runner/watcher are wired end-to-end. A plain merge of this PR changes NOTHING about
-// what the dev ACA jobs run.
-param bookingMode = 'toml'
-param watchMode = 'toml'
+// --- MU-17 (MULTIUSER_PLAN §11/§12): the DEV cutover ------------------------------------------
+// Dev runs the multi-user path: `tenant-run --event mb0600et` + `tenant-watch` over the shared
+// Cosmos account's `dev` database (MU-15b; the dev MI holds a data-plane role on /dbs/dev), the
+// web app, and ACS email. Dev STAYS dry-run (dryRun = true above): no real booking POSTs, and
+// the web refuses Cancel. Prod is untouched until MU-18.
+// Prerequisites (all done 2026-09-26, verified read-only): Cosmos account + role assignments,
+// dev KV secrets TENANT-CREDS-KEYRING / WEB-SESSION-SECRET / OAUTH-GOOGLE-CLIENT-ID /
+// OAUTH-GOOGLE-CLIENT-SECRET / OPERATOR-NOTIFY-EMAIL, Key Vault Secrets Officer for the CI
+// identity (email.bicep writes ACS-EMAIL-CONNECTION), Microsoft.Communication registered.
+param bookingMode = 'tenant'
+param watchMode = 'tenant'
 
 // Dev-only cadence change (operator directive, MU-15a): the watch job runs HOURLY instead of
-// every 10 minutes, cutting dev Log Analytics/compute noise now that the watcher polls on every
-// run regardless of time of day. This is a per-env PARAM (compute.bicep's watchCron), so it
-// cannot touch prod — prod's param file below keeps the unchanged */10 * * * *.
+// every 10 minutes. This is a per-env PARAM (compute.bicep's watchCron), so it cannot touch
+// prod — prod's param file keeps the unchanged */10 * * * *.
 param watchCron = '0 * * * *'
 
-// Tenant Cosmos/ACS values stay empty — toml mode never reads them (MULTIUSER_PLAN §10.1).
-// MU-15b/17 set these once the shared Cosmos account + ACS domain exist.
-param tenantCosmosEndpoint = ''
+// The shared free-tier account in rg-teetime-shared (MU-15b); the database is the env name.
+param tenantCosmosEndpoint = 'https://cosmos-teetime-shared.documents.azure.com:443/'
+// Empty = main.bicep derives DoNotReply@<the ACS managed domain> from the email module output.
 param acsEmailSender = ''
 
-// Web app + ACS: OFF by default in dev. The Google OAuth client (OAUTH-GOOGLE-CLIENT-ID/SECRET)
-// and WEB-SESSION-SECRET Key Vault secrets do not exist yet — flipping these true before the
-// operator creates them would fail the very next dev auto-deploy (ACA validates KV secret refs
-// at container-CREATE time). See the PR body for the exact secret-creation commands + the
-// Google Cloud Console steps.
-param deployWebApp = false
-param deployAcsEmail = false
-param webPublicBaseUrl = ''
+// The web app's URL is predictable: teetime-web-<env>.<the ACA environment's default domain>.
+// It must match the Google OAuth client's redirect URI (<this>/auth/google/callback).
+param deployWebApp = true
+param deployAcsEmail = true
+param webPublicBaseUrl = 'https://teetime-web-dev.kindwave-5d7c992b.eastus2.azurecontainerapps.io'
+// Empty = the web reads OPERATOR-NOTIFY-EMAIL from Key Vault (the repo is public).
 param operatorEmail = ''

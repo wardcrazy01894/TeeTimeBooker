@@ -157,7 +157,7 @@ required setting is missing:
 | `WEB_SESSION_SECRET` | Signs the session cookie |
 | `OAUTH_GOOGLE_CLIENT_ID` / `OAUTH_GOOGLE_CLIENT_SECRET` | Google sign-in (optional; at least one provider is required) |
 | `OAUTH_GITHUB_CLIENT_ID` / `OAUTH_GITHUB_CLIENT_SECRET` | GitHub sign-in (optional; at least one provider is required) |
-| `TEETIME_OPERATOR_EMAIL` | The operator's email — the only account that can use `/admin/users` |
+| `TEETIME_OPERATOR_EMAIL` | The operator's email — the only account that can use `/admin/users` (deployed: read from the `OPERATOR-NOTIFY-EMAIL` Key Vault secret) |
 | `TEETIME_WEB_DRY_RUN` | `true` (default) or `false`; in dry-run the site never cancels a real reservation |
 
 `webapp.bicep` wires only the Google pair as Key Vault secretRefs (`OAUTH-GOOGLE-CLIENT-ID` /
