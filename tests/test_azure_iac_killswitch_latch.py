@@ -60,3 +60,30 @@ def test_param_files_declare_both_latch_params(param_file: Path) -> None:
     text = param_file.read_text()
     assert "param killswitchFired" in text
     assert "param enableSchedules" in text
+
+
+def _declared_params(param_file: Path) -> set[str]:
+    names = set()
+    for line in param_file.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("param "):
+            names.add(stripped.split()[1])
+    return names
+
+
+def _deploy_blocks(workflow: str) -> list[str]:
+    marker = "deployment group cr" + "eate"
+    parts = workflow.split(marker)[1:]
+    return [p.split("- name:")[0] for p in parts]
+
+
+@pytest.mark.parametrize("param_file", [PARAM_DEV, PARAM_PROD])
+def test_every_param_file_value_reaches_every_ci_deploy(workflow: str, param_file: Path) -> None:
+    """MU-15a lesson (2026-09-26): CI deploys with INLINE parameters, so a value set only in a
+    .bicepparam file never reaches the deploy and silently falls back to the template default.
+    Dev's hourly `watchCron` shipped that way and dev kept polling every 10 min. Every param a
+    .bicepparam file declares must be passed by EVERY deploy command in the workflow, so the
+    checked-in file stays the single source of truth."""
+    for block in _deploy_blocks(workflow):
+        missing = sorted(n for n in _declared_params(param_file) if f"{n}=" not in block)
+        assert missing == [], f"{param_file.name}: not passed to a CI deploy: {missing}"
