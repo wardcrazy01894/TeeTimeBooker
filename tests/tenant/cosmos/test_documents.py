@@ -13,6 +13,8 @@ from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 import pytest
+
+from teetime.core.models import CourseId
 from teetime.tenant.cosmos.documents import (
     CI_CONTAINER_DEFAULT_TTL_S,
     GLOBAL_CONTAINER,
@@ -43,8 +45,6 @@ from teetime.tenant.cosmos.documents import (
     to_slot_doc,
     to_snapshot_doc,
 )
-
-from teetime.core.models import CourseId
 from teetime.tenant.models import (
     AccountProvenance,
     AccountStatus,
@@ -212,11 +212,17 @@ class TestRoundtripTenant:
     def test_roundtrip_request_row_all_fields(self) -> None:
         row = _rule_row()
         stored = from_row_doc(to_row_doc(row))
-        assert stored.item == row
-        # Instants survive as instants, and are re-read tz-AWARE (never naive).
-        assert stored.item.booked_tee_time is not None
+        # ``booked_tee_time`` sits INSIDE the DST fold (01:30 ET on 2026-11-01, fold=1 = the
+        # second, EST occurrence). PEP 495 makes an inter-zone ``==`` on such a value always
+        # False, so that one field is compared as an instant; everything else by equality.
+        assert replace(stored.item, booked_tee_time=None) == replace(row, booked_tee_time=None)
+        assert stored.item.booked_tee_time is not None and row.booked_tee_time is not None
+        assert stored.item.booked_tee_time.timestamp() == row.booked_tee_time.timestamp()
+        # The fold was honoured: fold=1 is EST (-05:00), so the UTC form is 06:30, not 05:30.
+        assert stored.item.booked_tee_time == datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
+        # Instants are re-read tz-AWARE (never naive).
         assert stored.item.booked_tee_time.utcoffset() is not None
-        assert stored.item.booked_tee_time == row.booked_tee_time
+        assert stored.item.cutoff_at.utcoffset() is not None
 
     def test_roundtrip_request_row_defaults(self) -> None:
         row = _explicit_row()
