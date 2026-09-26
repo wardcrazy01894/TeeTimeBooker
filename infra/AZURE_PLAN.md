@@ -455,6 +455,44 @@ makes no authenticated Azure SDK calls at runtime (no blob storage, no
 output. All assignments use `roleAssignmentCondition: none` (no ABAC conditions
 needed). Legacy Key Vault access policies are NOT used.
 
+### 7.2a Cosmos DB tenant store (MU-15b) — deploy + data-plane roles, by hand
+
+The multi-user tenant store is one free-tier Cosmos DB for NoSQL account,
+`cosmos-teetime-shared` in `rg-teetime-shared`, defined by `bicep/modules/cosmos.bicep`
+(MULTIUSER_PLAN §10.2). Like the shared ACR it is deployed **standalone by the operator**; neither
+env's `main.bicep` creates it, so CI never touches it. Invariants (pinned by
+`tests/test_cosmos_bicep.py`): free tier, `totalThroughputLimit: 1000` (a mis-edit above the free
+tier cannot be provisioned), databases `prod` and `dev` at 400 RU/s shared each, containers
+`tenant` (`/accountId`) and `global` (`/pk`, TTL on with no default), dev-only `tenant-ci` /
+`global-ci` (7-day TTL), an index policy equal to the store's `QUERIED_PATHS`, and
+`disableLocalAuth: true` (no account keys).
+
+**This retires "no authenticated Azure SDK calls at runtime" for the tenant path only.** The tenant
+jobs and web authenticate to Cosmos with their env's user-assigned MI (a token from the ACA
+identity endpoint, acquired at ~05:51 and cached, never in the race window). The TOML path keeps
+the no-SDK property until it is retired.
+
+Operator steps, once (agents must not run them):
+1. Deploy the account (the `Microsoft.DocumentDB` provider is already registered):
+   `az deployment group create -g rg-teetime-shared --name cosmos-teetime-shared --template-file infra/bicep/modules/cosmos.bicep`
+2. Create the four data-plane role assignments (`az cosmosdb sql role assignment create
+   --account-name cosmos-teetime-shared --resource-group rg-teetime-shared --role-definition-id
+   <id> --principal-id <objectId> --scope <scope>`). Built-in ids: Data **Contributor**
+   `00000000-0000-0000-0000-000000000002`, Data **Reader** `00000000-0000-0000-0000-000000000001`.
+
+| # | Principal | Role | Scope |
+|---|-----------|------|-------|
+| 1 | prod MI `id-teetime-prod` | Contributor | `/dbs/prod` |
+| 2 | dev MI `id-teetime-dev` | Contributor | `/dbs/dev` |
+| 3 | developer principal(s) for the integration suite | Contributor | `/dbs/dev/colls/tenant-ci` and `/dbs/dev/colls/global-ci` |
+| 4 | operator's own user (Portal Data Explorer) | **Reader** | `/dbs/prod` and `/dbs/dev` |
+
+No Bicep module may declare a Cosmos data-plane role assignment (pinned). Verification is
+read-only: `az cosmosdb sql role assignment list --account-name cosmos-teetime-shared
+--resource-group rg-teetime-shared`, and later a dev `tenant-watch --dry-run true` run must not log
+a 403 at startup. The account endpoint (`https://cosmos-teetime-shared.documents.azure.com:443/`)
+becomes each env's `tenantCosmosEndpoint` param at cutover (MU-17 dev, MU-18 prod).
+
 ### 7.3 Key Vault secret injection pattern
 
 ACA supports native Key Vault secret references via `keyVaultUrl` in the job's
