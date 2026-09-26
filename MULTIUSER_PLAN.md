@@ -396,6 +396,9 @@ higher-ranked row in a group reaches `booked`, the watcher runs the §8.5 manage
 lower-ranked `booked` rows in the same group. Lower-ranked rows are attempted only if their drop
 comes earlier. No engine change is needed; it is a tenant-watcher rule over the group.
 
+**Superseded by §16** (2026-09-26): built in MU-R1..R3. `group_rank` is now the row's best option
+rank, 1-based, and the collapse and group floor are specified in §16.3/§16.4.
+
 ### 3.7 Store Protocols
 
 `BookingStore` is **unchanged**. It stays the engine's in-run memory (`InMemoryStore` per process).
@@ -1541,8 +1544,11 @@ once their dependencies land.
 | **MU-18** | Prod cutover (params + tag) + docs (PLAN §12 hosted posture) | `main.bicepparam.prod` | MU-17 soak | – | all "latest infra tag" sites, PLAN §12 |
 | **MU-19** | Retire the TOML job wiring | `compute.bicep`, parity tests | MU-18 + 4 weekends | `test_no_toml_mode_remaining` | per §11.1 |
 | **MU-20** | Remove the TOML CLI (if Q6 = remove) | `__main__`, `config/` | MU-19 + 4 weekends | – | README, CLAUDE.md |
+| **MU-R1** | Ranked options + per-course price: model, store, Cosmos mapping (§16.2, §16.5) | `tenant/models.py`, `tenant/store.py`, `tenant/in_memory_store.py`, `tenant/cosmos/**` | MU-8b, MU-14 | `test_options_rank_unique_and_contiguous`, `test_group_downgrade_edge_allowlisted`, `test_old_schema_row_reads_as_single_option`, conformance additions | CLAUDE.md tenant bullets |
+| **MU-R2** | Group floor, `achieved_rank`, `collapse_group`, cross-course upgrade (§16.3/§16.4) | `tenant/groups.py`, `tenant/runner.py`, `tenant/watch_runner.py`, `tenant/materialize.py` | MU-R1, MU-9b, MU-10b | `test_achieved_rank_matches_engine_first_match`, `test_runner_collapses_same_drop_group_post_race`, `test_watcher_collapse_retries_failed_cancel`, `test_cancelled_group_not_external_cancel`, `test_group_floor_blocks_worse_rebook` | CLAUDE.md, §16 status |
+| **MU-R3** | The §16.1 form, account default price, dashboard group view | `web/**` | MU-R1, MU-13 | `test_ranked_form_roundtrip`, `test_price_prefilled_from_account_default`, `test_group_action_partial_failure_reported` | README web section |
 
-Critical path: MU-5 → MU-9a → MU-9b → MU-10b → MU-15a → MU-15b → MU-16 → MU-17 → MU-18. **Only
+Critical path: MU-5 → MU-9a → MU-9b → MU-10b → MU-15a → MU-15b → MU-16 → MU-17 → MU-18. MU-R1..R3 (§16) run beside MU-15a..MU-16 and should land before MU-17 so the dev cutover exercises them. **Only
 MU-8b and MU-15b depend on Spike S-M9** (async batch + IfMatch semantics). Everything else
 proceeds in parallel on `InMemoryTenantStore`. Five parallel lanes can start
 immediately after MU-0: MU-1, MU-2, MU-3, MU-4, MU-5, MU-7.
@@ -1746,8 +1752,17 @@ standing rules one level down.
 - `RequestRow.max_price` / `StandingRule.max_price`: `Decimal | None`; `None` = the account's
   `default_max_price` at run time. Fed to `BookingRequest.max_price_per_player` per course (the runner
   already builds one request per account/course).
-- **Achieved rank**: when a row books, record `booked_rank` = the rank of the option whose window
-  contains `booked_tee_time`. This is what cross-course comparison uses.
+- **Achieved rank** (review round 1, MF4): when a row books, record `booked_rank` = the rank of the
+  FIRST option, in ascending-rank order, whose window contains `booked_tee_time`. Options at one
+  course MAY overlap (e.g. rank 1 A 09:00–10:00 and rank 3 A 08:30–09:30); first-match-in-list is
+  exactly the rule the engine already uses (`core/slot_utils.py::_matching_window`), so the rank we
+  record is the rank the engine ranked the slot by. One pure helper, `tenant/groups.py::
+  achieved_rank(options, tee_time)`, is the only place this is computed, and it is tested against
+  `_matching_window` on overlapping options.
+- **Rules carry the group too** (should-fix 5): `StandingRule` gains `group_id` / `group_rank`
+  (today only `RequestRow` has them). One weekly group = one rule per course sharing a `group_id`;
+  the materializer copies the rule's `group_id` onto every row it creates, so the group of a rule
+  row on a date is `(group_id, target_date)`. Explicit groups get a fresh `group_id` per date.
 - Unchanged invariants: one ACTIVE row per (course account, date) (each course has its own account);
   one active rule per (course account, weekday). New: all rows of a group share `target_date`,
   `party_size` and `user`; option ranks are unique across the group and contiguous 1..N.
@@ -1758,34 +1773,117 @@ standing rules one level down.
 ### 16.3 Booking a group at the drop
 
 Courses that drop at the same instant run as ONE orchestrator per account per course, exactly as
-today, each with its row's windows (ascending rank) and price. Each may book its best available
-window. The **group keep-best** step (§16.4) then keeps the booking with the LOWEST `booked_rank` and
-cancels the others — the same shape as today's in-run `_cancel_extras`, lifted to the group.
+today, each with its row's windows (ascending rank) and price. The T0 path is unchanged: every
+account's writes stream per row as in §4.2 and nothing waits on another account. Each may book its
+best available window. Keep-best then runs AFTER the race (§16.4), so it adds no call before or at
+T0.
+
+**Group floor** (used by the booker at 05:50 and by the watcher on every run): for a row whose group
+already has a BOOKED row with `booked_rank = r` at ANOTHER course, only that row's options with rank
+`< r` are passed to the engine. A row with no such option is not attempted at all (no login, no
+CAPTCHA, no burst). This is what makes "an option that could only rank worse is not attempted" true,
+and it stops a downgraded row from re-booking its own worse slot.
 
 ### 16.4 Group keep-best + cross-course upgrade (the §3.6 hook, now built)
 
-Invariant: **at most one BOOKED row per group, and it is the best achieved rank.** Enforced by the
-booker's post-race step and by the watcher:
-- Two BOOKED rows in a group → keep the lower `booked_rank`, cancel the other via the §8.5
-  managed-cancel path (**owned** bookings only — a manual reservation is never auto-cancelled; if the
-  better one is manual, the bot's is cancelled, never the user's).
-- Upgrade: the watcher looks for a slot at ANY course of the group whose option rank beats the
-  current `booked_rank`; if found it books it (cancel-before-book is NOT needed across courses — they
-  are different accounts), then cancels the worse booking. Within one course the existing
-  upgrade path still applies (it already understands window order).
-- Different release times: a course that drops EARLIER is booked when it drops; a later-dropping,
-  higher-ranked option upgrades it when it drops. An option that could only ever rank worse than
-  what is already booked is not attempted.
+Invariant: **at most one BOOKED, OWNED row per group, and it is the best achieved rank.**
+
+**New row edge (review round 1, MF1).** Collapsing a group needs a transition §3.4 does not have,
+and the leased-edge allowlist would refuse it. Add:
+
+| Edge | Actor | Guard |
+|---|---|---|
+| booked → pending, `status_reason = "group_downgrade"` | runner (post-race collapse), watcher | lease; the row's booking is OWNED; another row of the same group is BOOKED with a strictly lower `booked_rank` |
+
+It is added to the leased-edge allowlist in §3.4. The row goes back to **pending**, not cancelled.
+`group_downgrade` is not user-terminal, so if the winning booking is later lost (external cancel,
+lost upgrade) the group floor lifts and this row is attempted again with all its options. While the
+winner holds, the group floor keeps it from re-booking. The ledger entry of the cancelled id moves to
+a new state `cancelled_group`, added to the §7.5 exclusion list beside `cancelled_upgrade` /
+`cancelled_extra`, so its disappearance is never read as an external cancel.
+
+**Collapse procedure** (one shared function, `tenant/groups.py::collapse_group`, used by both
+callers):
+1. Pick the keeper: the BOOKED row with the lowest `booked_rank`. Ties cannot happen, because option
+   ranks are unique across the group.
+2. For every other BOOKED row: if its booking is NOT owned (manual), leave it and notify the user
+   (never auto-cancelled; see the residuals below). If owned, set `upgrade_started_at` on it under
+   its lease BEFORE calling the course. That is the §7.5 marker: a crash after the cancel lands but
+   before the write is then classified `BOT_CAUSED`, and the watcher completes the downgrade instead
+   of marking an external cancel.
+3. `cancel_reservation(raw_id)` through that account's adapter.
+4. On success, ONE `record_outcomes` batch: row → pending(`group_downgrade`), booking cleared,
+   `booked_rank` cleared, `upgrade_started_at` cleared, ledger → `cancelled_group`.
+5. On failure: log CRITICAL, leave the row BOOKED with the marker set, and notify the user once. The
+   next watcher run (≤10 min) sees two BOOKED rows in the group and retries from step 1.
+
+**Who calls it and when (MF3).**
+- **Booker, same-drop groups:** in `tenant/runner.py`, after the per-account `gather` has finished
+  and before `finish_run` releases the leases. The runner already holds each row's lease and each
+  account's open, logged-in adapter, and it knows every account's outcome in memory. The join
+  therefore needs no extra read and no extra login. Groups are found from the event's rows by
+  `group_id`. A crash between "row A booked" and the collapse leaves two BOOKED rows, which is
+  exactly the state the watcher's backstop handles on its next run.
+- **Watcher, every run (backstop + different-drop groups):** after loading rows, any group with two
+  BOOKED rows is collapsed first, then upgrades run.
+
+**Cross-course upgrade (MF2).** The watcher looks, within the group floor, for a slot at any other
+course of the group whose option rank beats the current `booked_rank`. If found it books it, then
+runs the collapse, which cancels the worse booking. The order is **book first, then cancel**, the
+opposite of the same-course `UpgradeOrchestrator`. Across courses there is no 1-per-day conflict,
+because they are different accounts, so book-first never fails because of the held booking. Its only
+failure mode is holding two tee times until the collapse succeeds, which step 5 retries every run.
+Cancel-first would instead risk losing the held tee time if the new book then fails, which is worse
+for the user. Within one course the existing upgrade path still applies, since it already
+understands window order.
+
+**Cutoff.** A new booking or upgrade is never made after the §3.4 cutoff. The collapse of a
+duplicate IS still allowed after the cutoff. It only reduces what is held, like the existing
+`_cancel_extras` and the duplicate reconcile, and holding two tee times into the day of play means
+a no-show at one course.
+
+**Different release times:** a course that drops EARLIER is booked when it drops. A later-dropping,
+higher-ranked option is attempted within the group floor when it drops (by the booker if it has its
+own release event, else by the watcher), and the collapse then cancels the earlier booking.
+
+**Documented residuals** (mirroring §7.6):
+- The better booking is manual and the worse is bot-owned: the bot's is cancelled and the manual one
+  kept.
+- The better booking is bot-owned and the worse is manual: nothing is cancelled. The user holds two
+  and is told.
+- Both are manual: nothing is cancelled. The user is told.
+
+**Group-wide web actions (should-fix 7).** "Skip this date", "withdraw this one-off" and "cancel my
+tee time" act on the whole group. The web applies them row by row in rank order, each its own
+write, because the rows live in different partitions. Each step is idempotent. A partial failure
+shows which courses were not updated, and repeating the action finishes it. Cancel means the §8.5
+cancel of the one BOOKED row, then skipping the group's other rows.
+
+**One-off group on a date that has a rule group (should-fix 6).** The one-off form for such a date
+starts pre-filled from the rule group. On save, rule rows at courses that stay in the one-off group
+are superseded exactly as today (per-account slot pointer). Rule rows at courses the user REMOVED
+are marked **skipped**, the existing "don't book this date" action, which survives rule edits.
+Withdrawing the one-off group restores the superseded rows through the existing path. The skipped
+ones stay skipped and show on the dashboard, where the user can un-skip them. No new edge is needed.
 
 ### 16.5 PRs
 
 - **MU-R1** — model + store + Cosmos mapping: `options` (ranked windows), `max_price`,
-  `default_max_price`, `booked_rank`, group helpers (`list_group`, `create_group`), rank-uniqueness
-  validation, conformance tests, migration of single-window rows/rules.
-- **MU-R2** — engine wiring: materializer for grouped rules; runner + watcher build per-course
-  requests from ranked options + price; `booked_rank` recorded; §16.4 keep-best in the booker's
-  post-race step and the watcher's cross-course upgrade; tests incl. the operator's example
-  (A 9–10 > B 9–10 > A 8–9) for same-drop and different-drop cases.
+  `default_max_price`, `booked_rank`, `StandingRule.group_id`/`group_rank`, group helpers
+  (`list_group`, `create_group`), rank-uniqueness validation, the new `booked → pending
+  (group_downgrade)` edge in `check_transition` + the leased-edge allowlist, the `cancelled_group`
+  ledger state, conformance tests. **Migration (should-fix 9)** is read-compat, not a batch rewrite:
+  `from_doc` for the previous `schemaVersion` maps `window_earliest/latest` to
+  `options=((1, earliest, latest),)` and `max_price=None`, and every write uses the new version
+  (the §3.1 N/N−1 policy). It is order-independent of MU-16, but landing R1 first means prod never
+  holds old-version docs.
+- **MU-R2** — engine wiring: the materializer copies rule groups onto rows; runner + watcher build
+  per-course requests from ranked options, price and the group floor; `booked_rank` via
+  `achieved_rank`; `tenant/groups.py::collapse_group` called by the runner post-race and by the
+  watcher every run; the watcher's cross-course upgrade; §7.5 treats `cancelled_group` like
+  `cancelled_upgrade`. Tests incl. the operator's example (A 9–10 > B 9–10 > A 8–9) for same-drop and
+  different-drop cases, a crash between cancel and write, a failed collapse cancel retried by the
+  next watcher run, and the three manual residuals.
 - **MU-R3** — web: the §16.1 form (flat ranked option list, per-course price pre-filled + editable)
   for one-off dates and rules; account page default price; dashboard shows the group and which option
   booked (and its rank).
