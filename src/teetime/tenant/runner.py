@@ -71,6 +71,7 @@ from .models import (
     RowStatus,
     options_time_windows,
     row_is_frozen,
+    row_max_price,
 )
 from .notify import (
     USER_FACING_KINDS,
@@ -546,7 +547,7 @@ async def plan_release_event(
     accounts = [
         _Account(
             event_row=r,
-            request=_request_for(r.row, dry_run=True),
+            request=_request_for(r.row, r.account, dry_run=True),
             creds=CourseCredentials(username="", password=""),  # never used: no login
             recorder=make_recording_adapter(
                 adapter_factory(
@@ -887,7 +888,7 @@ async def _release_leases(store: _RunnerStore, row_ids: frozenset[RowId], *, own
             log.warning("tenant-run: row %s: lease release failed (%s)", row_id, type(exc).__name__)
 
 
-def _request_for(row: RequestRow, *, dry_run: bool) -> BookingRequest:
+def _request_for(row: RequestRow, account: CourseAccount, *, dry_run: bool) -> BookingRequest:
     return BookingRequest(
         request_id=row.request_id,
         target_dates=(row.target_date,),
@@ -895,6 +896,7 @@ def _request_for(row: RequestRow, *, dry_run: bool) -> BookingRequest:
         players=(_GUEST,) * row.party_size,
         course_preferences=(row.course_id,),
         holes=_TENANT_HOLES,
+        max_price_per_player=row_max_price(row, account),
         dry_run=dry_run,
     )
 
@@ -930,7 +932,7 @@ async def _prepare_accounts(
             accounts.append(
                 _Account(
                     event_row=event_row,
-                    request=_request_for(row, dry_run=dry_run),
+                    request=_request_for(row, event_row.account, dry_run=dry_run),
                     creds=creds[row.id],
                     recorder=make_recording_adapter(inner, clock=clock),
                     lease_key=key,

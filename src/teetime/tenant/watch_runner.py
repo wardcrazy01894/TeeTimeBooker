@@ -124,6 +124,7 @@ from .models import (
     SnapshotEntry,
     lease_held,
     options_time_windows,
+    row_max_price,
 )
 from .notify import UserEvent, UserEventKind, UserNotifier
 from .recording import RecordedBook, RecordingLog, make_recording_adapter
@@ -801,7 +802,7 @@ class _Run:
         error: Exception | None = None
         try:
             result = await engine.check_once(
-                _request_for(row, dry_run=self.dry_run), row.target_date
+                _request_for(row, work.account, dry_run=self.dry_run), row.target_date
             )
         except (RateLimitError, CaptchaError, AuthError) as exc:  # check_once re-raises only these
             error = exc
@@ -948,8 +949,9 @@ def _horizon(policy: ReleasePolicy, now: datetime) -> tuple[date, date]:
 def _group_request(
     key: SearchGroupKey, members: Sequence[EventRow], *, dry_run: bool
 ) -> BookingRequest:
-    """The group's ONE search request: the UNION of the members' windows (§7.2); each row
-    re-ranks with its own window afterwards."""
+    """The group's ONE search request: the UNION of the members' windows (§7.2) and the HIGHEST
+    member price cap (permissive, so no member loses a slot it could book); each row re-ranks
+    with its own windows and cap afterwards."""
     windows: list[TimeWindow] = []
     for member in members:
         for window in options_time_windows(member.row.options):
@@ -962,11 +964,12 @@ def _group_request(
         players=(_GUEST,) * key.party_size,
         course_preferences=(key.course_id,),
         holes=_TENANT_HOLES,
+        max_price_per_player=max(row_max_price(m.row, m.account) for m in members),
         dry_run=dry_run,
     )
 
 
-def _request_for(row: RequestRow, *, dry_run: bool) -> BookingRequest:
+def _request_for(row: RequestRow, account: CourseAccount, *, dry_run: bool) -> BookingRequest:
     return BookingRequest(
         request_id=row.request_id,
         target_dates=(row.target_date,),
@@ -974,6 +977,7 @@ def _request_for(row: RequestRow, *, dry_run: bool) -> BookingRequest:
         players=(_GUEST,) * row.party_size,
         course_preferences=(row.course_id,),
         holes=_TENANT_HOLES,
+        max_price_per_player=row_max_price(row, account),
         dry_run=dry_run,
     )
 
