@@ -13,8 +13,9 @@ a self-deadline (start + replicaTimeout - 90 s) writes still-running rows ``need
 
 MU-9a (the runner core: ``run_release_event``, ``resolve_credentials``,
 ``assert_blind_methods_present``) is IMPLEMENTED and UNWIRED — nothing on the production path
-calls it. Still stubs: ``exit_code_for`` + the CLI + emails (MU-9b), ``LeasedBookingStore``
-(MU-9c). The tenant watcher (MU-10b) lives in ``tenant.watch_runner``.
+calls it. Still stubs: ``exit_code_for`` + the CLI + emails (MU-9b). ``LeasedBookingStore``
+(MU-9c, ``tenant.store``) is for the watcher/web only. The tenant watcher (MU-10b) lives in
+``tenant.watch_runner``.
 """
 
 from __future__ import annotations
