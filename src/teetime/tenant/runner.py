@@ -14,8 +14,9 @@ a self-deadline (start + replicaTimeout - 90 s) writes still-running rows ``need
 MU-9a (the runner core: ``run_release_event``, ``resolve_credentials``,
 ``assert_blind_methods_present``) and MU-9b (``exit_code_for``, the post-race emails
 ``finish_run``, ``plan_release_event``, the §11.2 log lines, the store-call / writer bounds) are
-IMPLEMENTED; ``teetime tenant-run`` / ``tenant-plan`` (``tenant.booking_job``) run them over an
-in-memory store — nothing on the production path calls them until MU-15a/MU-16.
+IMPLEMENTED; ``teetime tenant-run`` / ``tenant-plan`` (``tenant.booking_job``) run them over the
+store ``tenant.wiring.open_tenant_store`` opens (Cosmos when configured, MU-16a) — no env's
+booking job runs them until its ``bookingMode`` is flipped to ``tenant`` (MU-17).
 ``LeasedBookingStore`` (MU-9c, ``tenant.store``) is for the watcher/web only. The tenant
 watcher (MU-10b) lives in ``tenant.watch_runner``.
 """

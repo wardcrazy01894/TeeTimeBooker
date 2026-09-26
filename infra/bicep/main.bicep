@@ -263,6 +263,10 @@ module webapp 'modules/webapp.bicep' = if (deployWebApp) {
     webPublicBaseUrl: webPublicBaseUrl
     operatorEmail: operatorEmail
     dryRun: dryRun
+    // MU-16a: the web's tenant backend (store + keyring + ACS), wired iff the endpoint is set.
+    tenantCosmosEndpoint: tenantCosmosEndpoint
+    acsEmailSender: acsEmailSender
+    userAssignedIdentityClientId: identity.outputs.clientId
   }
   dependsOn: [sharedAcrPull]
 }

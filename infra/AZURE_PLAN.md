@@ -336,6 +336,21 @@ regardless of time of day; dev is `dryRun=true` so this has no booking-behavior 
 `compute.bicep` includes the watch job `Microsoft.App/jobs` resource
 (implemented as part of M-azure-T1, now DONE).
 
+### 5.5 Migrate job (MU-16a, tenant mode only)
+
+`teetime-migrate-<env>` runs `teetime tenant-migrate` (MULTIUSER_PLAN §10.1/§10.2): connect to the
+Cosmos tenant store, run the ordered idempotent data-migration list (v1: empty), exit 0 (non-zero
+on any failure). It exists ONLY when `bookingMode` or `watchMode` is `tenant`, is ALWAYS a
+**Manual** trigger (never scheduled, so it is not a killswitch target and ignores
+`enableSchedules`), has a 600 s replica timeout and no Key Vault secret (env: the three Cosmos
+values + `TEETIME_ENV`). `azure-iac.yml` starts it and polls the execution to `Succeeded` (15 min
+cap; `Failed`/`Stopped`/timeout fails the deploy job) **right after deploy pass 2**, in a tenant
+env only. Not before the jobs switch image: pass 1 puts every job, this one included, on the
+public bootstrap image, so the real migration code only exists once pass 2 has also moved the
+booking/watch jobs and the web. That is safe because document readers accept `schemaVersion` N
+and N−1. An operator can re-run it by hand (`az containerapp job start -n teetime-migrate-<env>`);
+agents may not (deploy guard).
+
 ---
 
 ## 6. State persistence (pre-emption items 4 & 10)
@@ -403,6 +418,11 @@ exact Google Cloud Console + `az keyvault secret set` steps) before flipping tha
 
 GitHub OAuth (`OAUTH-GITHUB-CLIENT-ID`/`SECRET`) is deliberately NOT provisioned — operator
 decision 2026-09-26: Google only for v1.
+
+**The web app's tenant backend (MU-16a):** once `tenantCosmosEndpoint` is non-empty, `webapp.bicep`
+ALSO references `TENANT-CREDS-KEYRING` and `ACS-EMAIL-CONNECTION` (the same secrets the
+tenant-mode jobs use), so both must exist before the web is deployed with an endpoint set. With
+the endpoint empty the web references neither and runs on its in-memory store.
 
 **Only Player 1 needs secrets — guests do not.** The bot books a full foursome
 (4 player slots), but ForeUP's booking POST transmits only the player *count*,
@@ -518,6 +538,27 @@ behavior for secret rotation (see §7.4).
 If the managed identity does not have `Key Vault Secrets User` on the vault
 at container start time, ACA fails the job execution with a configuration
 error before the container runs. This is a fast-fail, not a silent failure.
+
+**Tenant-mode env inventory (MU-15a wiring, read by MU-16a's `tenant/wiring.py`).** Which env var
+each tenant container gets. Plain values come from Bicep params; secrets are `keyVaultUrl` refs
+as above. Nothing here exists in the default `toml` mode.
+
+| Env var | Kind | Booking + watch jobs (tenant mode) | Migrate job (`teetime-migrate-<env>`) | Web (`teetime-web-<env>`, endpoint set) |
+|---|---|---|---|---|
+| `TENANT_COSMOS_ENDPOINT` | plain (`tenantCosmosEndpoint`) | yes | yes | yes |
+| `TENANT_COSMOS_DATABASE` | plain (= `envName`) | yes | yes | yes |
+| `AZURE_CLIENT_ID` | plain (the MI's client id) | yes | yes | yes |
+| `TENANT_CREDS_KEYRING` | secret `TENANT-CREDS-KEYRING` | yes | no | yes |
+| `ACS_EMAIL_CONNECTION` | secret `ACS-EMAIL-CONNECTION` | yes | no | yes |
+| `ACS_EMAIL_SENDER` | plain (`acsEmailSender`) | yes | no | yes |
+| `OPERATOR_NOTIFY_EMAIL` | secret `OPERATOR-NOTIFY-EMAIL` | yes | no | no |
+| `TWOCAPTCHA_API_KEY` | secret `TWOCAPTCHA-API-KEY` | yes (shared with toml) | no | no |
+
+The store builder fails closed on a half-configured env: `TENANT_COSMOS_DATABASE` is always set
+in tenant mode, so a tenant job whose `tenantCosmosEndpoint` param was left empty refuses to start
+instead of running over an empty in-memory store and exiting 0. `TENANT_COSMOS_DATABASE` is never
+defaulted in code (`dev` would be the wrong database for prod). The migrate job deliberately gets
+no Key Vault secret at all, so it cannot fail on one the operator has not created.
 
 ### 7.4 Secret rotation
 

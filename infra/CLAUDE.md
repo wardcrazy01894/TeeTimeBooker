@@ -47,11 +47,16 @@ infra/
                              #   <key>`/`tenant-watch`; tenant-only secretRefs/env vars are added
                              #   ONLY inside a mode=='tenant' branch, so the default toml mode
                              #   never references a KV secret the operator has not created.
+                             #   + (MU-16a, tenant mode only) the Manual teetime-migrate-<env>
+                             #   job (`tenant-migrate`, no KV secret, NOT a killswitch target);
+                             #   azure-iac.yml starts + awaits it right after deploy pass 2.
       webapp.bicep           # NEW (MU-15a): Container App teetime-web-<env> (`teetime web`),
                              #   scale-to-zero, same ACA environment as the jobs. Gated on
                              #   deployWebApp (default false, both envs) — the Google OAuth /
                              #   session KV secrets do not exist yet. Ingress + max-replicas
                              #   latched to effectiveEnableSchedules (killswitch lever (c) target).
+                             #   MU-16a: tenant backend env (Cosmos, AZURE_CLIENT_ID, keyring,
+                             #   ACS) wired ONLY when tenantCosmosEndpoint is non-empty.
       email.bicep            # NEW (MU-15a): ACS Communication Service + Email Service +
                              #   Azure-managed domain; writes KV secret ACS-EMAIL-CONNECTION via
                              #   listKeys() at deploy time. Gated on deployAcsEmail (default false,

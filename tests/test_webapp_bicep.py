@@ -77,3 +77,51 @@ def test_webapp_secrets_are_google_oauth_only(webapp_bicep: str) -> None:
     assert "WEB-SESSION-SECRET" in webapp_bicep
     # GitHub OAuth is deliberately not wired (operator decision: Google only).
     assert "GITHUB" not in webapp_bicep
+
+
+# --- MU-16a: the web's tenant backend --------------------------------------------------------
+
+
+def _between(text: str, start: str) -> str:
+    i = text.index(start)
+    return text[i : text.index("]", i)]
+
+
+def test_webapp_gets_the_tenant_backend_env_when_cosmos_is_configured(webapp_bicep: str) -> None:
+    """`teetime web` needs the durable store (Cosmos endpoint + database + the MI client id),
+    the credential keyring (connect / refresh / cancel) and ACS (user email) — the names the
+    wiring reads (tenant/wiring.py, tenant/crypto.py, tenant/acs_email.py)."""
+    env = _between(webapp_bicep, "var webTenantEnv = [")
+    for name in (
+        "TENANT_COSMOS_ENDPOINT",
+        "TENANT_COSMOS_DATABASE",
+        "AZURE_CLIENT_ID",
+        "TENANT_CREDS_KEYRING",
+        "ACS_EMAIL_CONNECTION",
+        "ACS_EMAIL_SENDER",
+    ):
+        assert f"'{name}'" in env, name
+    # Secrets only by Key Vault reference, never a plain value.
+    assert "{ name: 'TENANT_CREDS_KEYRING',  secretRef: 'tenant-creds-keyring' }" in env
+    assert "{ name: 'ACS_EMAIL_CONNECTION',  secretRef: 'acs-email-connection' }" in env
+    secrets = _between(webapp_bicep, "var webTenantSecrets = [")
+    assert "secrets/TENANT-CREDS-KEYRING" in secrets
+    assert "secrets/ACS-EMAIL-CONNECTION" in secrets
+
+
+def test_webapp_tenant_backend_is_gated_on_the_cosmos_endpoint(webapp_bicep: str) -> None:
+    # Without an endpoint the web runs on its in-memory store and must NOT reference the
+    # tenant KV secrets (ACA validates KV refs at create time).
+    assert "var tenantBackend = !empty(tenantCosmosEndpoint)" in webapp_bicep
+    assert "secrets: tenantBackend ? concat(webSecrets, webTenantSecrets) : webSecrets" in (
+        webapp_bicep
+    )
+    assert "env: tenantBackend ? concat(webEnv, webTenantEnv) : webEnv" in webapp_bicep
+
+
+def test_main_passes_the_tenant_backend_to_the_webapp(main_bicep: str) -> None:
+    start = main_bicep.index("module webapp 'modules/webapp.bicep'")
+    block = main_bicep[start : main_bicep.index("\n}\n", start)]
+    assert "tenantCosmosEndpoint: tenantCosmosEndpoint" in block
+    assert "acsEmailSender: acsEmailSender" in block
+    assert "userAssignedIdentityClientId: identity.outputs.clientId" in block
