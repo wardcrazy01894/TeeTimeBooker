@@ -27,6 +27,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import MISSING, dataclass, fields
 from datetime import UTC, date, datetime, time
+from decimal import Decimal, InvalidOperation
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -214,6 +215,24 @@ _TIME = _Codec(encode=_encode_time, decode=_decode_time)
 _DATETIME = _Codec(encode=_encode_datetime, decode=_decode_datetime)
 
 
+def _encode_decimal(value: object) -> object:
+    return str(_expect(Decimal, value))
+
+
+def _decode_decimal(value: object) -> object:
+    # Money is stored as its exact decimal string, never a JSON number (a float would round).
+    try:
+        parsed = Decimal(_expect(str, value))
+    except InvalidOperation as exc:
+        raise DocumentError(f"not a decimal: {value!r}") from exc
+    if not parsed.is_finite():
+        raise DocumentError(f"not a finite decimal: {value!r}")
+    return parsed
+
+
+_DECIMAL = _Codec(encode=_encode_decimal, decode=_decode_decimal)
+
+
 @dataclass(frozen=True, slots=True)
 class _Field:
     attr: str  # dataclass attribute
@@ -336,6 +355,7 @@ _ROW_FIELDS: tuple[_Field, ...] = (
     _Field("last_outcome_at", "lastOutcomeAt", _optional(_DATETIME)),
     _Field("group_id", "groupId", _optional(_UUID)),
     _Field("group_rank", "groupRank", _optional(_INT)),
+    _Field("max_price", "maxPrice", _optional(_DECIMAL)),
 )
 
 
@@ -380,6 +400,9 @@ _RULE_FIELDS: tuple[_Field, ...] = (
     _Field("active", "active", _BOOL),
     _Field("materialized_through", "materializedThrough", _optional(_DATE)),
     _Field("version", "version", _INT),
+    _Field("max_price", "maxPrice", _optional(_DECIMAL)),
+    _Field("group_id", "groupId", _optional(_UUID)),
+    _Field("group_rank", "groupRank", _optional(_INT)),
 )
 
 
@@ -416,6 +439,7 @@ _ACCOUNT_FIELDS: tuple[_Field, ...] = (
     _Field("otp_mailbox", "otpMailbox", _optional(_STR)),
     _Field("consecutive_soft_auth_failures", "consecutiveSoftAuthFailures", _INT),
     _Field("verified_at", "verifiedAt", _optional(_DATETIME)),
+    _Field("default_max_price", "defaultMaxPrice", _DECIMAL),
 )
 
 

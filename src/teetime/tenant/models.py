@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from decimal import Decimal
 from enum import StrEnum
 from typing import NewType
 from uuid import UUID, uuid5
@@ -147,6 +148,10 @@ class User:
     status: UserStatus
 
 
+# §16.1: the per-player cap a new course account starts with (operator directive 2026-09-26).
+DEFAULT_MAX_PRICE = Decimal("100.00")
+
+
 @dataclass(frozen=True, slots=True)
 class CourseAccount:
     """One user's login at one course [D1]. UNIQUE(user_id, course_id) and
@@ -165,6 +170,9 @@ class CourseAccount:
     otp_mailbox: str | None = None
     consecutive_soft_auth_failures: int = 0
     verified_at: datetime | None = None
+    # §16.2 (MU-R1): the per-player green-fee cap used when a request sets no override. Shown
+    # pre-filled on the booking form; per person, per course.
+    default_max_price: Decimal = DEFAULT_MAX_PRICE
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +188,11 @@ class StandingRule:
     active: bool
     materialized_through: date | None
     version: int
+    # §16.2 (MU-R1): None = the account's ``default_max_price`` at run time.
+    max_price: Decimal | None = None
+    # §16.2: one weekly group = one rule per course sharing ``group_id``; copied onto its rows.
+    group_id: UUID | None = None
+    group_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +241,8 @@ class RequestRow:
     last_outcome_at: datetime | None = None
     group_id: UUID | None = None
     group_rank: int | None = None
+    # §16.2 (MU-R1): None = the account's ``default_max_price`` at run time.
+    max_price: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,8 +7,10 @@ transitions end-to-end through a store. These tests pin the table itself, per ac
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
@@ -20,12 +22,14 @@ from teetime.tenant.models import (
     USER_TERMINAL,
     USER_WITHDRAW_REASON,
     Actor,
+    CourseAccount,
     CourseAccountId,
     RequestRow,
     RowId,
     RowSource,
     RowStatus,
     RuleId,
+    StandingRule,
     TransitionRefusedError,
     UserId,
     check_create,
@@ -336,3 +340,18 @@ def test_reactivation_restores_pre_supersede_status() -> None:
         check_transition(plain, S, actor=Actor.MATERIALIZER, now=NOW)
     with pytest.raises(TransitionRefusedError):
         check_transition(was_skipped, S, actor=Actor.WEB, now=NOW)
+
+
+def test_price_and_rule_group_defaults() -> None:
+    """MU-R1 (§16.2): an account's default cap is $100 per player; a rule or row with no override
+    uses it (``max_price=None``); rules carry the group like rows do."""
+    assert fields_default(CourseAccount, "default_max_price") == Decimal("100.00")
+    assert fields_default(RequestRow, "max_price") is None
+    assert fields_default(StandingRule, "max_price") is None
+    assert fields_default(StandingRule, "group_id") is None
+    assert fields_default(StandingRule, "group_rank") is None
+
+
+def fields_default(cls: type, name: str) -> object:
+    (field,) = [f for f in dataclasses.fields(cls) if f.name == name]
+    return field.default

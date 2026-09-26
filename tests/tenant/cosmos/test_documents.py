@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from enum import Enum
 from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
@@ -154,6 +155,7 @@ def _rule_row(target: date = DST_END_DATE) -> RequestRow:
         last_outcome_at=datetime(2026, 10, 25, 10, 0, 1, tzinfo=UTC),
         group_id=UUID("33333333-3333-4333-8333-333333333333"),
         group_rank=1,
+        max_price=Decimal("85.50"),
     )
 
 
@@ -190,6 +192,7 @@ def _account() -> CourseAccount:
         otp_mailbox="otp+golfer@example.com",
         consecutive_soft_auth_failures=2,
         verified_at=datetime(2026, 9, 1, 15, 30, tzinfo=ET),
+        default_max_price=Decimal("120.00"),
     )
 
 
@@ -204,6 +207,9 @@ def _rule() -> StandingRule:
         active=True,
         materialized_through=date(2026, 10, 17),
         version=4,
+        max_price=Decimal("75"),
+        group_id=UUID("55555555-5555-4555-8555-555555555555"),
+        group_rank=2,
     )
 
 
@@ -750,6 +756,31 @@ class TestEnvelopeValidation:
         for key in ("needsReconcile", "supersededFrom", "groupRank", "leaseOwner"):
             del doc[key]
         assert from_doc(doc).item == _explicit_row()
+
+    def test_price_fields_absent_read_as_defaults(self) -> None:
+        """MU-R1 read-compat (§16.5): documents written before the price and rule-group fields
+        existed read back with the account default $100 and no per-request override."""
+        account_doc = to_doc(_account())
+        del account_doc["defaultMaxPrice"]
+        assert from_doc(account_doc).item.default_max_price == Decimal("100.00")
+        rule_doc = to_doc(_rule())
+        for key in ("maxPrice", "groupId", "groupRank"):
+            del rule_doc[key]
+        rule = from_doc(rule_doc).item
+        assert (rule.max_price, rule.group_id, rule.group_rank) == (None, None, None)
+        row_doc = to_doc(_rule_row())
+        del row_doc["maxPrice"]
+        assert from_doc(row_doc).item.max_price is None
+
+    def test_prices_are_stored_as_exact_decimal_strings(self) -> None:
+        """Money never round-trips through a float: the document holds the decimal string."""
+        assert to_doc(_account())["defaultMaxPrice"] == "120.00"
+        assert to_doc(_rule_row())["maxPrice"] == "85.50"
+        assert to_doc(_explicit_row())["maxPrice"] is None
+        with pytest.raises(DocumentError):
+            from_doc({**to_doc(_rule_row()), "maxPrice": 85.5})
+        with pytest.raises(DocumentError):
+            from_doc({**to_doc(_rule_row()), "maxPrice": "NaN"})
 
     def test_wrong_value_types_rejected(self) -> None:
         doc = to_doc(_explicit_row())
