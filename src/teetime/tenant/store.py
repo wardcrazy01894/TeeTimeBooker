@@ -277,6 +277,13 @@ class TenantStore(Protocol):
         (MU-8b): a point read of the partition's ``account`` doc."""
         ...
 
+    async def get_user_unscoped(self, user_id: UserId) -> User | None:
+        """SYSTEM read (the booking runner's post-race emails, MU-9b): the user by id with NO
+        session scoping — a row reaches the runner carrying only its account's ``user_id``.
+        Never called from a web request. Cosmos (MU-8b): a point read of the ``user:<id>``
+        doc in ``global``."""
+        ...
+
     async def rows_for_account_date(
         self, account_id: CourseAccountId, target_date: date
     ) -> list[RequestRow]:
