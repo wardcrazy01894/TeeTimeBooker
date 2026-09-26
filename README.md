@@ -278,6 +278,25 @@ MB_USERNAME=… MB_PASSWORD=… uv run pytest -m integration tests/test_foreup_c
 
 This step is also in the operator runbook (`infra/AZURE_PLAN.md` §10.4).
 
+**Cosmos tenant-store conformance (manual, MU-8b).** `CosmosTenantStore`
+(`src/teetime/tenant/cosmos/store.py`, not wired into any command yet) runs the full
+`TenantStoreConformance` suite in CI over an in-process fake of the Cosmos container API. The same
+suite runs against the REAL free-tier `dev` database, `integration`-marked and skipped unless both
+variables below are set. It uses only the Bicep-owned `tenant-ci` / `global-ci` containers (the
+`-ci` suffix is required; no job or the web ever sets it), authenticates with your `az login`
+through `DefaultAzureCredential` (the account has key auth disabled), and needs your principal to
+hold the Data Contributor role on those two containers (MULTIUSER_PLAN §10.5 row 3). Every test
+EMPTIES both CI containers first, so run it from one machine at a time:
+
+```bash
+az login
+TENANT_COSMOS_ENDPOINT=https://cosmos-teetime-shared.documents.azure.com:443/ \
+TENANT_COSMOS_CONTAINER_SUFFIX=-ci TENANT_COSMOS_DATABASE=dev \
+  uv run pytest -m integration tests/tenant/cosmos/test_cosmos_store.py -v
+```
+
+The Cosmos account itself is MU-15b (not deployed yet), so this cannot run until it exists.
+
 ---
 
 ## Architecture
