@@ -16,6 +16,8 @@ in MU-10b.
 
 from __future__ import annotations
 
+import inspect
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import time
@@ -26,16 +28,22 @@ from ..core.adapter import CourseAdapter
 from ..core.clock import Clock
 from ..core.config import BookingCutoffConfig, OneBookingPolicyConfig, SchedulerConfig
 from ..core.models import BookingOutcome, CourseCredentials, CourseId
+from ..core.redaction import register_secret_literals
 from ..core.release_policy import ReleasePolicy
 from ..courses.foreup.token_pool import SharedCaptchaPool
-from .crypto import Keyring
-from .models import CourseAccount, RowId
+from .crypto import Keyring, credential_aad, decrypt_password
+from .models import CourseAccount, EventRow, RowId
 from .notify import UserNotifier
 from .store import TenantStore
 
 _MU9 = "MULTIUSER_PLAN.md MU-9a"
 _MU9B = "MULTIUSER_PLAN.md MU-9b"
 _MU10 = "MULTIUSER_PLAN.md MU-10b"
+
+log = logging.getLogger(__name__)
+
+# The BlindPostCapable members the orchestrator calls through a bare ``cast`` (§4.6 SF1).
+_BLIND_METHODS = ("synthesize_blind_slots", "captcha_pool_size")
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,17 +155,53 @@ async def run_release_event(
 def assert_blind_methods_present(adapters: Sequence[CourseAdapter]) -> None:
     """Pre-T0 guard (round-2 SF1): every adapter with ``capabilities.blind_post`` must expose
     ``synthesize_blind_slots`` and ``captcha_pool_size`` via ``inspect.getattr_static`` (the
-    orchestrator only ``cast``s). Raises -> systemic non-zero exit at ~05:51, never a silent T0
-    AttributeError."""
-    raise NotImplementedError(_MU9)
+    orchestrator only ``cast``s). Raises ``TypeError`` -> systemic non-zero exit at ~05:51, never
+    a silent T0 AttributeError."""
+    for adapter in adapters:
+        if not adapter.capabilities.blind_post:
+            continue
+        missing = [
+            name for name in _BLIND_METHODS if inspect.getattr_static(adapter, name, None) is None
+        ]
+        if missing:
+            raise TypeError(
+                f"{type(adapter).__name__} reports capabilities.blind_post=True but lacks "
+                f"{', '.join(missing)}: the orchestrator would fail silently at the pre-warm "
+                "and fatally at T0"
+            )
 
 
 def resolve_credentials(
-    rows: Sequence[CourseAccount], *, keyring: Keyring
+    rows: Sequence[EventRow], *, keyring: Keyring
 ) -> tuple[dict[RowId, CourseCredentials], frozenset[RowId]]:
-    """Decrypt each account's password in process (and register it with the log filter).
-    Returns (creds by row, rows whose decrypt failed). Never raises per row (§4.5)."""
-    raise NotImplementedError(_MU9)
+    """Decrypt each account's password in process and register it with the log filter (E7,
+    ``register_secret_literals``) BEFORE it is used anywhere. Returns (creds by row, rows whose
+    decrypt failed). Never raises per row (§4.5): a failed row is logged by id and class name
+    only (never the blob or any key material) and skipped."""
+    creds: dict[RowId, CourseCredentials] = {}
+    failed: set[RowId] = set()
+    for event_row in rows:
+        account = event_row.account
+        try:
+            password = decrypt_password(
+                keyring, account.password_ciphertext, aad=credential_aad(account)
+            )
+        except Exception as exc:  # per-row isolation: one bad blob never blocks the others
+            log.error(
+                "tenant-run: row %s: credential decrypt failed (%s); row skipped",
+                event_row.row.id,
+                type(exc).__name__,
+            )
+            failed.add(event_row.row.id)
+            continue
+        if register_secret_literals([password]) == 0:
+            log.warning(
+                "tenant-run: row %s: decrypted password is shorter than the log-mask floor and "
+                "will NOT be masked in logs",
+                event_row.row.id,
+            )
+        creds[event_row.row.id] = CourseCredentials(username=account.username, password=password)
+    return creds, frozenset(failed)
 
 
 async def run_tenant_watch(
