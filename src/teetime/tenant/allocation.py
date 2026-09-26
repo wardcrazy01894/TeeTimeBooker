@@ -39,12 +39,19 @@ class BlindAllocation:
 
 
 def draft_order(row_ids: Sequence[RowId], *, target_date: date) -> tuple[RowId, ...]:
-    """Rows sorted by id, rotated by ``target_date.toordinal() % len(row_ids)``, so first pick
-    rotates across dates (§13 Q4 may replace this with an operator-first priority)."""
+    """Rows sorted by id, rotated by the WEEK index ``(target_date.toordinal() // 7) %
+    len(row_ids)``, so first pick rotates across drops (§13 Q4 may replace this with an
+    operator-first priority).
+
+    Week index, not the raw ordinal (MU-3 review follow-up): an account's drops for one course
+    recur on the SAME weekday, so consecutive targets are exactly 7 ordinals apart and
+    ``toordinal() % 7`` would be constant for N == 7 (one account first forever), while N == 14
+    would only ever use two offsets. The week index advances by one per weekly drop, so every N
+    cycles (``test_allocation_rotation_cycles_for_seven_accounts``)."""
     ordered = sorted(row_ids)
     if not ordered:
         return ()
-    k = target_date.toordinal() % len(ordered)
+    k = (target_date.toordinal() // 7) % len(ordered)
     return tuple(ordered[k:] + ordered[:k])
 
 

@@ -358,7 +358,8 @@ implemented per-milestone (`core/release_policy.py`, MU-1; `tenant/allocation.py
 `tenant/crypto.py`, MU-7; `tenant/models.py`, the `TenantStore` Protocol and
 `tenant/in_memory_store.py` with the `tests/tenant/conformance.py` suite, MU-5;
 `dev/virtual_clock.py` + `tenant/recording.py` + `dev/blind_fake_adapter.py`, MU-9a0;
-`tenant/cosmos/documents.py`, MU-8a; `tenant/notify.py` + `tenant/acs_email.py`, MU-11) are covered by
+`tenant/cosmos/documents.py`, MU-8a; the `tenant/runner.py` booking-runner core, MU-9a;
+`tenant/notify.py` + `tenant/acs_email.py`, MU-11) are covered by
 their own tests. **Nothing imports them from the production path.**
 (`src/teetime/courses/foreup/token_pool.py` is IMPLEMENTED (MU-2) and backs `ForeUpAdapter`'s
 private CAPTCHA pool with unchanged default behaviour; the shared/injected mode has no caller yet.)
@@ -407,7 +408,31 @@ does not return — see the recorder bullet under the capability notes below, wh
 why it is one CONCRETE class per capability set and never a `__getattr__` proxy.
 `dev/blind_fake_adapter.py::BlindFakeAdapter` is the blind-capable `FakeAdapter` variant carrying
 the MU-3 allowlist hook (FakeAdapter's defaults are unchanged); it drives the recorder's race-path
-end-to-end test through the UNMODIFIED `Orchestrator`. **MU-10a is DONE in
+end-to-end test through the UNMODIFIED `Orchestrator`. **MU-9a is DONE in code, UNWIRED**
+(`tenant/runner.py::run_release_event` + `resolve_credentials` + `assert_blind_methods_present`;
+no CLI yet, nothing on the production path calls it; `exit_code_for`/CLI/emails are MU-9b,
+`LeasedBookingStore` MU-9c): DST gate (pure, before ANY store call) → READ #1 `load_event_rows`
+(+ a Python freeze re-check) → WRITE #1 `claim_rows` (a row another writer leases is re-claimed
+every 15 s until T0−150 s, then skipped) → in-process decrypt with every password registered as an
+E7 secret literal (a per-row decrypt failure skips only that row) → one adapter per account from
+the `AdapterFactory` (which now also receives the account's pool `lease_key` = row id), each
+wrapped by `make_recording_adapter` → the SF1 blind-member guard (a failure is SYSTEMIC pre-T0:
+nothing races and the claimed leases are released) → per course, allocation over each blind
+account's UNFILTERED candidates (allowlist cleared first) with `C // burst` blind accounts
+(`SharedCaptchaPool.max_concurrent_solves`, 12 without a pool) and the rest search-only → EVERY
+account of a pooled course registered in draft order (k = its allowlist size, **k = 0 for
+over-cap**) + reserve R + `arm(t0)` → one UNMODIFIED `Orchestrator(prefetch_book=True)` per account
+on S′ (event fire time/zone; reserve 0 when pooled; burst 0 when search-only), all concurrent with
+per-account exception isolation → each outcome built from the returned result + the recorder log
+(§4.6 ownership: kept booking `held` only if THIS run booked its raw id; surplus not cancelled OK
+→ `held_extra`, owned; cancelled OK → `cancelled_extra`; a guard's ALREADY_BOOKED is unowned,
+`needs_reconcile` if an UNCERTAIN POST is on record) and STREAMED: one `record_outcomes` call PER
+ROW, none before T0 + `post_burst_quiet_s` (10 s), 60 s retry, a refused/failed write → CRITICAL +
+the outcome JSON on stdout + `RunReport.outcome_write_failures`. A self-deadline (start +
+replicaTimeout − 90 s) cancels still-running accounts and writes their rows `needs_reconcile`.
+`tenant.allocation.draft_order` now rotates by the WEEK index (`toordinal() // 7`): the raw ordinal
+never rotated at N = 7, because one account's drops recur weekly. Tests:
+`tests/tenant/test_runner{,_race}.py` (VirtualClock throughout). **MU-10a is DONE in
 code, UNWIRED** (`tenant/watcher.py`, the tenant watcher's PURE decision layer — no I/O, no store
 or adapter calls; nothing calls it until the MU-10b runner wiring): `group_rows_for_search`
 (one shared search per `(course, date, party_size)` — party is part of the key because MB

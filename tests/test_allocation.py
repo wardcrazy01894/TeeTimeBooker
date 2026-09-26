@@ -9,6 +9,7 @@ allocator AND the E2 hook AND the E3 grid working together, exactly as the runne
 from __future__ import annotations
 
 from datetime import date, time, timedelta
+from itertools import pairwise
 from uuid import UUID, uuid4
 
 import pytest
@@ -76,10 +77,12 @@ def _burst(
 
 
 def _date_with_rotation(n: int, k: int) -> date:
-    """A date whose toordinal() % n == k (so the draft rotation is known)."""
+    """A SATURDAY whose week index (``toordinal() // 7``) % n == k (so the draft rotation is
+    known). Stepping by whole weeks mirrors real targets: one course's drops for one account
+    recur on the same weekday, so rotation must advance per WEEK, not per day."""
     d = SAT
-    while d.toordinal() % n != k:
-        d += timedelta(days=1)
+    while (d.toordinal() // 7) % n != k:
+        d += timedelta(days=7)
     return d
 
 
@@ -95,8 +98,8 @@ def test_draft_order_sorts_by_id_and_rotates_by_date() -> None:
 
 
 def test_allocation_rotates_first_pick_by_date() -> None:
-    """§5.4: over consecutive dates first pick rotates, so the rank-0 slot (09:22 for the
-    operator window) goes to a different account each day and every account holds first pick
+    """§5.4: over consecutive weeks first pick rotates, so the rank-0 slot (09:22 for the
+    operator window) goes to a different account each week and every account holds first pick
     equally often over a season."""
     adapter = MangroveBayAdapter()
     ranked = {
@@ -112,6 +115,19 @@ def test_allocation_rotates_first_pick_by_date() -> None:
         assert alloc.order == order
         holders.append(next(r for r, ids in alloc.allowlists.items() if rank0 in ids))
     assert holders == [ROW_A, ROW_B]
+
+
+def test_allocation_rotation_cycles_for_seven_accounts() -> None:
+    """MU-3 review follow-up: rotating by the RAW ordinal (``toordinal() % N``) never rotates
+    when N == 7, because one account's targets for a course recur WEEKLY (same weekday), so the
+    ordinal advances by exactly 7 between drops and ``% 7`` is constant — the same account would
+    hold first pick every week forever. Rotating by the WEEK index cycles all seven."""
+    rows = [RowId(UUID(int=i + 1)) for i in range(7)]
+    saturdays = [SAT + timedelta(weeks=w) for w in range(7)]
+    first_picks = [draft_order(rows, target_date=d)[0] for d in saturdays]
+    assert sorted(first_picks) == sorted(rows)  # each account first exactly once in 7 weeks
+    # And consecutive same-weekday drops always hand first pick to a DIFFERENT account.
+    assert all(a != b for a, b in pairwise(first_picks))
 
 
 # --- allocate_blind_slots -----------------------------------------------------------------
