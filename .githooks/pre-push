@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Pre-push gate: run every check CI's `test / lint / typecheck` job runs, and refuse the push on
+# the first failure. Exit codes decide — never filtered or tailed output — so a PR cannot be
+# opened with a gate CI will fail (tests/test_prepush_hook.py keeps this list in step with ci.yml).
+#
+# Enable once per clone (worktrees share it):  git config core.hooksPath .githooks
+# Emergency bypass (never for normal work):   git push --no-verify
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+run() {
+  echo "pre-push: $*" >&2
+  if ! "$@"; then
+    echo "pre-push: FAILED: $* — push blocked. Fix it (CI would fail the same way)." >&2
+    exit 1
+  fi
+}
+
+run uv lock --locked
+run uv sync --quiet
+run uv run ruff check .
+run uv run ruff format --check .
+run uv run mypy
+run uv run pytest -m "not integration" -q -p no:cacheprovider
+echo "pre-push: all gates passed" >&2
