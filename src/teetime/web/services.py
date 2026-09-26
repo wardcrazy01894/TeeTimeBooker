@@ -12,7 +12,13 @@ to ``ActionRefusedError`` carrying the user-facing §8.2 message (the web's 409)
 input is ``InvalidInputError`` (400). The dashboard reads the persisted snapshot and NEVER logs
 in to ForeUP (§8.6).
 
-STUB — connect / refresh / cancel are MULTIUSER_PLAN MU-14.
+MU-14 (implemented here): connect / re-verify a course account (§8.4: rate-checked FIRST, ONE
+live login on a throwaway adapter that is never retried, the password E7-registered and stored
+only AES-GCM-encrypted with the account-bound AAD), "Refresh from course" (§8.6: a live login +
+list behind the in-process TTL ``RefreshCache``, capped per account per hour; an UNTRUSTED list
+is never persisted) and the managed cancel of a BOOKED row (§8.5: dry-run refusal, the web's
+60 s row lease through ``LeasedBookingStore``, a trusted live list required, then ONE
+``record_outcomes`` batch; snapshot, audit and email best-effort after the commit).
 """
 
 from __future__ import annotations
@@ -89,7 +95,6 @@ from ..tenant.store import (
     VersionConflictError,
 )
 
-_MU14 = "MULTIUSER_PLAN.md MU-14"
 log = logging.getLogger(__name__)
 
 WEEKDAY_NAMES: tuple[str, ...] = (
@@ -182,6 +187,9 @@ class DashboardRow:
     booked_tee_time_local: str | None  # "09:30", course-local
     can_rerequest: bool  # a cancelled date with no active row: offer "Re-request this date"
     frozen: bool
+    # MU-14 (§8.5): a BOOKED row whose reservation the ledger owns (the bot made it). An
+    # unowned one offers Cancel only behind an explicit confirm.
+    owned: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,6 +427,12 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
                     and not frozen
                 ),
                 frozen=frozen,
+                owned=(
+                    row.status is RowStatus.BOOKED
+                    and row.booked_raw_id is not None
+                    and row.booked_raw_id
+                    in await reader.owned(row.course_account_id, row.target_date)
+                ),
             )
         )
     return out
@@ -664,6 +678,35 @@ async def withdraw_row(
         reason=USER_WITHDRAW_REASON,
         clock=clock,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class AccountView:
+    """What the accounts page renders per account: the account and its persisted snapshot's
+    age. Reads only; never logs in (§8.6)."""
+
+    account: CourseAccount
+    snapshot_label: str
+
+
+async def account_views(
+    store: TenantStore,
+    *,
+    user_id: UserId,
+    clock: Clock,
+    policies: Mapping[str, ReleasePolicy],
+) -> list[AccountView]:
+    """The user's accounts with their snapshot age, in the course's timezone when known."""
+    now = clock.now_utc()
+    views: list[AccountView] = []
+    for account in await store.list_accounts_for_user(user_id):
+        policy = policies.get(str(account.course_id))
+        tz = ZoneInfo(policy.timezone) if policy is not None else ZoneInfo("UTC")
+        snap = await store.get_snapshot(account.id)
+        views.append(
+            AccountView(account=account, snapshot_label=_snapshot_label(snap, now=now, tz=tz))
+        )
+    return views
 
 
 # --- MU-14 --------------------------------------------------------------------------------------

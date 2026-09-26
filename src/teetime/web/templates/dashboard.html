@@ -6,7 +6,7 @@
 <p>Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider }} (subject {{ user.oauth_subject }}).</p>
 
 {% if not accounts %}
-<p class="placeholder">No course account is connected yet, so there is nothing to book.</p>
+<p class="placeholder">No course account is connected yet, so there is nothing to book. <a href="/accounts">Connect one</a>.</p>
 {% endif %}
 
 <h2>Upcoming dates</h2>

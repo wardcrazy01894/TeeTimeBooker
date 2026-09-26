@@ -4,11 +4,11 @@
 the framework, and a test asserts every non-GET route has ``csrf=True`` and every ``user`` route
 has an IDOR test (``test_route_rejects_other_users_row``).
 
-The MU-12 and MU-13 rows are BOUND (``web/app.py``, ``web/pages.py``;
-``tests/web/test_web_app.py`` pins that every MU-12 row exists in the app with its method and that
-``auth=NONE`` rows are exactly the public allowlist, and ``tests/web/test_web_pages.py`` that every
-MU-13 row is bound, user-auth, CSRF on POST, IDOR-tested, and names a real ``web.services``
-function). The MU-14 rows are still contract-only.
+Every row is BOUND (``web/app.py``, ``web/pages.py``; ``tests/web/test_web_app.py`` pins that
+every MU-12 row exists in the app with its method and that ``auth=NONE`` rows are exactly the
+public allowlist; ``tests/web/test_web_pages.py`` and ``tests/web/test_web_accounts_pages.py``
+that every MU-13 / MU-14 row is bound, user-auth, CSRF on POST, IDOR-tested, and names a real
+``web.services`` function).
 """
 
 from __future__ import annotations
