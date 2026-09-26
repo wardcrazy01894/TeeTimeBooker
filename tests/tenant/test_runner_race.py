@@ -15,7 +15,13 @@ from uuid import uuid4
 
 import pytest
 
-from teetime.core.adapter import AdapterError, AuthError, CancelError, OtpChallengeError
+from teetime.core.adapter import (
+    AdapterError,
+    AuthError,
+    CancelError,
+    OtpChallengeError,
+    RateLimitError,
+)
 from teetime.core.models import BookingOutcome, CourseId, ExistingReservation
 from teetime.core.orchestrator import Orchestrator
 from teetime.core.redaction import redact_text
@@ -764,3 +770,25 @@ async def test_runner_dry_run_never_collapses() -> None:
     # the pre-claim group-floor read is allowed; a post-race collapse read is not
     assert spy.names().count("rows_in_groups") <= 1
     assert all(n != "set_upgrade_marker" for n in spy.names())
+
+
+async def test_runner_collapse_stops_on_a_rate_limit_and_the_run_still_succeeds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """§16.4: a 429 while cancelling the worse booking stops the collapse pass (the watcher
+    retries); it never fails the run, and the worse row stays BOOKED rather than being written
+    as downgraded when nothing was cancelled."""
+    store = new_store()
+    group = uuid4()
+    worse = await seed_account(store, n=1, group_id=group, options=(RankedWindow(3, *WINDOW),))
+    better = await seed_account(store, n=2, group_id=group, options=(RankedWindow(1, *WINDOW),))
+    clock = race_clock()
+    throttled = TimedBlindAdapter(clock)
+    throttled.set_cancel_to_raise(RateLimitError("slow down", retry_after_s=30))
+
+    report = await _run(store, clock, ScriptedFactory(adapters={worse.account.id: throttled}))
+
+    assert report.systemic_error is None
+    assert (await _row(store, better)).status is RowStatus.BOOKED
+    assert (await _row(store, worse)).status is RowStatus.BOOKED
+    assert "rate-limited during the group collapse" in caplog.text
