@@ -167,6 +167,14 @@ window, party size); edits apply from the next drop. **`/dates`** adds a one-off
 unskips a rule's date, withdraws a one-off, and re-requests a date after a cancel. Cancelling a
 booked tee time from the site arrives with MU-14.
 
+Notifications (MU-11, in code, not wired to a job yet) go out as plain-text email through Azure
+Communication Services, called over REST with no SDK. The tenant jobs will read two env vars:
+
+| Env var | Purpose |
+|---------|---------|
+| `ACS_EMAIL_CONNECTION` | ACS connection string (`endpoint=https://…/;accesskey=…`), a Key Vault secret; the access key is masked in all logs |
+| `ACS_EMAIL_SENDER` | Sender address on the Azure-managed domain, e.g. `DoNotReply@<guid>.azurecomm.net` |
+
 `teetime tenant-watch --dry-run true` runs one multi-user tenant-watcher pass (MU-10b: shared
 searches, logins only on an opportunity, snapshot trust, vanish/adoption, ownership-gated
 upgrades). It needs `TENANT_CREDS_KEYRING` and, until MU-16, runs over an empty in-memory store.
