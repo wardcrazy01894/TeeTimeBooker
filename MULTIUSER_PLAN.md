@@ -298,6 +298,7 @@ a global cutoff-policy change needs a migration that recomputes `cutoff_at`, §1
 | booked → booked (upgrade) | tenant watcher | via `UpgradeOrchestrator` under row lease |
 | booked → cancelled | web (user cancel, §8.5: reason `user` or `already_gone`); watcher (reason `external` only; reasons are tied to the actor, MU-5 review) (`external`: the reservation is absent from **two consecutive trusted** snapshots, **and** `upgrade_started_at` is NULL, **and** the id is not ledgered `cancelled_upgrade`/`cancelled_extra`, **and** no same-(date, party) replacement reservation exists; a replacement is adopted instead, §7.5) | lease |
 | booked → pending (+`needs_reconcile`) | tenant watcher | **refused unless the write sets `needs_reconcile`** (MU-5 review MF2; without it the §7.6 in-window adoption never applies). The upgrade cancelled the old slot and the rebook failed. **Detected by observation, not by the store terminal** (`delete_terminal` runs only after a *successful* rebook, `upgrade_orchestrator.py:492`; after a failed rebook Gate 3 returns the old `prior`). The recording decorator (§4.6) sees `cancel_reservation(booked_raw_id)` succeed and no new BOOKED. If the process dies before the write, the `upgrade_started_at` intent marker (set under the lease **before** the engine runs) makes the next run treat a missing reservation as bot-caused: pending + needs_reconcile, **not** cancelled(external) (M2) |
+| booked → pending (`group_downgrade`, §16.4) | tenant runner (post-race collapse), tenant watcher | lease; the row's booking is OWNED; another row of the same group is BOOKED with a strictly lower `booked_rank`. The ONLY booked → pending edge that does not set `needs_reconcile`: the outcome is known (the bot cancelled its own worse booking), so nothing needs adopting |
 | pending → lost | tenant watcher finalizer | `frozen_reason(...) == "cutoff"` or date passed; a `lost` email goes out once |
 | booked, frozen | none (stays booked) | a held booking is never auto-cancelled at cutoff (LEADTIME_SKIP F1) |
 
@@ -332,7 +333,8 @@ the rule (MU-5 review MF1). The round-6 restore applies only when the rule is AC
   consistent. Pinned by `test_skip_survives_supersede_deactivate_withdraw_reactivate`.
 - **Leased-edge allowlist (MU-5 review round 2, MF1).** `record_outcomes` (the leased path) may
   write ONLY pending → booked (runner, watcher), booked → booked (watcher upgrade), booked →
-  pending + `needs_reconcile` (watcher) and booked → cancelled (watcher `external`; web `user` /
+  pending + `needs_reconcile` (watcher), booked → pending `group_downgrade` (runner, watcher;
+  §16.4) and booked → cancelled (watcher `external`; web `user` /
   `already_gone` for the §8.5 cancel). Every other edge goes through the unleased paths that
   carry its guards (user-terminal history, the D2 restore, rule active), so no lease holder can
   write it around them.
@@ -1795,7 +1797,13 @@ and the leased-edge allowlist would refuse it. Add:
 |---|---|---|
 | booked → pending, `status_reason = "group_downgrade"` | runner (post-race collapse), watcher | lease; the row's booking is OWNED; another row of the same group is BOOKED with a strictly lower `booked_rank` |
 
-It is added to the leased-edge allowlist in §3.4. The row goes back to **pending**, not cancelled.
+It is added to the §3.4 table and leased-edge allowlist. **`check_transition` becomes
+reason-aware for this one edge (review round 2, MF1):** today any booked → pending write must set
+`needs_reconcile`. That rule stays for every other booked → pending write. A write whose
+`status_reason` is `group_downgrade` is instead REQUIRED to leave `needs_reconcile` false, because
+setting it would send the row through the watcher's reconcile-adoption paths (`needs_login`'s
+reconcile reason and `ADOPTED_RECONCILE`), which are for an ambiguous outcome, and this outcome is
+known. The row goes back to **pending**, not cancelled.
 `group_downgrade` is not user-terminal, so if the winning booking is later lost (external cancel,
 lost upgrade) the group floor lifts and this row is attempted again with all its options. While the
 winner holds, the group floor keeps it from re-booking. The ledger entry of the cancelled id moves to
@@ -1818,12 +1826,18 @@ callers):
    next watcher run (≤10 min) sees two BOOKED rows in the group and retries from step 1.
 
 **Who calls it and when (MF3).**
-- **Booker, same-drop groups:** in `tenant/runner.py`, after the per-account `gather` has finished
-  and before `finish_run` releases the leases. The runner already holds each row's lease and each
-  account's open, logged-in adapter, and it knows every account's outcome in memory. The join
-  therefore needs no extra read and no extra login. Groups are found from the event's rows by
-  `group_id`. A crash between "row A booked" and the collapse leaves two BOOKED rows, which is
-  exactly the state the watcher's backstop handles on its next run.
+- **Booker, same-drop groups (review round 2, MF2):** a separate pass in `tenant/runner.py` that
+  runs strictly AFTER every §4.2 WRITE #2 has committed. WRITE #2 is unchanged: it still streams
+  one write per row as each account returns, with that row's real outcome, and releases the row's
+  lease. Collapse never edits a queued outcome, so there is exactly one outcome write per row and
+  nothing can re-assert `booked` over a downgrade. The pass then finds groups with two BOOKED rows
+  from the outcomes it just wrote (no read), re-acquires each losing row's lease through the normal
+  fingerprinted path (fingerprint = the BOOKED state WRITE #2 wrote), and runs the collapse with
+  that account's still-open, logged-in adapter (no extra login). If a lease cannot be acquired
+  (the watcher holds it, or the row changed), the row is skipped and the watcher's backstop
+  collapses it. The pass runs before the self-deadline and before `finish_run`. It is off the T0
+  path: every POST and every WRITE #2 has already happened. A crash between WRITE #2 and the
+  collapse leaves two BOOKED rows, which the watcher's backstop handles on its next run.
 - **Watcher, every run (backstop + different-drop groups):** after loading rows, any group with two
   BOOKED rows is collapsed first, then upgrades run.
 
@@ -1871,7 +1885,8 @@ ones stay skipped and show on the dashboard, where the user can un-skip them. No
 - **MU-R1** — model + store + Cosmos mapping: `options` (ranked windows), `max_price`,
   `default_max_price`, `booked_rank`, `StandingRule.group_id`/`group_rank`, group helpers
   (`list_group`, `create_group`), rank-uniqueness validation, the new `booked → pending
-  (group_downgrade)` edge in `check_transition` + the leased-edge allowlist, the `cancelled_group`
+  (group_downgrade)` edge in `check_transition` (reason-aware: `needs_reconcile` required on every
+  other booked → pending write and forbidden on this one) + the leased-edge allowlist, the `cancelled_group`
   ledger state, conformance tests. **Migration (should-fix 9)** is read-compat, not a batch rewrite:
   `from_doc` for the previous `schemaVersion` maps `window_earliest/latest` to
   `options=((1, earliest, latest),)` and `max_price=None`, and every write uses the new version
