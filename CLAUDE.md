@@ -565,6 +565,29 @@ the store) and `integration`-marked against the real `dev` CI containers (README
 tests in `tests/tenant/cosmos/test_cosmos_store.py`. Known residual (documented in the module):
 the user-terminal half of the may-become-active guard is a partition query the batch cannot assert.
 The integration leg has NOT run yet (no Cosmos account exists).
+**MU-15a is DONE (infra without the DB, MULTIUSER_PLAN §10.1/§12): `infra/bicep/release_events.json`
++ `compute.bicep`/`killswitch.bicep` derive their booking-job loop from it (v1: one event,
+`mb0600et`, keeping the legacy `teetime-job-<env>-edt/-est` names); `bookingMode`/`watchMode`
+params (default `toml` in BOTH envs — this PR changes NOTHING about what either env's ACA jobs
+run) select `run --config .../container.toml` vs `tenant-run --event <key>`/`tenant-watch`, with
+every tenant-only secretRef/env var (`TENANT_CREDS_KEYRING`, `ACS_EMAIL_CONNECTION`,
+`OPERATOR_NOTIFY_EMAIL`, `TENANT_COSMOS_*`, `AZURE_CLIENT_ID`, `ACS_EMAIL_SENDER`) gated behind a
+`== 'tenant'` branch so the default toml mode never references a Key Vault secret the operator
+has not created. Dev's watch cron moved to hourly (`0 * * * *`, operator directive — prod
+untouched at `*/10 * * * *`) via the new per-env `watchCron` param. Two new Bicep modules,
+BOTH gated off by default (`deployWebApp`/`deployAcsEmail` = `false` in both envs, so this PR
+cannot break the dev auto-deploy on a missing secret): `webapp.bicep` (the `teetime-web-<env>`
+Container App, scale-to-zero, ingress/max-replicas latched to the SAME `effectiveEnableSchedules`
+killswitch signal as the ACA Jobs) and `email.bicep` (ACS Communication Service + Email Service +
+Azure-managed domain, writing `ACS-EMAIL-CONNECTION` via `listKeys()` at deploy time — needs the
+operator to register the `Microsoft.Communication` RP and grant the CI deploy identity "Key
+Vault Secrets Officer" first). The cost killswitch gained **lever (c)**: a `POST .../stop` on
+each env's web Container App (14 actions total, up from 12); the "ACA Job Schedule Manager"
+custom role needs `Microsoft.App/containerApps/read` + `.../stop/action` added (operator runs
+`az role definition update`, not `create` — same GUID). Also fixed (BACKLOG "scope
+forwarded_allow_ips"): `teetime web`'s uvicorn now passes an explicit `forwarded_allow_ips`
+(default `127.0.0.1` — ACA's ingress sidecar reaches the container over loopback within the same
+pod; override via `WEB_FORWARDED_ALLOW_IPS`) instead of leaving it un-set.
 
 ## Package layout
 

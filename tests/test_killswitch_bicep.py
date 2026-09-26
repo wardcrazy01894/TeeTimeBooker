@@ -184,6 +184,11 @@ def test_killswitch_stops_all_six_jobs(ks_non_comment_lines: str) -> None:
 _EXPECTED_JOBS_PER_ENV = 3  # -edt, -est, watch
 _EXPECTED_ENVS = 2  # dev, prod
 _EXPECTED_CALLS_PER_LEVER = _EXPECTED_JOBS_PER_ENV * _EXPECTED_ENVS  # 6
+# Lever (c), MU-15a: 1 web-app stop per env (Microsoft.App/containerApps, not .../jobs) — a
+# DIFFERENT resource type from levers (a)/(b), so it is counted separately, not folded into
+# _EXPECTED_CALLS_PER_LEVER.
+_EXPECTED_WEBAPP_STOPS = 1 * _EXPECTED_ENVS  # 2
+_EXPECTED_TOTAL_STOP_ACTIONS = _EXPECTED_CALLS_PER_LEVER + _EXPECTED_WEBAPP_STOPS  # 8
 
 
 def test_killswitch_has_exactly_six_patch_actions(ks_non_comment_lines: str) -> None:
@@ -200,19 +205,36 @@ def test_killswitch_has_exactly_six_patch_actions(ks_non_comment_lines: str) -> 
     assert patch_keys == _EXPECTED_CALLS_PER_LEVER
 
 
-def test_killswitch_has_exactly_six_stop_actions(ks_non_comment_lines: str) -> None:
-    """Lever (b): exactly 6 POST /stop actions — one per cron, halting in-flight replicas."""
+def test_killswitch_has_exactly_eight_stop_actions(ks_non_comment_lines: str) -> None:
+    """Lever (b) + lever (c) (MU-15a): 6 ACA-job POST /stop + 2 web-app POST /stop = 8 total —
+    one per cron plus one per env's web Container App, halting in-flight replicas/traffic."""
     post_methods = ks_non_comment_lines.count("method: 'POST'")
     stop_uris = ks_non_comment_lines.count("/stop?api-version")
-    assert post_methods == _EXPECTED_CALLS_PER_LEVER, (
-        f"expected {_EXPECTED_CALLS_PER_LEVER} POST actions, found {post_methods} — "
+    assert post_methods == _EXPECTED_TOTAL_STOP_ACTIONS, (
+        f"expected {_EXPECTED_TOTAL_STOP_ACTIONS} POST actions, found {post_methods} — "
         f"a dropped /stop leaves a running replica burning spend the killswitch can't halt"
     )
-    assert stop_uris == _EXPECTED_CALLS_PER_LEVER, (
-        f"expected {_EXPECTED_CALLS_PER_LEVER} /stop URIs, found {stop_uris}"
+    assert stop_uris == _EXPECTED_TOTAL_STOP_ACTIONS, (
+        f"expected {_EXPECTED_TOTAL_STOP_ACTIONS} /stop URIs, found {stop_uris}"
     )
     stop_keys = sum(1 for ln in ks_non_comment_lines.splitlines() if ln.strip().startswith("Stop_"))
-    assert stop_keys == _EXPECTED_CALLS_PER_LEVER
+    assert stop_keys == _EXPECTED_TOTAL_STOP_ACTIONS
+
+
+def test_killswitch_targets_all_derived_jobs_and_web(ks_non_comment_lines: str) -> None:
+    """MU-15a (MULTIUSER_PLAN §12): the killswitch must reference every job name
+    compute.bicep derives from release_events.json, plus both teetime-web-<env> apps."""
+    assert "'teetime-job-${envName}-edt'" in ks_non_comment_lines
+    assert "'teetime-job-${envName}-est'" in ks_non_comment_lines
+    assert "'teetime-job-prod-edt'" in ks_non_comment_lines
+    assert "'teetime-job-prod-est'" in ks_non_comment_lines
+    assert "'teetime-watch-job-${envName}'" in ks_non_comment_lines
+    assert "'teetime-watch-job-prod'" in ks_non_comment_lines
+    assert "'teetime-web-${envName}'" in ks_non_comment_lines
+    assert "'teetime-web-prod'" in ks_non_comment_lines
+    # web app stop uses the containerApps resource type, not jobs
+    assert "Microsoft.App/containerApps/${webApp}/stop" in ks_non_comment_lines
+    assert "Microsoft.App/containerApps/${webAppProd}/stop" in ks_non_comment_lines
 
 
 # ---------------------------------------------------------------------------

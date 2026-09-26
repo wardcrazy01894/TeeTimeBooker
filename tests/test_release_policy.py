@@ -12,7 +12,7 @@ semantics the tenant runner (MU-9a) and the release-events parity test (MU-15a) 
 
 from __future__ import annotations
 
-import re
+import json
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -35,9 +35,7 @@ from teetime.core.release_policy import (
 from teetime.courses.foreup.mangrove_bay import MangroveBayAdapter
 from teetime.courses.teeitup.sydney_marovitz import SydneyMarovitzAdapter
 
-COMPUTE_BICEP = (
-    Path(__file__).resolve().parent.parent / "infra" / "bicep" / "modules" / "compute.bicep"
-)
+RELEASE_EVENTS = Path(__file__).resolve().parent.parent / "infra" / "bicep" / "release_events.json"
 
 NY = "America/New_York"
 CHI = "America/Chicago"
@@ -81,12 +79,16 @@ def test_target_date_rejects_naive_now() -> None:
 
 
 def test_cron_pair_mb_matches_compute_bicep() -> None:
-    """The derived MB pair must EQUAL the strings prod ships — read from the bicep, not retyped."""
-    bicep = COMPUTE_BICEP.read_text()
-    edt = re.search(r"var cronEdtDaily = '([^']+)'", bicep)
-    est = re.search(r"var cronEstDaily = '([^']+)'", bicep)
-    assert edt is not None and est is not None, "compute.bicep cron vars not found"
-    assert cron_pair(MangroveBayAdapter.release_policy) == (edt.group(1), est.group(1))
+    """The derived MB pair must EQUAL the strings prod ships. Since MU-15a, compute.bicep
+    derives its booking-job crons from ``release_events.json`` (loadJsonContent) rather than
+    hand-written vars, so that JSON is what's read here — tests/test_release_events_parity.py
+    is the sibling that pins the WHOLE file (not just MB) to this same function."""
+    events = json.loads(RELEASE_EVENTS.read_text())
+    (mb_event,) = [e for e in events if "foreup:mangrove_bay" in e["courses"]]
+    assert cron_pair(MangroveBayAdapter.release_policy) == (
+        mb_event["cronDst"],
+        mb_event["cronStd"],
+    )
     # Belt-and-braces: the literal values the plan (§6.1) and PLAN.md §6.3 document.
     assert cron_pair(MB_POLICY) == ("50 9 * * *", "50 10 * * *")
 
