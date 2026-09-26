@@ -479,6 +479,13 @@ class TenantStore(Protocol):
 class LeasedBookingStore:
     """``BookingStore`` adapter for the WATCHER and WEB paths (§3.5).
 
+    SINGLE-READ FINGERPRINT (MU-9c review): the ``RowFingerprint`` is captured once per instance
+    and never refreshed. If anything writes the row between two ``request_lock`` acquisitions
+    for the same RequestId (e.g. a ``record_outcomes`` that sets ``needs_reconcile`` and bumps the
+    version), every later acquisition on that row in the same run DEFERS as "moved". A caller
+    that locks a row more than once per run with an intervening write (the watcher's
+    reconcile-then-upgrade) must re-read and build a fresh instance, or refresh the map.
+
     Delegates terminals/attempts/sessions to an ``InMemoryStore`` but maps
     ``request_lock(request_id)`` to the DURABLE row lease of the row registered for that
     RequestId, **matching the ``RowFingerprint`` the runner read** (M5). It raises
