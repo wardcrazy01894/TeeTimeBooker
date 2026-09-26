@@ -69,6 +69,7 @@ from ..tenant.models import (
     CourseAccount,
     CourseAccountId,
     OwnedBooking,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -299,8 +300,9 @@ def _refused(exc: Exception, *, row: RequestRow | None = None) -> ActionRefusedE
             one_off=OneOffPrefill(
                 account_id=row.course_account_id,
                 target_date=row.target_date,
-                window_earliest=row.window_earliest,
-                window_latest=row.window_latest,
+                # Until MU-R3 the web creates single-option rows only, so options[0] is exact.
+                window_earliest=row.options[0].earliest,
+                window_latest=row.options[0].latest,
                 party_size=row.party_size,
             ),
         )
@@ -484,6 +486,11 @@ def _conflict(rule: StandingRule) -> ActionRefusedError:
     )
 
 
+def _single_option(earliest: time, latest: time) -> tuple[RankedWindow, ...]:
+    """The pre-MU-R3 forms carry ONE window; it is the row's only option, rank 1 (§16.2)."""
+    return (RankedWindow(1, earliest, latest),)
+
+
 async def create_rule(
     store: TenantStore,
     *,
@@ -502,8 +509,7 @@ async def create_rule(
         id=RuleId(uuid4()),
         course_account_id=account.id,
         weekday=rule_input.weekday,
-        window_earliest=rule_input.window_earliest,
-        window_latest=rule_input.window_latest,
+        options=_single_option(rule_input.window_earliest, rule_input.window_latest),
         party_size=rule_input.party_size,
         active=True,
         materialized_through=None,
@@ -571,8 +577,7 @@ async def edit_rule(
     new = replace(
         old,
         weekday=rule_input.weekday,
-        window_earliest=rule_input.window_earliest,
-        window_latest=rule_input.window_latest,
+        options=_single_option(rule_input.window_earliest, rule_input.window_latest),
         party_size=rule_input.party_size,
         version=version,
     )
@@ -614,8 +619,7 @@ async def create_one_off(
             user_id=user_id,
             account_id=one_off.account_id,
             target_date=one_off.target_date,
-            window_earliest=one_off.window_earliest,
-            window_latest=one_off.window_latest,
+            options=_single_option(one_off.window_earliest, one_off.window_latest),
             party_size=one_off.party_size,
             now=clock.now_utc(),
         )

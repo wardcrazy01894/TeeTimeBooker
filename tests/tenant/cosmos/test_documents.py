@@ -93,6 +93,7 @@ from teetime.tenant.models import (
     EventRow,
     OwnedBooking,
     OwnedBookingId,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -132,8 +133,13 @@ def _rule_row(target: date = DST_END_DATE) -> RequestRow:
         course_id=MB,
         target_date=target,
         timezone=TZ,
-        window_earliest=time(8, 45),
-        window_latest=time(10, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(8, 45),
+                time(10, 0),
+            ),
+        ),
         party_size=2,
         status=RowStatus.BOOKED,
         source=RowSource.RULE,
@@ -168,8 +174,13 @@ def _explicit_row(target: date = DST_START_DATE) -> RequestRow:
         course_id=MB,
         target_date=target,
         timezone=TZ,
-        window_earliest=time(7, 0),
-        window_latest=time(12, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(7, 0),
+                time(12, 0),
+            ),
+        ),
         party_size=4,
         status=RowStatus.PENDING,
         source=RowSource.EXPLICIT,
@@ -201,8 +212,13 @@ def _rule() -> StandingRule:
         id=RULE,
         course_account_id=ACCOUNT,
         weekday=5,
-        window_earliest=time(8, 45),
-        window_latest=time(10, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(8, 45),
+                time(10, 0),
+            ),
+        ),
         party_size=2,
         active=True,
         materialized_through=date(2026, 10, 17),
@@ -405,7 +421,7 @@ class TestIds:
         assert TENANT_CONTAINER == "tenant"
         assert GLOBAL_CONTAINER == "global"
         assert CI_CONTAINER_DEFAULT_TTL_S == 7 * 86400
-        assert SCHEMA_VERSION == 1
+        assert SCHEMA_VERSION == 2  # MU-R1: ranked options
         assert uuid5(USER, str(MB)) == ACCOUNT  # the §3.1 derivation the partition rests on
         assert isinstance(CourseAccountId(ACCOUNT), UUID)
 
@@ -632,8 +648,7 @@ _REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "ruleId",
         "accountId",
         "weekday",
-        "windowEarliest",
-        "windowLatest",
+        "options",
         "partySize",
         "active",
         "materializedThrough",
@@ -645,8 +660,7 @@ _REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
         "courseId",
         "targetDate",
         "timezone",
-        "windowEarliest",
-        "windowLatest",
+        "options",
         "partySize",
         "status",
         "source",
@@ -726,7 +740,7 @@ class TestDispatch:
 
 
 class TestEnvelopeValidation:
-    @pytest.mark.parametrize("version", [0, 2, 99, -1, "1", 1.0, True, None])
+    @pytest.mark.parametrize("version", [0, 3, 99, -1, "1", 1.0, True, None])
     def test_unknown_schema_version_rejected(self, version: object) -> None:
         for doc in _every_doc():
             with pytest.raises(DocumentError, match="schemaVersion"):
@@ -771,6 +785,34 @@ class TestEnvelopeValidation:
         row_doc = to_doc(_rule_row())
         del row_doc["maxPrice"]
         assert from_doc(row_doc).item.max_price is None
+
+    def test_old_schema_row_reads_as_single_option(self) -> None:
+        """§16.5 read-compat: a schemaVersion-1 row or rule stored ONE window as
+        windowEarliest/windowLatest; it reads back as the single option of rank 1."""
+        for item in (_explicit_row(), _rule()):
+            doc = to_doc(item)
+            (option,) = item.options
+            del doc["options"]
+            doc |= {
+                "schemaVersion": 1,
+                "windowEarliest": option.earliest.isoformat(),
+                "windowLatest": option.latest.isoformat(),
+            }
+            assert from_doc(doc).item == item
+
+    def test_options_are_validated_on_read(self) -> None:
+        doc = to_doc(_explicit_row())
+        for bad in (
+            [],
+            [
+                {"rank": 2, "earliest": "09:00:00", "latest": "10:00:00"},
+                {"rank": 1, "earliest": "08:00:00", "latest": "09:00:00"},
+            ],
+            [{"rank": True, "earliest": "09:00:00", "latest": "10:00:00"}],
+            [{"rank": 1, "earliest": "09:00:00"}],
+        ):
+            with pytest.raises(DocumentError):
+                from_doc({**doc, "options": bad})
 
     def test_prices_are_stored_as_exact_decimal_strings(self) -> None:
         """Money never round-trips through a float: the document holds the decimal string."""

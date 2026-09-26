@@ -43,6 +43,8 @@ from .models import (
     RequestRow,
     ReservationSnapshot,
     RowStatus,
+    achieved_rank,
+    options_time_windows,
 )
 
 # Per-account reconcile cadence: log in when (hash(account_id) + run_index) % N == 0, i.e.
@@ -115,7 +117,7 @@ def _ranking_request(row: RequestRow) -> BookingRequest:
     return BookingRequest(
         request_id=row.request_id,
         target_dates=(row.target_date,),
-        time_windows=(TimeWindow(earliest=row.window_earliest, latest=row.window_latest),),
+        time_windows=options_time_windows(row.options),
         players=tuple(
             Player(first_name=f"p{i}", last_name="tenant", email="") for i in range(row.party_size)
         ),
@@ -156,15 +158,29 @@ def _held_slot(row: RequestRow, tee_time: datetime) -> TeeTimeSlot:
 
 
 def _has_upgrade_candidate(row: RequestRow, ranked: Sequence[TeeTimeSlot]) -> bool:
-    """The ``UpgradeOrchestrator`` within-window rule: a candidate STRICTLY closer to the row
-    window's midpoint than the held tee time. Ties never upgrade (the cancel-before-book
-    no-booking window is not worth an equal slot). Tenant rows carry ONE window, so the
-    higher-tier leg of that rule has nothing to compare."""
+    """The ``UpgradeOrchestrator`` rule over the row's ranked options (§16.2): a candidate in a
+    BETTER-ranked option always beats the held tee time (the higher-tier leg); one in the SAME
+    option must be STRICTLY closer to that option's midpoint (ties never upgrade: the
+    cancel-before-book no-booking window is not worth an equal slot); a worse option never does.
+    Ranks are resolved first-match in rank order, exactly as the engine ranks windows."""
     if row.booked_tee_time is None:
         return False
-    window = TimeWindow(earliest=row.window_earliest, latest=row.window_latest)
-    held = midpoint_distance_minutes(_held_slot(row, row.booked_tee_time), window)
-    return any(midpoint_distance_minutes(c, window) < held for c in ranked)
+    held_slot = _held_slot(row, row.booked_tee_time)
+    held_rank = achieved_rank(row.options, held_slot.tee_time.time())
+    for candidate in ranked:
+        rank = achieved_rank(row.options, candidate.tee_time.time())
+        if rank is None:
+            continue
+        if held_rank is None or rank < held_rank:
+            return True
+        if rank == held_rank:
+            (option,) = [o for o in row.options if o.rank == rank]
+            window = TimeWindow(earliest=option.earliest, latest=option.latest)
+            if midpoint_distance_minutes(candidate, window) < midpoint_distance_minutes(
+                held_slot, window
+            ):
+                return True
+    return False
 
 
 def needs_login(

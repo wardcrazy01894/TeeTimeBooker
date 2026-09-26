@@ -52,8 +52,10 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Protocol, runtime_checkable
+from uuid import UUID
 
 from ..core.clock import Clock
 from ..core.models import BookingResult, CourseId, RequestId
@@ -65,6 +67,7 @@ from .models import (
     CourseAccountId,
     EventRow,
     OwnedBooking,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -411,10 +414,12 @@ class TenantStore(Protocol):
         user_id: UserId,
         account_id: CourseAccountId,
         target_date: date,
-        window_earliest: time,
-        window_latest: time,
+        options: tuple[RankedWindow, ...],
         party_size: int,
         now: datetime,
+        max_price: Decimal | None = None,
+        group_id: UUID | None = None,
+        group_rank: int | None = None,
     ) -> RequestRow:
         """Supersedes a PENDING/SKIPPED rule row for the same (account, date) in the same
         transaction; refuses (``TransitionRefusedError``) if a BOOKED row or another explicit row

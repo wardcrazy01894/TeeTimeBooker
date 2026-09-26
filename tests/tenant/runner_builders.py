@@ -39,6 +39,7 @@ from teetime.tenant.models import (
     AccountProvenance,
     AccountStatus,
     CourseAccount,
+    RankedWindow,
     RequestRow,
     User,
     UserId,
@@ -148,8 +149,7 @@ async def seed_account(
         user_id=user.id,
         account_id=account.id,
         target_date=TARGET,
-        window_earliest=WINDOW[0],
-        window_latest=WINDOW[1],
+        options=(RankedWindow(1, WINDOW[0], WINDOW[1]),),
         party_size=2,
         now=SETUP_NOW,
     )

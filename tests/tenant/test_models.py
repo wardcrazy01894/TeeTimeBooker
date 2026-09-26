@@ -15,15 +15,18 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from teetime.core.models import CourseId, derive_request_id
+from teetime.core.models import CourseId, TimeWindow, derive_request_id
 from teetime.tenant.models import (
     CANCEL_REASONS,
+    GROUP_DOWNGRADE_REASON,
     SYSTEM_WITHDRAW_REASONS,
     USER_TERMINAL,
     USER_WITHDRAW_REASON,
     Actor,
+    BookingState,
     CourseAccount,
     CourseAccountId,
+    RankedWindow,
     RequestRow,
     RowId,
     RowSource,
@@ -32,15 +35,19 @@ from teetime.tenant.models import (
     StandingRule,
     TransitionRefusedError,
     UserId,
+    achieved_rank,
     check_create,
     check_transition,
     derive_account_id,
     is_user_terminal,
     lease_held,
+    options_time_windows,
     row_is_frozen,
     row_request_id,
     rule_row_id,
+    validate_options,
 )
+from teetime.tenant.semantics import LEASED_EDGES
 
 MB = CourseId("foreup:19671:2149")
 TZ = "America/New_York"
@@ -71,8 +78,13 @@ def _row(
         course_id=MB,
         target_date=TARGET,
         timezone=TZ,
-        window_earliest=time(8, 0),
-        window_latest=time(10, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(8, 0),
+                time(10, 0),
+            ),
+        ),
         party_size=2,
         status=status,
         source=source,
@@ -355,3 +367,65 @@ def test_price_and_rule_group_defaults() -> None:
 def fields_default(cls: type, name: str) -> object:
     (field,) = [f for f in dataclasses.fields(cls) if f.name == name]
     return field.default
+
+
+def test_ranked_window_options_are_validated() -> None:
+    """§16.2: a row/rule carries its course's options in ascending GLOBAL rank. Ranks are 1-based,
+    unique and ascending within the row (they need not be contiguous: the other ranks belong to
+    other courses of the group), and every window has earliest < latest. Overlap is allowed."""
+    ok = (RankedWindow(1, time(9), time(10)), RankedWindow(3, time(8, 30), time(9, 30)))
+    assert validate_options(ok) == ok
+    for bad in (
+        (),
+        (RankedWindow(0, time(9), time(10)),),
+        (RankedWindow(2, time(9), time(10)), RankedWindow(1, time(8), time(9))),
+        (RankedWindow(1, time(9), time(10)), RankedWindow(1, time(8), time(9))),
+        (RankedWindow(1, time(10), time(9)),),
+    ):
+        with pytest.raises(ValueError):
+            validate_options(bad)
+
+
+def test_time_windows_in_rank_order() -> None:
+    """The engine prefers earlier-listed windows, so a row's windows are handed over in rank order."""
+    opts = (RankedWindow(1, time(9), time(10)), RankedWindow(3, time(8), time(9)))
+    assert options_time_windows(opts) == (
+        TimeWindow(earliest=time(9), latest=time(10)),
+        TimeWindow(earliest=time(8), latest=time(9)),
+    )
+
+
+def test_achieved_rank_is_first_match_in_rank_order() -> None:
+    """Review round 1 MF4: overlapping options resolve like core.slot_utils._matching_window,
+    first match in list (= ascending rank) order."""
+    opts = (RankedWindow(1, time(9), time(10)), RankedWindow(3, time(8, 30), time(9, 30)))
+    assert achieved_rank(opts, time(9, 15)) == 1
+    assert achieved_rank(opts, time(8, 45)) == 3
+    assert achieved_rank(opts, time(11)) is None
+
+
+def test_group_downgrade_edge_is_reason_scoped() -> None:
+    """§16.4 (review rounds 2 and 3): booked -> pending ``group_downgrade`` is the collapse of a
+    group's worse booking. It must NOT set needs_reconcile (the outcome is known), the runner and
+    the watcher may write it, and the runner may write booked -> pending for NO other reason."""
+    booked = _row(B)
+    for actor in (Actor.BOOKING_RUNNER, Actor.WATCHER):
+        check_transition(booked, P, actor=actor, now=NOW, reason=GROUP_DOWNGRADE_REASON)
+        with pytest.raises(TransitionRefusedError, match="needs_reconcile"):
+            check_transition(
+                booked,
+                P,
+                actor=actor,
+                now=NOW,
+                reason=GROUP_DOWNGRADE_REASON,
+                needs_reconcile=True,
+            )
+    with pytest.raises(TransitionRefusedError):
+        check_transition(booked, P, actor=Actor.BOOKING_RUNNER, now=NOW, needs_reconcile=True)
+    with pytest.raises(TransitionRefusedError):
+        check_transition(booked, P, actor=Actor.WEB, now=NOW, reason=GROUP_DOWNGRADE_REASON)
+    assert BookingState("cancelled_group") is BookingState.CANCELLED_GROUP
+
+
+def test_group_downgrade_is_a_record_outcomes_edge() -> None:
+    assert Actor.BOOKING_RUNNER in LEASED_EDGES[(B, P)]
