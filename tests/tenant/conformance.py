@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -1484,6 +1484,35 @@ class TenantStoreConformance:
         assert rows[0].account.id == a.account.id
         assert await s.load_event_rows(targets={MB: TARGET}, now=TARGET_CUTOFF) == []
         assert pb.id not in {er.row.id for er in rows}
+
+    async def test_rows_in_groups_reads_across_accounts(self, harness: StoreHarness) -> None:
+        """MU-R2 (§16.3): the group floor and the collapse need every row of a (group, date)
+        pair, which lives in several account partitions. A system read, any status."""
+        s = harness.store
+        a = await _tenant(s, n=1)
+        b = await _tenant(s, n=2)
+        group, other = uuid4(), uuid4()
+
+        async def row(t: Tenant, g: UUID, target: date = TARGET) -> RequestRow:
+            return await s.create_explicit_row(
+                user_id=t.user.id,
+                account_id=t.account.id,
+                target_date=target,
+                options=(RankedWindow(1, time(9, 0), time(11, 0)),),
+                party_size=2,
+                now=NOW,
+                group_id=g,
+                group_rank=1,
+            )
+
+        ra = await row(a, group)
+        rb = await _book(s, await row(b, group))
+        await row(a, other, TARGET + timedelta(days=7))
+        await row(b, group, TARGET + timedelta(days=7))
+        found = await s.rows_in_groups({(group, TARGET)})
+        assert sorted(r.id for r in found) == sorted([ra.id, rb.id])
+        assert {r.status for r in found} == {RowStatus.PENDING, RowStatus.BOOKED}
+        assert await s.rows_in_groups(set()) == []
 
     async def test_load_event_rows_ordered_by_row_id(self, harness: StoreHarness) -> None:
         s = harness.store

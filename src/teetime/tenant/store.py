@@ -49,7 +49,7 @@ SF5/M4). No store call happens inside [T0 - lead - 1 s, T0 + 10 s].
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -159,6 +159,12 @@ class TenantStore(Protocol):
         joined to ACTIVE accounts, EXCLUDING rule rows their STORED rule no longer covers
         (missing, inactive, other weekday). Ordered by row id (the allocator rotates from
         there)."""
+        ...
+
+    async def rows_in_groups(self, keys: Collection[tuple[UUID, date]]) -> list[RequestRow]:
+        """System read (§16.3/§16.4, MU-R2): every row of each ``(group_id, target_date)``, any
+        status, across account partitions. The group floor and the collapse read it; the web
+        never calls it."""
         ...
 
     async def claim_rows(
