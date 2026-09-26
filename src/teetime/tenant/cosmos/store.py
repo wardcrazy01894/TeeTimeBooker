@@ -1188,6 +1188,11 @@ class CosmosTenantStore:
         stored = await self._account(account_id)
         return stored.item if stored is not None else None
 
+    async def get_user_unscoped(self, user_id: UserId) -> User | None:
+        """SYSTEM read (the booking runner mails a row's user by id); the web never calls it."""
+        stored = await self._user(user_id)
+        return stored.item if stored is not None else None
+
     async def rows_for_account_date(
         self, account_id: CourseAccountId, target_date: date
     ) -> list[RequestRow]:
