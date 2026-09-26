@@ -175,6 +175,10 @@ Communication Services, called over REST with no SDK. The tenant jobs will read 
 | `ACS_EMAIL_CONNECTION` | ACS connection string (`endpoint=https://…/;accesskey=…`), a Key Vault secret; the access key is masked in all logs |
 | `ACS_EMAIL_SENDER` | Sender address on the Azure-managed domain, e.g. `DoNotReply@<guid>.azurecomm.net` |
 
+`teetime tenant-watch --dry-run true` runs one multi-user tenant-watcher pass (MU-10b: shared
+searches, logins only on an opportunity, snapshot trust, vanish/adoption, ownership-gated
+upgrades). It needs `TENANT_CREDS_KEYRING` and, until MU-16, runs over an empty in-memory store.
+
 ---
 
 ## Docker (v1)

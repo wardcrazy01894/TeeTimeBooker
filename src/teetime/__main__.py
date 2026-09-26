@@ -4,11 +4,14 @@ Commands:
 - show-config: print the resolved AppConfig with secrets masked.
 - run: execute one BookingRequest end-to-end.
 - watch: perform one cancellation-availability check (M-feature-1).
+- web: serve the multi-user web app (MULTIUSER_PLAN §8; not deployed).
+- tenant-watch: one multi-user tenant-watcher run (MULTIUSER_PLAN §7; not deployed).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -29,6 +32,7 @@ from .core.config import (
     AppConfig,
     BookingCutoffConfig,
     MissingEnvVarError,
+    OneBookingPolicyConfig,
     SchedulerConfig,
     load,
     redact,
@@ -57,11 +61,17 @@ from .courses.foreup.captcha import (
     resolve_invisible_site_key,
 )
 from .courses.foreup.mangrove_bay import MangroveBayAdapter
+from .courses.foreup.token_pool import LeaseKey, SharedCaptchaPool
 from .courses.teeitup.sydney_marovitz import SydneyMarovitzAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
 from .persistence.in_memory_store import InMemoryStore
+from .tenant.crypto import KEYRING_ENV_VAR, KeyringError, load_keyring_from_env
 from .tenant.in_memory_store import InMemoryTenantStore
+from .tenant.models import CourseAccount
+from .tenant.notify import UserEvent
+from .tenant.runner import ExitStatus
+from .tenant.watch_runner import run_tenant_watch, watch_exit_status
 from .web.app import WebConfigError, WebSettings, create_app, load_web_settings
 
 # Registry mapping TOML adapter names to adapter classes.
@@ -825,6 +835,88 @@ def _serve_web(app: FastAPI, *, host: str, port: int) -> None:
     # redirect comes from TEETIME_PUBLIC_BASE_URL) and the app is not deployed. MU-15a must
     # scope forwarded_allow_ips to the Container Apps ingress once its source range is known.
     uvicorn.run(app, host=host, port=port, log_config=None, proxy_headers=True)
+
+
+@cli.command(name="tenant-watch")
+@click.option(
+    "--dry-run",
+    type=bool,
+    default=True,
+    show_default=True,
+    help="If true, never book, upgrade, reconcile-cancel or mark a row cancelled(external) "
+    "(MULTIUSER_PLAN §7.8); logins, snapshots and DB-only adoption still run.",
+)
+def tenant_watch_cmd(dry_run: bool) -> None:
+    """One multi-user tenant-watcher run (MULTIUSER_PLAN §7, MU-10b).
+
+    Reads the credential keyring from $TENANT_CREDS_KEYRING (fail-closed) and registers its key
+    material as E7 secret literals. MU-10b: the tenant store is IN-MEMORY (empty), no hosted
+    course or adapter factory is wired, and this command is not deployed — the Cosmos store is
+    MU-16, the ACA job MU-15a. Exits non-zero only on a systemic failure (§7.9).
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
+    )
+    install_log_redaction()
+    log = logging.getLogger(__name__)
+    try:
+        keyring = load_keyring_from_env()
+    except KeyringError as e:
+        raise click.ClickException(str(e)) from e
+    # E7 (§9.4): the base64 key strings exactly as they appear in the env value.
+    register_secret_literals(json.loads(os.environ[KEYRING_ENV_VAR])["keys"].values())
+    log.warning(
+        "teetime tenant-watch: tenant store is IN-MEMORY (MU-10b) — no rows, nothing is watched; "
+        "the Cosmos store is wired by MU-16. dry_run=%s",
+        dry_run,
+    )
+    cutoff = BookingCutoffConfig()
+    report = asyncio.run(
+        run_tenant_watch(
+            policies={},
+            store=InMemoryTenantStore(course_timezones={}, cutoff=cutoff),
+            clock=RealClock(),
+            scheduler=SchedulerConfig(),
+            booking_policy=OneBookingPolicyConfig(enabled=True),
+            cutoff=cutoff,
+            keyring=keyring,
+            adapter_factory=_unwired_tenant_adapter_factory,
+            notifier=_LoggingUserNotifier(),
+            dry_run=dry_run,
+        )
+    )
+    if watch_exit_status(report) is not ExitStatus.OK:
+        raise click.ClickException(
+            f"tenant-watch: systemic failure (systemic_error={report.systemic_error}, "
+            f"captcha_error={report.captcha_error}, "
+            f"decrypt_failures={len(report.decrypt_failures)}, "
+            f"outcome_write_failures={len(report.outcome_write_failures)})"
+        )
+
+
+def _unwired_tenant_adapter_factory(
+    *,
+    course_id: CourseId,
+    account: CourseAccount,
+    pool: SharedCaptchaPool | None,
+    lease_key: LeaseKey | None,
+    dry_run: bool,
+) -> CourseAdapter:
+    """No hosted course is wired yet (MU-15a): unreachable over the empty in-memory store."""
+    raise RuntimeError(f"tenant-watch: no adapter factory is wired for {course_id} (MU-15a)")
+
+
+class _LoggingUserNotifier:
+    """Stand-in ``UserNotifier`` until the MU-11 email backend: one INFO line per event, kind +
+    row id only (no PII)."""
+
+    async def send(self, event: UserEvent) -> None:
+        logging.getLogger(__name__).info(
+            "tenant-watch: notify %s for row %s", event.kind, event.row_id
+        )
 
 
 def main() -> int:
