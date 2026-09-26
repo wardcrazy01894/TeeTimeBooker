@@ -95,9 +95,6 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   `RowOutcome`, the Cosmos mapping and `_uncertain_times`, with a round-trip test.
 - **`needs_reconcile` on a PENDING row cannot be cleared via `record_outcomes`**, so that account
   logs in on every watch run (6/hour) until the row books or freezes. Add a flag-clear outcome.
-- **Pin that the OAuth token exchange never logs a secret** (MU-12 review should-fix): capture
-  logs across a `sign_in()` round-trip and assert the mocked bearer token / client secret never
-  appear, like `tests/test_log_redaction.py` pins the 2captcha case. Do it in MU-14.
 - **Scope uvicorn `forwarded_allow_ips` to the ACA ingress** in MU-15a (today it trusts any peer).
 - **Rule deletion must clear the `ruleday|<weekday>` pointer atomically** (surfaced in the MU-6
   review). The store has no rule delete yet; when MU-8b (Cosmos) or MU-13 (web) adds one, it must

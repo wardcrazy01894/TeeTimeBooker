@@ -164,8 +164,18 @@ Pages (MU-13, plain HTML forms, no JavaScript): **`/`** is the dashboard (your d
 next 21 days with status, the booked tee time and when the course account was last checked:
 "as of 07:53"). **`/rules`** creates, edits and deactivates standing weekly rules (course, day,
 window, party size); edits apply from the next drop. **`/dates`** adds a one-off date, skips or
-unskips a rule's date, withdraws a one-off, and re-requests a date after a cancel. Cancelling a
-booked tee time from the site arrives with MU-14.
+unskips a rule's date, withdraws a one-off, re-requests a date after a cancel, and (MU-14)
+**cancels a booked tee time**: the site takes a 60 s lease on that date (refused while the bot is
+booking it), logs in to the course once, requires a trustworthy reservation list, cancels, and
+records the cancel. A booking the bot didn't make needs an extra confirm tick, and a dry-run site
+never cancels. **`/accounts`** (MU-14) connects your course login: the site checks it with ONE
+live login (never retried; at most 5 attempts per user and 3 per login per hour, 30 site-wide,
+and a 15-minute pause after 2 attempts on one login), then stores the password AES-GCM-encrypted
+and never shows it again. It also re-verifies a login the course rejected, and **Refresh from
+course** re-reads your reservations live (cached for 2 minutes, at most 6 per account per hour;
+a list the course returned unreadably is never saved). Connect / refresh / cancel need the
+credential keyring and a course adapter, which `teetime web` does not wire yet (MU-15a/MU-16),
+so on a local run those actions say "not available".
 
 Notifications (MU-11, in code, not wired to a job yet) go out as plain-text email through Azure
 Communication Services, called over REST with no SDK. The tenant jobs will read two env vars:
