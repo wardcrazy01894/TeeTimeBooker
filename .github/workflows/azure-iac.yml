@@ -162,6 +162,22 @@ jobs:
           echo "KILLSWITCH_FIRED=${KSF}" >> "$GITHUB_ENV"
           echo "ENABLE_SCHEDULES=${ENS}" >> "$GITHUB_ENV"
           echo "Latch from ${PARAM_FILE}: killswitchFired=${KSF} enableSchedules=${ENS}"
+          # MU-15a: every other value the param file sets must reach the deploy too, or it
+          # silently falls back to the template default (dev's hourly watchCron did).
+          # tests/test_azure_iac_killswitch_latch.py pins that each declared param is passed.
+          python3 - "${PARAM_FILE}" >> "$GITHUB_ENV" <<'PY'
+          import re, sys
+          names = {"bookingMode": "BOOKING_MODE", "watchMode": "WATCH_MODE", "watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL"}
+          text = open(sys.argv[1]).read()
+          for name, env in names.items():
+              m = re.search(r"^param " + name + r"\s*=\s*(.+?)\s*$", text, re.M)
+              if m is None:
+                  sys.exit(f"::error::could not parse {name} from {sys.argv[1]}")
+              value = m.group(1)
+              if len(value) >= 2 and value[0] == value[-1] == "'":
+                  value = value[1:-1]
+              print(f"{env}={value}")
+          PY
       # Shared-ACR consolidation: dev no longer creates its own ACR — it pulls from the
       # SHARED ACR (in ${SHARED_ACR_RG}). Resolve it FIRST (it pre-exists, deployed separately);
       # then a two-pass deploy: pass 1 (bootstrap public image) stands up dev's resources +
@@ -186,6 +202,15 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          killswitchFired="${KILLSWITCH_FIRED}" \
                          enableSchedules="${ENABLE_SCHEDULES}" \
+                         bookingMode="${BOOKING_MODE}" \
+                         watchMode="${WATCH_MODE}" \
+                         watchCron="${WATCH_CRON}" \
+                         tenantCosmosEndpoint="${TENANT_COSMOS_ENDPOINT}" \
+                         acsEmailSender="${ACS_EMAIL_SENDER}" \
+                         deployWebApp="${DEPLOY_WEB_APP}" \
+                         deployAcsEmail="${DEPLOY_ACS_EMAIL}" \
+                         webPublicBaseUrl="${WEB_PUBLIC_BASE_URL}" \
+                         operatorEmail="${OPERATOR_EMAIL}" \
                          sharedAcrName="${ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=true \
@@ -208,6 +233,15 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          killswitchFired="${KILLSWITCH_FIRED}" \
                          enableSchedules="${ENABLE_SCHEDULES}" \
+                         bookingMode="${BOOKING_MODE}" \
+                         watchMode="${WATCH_MODE}" \
+                         watchCron="${WATCH_CRON}" \
+                         tenantCosmosEndpoint="${TENANT_COSMOS_ENDPOINT}" \
+                         acsEmailSender="${ACS_EMAIL_SENDER}" \
+                         deployWebApp="${DEPLOY_WEB_APP}" \
+                         deployAcsEmail="${DEPLOY_ACS_EMAIL}" \
+                         webPublicBaseUrl="${WEB_PUBLIC_BASE_URL}" \
+                         operatorEmail="${OPERATOR_EMAIL}" \
                          sharedAcrName="${ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \
@@ -272,6 +306,22 @@ jobs:
           echo "KILLSWITCH_FIRED=${KSF}" >> "$GITHUB_ENV"
           echo "ENABLE_SCHEDULES=${ENS}" >> "$GITHUB_ENV"
           echo "Latch from ${PARAM_FILE}: killswitchFired=${KSF} enableSchedules=${ENS}"
+          # MU-15a: every other value the param file sets must reach the deploy too, or it
+          # silently falls back to the template default (dev's hourly watchCron did).
+          # tests/test_azure_iac_killswitch_latch.py pins that each declared param is passed.
+          python3 - "${PARAM_FILE}" >> "$GITHUB_ENV" <<'PY'
+          import re, sys
+          names = {"bookingMode": "BOOKING_MODE", "watchMode": "WATCH_MODE", "watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL"}
+          text = open(sys.argv[1]).read()
+          for name, env in names.items():
+              m = re.search(r"^param " + name + r"\s*=\s*(.+?)\s*$", text, re.M)
+              if m is None:
+                  sys.exit(f"::error::could not parse {name} from {sys.argv[1]}")
+              value = m.group(1)
+              if len(value) >= 2 and value[0] == value[-1] == "'":
+                  value = value[1:-1]
+              print(f"{env}={value}")
+          PY
       # Shared-ACR consolidation: prod no longer creates its own ACR — it pulls from the
       # SHARED ACR (in ${SHARED_ACR_RG}, deployed separately). Resolve it FIRST; then a
       # two-pass deploy: pass 1 (bootstrap public image) stands up prod's resources + the
@@ -296,6 +346,15 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          killswitchFired="${KILLSWITCH_FIRED}" \
                          enableSchedules="${ENABLE_SCHEDULES}" \
+                         bookingMode="${BOOKING_MODE}" \
+                         watchMode="${WATCH_MODE}" \
+                         watchCron="${WATCH_CRON}" \
+                         tenantCosmosEndpoint="${TENANT_COSMOS_ENDPOINT}" \
+                         acsEmailSender="${ACS_EMAIL_SENDER}" \
+                         deployWebApp="${DEPLOY_WEB_APP}" \
+                         deployAcsEmail="${DEPLOY_ACS_EMAIL}" \
+                         webPublicBaseUrl="${WEB_PUBLIC_BASE_URL}" \
+                         operatorEmail="${OPERATOR_EMAIL}" \
                          sharedAcrName="${ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=true \
@@ -315,6 +374,15 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          killswitchFired="${KILLSWITCH_FIRED}" \
                          enableSchedules="${ENABLE_SCHEDULES}" \
+                         bookingMode="${BOOKING_MODE}" \
+                         watchMode="${WATCH_MODE}" \
+                         watchCron="${WATCH_CRON}" \
+                         tenantCosmosEndpoint="${TENANT_COSMOS_ENDPOINT}" \
+                         acsEmailSender="${ACS_EMAIL_SENDER}" \
+                         deployWebApp="${DEPLOY_WEB_APP}" \
+                         deployAcsEmail="${DEPLOY_ACS_EMAIL}" \
+                         webPublicBaseUrl="${WEB_PUBLIC_BASE_URL}" \
+                         operatorEmail="${OPERATOR_EMAIL}" \
                          sharedAcrName="${ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \

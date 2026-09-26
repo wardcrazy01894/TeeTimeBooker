@@ -574,7 +574,11 @@ every tenant-only secretRef/env var (`TENANT_CREDS_KEYRING`, `ACS_EMAIL_CONNECTI
 `OPERATOR_NOTIFY_EMAIL`, `TENANT_COSMOS_*`, `AZURE_CLIENT_ID`, `ACS_EMAIL_SENDER`) gated behind a
 `== 'tenant'` branch so the default toml mode never references a Key Vault secret the operator
 has not created. Dev's watch cron moved to hourly (`0 * * * *`, operator directive — prod
-untouched at `*/10 * * * *`) via the new per-env `watchCron` param. Two new Bicep modules,
+untouched at `*/10 * * * *`) via the new per-env `watchCron` param. **CI note (2026-09-26):** `azure-iac.yml` deploys with INLINE
+parameters, so every value a `.bicepparam` file sets must be parsed and passed by the workflow;
+the first MU-15a merge missed this and dev stayed at `*/10`. The workflow now parses all nine
+MU-15a params, and `tests/test_azure_iac_killswitch_latch.py::test_every_param_file_value_reaches_every_ci_deploy`
+fails CI if any declared param is not passed to every deploy. Two new Bicep modules,
 BOTH gated off by default (`deployWebApp`/`deployAcsEmail` = `false` in both envs, so this PR
 cannot break the dev auto-deploy on a missing secret): `webapp.bicep` (the `teetime-web-<env>`
 Container App, scale-to-zero, ingress/max-replicas latched to the SAME `effectiveEnableSchedules`
