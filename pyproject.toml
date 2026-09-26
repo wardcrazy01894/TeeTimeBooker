@@ -37,6 +37,14 @@ dependencies = [
     "authlib>=1.8.0",           # OAuth 2 / OIDC client for GitHub + Google sign-in (§8.3)
     "itsdangerous>=2.2.0",      # signed session cookie (Starlette SessionMiddleware, §8.3)
     "python-multipart>=0.0.32", # HTML form parsing (CSRF token + admin forms)
+    # Multi-user tenant store (MULTIUSER_PLAN §10.2, MU-8b): `tenant/cosmos/store.py` — the async
+    # Cosmos DB client, Entra-token auth (managed identity in ACA, `az login` locally; the account
+    # has local/key auth disabled), and aiohttp, the transport the async azure-core pipeline
+    # needs. Floors are Dependabot-managed, so these comments name no version. Only the tenant
+    # store imports them; the booking/watch TOML production path never does.
+    "azure-cosmos>=4.17.1",     # async ContainerProxy: transactional batch + IfMatch ETags
+    "azure-identity>=1.25.3",   # DefaultAzureCredential (azure.identity.aio)
+    "aiohttp>=3.14.3",          # async HTTP transport for azure-core (azure.cosmos.aio)
 ]
 
 # Dev deps are a PEP 735 dependency-group, NOT a `[project.optional-dependencies]` extra.
