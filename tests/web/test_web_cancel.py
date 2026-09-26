@@ -404,3 +404,25 @@ async def test_cancel_other_users_row_is_not_found(store: SpyStore, clock: FakeC
         await _cancel(store, clock, factory, account=account, row=row, user_id=UserId(uuid4()))
     assert factory.calls == []
     assert await _row(store, account, row) == row
+
+
+async def test_cancel_login_is_bound_by_the_refresh_rate_limit(
+    store: SpyStore, clock: FakeClock
+) -> None:
+    """Review must-fix (#241): a Cancel does a live ForeUP login, so it spends the SAME per-account
+    hourly budget as Refresh. Once that budget is used up the cancel is refused BEFORE any login,
+    so repeated clicks after a failed cancel cannot hammer the user's real ForeUP account."""
+    account, row = await _booked(store)
+    for _ in range(services.ProbeLimits().refreshes_per_account_per_hour):
+        await store.record_login_probe(
+            user_id=account.user_id,
+            course_id=account.course_id,
+            username_hash=services.refresh_probe_hash(account.id),
+            ok=True,
+            at=T0,
+        )
+    factory = ProbeFactory(adapter=_live_adapter(RAW))
+    with pytest.raises(services.RateLimitedError):
+        await _cancel(store, clock, factory, account=account, row=row)
+    assert factory.calls == []
+    assert await _row(store, account, row) == row

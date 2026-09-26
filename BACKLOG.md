@@ -80,6 +80,12 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Multi-user follow-ups
 
+- **Web cancel: test the 60 s lease expiring mid-cancel** (MU-14 review): a slow ForeUP login
+  or DELETE could outlive `WEB_LEASE_SECONDS`, and `record_outcomes` should then refuse the write
+  (lease no longer held). Pin it with a FakeClock that advances past the lease inside the adapter.
+- **Strict probe limits** (MU-14 review): the login-probe caps are count-then-act, so a burst of
+  simultaneous requests can overshoot by N-1. A per-bucket counter doc with IfMatch would make it
+  exact; not worth it at invite-only scale.
 - **Runner: release leases claimed before a mid-retry claim failure** (MU-9b review should-fix):
   today they expire at T0+1200 s, blocking the watcher ~20 min; a bounded release (outside the
   race window) would free them on the next watch cycle.

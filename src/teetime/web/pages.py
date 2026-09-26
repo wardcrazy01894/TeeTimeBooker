@@ -392,6 +392,7 @@ def _register_account_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
                 dry_run=ctx.settings.dry_run,
                 cache=ctx.refresh_cache,
                 notifier=ctx.notifier,
+                limits=ctx.probe_limits,
             )
             return "/dates?notice=cancelled"
 

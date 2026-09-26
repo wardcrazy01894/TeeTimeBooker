@@ -721,7 +721,12 @@ class ProbeLimits:
     because ``count_login_probes`` counts probes and does not read their outcome. It can only
     refuse MORE often than the plan's rule (never less), which is the safe direction while the
     ForeUP lockout threshold is unknown (Spike S-M6). ``refreshes_per_account_per_hour`` is
-    the §8.6 hard cap on live refreshes."""
+    the §8.6 hard cap on live refreshes, and it also bounds the live login a Cancel makes.
+
+    Accepted race (#241 review): every check is count-then-act, so N requests landing in the same
+    instant can each read a count under the cap and all proceed, overshooting by at most N-1.
+    That is tolerable for an invite-only site with a handful of users; the durable probe docs
+    still stop the next request. A strict bound would need a per-bucket counter doc with IfMatch."""
 
     per_user_per_hour: int = 5
     per_username_per_hour: int = 3
@@ -1087,7 +1092,8 @@ async def _check_refresh_limits(
     if mine >= limits.refreshes_per_account_per_hour or site >= limits.site_per_hour:
         log.info("web: refresh of account %s refused by rate limit", account.id)
         raise RateLimitedError(
-            "This account was refreshed too often in the last hour. Please try again later."
+            "This account was checked with the course too often in the last hour (refresh and "
+            "cancel share one limit). Please try again later."
         )
 
 
@@ -1289,6 +1295,7 @@ async def cancel_row(
     dry_run: bool,
     cache: RefreshCache | None = None,
     notifier: UserNotifier | None = None,
+    limits: ProbeLimits | None = None,
 ) -> RequestRow:
     """The managed-cancel path (§8.5): dry-run refusal (§7.8) -> row lease (60 s, through
     ``LeasedBookingStore`` with the fingerprint just read, M5) -> decrypt -> authenticate (must
@@ -1311,6 +1318,15 @@ async def cancel_row(
         raise CancelRefusedError(_UNOWNED)
     account = await _own_account(store, user_id=user_id, account_id=row.course_account_id)
     _usable_account(account)
+    # A cancel does a live ForeUP login, so it spends the same per-account hourly budget as
+    # Refresh (#241 review): refused BEFORE the lease and the login, so repeated clicks after a
+    # failed cancel cannot hammer the user's real ForeUP account.
+    await _check_refresh_limits(
+        store,
+        account=account,
+        limits=ProbeLimits() if limits is None else limits,
+        now=clock.now_utc(),
+    )
     owner = f"web:{uuid4().hex}"
     leased = LeasedBookingStore(
         inner=InMemoryStore(),
