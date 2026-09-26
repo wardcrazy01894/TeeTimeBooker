@@ -278,7 +278,12 @@ def _open(doc: Mapping[str, object], *, doc_type: str) -> None:
     if found != doc_type:
         raise DocumentError(f"expected a {doc_type!r} document, got type={found!r}")
     version = doc.get("schemaVersion")
-    if not isinstance(version, int) or version not in READABLE_SCHEMA_VERSIONS:
+    # bool is an int subclass (True == 1): refuse it explicitly.
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in READABLE_SCHEMA_VERSIONS
+    ):
         raise DocumentError(
             f"unreadable schemaVersion {version!r} (readable: {sorted(READABLE_SCHEMA_VERSIONS)})"
         )
@@ -882,22 +887,76 @@ type Persisted = (
 
 
 def to_doc(obj: Persisted) -> dict[str, object]:
-    """The document for any persisted domain object (dispatch on its type)."""
-    raise NotImplementedError("MU-8a")
+    """The document for any persisted domain object (dispatch on its type). A value that is not
+    one of the ``Persisted`` types (e.g. a ``RowFingerprint``, which is never stored) is a
+    ``DocumentError``."""
+    match obj:
+        case CourseAccount():
+            doc = to_account_doc(obj)
+        case StandingRule():
+            doc = to_rule_doc(obj)
+        case RequestRow():
+            doc = to_row_doc(obj)
+        case SlotPointer():
+            doc = to_slot_doc(obj)
+        case RuleDayPointer():
+            doc = to_ruleday_doc(obj)
+        case OwnedBooking():
+            doc = to_booking_doc(obj)
+        case ReservationSnapshot():
+            doc = to_snapshot_doc(obj)
+        case User():
+            doc = to_user_doc(obj)
+        case UniquenessClaim():
+            doc = to_claim_doc(obj)
+        case LoginProbe():
+            doc = to_probe_doc(obj)
+        case AuditRecord():
+            doc = to_audit_doc(obj)
+        case _:
+            raise DocumentError(f"{type(obj).__name__} is not a persisted type")
+    return doc
+
+
+_READERS: Mapping[str, Callable[[Mapping[str, object]], Stored[Persisted]]] = {
+    "account": from_account_doc,
+    "rule": from_rule_doc,
+    "row": from_row_doc,
+    "slot": from_slot_doc,
+    "ruleday": from_ruleday_doc,
+    "booking": from_booking_doc,
+    "snapshot": from_snapshot_doc,
+    "user": from_user_doc,
+    "claim": from_claim_doc,
+    "probe": from_probe_doc,
+    "audit": from_audit_doc,
+}
 
 
 def from_doc(doc: Mapping[str, object]) -> Stored[Persisted]:
-    """Read any document back (dispatch on its ``type`` discriminator)."""
-    raise NotImplementedError("MU-8a")
+    """Read any document back (dispatch on its ``type`` discriminator). An unknown or missing
+    ``type`` is a ``DocumentError``; so is anything the typed reader refuses."""
+    doc_type = doc.get("type")
+    reader = _READERS.get(doc_type) if isinstance(doc_type, str) else None
+    if reader is None:
+        raise DocumentError(f"unknown document type {doc_type!r}")
+    return reader(doc)
 
 
 def row_fingerprint_of(doc: Mapping[str, object]) -> RowFingerprint:
-    """The ``RowFingerprint`` (M5) of a stored ``row`` document."""
-    raise NotImplementedError("MU-8a")
+    """The ``RowFingerprint`` (M5) of a stored ``row`` document: what a reader saw, for the
+    lease acquire to match (MU-8b asserts it against the row it IfMatch-replaces)."""
+    row = from_row_doc(doc).item
+    return RowFingerprint(status=row.status, version=row.version, booked_raw_id=row.booked_raw_id)
 
 
 def event_row_from_docs(
     row_doc: Mapping[str, object], account_doc: Mapping[str, object]
 ) -> EventRow:
-    """Join a ``row`` and its ``account`` document into an ``EventRow`` (§4.2/§7.1)."""
-    raise NotImplementedError("MU-8a")
+    """Join a ``row`` and its ``account`` document into an ``EventRow`` (§4.2/§7.1). Both live
+    in the same partition; a pair from two different accounts is refused, never joined."""
+    row = from_row_doc(row_doc).item
+    account = from_account_doc(account_doc).item
+    if row.course_account_id != account.id:
+        raise DocumentError(f"row {row.id} does not belong to account {account.id}")
+    return EventRow(row=row, account=account)
