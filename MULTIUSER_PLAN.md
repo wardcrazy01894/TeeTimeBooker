@@ -1593,7 +1593,7 @@ immediately after MU-0: MU-1, MU-2, MU-3, MU-4, MU-5, MU-7.
     §10.5 runbook** (decided 2026-09-25: CI never holds `sqlRoleAssignments/write`).
 11. Does dev's KV hold the **same** MB account as prod? (The concurrent-login evidence in §11
     depends on it.)
-12. ~~Operator notify address~~. **RESOLVED 2026-09-26:** `alanc3939@gmail.com`. KV secret
+12. ~~Operator notify address~~. **RESOLVED 2026-09-26:** the operator's personal address (not written here: the repo is public). KV secret
     `OPERATOR-NOTIFY-EMAIL`, wired as `OPERATOR_NOTIFY_EMAIL` into the tenant jobs (tenant-mode
     only, `compute.bicep`) and available for the web app's `TEETIME_OPERATOR_EMAIL` (a separate,
     plain, non-secret value — the operator's SIGN-IN identity, not the notification recipient;
