@@ -28,17 +28,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, time
+from datetime import date, datetime, time
 from uuid import uuid4
 
-from ..core.booking_cutoff import cutoff_instant
 from ..core.config import BookingCutoffConfig
 from ..core.models import CourseId
 from ..core.redaction import redact_payload
 from .materialize import RuleConflictError
 from .models import (
     ACTIVE_ROW_STATUSES,
-    SYSTEM_WITHDRAW_REASONS,
     AccountStatus,
     Actor,
     BookingState,
@@ -65,8 +63,24 @@ from .models import (
     is_user_terminal,
     lease_held,
     row_is_frozen,
-    row_request_id,
     rule_row_id,
+)
+from .semantics import (
+    LEASABLE_STATUSES,
+    NOT_FOUND,
+    SOFT_AUTH_FAILURE_LIMIT,
+    RowWrite,
+    becomes_bookable,
+    fingerprint_matches,
+    ledger_entries,
+    new_row,
+    outcome_row,
+    restorable_rule_row,
+    rule_covers_row,
+    uncovered_reason,
+    unleased_write,
+    upserted_rule,
+    validate_ledger,
 )
 from .store import (
     RowLeaseError,
@@ -76,39 +90,7 @@ from .store import (
     VersionConflictError,
 )
 
-# Consecutive soft login failures after which an account stops logging in (§7.5).
-SOFT_AUTH_FAILURE_LIMIT = 3
-
-_Write = tuple[RequestRow | None, RequestRow]
-
-# Only these statuses are ever leased: nothing is booked, upgraded or cancelled from any other.
-_LEASABLE_STATUSES = frozenset({RowStatus.PENDING, RowStatus.BOOKED})
-
-
-def _becomes_bookable(old: RequestRow | None, new: RequestRow) -> bool:
-    """True when a write puts a row into PENDING / SKIPPED from outside the active set
-    (create, reactivate, restore, un-supersede) or unskips it. booked -> pending (the M2 edge)
-    is excluded: it records what already happened and must never be refused."""
-    if new.status not in (RowStatus.PENDING, RowStatus.SKIPPED):
-        return False
-    if old is None or old.status not in ACTIVE_ROW_STATUSES:
-        return True
-    return old.status is RowStatus.SKIPPED and new.status is RowStatus.PENDING
-
-
-# The ONLY §3.4 edges the LEASED path (``record_outcomes``) may write, and by whom. Everything else
-# (skip, withdraw, un-supersede, reactivate, ...) goes through the unleased paths, which carry the
-# extra guards (user-terminal history, D2 restore, rule active). MU-5 review round 2, MF1.
-_LEASED_EDGES: dict[tuple[RowStatus, RowStatus], frozenset[Actor]] = {
-    (RowStatus.PENDING, RowStatus.BOOKED): frozenset({Actor.BOOKING_RUNNER, Actor.WATCHER}),
-    (RowStatus.BOOKED, RowStatus.BOOKED): frozenset({Actor.WATCHER}),  # upgrade
-    (RowStatus.BOOKED, RowStatus.PENDING): frozenset({Actor.WATCHER}),  # + needs_reconcile
-    # watcher: external (vanish); web: the §8.5 managed cancel (user / already_gone)
-    (RowStatus.BOOKED, RowStatus.CANCELLED): frozenset({Actor.WATCHER, Actor.WEB}),
-}
-
-# One message for "missing" and "not yours" alike, naming no id (IDOR defence, §9.1).
-_NOT_FOUND = "not found"
+_Write = RowWrite
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,22 +109,6 @@ class _Probe:
     username_hash: str
     ok: bool
     at: datetime
-
-
-def _fingerprint_matches(row: RequestRow, expected: RowFingerprint | None) -> bool:
-    if expected is None:
-        return True
-    return (row.status, row.version, row.booked_raw_id) == (
-        expected.status,
-        expected.version,
-        expected.booked_raw_id,
-    )
-
-
-def _strip_ttb(code: str | None) -> str | None:
-    if code is None:
-        return None
-    return code.removeprefix("TTB:")
 
 
 class InMemoryTenantStore:
@@ -195,7 +161,7 @@ class InMemoryTenantStore:
             if old is not None and stored != old:
                 raise TransitionRefusedError(f"row {new.id} changed since it was read")
         for old, new in writes:
-            if new.source is RowSource.RULE and _becomes_bookable(old, new):
+            if new.source is RowSource.RULE and becomes_bookable(old, new):
                 self._guard_rule_row_may_become_active(new)
         slots = dict(self._slots)
         for old, new in writes:  # releases first, so a supersede frees the slot it re-points
@@ -221,7 +187,7 @@ class InMemoryTenantStore:
     def _row(self, row_id: RowId) -> RequestRow:
         row = self._rows.get(row_id)
         if row is None:
-            raise TenantNotFoundError(_NOT_FOUND)
+            raise TenantNotFoundError(NOT_FOUND)
         return row
 
     def _account_for_user(
@@ -229,7 +195,7 @@ class InMemoryTenantStore:
     ) -> CourseAccount:
         account = self._accounts.get(account_id)
         if account is None or (user_id is not None and account.user_id != user_id):
-            raise TenantNotFoundError(_NOT_FOUND)
+            raise TenantNotFoundError(NOT_FOUND)
         return account
 
     def _history(self, account_id: CourseAccountId, day: date) -> list[RequestRow]:
@@ -239,10 +205,6 @@ class InMemoryTenantStore:
             if r.course_account_id == account_id and r.target_date == day
         )
         return sorted(rows, key=lambda r: r.id)
-
-    def _cutoff_at(self, course_id: CourseId, day: date) -> datetime:
-        tz = self.course_timezone(course_id)
-        return cutoff_instant(day, timezone=tz, cutoff=self._cutoff).astimezone(UTC)
 
     def _new_row(
         self,
@@ -256,30 +218,22 @@ class InMemoryTenantStore:
         source: RowSource,
         rule_id: RuleId | None,
     ) -> RequestRow:
-        return RequestRow(
-            id=row_id,
-            course_account_id=account.id,
-            course_id=account.course_id,
-            target_date=target_date,
+        return new_row(
+            row_id=row_id,
+            account=account,
             timezone=self.course_timezone(account.course_id),
-            window_earliest=window[0],
-            window_latest=window[1],
+            cutoff=self._cutoff,
+            target_date=target_date,
+            window=window,
             party_size=party_size,
             status=status,
             source=source,
-            cutoff_at=self._cutoff_at(account.course_id, target_date),
-            request_id=row_request_id(row_id),
-            version=1,
             rule_id=rule_id,
         )
 
     @staticmethod
     def _unleased_write(row: RequestRow, now: datetime) -> RequestRow:
-        """An unleased (web / materializer / finalizer) write clears an EXPIRED lease, so a stale
-        holder cannot come back and move a row someone else has since written (SF2)."""
-        if row.lease_owner is not None and not lease_held(row, now=now):
-            return replace(row, lease_owner=None, lease_expires_at=None)
-        return row
+        return unleased_write(row, now)
 
     def _refuse_if_user_terminal(self, account_id: CourseAccountId, day: date) -> None:
         if any(is_user_terminal(r) for r in self._history(account_id, day)):
@@ -287,32 +241,15 @@ class InMemoryTenantStore:
                 f"{day} has a user-terminal row; only an explicit re-request reopens it"
             )
 
+    def _stored_rule(self, row: RequestRow) -> StandingRule | None:
+        return self._rules.get(row.rule_id) if row.rule_id is not None else None
+
     def _rule_covers_row(self, row: RequestRow) -> bool:
-        """THE coverage predicate (round-5 MF1/MF2), read from the STORED rule: True for explicit
-        rows, and for a rule row whose rule exists, is active, is on the row's weekday and belongs
-        to the row's account. Every read path that offers rows for booking and every writer of an
-        active status onto a rule row goes through it."""
-        if row.rule_id is None:
-            return True
-        rule = self._rules.get(row.rule_id)
-        return (
-            rule is not None
-            and rule.active
-            # Defensive: upsert_rule never moves a rule between accounts, so this leg cannot
-            # fail today; kept so a future account move cannot silently cover foreign rows.
-            and rule.course_account_id == row.course_account_id
-            and rule.weekday == row.target_date.weekday()
-        )
+        """``semantics.rule_covers_row`` against the STORED rule."""
+        return rule_covers_row(row, self._stored_rule(row))
 
     def _uncovered_reason(self, row: RequestRow) -> str:
-        """The system withdraw reason for a rule row its rule no longer covers."""
-        rule = self._rules.get(row.rule_id) if row.rule_id is not None else None
-        # The account leg is defensive (unreachable today, see _rule_covers_row).
-        if rule is None or rule.course_account_id != row.course_account_id:
-            return "rule_deleted"
-        if not rule.active:
-            return "rule_deactivated"
-        return "rule_weekday_changed"
+        return uncovered_reason(row, self._stored_rule(row))
 
     def _guard_rule_row_may_become_active(self, row: RequestRow) -> None:
         """The shared "may become active" guard for a rule row (round-5 MF1), enforced inside the
@@ -334,51 +271,12 @@ class InMemoryTenantStore:
         return stored
 
     def _restorable_rule_row(self, explicit: RequestRow, now: datetime) -> _Write | None:
-        """The rule row a withdrawn explicit row gives the date back to, restored to
-        ``superseded_from or PENDING``, iff its rule is active and the date not frozen:
-        - a SUPERSEDED row (§3.4, round-4 D2); else
-        - a SYSTEM-WITHDRAWN row with no user-terminal row for the date (round-6: deactivate ->
-          reactivate while the one-off held the slot -> withdraw one-off; reactivation was
-          refused by the held slot, so nothing else would bring it back), refreshed from the rule.
-        The restore writes that row too, so it must be unleased like every web write (M4)."""
-        history = self._history(explicit.course_account_id, explicit.target_date)
-        superseded = [r for r in history if r.status is RowStatus.SUPERSEDED]
-        withdrawn = [
-            r
-            for r in history
-            if r.status is RowStatus.WITHDRAWN and r.status_reason in SYSTEM_WITHDRAW_REASONS
-        ]
-        if any(is_user_terminal(r) for r in history):
-            # Round-7: a user-terminal date stays blocked for the rule. Withdrawing a re-request
-            # undoes the re-request, not the cancel; a superseded rule row stays SUPERSEDED (inert).
-            return None
-        for row in [*superseded, *withdrawn]:
-            if row.source is not RowSource.RULE or not self._rule_covers_row(row):
-                continue  # round-4 MF-A / round-5: only a row its (stored) rule still covers
-            rule = self._rules[row.rule_id] if row.rule_id is not None else None
-            assert rule is not None  # covered implies the rule exists
-            if row_is_frozen(row, now=now):
-                continue
-            if lease_held(row, now=now):
-                raise RowLeaseError(f"booking in progress for {row.target_date}")
-            target = row.superseded_from or RowStatus.PENDING
-            restored = replace(
-                self._unleased_write(row, now),
-                status=target,
-                status_reason=None,
-                superseded_from=None,
-                version=row.version + 1,
-            )
-            if row.status is RowStatus.WITHDRAWN:
-                check_transition(row, target, actor=Actor.MATERIALIZER, now=now)
-                restored = replace(
-                    restored,
-                    window_earliest=rule.window_earliest,
-                    window_latest=rule.window_latest,
-                    party_size=rule.party_size,
-                )
-            return (row, restored)
-        return None
+        """``semantics.restorable_rule_row`` over the stored history and rules."""
+        return restorable_rule_row(
+            history=self._history(explicit.course_account_id, explicit.target_date),
+            rules=self._rules,
+            now=now,
+        )
 
     # --- TenantStore ---------------------------------------------------------------------
 
@@ -442,11 +340,11 @@ class InMemoryTenantStore:
     def _apply_outcome(self, o: RowOutcome) -> None:
         row = self._rows.get(o.row_id)
         # Before ANY write: the row and its ledger are one unit (SF3).
-        self._validate_ledger(o, course_id=row.course_id if row is not None else None)
+        validate_ledger(o, course_id=row.course_id if row is not None else None)
         try:
             if row is None:
-                raise TenantNotFoundError(_NOT_FOUND)
-            self._commit([(row, self._outcome_row(row, o))])
+                raise TenantNotFoundError(NOT_FOUND)
+            self._commit([(row, outcome_row(row, o))])
         except (TransitionRefusedError, RowLeaseError, TenantNotFoundError):
             # The row moved: keep what the bot did (ledger by account + date) and make the
             # date's active row reconcile it on the next watcher run (M4).
@@ -455,96 +353,8 @@ class InMemoryTenantStore:
             raise
         self._write_ledger(o, course_id=row.course_id)
 
-    def _outcome_row(self, row: RequestRow, o: RowOutcome) -> RequestRow:
-        owns = row.lease_owner is not None and row.lease_owner == o.release_lease_owner
-        holder = owns and lease_held(row, now=o.at)  # an expired lease is no lease (SF2)
-        if o.to_status is not None:
-            leased_by = _LEASED_EDGES.get((row.status, o.to_status), frozenset())
-            if o.actor not in leased_by:
-                raise TransitionRefusedError(
-                    f"{row.status} -> {o.to_status} by {o.actor} is not a record_outcomes edge"
-                )
-            check_transition(
-                row,
-                o.to_status,
-                actor=o.actor,
-                now=o.at,
-                reason=o.status_reason,
-                needs_reconcile=o.needs_reconcile,
-            )
-            if not holder:
-                raise RowLeaseError(f"row {row.id}: {o.release_lease_owner!r} holds no live lease")
-        elif lease_held(row, now=o.at) and not holder:
-            raise RowLeaseError(f"row {row.id} is leased by {row.lease_owner!r}")
-        new = replace(row, last_outcome=o.last_outcome, last_outcome_at=o.at)
-        if o.to_status is not None:
-            new = replace(
-                self._booking_fields(new, o),
-                status=o.to_status,
-                status_reason=o.status_reason,
-                needs_reconcile=o.needs_reconcile,
-            )
-        elif o.needs_reconcile:
-            new = replace(new, needs_reconcile=True)
-        if o.clear_upgrade_marker:
-            new = replace(new, upgrade_started_at=None)
-        if owns:
-            new = replace(new, lease_owner=None, lease_expires_at=None)
-        changed = (new.status, new.needs_reconcile, new.booked_raw_id) != (
-            row.status,
-            row.needs_reconcile,
-            row.booked_raw_id,
-        )
-        return replace(new, version=row.version + 1) if changed else new
-
-    @staticmethod
-    def _booking_fields(row: RequestRow, o: RowOutcome) -> RequestRow:
-        if o.to_status is RowStatus.PENDING:  # upgrade cancelled the old slot: no booking held
-            return replace(
-                row,
-                booked_tee_time=None,
-                booked_confirmation=None,
-                booked_raw_id=None,
-                booked_at=None,
-            )
-        if o.to_status is not RowStatus.BOOKED:  # CANCELLED keeps booked_* as history
-            return row
-        raw_id = o.booking.raw_reservation_id if o.booking is not None else None
-        tee = o.booking.tee_time if o.booking is not None else None
-        if tee is None and o.result is not None and o.result.slot is not None:
-            tee = o.result.slot.tee_time
-        confirmation = o.result.confirmation_code if o.result is not None else None
-        if confirmation is None and raw_id is not None:
-            confirmation = f"TTB:{raw_id}"
-        if raw_id is None and o.booking is None and o.result is not None:
-            raw_id = _strip_ttb(o.result.confirmation_code)
-        return replace(
-            row,
-            booked_raw_id=raw_id,
-            booked_tee_time=tee,
-            booked_confirmation=confirmation,
-            booked_at=o.at,
-        )
-
-    @staticmethod
-    def _ledger_entries(o: RowOutcome) -> list[OwnedBooking]:
-        return [
-            *([o.booking] if o.booking is not None else []),
-            *o.held_extras,
-            *o.cancelled_extras,
-        ]
-
-    def _validate_ledger(self, o: RowOutcome, *, course_id: CourseId | None) -> None:
-        for entry in self._ledger_entries(o):
-            if entry.course_account_id != o.course_account_id:
-                raise ValueError(f"ledger entry {entry.id} is for another account")
-            if entry.target_date != o.target_date:
-                raise ValueError(f"ledger entry {entry.id} is for another date")
-            if course_id is not None and entry.course_id != course_id:
-                raise ValueError(f"ledger entry {entry.id} is for another course")
-
     def _write_ledger(self, o: RowOutcome, *, course_id: CourseId | None) -> None:
-        for entry in self._ledger_entries(o):
+        for entry in ledger_entries(o):
             key = (entry.course_account_id, entry.course_id, entry.raw_reservation_id)
             self._ledger[key] = entry
         if o.cancelled_upgrade_raw_id is not None:
@@ -578,11 +388,11 @@ class InMemoryTenantStore:
         expected: RowFingerprint | None,
     ) -> bool:
         row = self._row(row_id)
-        if row.status not in _LEASABLE_STATUSES:
+        if row.status not in LEASABLE_STATUSES:
             return False  # nothing is ever booked, upgraded or cancelled from any other status
         if lease_held(row, now=now) and row.lease_owner != owner:
             return False
-        if not _fingerprint_matches(row, expected):
+        if not fingerprint_matches(row, expected):
             return False
         self._commit([(row, replace(row, lease_owner=owner, lease_expires_at=until))])
         return True
@@ -690,7 +500,7 @@ class InMemoryTenantStore:
         row = self._row(row_id)
         if row.lease_owner != owner or not lease_held(row, now=at):
             return False
-        if not _fingerprint_matches(row, expected):
+        if not fingerprint_matches(row, expected):
             return False
         self._commit([(row, replace(row, upgrade_started_at=at))])
         return True
@@ -784,7 +594,7 @@ class InMemoryTenantStore:
     async def reset_materialized_through(self, rule_id: RuleId) -> None:
         rule = self._rules.get(rule_id)
         if rule is None:
-            raise TenantNotFoundError(_NOT_FOUND)
+            raise TenantNotFoundError(NOT_FOUND)
         self._rules[rule_id] = replace(rule, materialized_through=None)
 
     async def rewrite_pending_rule_row(
@@ -824,7 +634,7 @@ class InMemoryTenantStore:
     async def set_materialized_through(self, rule_id: RuleId, through: date) -> None:
         rule = self._rules.get(rule_id)
         if rule is None:
-            raise TenantNotFoundError(_NOT_FOUND)
+            raise TenantNotFoundError(NOT_FOUND)
         if rule.materialized_through is not None and rule.materialized_through >= through:
             return  # never moves backwards (§3.2)
         self._rules[rule_id] = replace(rule, materialized_through=through)
@@ -961,7 +771,7 @@ class InMemoryTenantStore:
     ) -> RequestRow:
         row = self._row(row_id)
         if actor is Actor.WEB and user_id is None:
-            raise TenantNotFoundError(_NOT_FOUND)
+            raise TenantNotFoundError(NOT_FOUND)
         self._account_for_user(row.course_account_id, user_id)
         if actor not in (Actor.WEB, Actor.MATERIALIZER):
             raise TransitionRefusedError(f"{actor} writes through record_outcomes (leased path)")
@@ -997,7 +807,7 @@ class InMemoryTenantStore:
         self._account_for_user(rule.course_account_id, user_id)
         existing = self._rules.get(rule.id)
         if existing is not None and existing.course_account_id != rule.course_account_id:
-            raise TenantNotFoundError(_NOT_FOUND)
+            raise TenantNotFoundError(NOT_FOUND)
         if existing is not None and rule.version != existing.version:
             raise VersionConflictError(
                 f"rule edited from version {rule.version}; stored is {existing.version}"
@@ -1015,20 +825,7 @@ class InMemoryTenantStore:
                     f"account already has an active rule for weekday {rule.weekday}"
                 )
             ruledays[key] = rule.id
-        stored = rule
-        if existing is not None:
-            # A stored None is a RESET (§7.7) and wins over the caller's copy; otherwise the
-            # watermark never moves backwards.
-            through = existing.materialized_through
-            if through is not None and rule.materialized_through is not None:
-                through = max(through, rule.materialized_through)
-            moved = rule.weekday != existing.weekday
-            reactivated = rule.active and not existing.active
-            if moved or reactivated:
-                # Round-5 SF-2 (coordinator decision): the rule is due for the tick in the same
-                # write, so a crash before the web's synchronous materialize loses nothing.
-                through = None
-            stored = replace(rule, version=existing.version + 1, materialized_through=through)
+        stored = upserted_rule(rule, existing)
         self._ruledays = ruledays
         self._rules[rule.id] = stored
         return stored
