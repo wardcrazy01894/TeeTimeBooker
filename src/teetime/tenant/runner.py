@@ -48,7 +48,6 @@ from ..core.models import (
     Player,
     SlotId,
     TeeTimeSlot,
-    TimeWindow,
 )
 from ..core.orchestrator import Orchestrator
 from ..core.redaction import register_secret_literals
@@ -66,9 +65,11 @@ from .models import (
     EventRow,
     OwnedBooking,
     OwnedBookingId,
+    RankedWindow,
     RequestRow,
     RowId,
     RowStatus,
+    options_time_windows,
     row_is_frozen,
 )
 from .notify import (
@@ -474,6 +475,10 @@ async def _book_event(
     return replace(report, auth_failed_accounts=auth_failed), events
 
 
+def _options_text(options: tuple[RankedWindow, ...]) -> str:
+    return ", ".join(f"#{o.rank} {o.earliest:%H:%M}-{o.latest:%H:%M}" for o in options)
+
+
 @dataclass(frozen=True, slots=True)
 class PlannedRow:
     """One pending row as ``tenant-plan`` shows it (ids and times only — no login names)."""
@@ -481,7 +486,7 @@ class PlannedRow:
     row_id: RowId
     course_id: CourseId
     target_date: date
-    window: tuple[time, time]
+    options: tuple[RankedWindow, ...]
     party_size: int
     allowlist_times: tuple[str, ...]
     search_only: bool
@@ -514,7 +519,7 @@ class EventPlan:
                 blind = "search-only" if r.search_only else f"blind [{','.join(r.allowlist_times)}]"
                 lines.append(
                     f"  row {r.row_id} {r.target_date.isoformat()} "
-                    f"{r.window[0]:%H:%M}-{r.window[1]:%H:%M} party {r.party_size}: {blind}"
+                    f"{_options_text(r.options)} party {r.party_size}: {blind}"
                 )
         return lines
 
@@ -567,7 +572,7 @@ async def plan_release_event(
             row_id=a.row.id,
             course_id=a.row.course_id,
             target_date=a.row.target_date,
-            window=(a.row.window_earliest, a.row.window_latest),
+            options=a.row.options,
             party_size=a.row.party_size,
             allowlist_times=a.allowlist_times,
             search_only=a.search_only,
@@ -886,7 +891,7 @@ def _request_for(row: RequestRow, *, dry_run: bool) -> BookingRequest:
     return BookingRequest(
         request_id=row.request_id,
         target_dates=(row.target_date,),
-        time_windows=(TimeWindow(earliest=row.window_earliest, latest=row.window_latest),),
+        time_windows=options_time_windows(row.options),
         players=(_GUEST,) * row.party_size,
         course_preferences=(row.course_id,),
         holes=_TENANT_HOLES,

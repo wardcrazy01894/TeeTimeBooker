@@ -123,6 +123,7 @@ from .models import (
     RowStatus,
     SnapshotEntry,
     lease_held,
+    options_time_windows,
 )
 from .notify import UserEvent, UserEventKind, UserNotifier
 from .recording import RecordedBook, RecordingLog, make_recording_adapter
@@ -951,9 +952,9 @@ def _group_request(
     re-ranks with its own window afterwards."""
     windows: list[TimeWindow] = []
     for member in members:
-        window = TimeWindow(earliest=member.row.window_earliest, latest=member.row.window_latest)
-        if window not in windows:
-            windows.append(window)
+        for window in options_time_windows(member.row.options):
+            if window not in windows:
+                windows.append(window)
     return BookingRequest(
         request_id=members[0].row.request_id,
         target_dates=(key.target_date,),
@@ -969,7 +970,7 @@ def _request_for(row: RequestRow, *, dry_run: bool) -> BookingRequest:
     return BookingRequest(
         request_id=row.request_id,
         target_dates=(row.target_date,),
-        time_windows=(TimeWindow(earliest=row.window_earliest, latest=row.window_latest),),
+        time_windows=options_time_windows(row.options),
         players=(_GUEST,) * row.party_size,
         course_preferences=(row.course_id,),
         holes=_TENANT_HOLES,

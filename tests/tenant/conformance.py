@@ -41,6 +41,7 @@ from teetime.tenant.models import (
     CourseAccountId,
     OwnedBooking,
     OwnedBookingId,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -143,8 +144,7 @@ def _rule(
         id=rule_id or RuleId(uuid4()),
         course_account_id=t.account.id,
         weekday=weekday,
-        window_earliest=earliest,
-        window_latest=latest,
+        options=(RankedWindow(1, earliest, latest),),
         party_size=party,
         active=active,
         materialized_through=None,
@@ -168,8 +168,13 @@ async def _explicit(
         user_id=t.user.id,
         account_id=t.account.id,
         target_date=target,
-        window_earliest=time(9, 0),
-        window_latest=time(11, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(9, 0),
+                time(11, 0),
+            ),
+        ),
         party_size=2,
         now=now,
     )
@@ -411,8 +416,13 @@ class TenantStoreConformance:
                 user_id=mallory.user.id,
                 account_id=t.account.id,
                 target_date=TARGET,
-                window_earliest=time(9, 0),
-                window_latest=time(11, 0),
+                options=(
+                    RankedWindow(
+                        1,
+                        time(9, 0),
+                        time(11, 0),
+                    ),
+                ),
                 party_size=2,
                 now=NOW,
             )
@@ -847,13 +857,23 @@ class TenantStoreConformance:
         t = await _tenant(s)
         rule, row = await self._system_withdrawn(s, t)
         edited = await s.upsert_rule(
-            replace(rule, window_earliest=time(7, 0), window_latest=time(9, 0), party_size=3),
+            replace(
+                rule,
+                options=(
+                    RankedWindow(
+                        1,
+                        time(7, 0),
+                        time(9, 0),
+                    ),
+                ),
+                party_size=3,
+            ),
             user_id=t.user.id,
         )
         back = await s.reactivate_rule_row(row, edited, now=NOW)
         assert back.status is RowStatus.PENDING
         assert back.status_reason is None
-        assert (back.window_earliest, back.window_latest, back.party_size) == (
+        assert (back.options[0].earliest, back.options[0].latest, back.party_size) == (
             time(7, 0),
             time(9, 0),
             3,
@@ -1602,9 +1622,9 @@ class TenantStoreConformance:
         assert row is not None
         assert row.status is RowStatus.SUPERSEDED
         assert row.rule_id == rule.id
-        assert (row.window_earliest, row.window_latest, row.party_size) == (
-            rule.window_earliest,
-            rule.window_latest,
+        assert (row.options[0].earliest, row.options[0].latest, row.party_size) == (
+            rule.options[0].earliest,
+            rule.options[0].latest,
             rule.party_size,
         )
         assert await harness.slot_pointer(t.account.id, TARGET) == explicit.id
@@ -1649,7 +1669,10 @@ class TenantStoreConformance:
         with pytest.raises(RuleConflictError):
             await s.upsert_rule(_rule(t, weekday=SAT), user_id=t.user.id)
         # Editing the SAME rule is fine (version bump), as are other weekdays / inactive rules.
-        edited = await s.upsert_rule(replace(first, window_latest=time(11, 0)), user_id=t.user.id)
+        edited = await s.upsert_rule(
+            replace(first, options=(RankedWindow(1, first.options[0].earliest, time(11, 0)),)),
+            user_id=t.user.id,
+        )
         assert edited.version == first.version + 1
         await s.upsert_rule(_rule(t, weekday=6), user_id=t.user.id)
         await s.upsert_rule(_rule(t, weekday=SAT, active=False), user_id=t.user.id)
@@ -2132,11 +2155,14 @@ class TenantStoreConformance:
         s = harness.store
         t = await _tenant(s)
         first = await s.upsert_rule(_rule(t), user_id=t.user.id)
-        await s.upsert_rule(replace(first, window_latest=time(11, 0)), user_id=t.user.id)
+        await s.upsert_rule(
+            replace(first, options=(RankedWindow(1, first.options[0].earliest, time(11, 0)),)),
+            user_id=t.user.id,
+        )
         with pytest.raises(VersionConflictError):
             await s.upsert_rule(replace(first, party_size=4), user_id=t.user.id)
         (stored,) = await s.rules_needing_materialization(through=TARGET)
-        assert (stored.window_latest, stored.party_size, stored.version) == (time(11, 0), 2, 2)
+        assert (stored.options[0].latest, stored.party_size, stored.version) == (time(11, 0), 2, 2)
 
     async def test_upsert_rule_never_regresses_materialized_through(
         self, harness: StoreHarness
@@ -2145,7 +2171,10 @@ class TenantStoreConformance:
         t = await _tenant(s)
         read = await s.upsert_rule(_rule(t), user_id=t.user.id)
         await s.set_materialized_through(read.id, TARGET)  # the watcher tick, after the read
-        edited = await s.upsert_rule(replace(read, window_latest=time(11, 0)), user_id=t.user.id)
+        edited = await s.upsert_rule(
+            replace(read, options=(RankedWindow(1, read.options[0].earliest, time(11, 0)),)),
+            user_id=t.user.id,
+        )
         assert edited.materialized_through == TARGET
         assert await s.rules_needing_materialization(through=TARGET) == []
 
@@ -2483,7 +2512,12 @@ class TenantStoreConformance:
             now=NOW,
         )
         rule = await s.upsert_rule(
-            replace(rule, active=True, window_earliest=time(7, 0), party_size=3),
+            replace(
+                rule,
+                active=True,
+                options=(RankedWindow(1, time(7, 0), rule.options[0].latest),),
+                party_size=3,
+            ),
             user_id=t.user.id,
         )
         with pytest.raises(TransitionRefusedError):
@@ -2499,7 +2533,7 @@ class TenantStoreConformance:
         restored = await _get(s, rule_row)
         assert restored.status is RowStatus.PENDING
         assert restored.status_reason is None
-        assert (restored.window_earliest, restored.party_size) == (time(7, 0), 3)
+        assert (restored.options[0].earliest, restored.party_size) == (time(7, 0), 3)
         assert await harness.slot_pointer(t.account.id, TARGET) == rule_row.id
 
     async def test_withdraw_explicit_restores_system_withdrawn_skip_as_skipped(
@@ -2672,7 +2706,10 @@ class TenantStoreConformance:
         await s.set_materialized_through(read.id, through)
         stale = replace(read, materialized_through=through)  # the web read it after the tick
         await s.reset_materialized_through(read.id)
-        edited = await s.upsert_rule(replace(stale, window_latest=time(11, 0)), user_id=t.user.id)
+        edited = await s.upsert_rule(
+            replace(stale, options=(RankedWindow(1, stale.options[0].earliest, time(11, 0)),)),
+            user_id=t.user.id,
+        )
         assert edited.materialized_through is None
         assert [r.id for r in await s.rules_needing_materialization(through=through)] == [read.id]
 
@@ -2849,7 +2886,10 @@ class TenantStoreConformance:
         rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
         through = NOW.date() + timedelta(days=21)
         await s.set_materialized_through(rule.id, through)
-        rule = await s.upsert_rule(replace(rule, window_latest=time(11, 0)), user_id=t.user.id)
+        rule = await s.upsert_rule(
+            replace(rule, options=(RankedWindow(1, rule.options[0].earliest, time(11, 0)),)),
+            user_id=t.user.id,
+        )
         assert rule.materialized_through == through
         rule = await s.upsert_rule(replace(rule, weekday=6), user_id=t.user.id)
         assert rule.materialized_through is None
@@ -2942,13 +2982,23 @@ class TenantStoreConformance:
         t = await _tenant(s)
         rule, row = await _rule_row(s, t)
         rule = await s.upsert_rule(
-            replace(rule, window_earliest=time(7, 0), window_latest=time(8, 30), party_size=4),
+            replace(
+                rule,
+                options=(
+                    RankedWindow(
+                        1,
+                        time(7, 0),
+                        time(8, 30),
+                    ),
+                ),
+                party_size=4,
+            ),
             user_id=t.user.id,
         )
         out = await s.rewrite_pending_rule_row(
             row.id, rule=rule, expected_version=row.version, now=NOW
         )
-        assert (out.window_earliest, out.window_latest, out.party_size) == (
+        assert (out.options[0].earliest, out.options[0].latest, out.party_size) == (
             time(7, 0),
             time(8, 30),
             4,
@@ -2979,7 +3029,10 @@ class TenantStoreConformance:
             )
         await s.release_row_lease(row.id, owner=BOOKER)
         # stale rule (IfMatch on the stored rule)
-        edited = await s.upsert_rule(replace(rule, window_latest=time(11, 0)), user_id=t.user.id)
+        edited = await s.upsert_rule(
+            replace(rule, options=(RankedWindow(1, rule.options[0].earliest, time(11, 0)),)),
+            user_id=t.user.id,
+        )
         with pytest.raises(TransitionRefusedError, match="stale"):
             await s.rewrite_pending_rule_row(
                 row.id, rule=rule, expected_version=row.version, now=NOW

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, status %}
+{% from "_macros.html" import hhmm, status, windows %}
 {% block title %}Dashboard · TeeTimeBooker{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
@@ -21,7 +21,7 @@
     <tr>
       <td>{{ weekdays[r.row.target_date.weekday()][:3] }} {{ r.row.target_date.isoformat() }}</td>
       <td>{{ r.row.course_id }}</td>
-      <td>{{ hhmm(r.row.window_earliest) }}–{{ hhmm(r.row.window_latest) }}</td>
+      <td>{{ windows(r.row.options) }}</td>
       <td>{{ r.row.party_size }}</td>
       <td>
         <span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>

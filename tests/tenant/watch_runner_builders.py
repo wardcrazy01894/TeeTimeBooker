@@ -36,6 +36,7 @@ from teetime.tenant.models import (
     CourseAccount,
     OwnedBooking,
     OwnedBookingId,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowStatus,
@@ -119,8 +120,7 @@ async def seed(
         user_id=user.id,
         account_id=account.id,
         target_date=TARGET,
-        window_earliest=WINDOW[0],
-        window_latest=WINDOW[1],
+        options=(RankedWindow(1, WINDOW[0], WINDOW[1]),),
         party_size=party_size,
         now=SEED_NOW,
     )

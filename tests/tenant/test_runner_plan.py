@@ -13,6 +13,7 @@ from typing import Any
 from teetime.core.models import BookingRequest, BookingResult, CourseId, TeeTimeSlot
 from teetime.courses.foreup.token_pool import SharedCaptchaPool
 from teetime.dev.blind_fake_adapter import BlindFakeAdapter
+from teetime.tenant.models import RankedWindow
 from teetime.tenant.runner import plan_release_event, run_release_event, tenant_scheduler
 
 from .runner_builders import (
@@ -97,7 +98,11 @@ async def test_tenant_plan_makes_no_foreup_call() -> None:
     assert first.allowlist_times[0] == "08:15"  # rank-0 goes to the week's first pick
     assert len(first.allowlist_times) == len(second.allowlist_times) == 3
     assert not set(first.allowlist_times) & set(second.allowlist_times)  # disjoint (§5.4)
-    assert (first.window, first.party_size, first.search_only) == (WINDOW, 2, False)
+    assert (first.options, first.party_size, first.search_only) == (
+        (RankedWindow(1, *WINDOW),),
+        2,
+        False,
+    )
     lines = plan.render()
     assert lines[0].startswith("tenant-plan mb0600et: release 06:00 America/New_York")
     assert any(f"row {a.row.id}" in line for line in lines)

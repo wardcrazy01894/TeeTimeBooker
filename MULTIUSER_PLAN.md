@@ -1711,7 +1711,7 @@ data-plane role assignments are created by hand by the operator.
 
 ## 16. Ranked preferences: one ranked list of course + time options, price per course (operator request 2026-09-26)
 
-Status: **DESIGN — to be reviewed; built in MU-R1..R3 after MU-8b and MU-14 merge.** Supersedes
+Status: **RATIFIED 2026-09-26 (3 review rounds, #239). MU-R1 (model + store + mapping) is DONE in code; MU-R2/R3 pending.** Supersedes
 MU-P1 (the per-account price cap is folded in here) and promotes the §3.6 cross-course hook from
 "designed only" to built.
 
@@ -1886,7 +1886,8 @@ ones stay skipped and show on the dashboard, where the user can un-skip them. No
   `default_max_price`, `booked_rank`, `StandingRule.group_id`/`group_rank`, group helpers
   (`list_group`, `create_group`), rank-uniqueness validation, the new `booked → pending
   (group_downgrade)` edge in `check_transition` (reason-aware: `needs_reconcile` required on every
-  other booked → pending write and forbidden on this one) + the leased-edge allowlist, the `cancelled_group`
+  other booked → pending write and forbidden on this one; ownership reason-scoped too, review
+  round 3: the runner may write booked → pending ONLY as a `group_downgrade`, the watcher both) + the leased-edge allowlist, the `cancelled_group`
   ledger state, conformance tests. **Migration (should-fix 9)** is read-compat, not a batch rewrite:
   `from_doc` for the previous `schemaVersion` maps `window_earliest/latest` to
   `options=((1, earliest, latest),)` and `max_price=None`, and every write uses the new version

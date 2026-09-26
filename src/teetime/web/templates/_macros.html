@@ -2,6 +2,9 @@
 
 {% macro hhmm(t) %}{{ t.strftime('%H:%M') }}{% endmacro %}
 
+{# A row's or rule's ranked options (§16.2), best first. #}
+{% macro windows(options) %}{% for o in options %}{{ o.earliest.strftime('%H:%M') }}–{{ o.latest.strftime('%H:%M') }}{% if not loop.last %}, {% endif %}{% endfor %}{% endmacro %}
+
 {% macro status(r, status_labels) -%}
 {{ status_labels.get((r.row.status.value, r.row.status_reason), r.row.status.value) }}
 {%- endmacro %}

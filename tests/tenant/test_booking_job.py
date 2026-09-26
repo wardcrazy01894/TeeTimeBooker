@@ -42,6 +42,7 @@ from teetime.tenant.models import (
     AccountProvenance,
     AccountStatus,
     CourseAccount,
+    RankedWindow,
     User,
     UserId,
     UserRole,
@@ -93,8 +94,13 @@ async def _seed(store: InMemoryTenantStore, *, n: int) -> tuple[User, CourseAcco
         user_id=user.id,
         account_id=account.id,
         target_date=target,
-        window_earliest=time(8, 45),
-        window_latest=time(10, 0),
+        options=(
+            RankedWindow(
+                1,
+                time(8, 45),
+                time(10, 0),
+            ),
+        ),
         party_size=2,
         now=NOW - timedelta(days=1),
     )

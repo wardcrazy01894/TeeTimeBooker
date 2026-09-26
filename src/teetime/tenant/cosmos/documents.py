@@ -27,6 +27,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import MISSING, dataclass, fields
 from datetime import UTC, date, datetime, time
+from decimal import Decimal, InvalidOperation
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -41,6 +42,7 @@ from ..models import (
     CourseAccountId,
     EventRow,
     OwnedBooking,
+    RankedWindow,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -55,13 +57,15 @@ from ..models import (
     UserRole,
     UserStatus,
     rule_row_id,
+    validate_options,
 )
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
 # Writers write this; readers accept it and its predecessor (expand/contract, §10.2).
-SCHEMA_VERSION = 1
+# 2 = MU-R1 ranked ``options`` replace ``windowEarliest``/``windowLatest`` (§16.5).
+SCHEMA_VERSION = 2
 READABLE_SCHEMA_VERSIONS: frozenset[int] = frozenset(
     v for v in (SCHEMA_VERSION - 1, SCHEMA_VERSION) if v >= 1
 )
@@ -214,6 +218,72 @@ _TIME = _Codec(encode=_encode_time, decode=_decode_time)
 _DATETIME = _Codec(encode=_encode_datetime, decode=_decode_datetime)
 
 
+def _encode_decimal(value: object) -> object:
+    return str(_expect(Decimal, value))
+
+
+def _decode_decimal(value: object) -> object:
+    # Money is stored as its exact decimal string, never a JSON number (a float would round).
+    try:
+        parsed = Decimal(_expect(str, value))
+    except InvalidOperation as exc:
+        raise DocumentError(f"not a decimal: {value!r}") from exc
+    if not parsed.is_finite():
+        raise DocumentError(f"not a finite decimal: {value!r}")
+    return parsed
+
+
+_DECIMAL = _Codec(encode=_encode_decimal, decode=_decode_decimal)
+
+
+def _encode_options(value: object) -> object:
+    options = _expect(tuple, value)
+    return [
+        {
+            "rank": _expect(RankedWindow, o).rank,
+            "earliest": _encode_time(o.earliest),
+            "latest": _encode_time(o.latest),
+        }
+        for o in options
+    ]
+
+
+def _decode_options(value: object) -> object:
+    out: list[RankedWindow] = []
+    for item in _expect(list, value):
+        entry = _expect(dict, item)
+        if set(entry) != {"rank", "earliest", "latest"}:
+            raise DocumentError(f"an option has keys {sorted(entry)}")
+        rank = entry["rank"]
+        if not isinstance(rank, int) or isinstance(rank, bool):
+            raise DocumentError(f"option rank must be an int: {rank!r}")
+        out.append(
+            RankedWindow(
+                rank,
+                _expect(time, _decode_time(entry["earliest"])),
+                _expect(time, _decode_time(entry["latest"])),
+            )
+        )
+    try:
+        return validate_options(tuple(out))
+    except ValueError as exc:
+        raise DocumentError(str(exc)) from exc
+
+
+_OPTIONS = _Codec(encode=_encode_options, decode=_decode_options)
+
+
+def _upgrade_single_window(doc: Mapping[str, object]) -> Mapping[str, object]:
+    """Read-compat for a schemaVersion-1 row/rule (§16.5): its one window is option rank 1."""
+    if "options" in doc or "windowEarliest" not in doc or "windowLatest" not in doc:
+        return doc
+    upgraded = {k: v for k, v in doc.items() if k not in ("windowEarliest", "windowLatest")}
+    upgraded["options"] = [
+        {"rank": 1, "earliest": doc["windowEarliest"], "latest": doc["windowLatest"]}
+    ]
+    return upgraded
+
+
 @dataclass(frozen=True, slots=True)
 class _Field:
     attr: str  # dataclass attribute
@@ -313,8 +383,7 @@ _ROW_FIELDS: tuple[_Field, ...] = (
     _Field("course_id", "courseId", _STR),
     _Field("target_date", "targetDate", _DATE),
     _Field("timezone", "timezone", _STR),
-    _Field("window_earliest", "windowEarliest", _TIME),
-    _Field("window_latest", "windowLatest", _TIME),
+    _Field("options", "options", _OPTIONS),
     _Field("party_size", "partySize", _INT),
     _Field("status", "status", _enum(RowStatus)),
     _Field("source", "source", _enum(RowSource)),
@@ -336,6 +405,7 @@ _ROW_FIELDS: tuple[_Field, ...] = (
     _Field("last_outcome_at", "lastOutcomeAt", _optional(_DATETIME)),
     _Field("group_id", "groupId", _optional(_UUID)),
     _Field("group_rank", "groupRank", _optional(_INT)),
+    _Field("max_price", "maxPrice", _optional(_DECIMAL)),
 )
 
 
@@ -363,7 +433,7 @@ def to_row_doc(row: RequestRow) -> dict[str, object]:
 
 def from_row_doc(doc: Mapping[str, object]) -> Stored[RequestRow]:
     _open(doc, doc_type="row")
-    row = _decode_fields(doc, RequestRow, _ROW_FIELDS)
+    row = _decode_fields(_upgrade_single_window(doc), RequestRow, _ROW_FIELDS)
     _check_identity(doc, doc_id=row_doc_id(row), account_id=row.course_account_id)
     return Stored(row, _etag_of(doc))
 
@@ -374,12 +444,14 @@ _RULE_FIELDS: tuple[_Field, ...] = (
     _Field("id", "ruleId", _UUID),
     _Field("course_account_id", "accountId", _UUID),
     _Field("weekday", "weekday", _INT),
-    _Field("window_earliest", "windowEarliest", _TIME),
-    _Field("window_latest", "windowLatest", _TIME),
+    _Field("options", "options", _OPTIONS),
     _Field("party_size", "partySize", _INT),
     _Field("active", "active", _BOOL),
     _Field("materialized_through", "materializedThrough", _optional(_DATE)),
     _Field("version", "version", _INT),
+    _Field("max_price", "maxPrice", _optional(_DECIMAL)),
+    _Field("group_id", "groupId", _optional(_UUID)),
+    _Field("group_rank", "groupRank", _optional(_INT)),
 )
 
 
@@ -397,7 +469,7 @@ def to_rule_doc(rule: StandingRule) -> dict[str, object]:
 
 def from_rule_doc(doc: Mapping[str, object]) -> Stored[StandingRule]:
     _open(doc, doc_type="rule")
-    rule = _decode_fields(doc, StandingRule, _RULE_FIELDS)
+    rule = _decode_fields(_upgrade_single_window(doc), StandingRule, _RULE_FIELDS)
     _check_identity(doc, doc_id=rule_doc_id(rule), account_id=rule.course_account_id)
     return Stored(rule, _etag_of(doc))
 
@@ -416,6 +488,7 @@ _ACCOUNT_FIELDS: tuple[_Field, ...] = (
     _Field("otp_mailbox", "otpMailbox", _optional(_STR)),
     _Field("consecutive_soft_auth_failures", "consecutiveSoftAuthFailures", _INT),
     _Field("verified_at", "verifiedAt", _optional(_DATETIME)),
+    _Field("default_max_price", "defaultMaxPrice", _DECIMAL),
 )
 
 

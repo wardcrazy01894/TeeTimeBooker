@@ -11,7 +11,8 @@ from uuid import uuid4
 
 import pytest
 
-from teetime.tenant.models import BookingState, RowStatus
+from teetime.core.models import TeeTimeSlot
+from teetime.tenant.models import BookingState, RankedWindow, RowStatus
 from teetime.tenant.watcher import (
     MAX_BOOKED_SNAPSHOT_AGE_S,
     RECONCILE_EVERY_N_RUNS,
@@ -348,4 +349,45 @@ def test_now_utc_vs_local_agree() -> None:
         needs_login(booked, group_slots=[], snapshot=old, run_index=run_index, now=NOW)
         is needs_login(booked, group_slots=[], snapshot=old, run_index=run_index, now=now_local)
         is LoginReason.STALE_SNAPSHOT
+    )
+
+
+def test_upgrade_candidate_honours_option_rank() -> None:
+    """§16.2 (MU-R1): with several options at one course, a slot in a BETTER-ranked option is an
+    upgrade even when it is farther from its own window's midpoint (the UpgradeOrchestrator
+    higher-tier leg); within the SAME option only a strictly closer slot is; a slot in a worse
+    option never is."""
+    run_index = _off_cadence_run_index(0)
+    acct = account(0)
+    opts = (RankedWindow(1, time(9, 0), time(10, 0)), RankedWindow(3, time(7, 0), time(8, 0)))
+    booked = event(
+        acct,
+        status=RowStatus.BOOKED,
+        booked_tee=time(7, 30),  # dead centre of the rank-3 option
+        booked_raw_id="R1",
+        options=opts,
+    )
+    ledger = [owned(booked.row, "R1")]
+
+    def reason(slots: list[TeeTimeSlot]) -> LoginReason | None:
+        return needs_login(
+            booked, group_slots=slots, snapshot=FRESH, run_index=run_index, now=NOW, owned=ledger
+        )
+
+    assert reason([slot(time(9, 0))]) is LoginReason.UPGRADE_CANDIDATE  # better tier, edge
+    assert reason([slot(time(7, 5))]) is None  # same tier, farther from its midpoint
+    booked_edge = event(
+        acct, status=RowStatus.BOOKED, booked_tee=time(9, 55), booked_raw_id="R1", options=opts
+    )
+    ledger_edge = [owned(booked_edge.row, "R1")]
+    assert (
+        needs_login(
+            booked_edge,
+            group_slots=[slot(time(7, 30))],  # worse tier, even though centred
+            snapshot=FRESH,
+            run_index=run_index,
+            now=NOW,
+            owned=ledger_edge,
+        )
+        is None
     )
