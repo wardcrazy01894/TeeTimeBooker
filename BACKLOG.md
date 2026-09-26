@@ -80,6 +80,13 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Multi-user follow-ups
 
+- **Durable uncertain-slot carrier for PENDING rows** (PR #235 review must-fix, taken as a
+  documented gap): an UNCERTAIN watcher book on a PENDING row records `needs_reconcile` but no
+  slot (`booked_tee_time` is BOOKED-only), so a POST that actually landed is adopted UNOWNED on
+  the next run. Fail-safe. Fix: a `RequestRow.uncertain_tee_time` field threaded through
+  `RowOutcome`, the Cosmos mapping and `_uncertain_times`, with a round-trip test.
+- **`needs_reconcile` on a PENDING row cannot be cleared via `record_outcomes`**, so that account
+  logs in on every watch run (6/hour) until the row books or freezes. Add a flag-clear outcome.
 - **Pin that the OAuth token exchange never logs a secret** (MU-12 review should-fix): capture
   logs across a `sign_in()` round-trip and assert the mocked bearer token / client secret never
   appear, like `tests/test_log_redaction.py` pins the 2captcha case. Do it in MU-14.

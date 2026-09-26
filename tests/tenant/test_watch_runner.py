@@ -343,6 +343,25 @@ async def test_watch_uncertain_book_sets_needs_reconcile_and_exits_zero() -> Non
     assert watch_exit_status(report) is ExitStatus.OK
 
 
+async def test_watch_uncertain_book_on_pending_row_leaves_no_durable_slot_known_gap() -> None:
+    """KNOWN GAP (PR #235 review, BACKLOG "durable uncertain-slot carrier"): an UNCERTAIN book on a
+    PENDING row records ``needs_reconcile`` but NO durable slot — ``booked_tee_time`` is set only in
+    BOOKED — so if that POST actually landed, the next run adopts the reservation as UNOWNED, not
+    ADOPTED_RECONCILE. Fail-SAFE (never a double-book, never cancels a user's booking); the cost is
+    that the bot cannot manage that one booking. Pinned so the fix is a deliberate change."""
+    store = new_store()
+    s = await seed(store, n=1)
+    fake = WatchFake()
+    fake.set_book_to_raise(AdapterError("read timeout after POST"))
+    factory = FakeFactory(adapters={s.account.id: fake})
+
+    await _watch(store, factory)
+
+    row = await stored_row(store, s)
+    assert row.needs_reconcile is True
+    assert row.booked_tee_time is None  # the gap: no carrier for the attempted slot
+
+
 async def test_watch_auth_error_is_per_account_and_exits_zero() -> None:
     store = new_store()
     a = await seed(store, n=1)

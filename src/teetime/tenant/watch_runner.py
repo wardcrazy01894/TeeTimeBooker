@@ -1007,7 +1007,11 @@ def _held_reservation(row: RequestRow) -> ExistingReservation:
 
 
 def _uncertain_times(row: RequestRow) -> tuple[datetime, ...]:
-    """``row.booked_tee_time`` is the durable carrier of an UNCERTAIN slot across runs (§4.6)."""
+    """``row.booked_tee_time`` carries an UNCERTAIN slot across runs (§4.6) ONLY for a row that was
+    BOOKED (the store nulls it on any transition to PENDING). KNOWN GAP: an uncertain book on a
+    PENDING row leaves no durable slot, so a landed POST is later adopted UNOWNED (fail-safe; see
+    BACKLOG "durable uncertain-slot carrier" and
+    ``test_watch_uncertain_book_on_pending_row_leaves_no_durable_slot_known_gap``)."""
     return (row.booked_tee_time,) if row.booked_tee_time is not None else ()
 
 
