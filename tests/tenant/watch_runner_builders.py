@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from teetime.core.config import BookingCutoffConfig, OneBookingPolicyConfig, SchedulerConfig
 from teetime.core.models import (
@@ -85,7 +85,13 @@ class Seeded:
 
 
 async def seed(
-    store: InMemoryTenantStore, *, n: int, party_size: int = 2, ciphertext: str | None = None
+    store: InMemoryTenantStore,
+    *,
+    n: int,
+    party_size: int = 2,
+    ciphertext: str | None = None,
+    options: tuple[RankedWindow, ...] | None = None,
+    group_id: UUID | None = None,
 ) -> Seeded:
     """A user + an MB account (real AES-GCM blob, AAD bound) + an explicit PENDING row for
     TARGET in WINDOW with ``party_size``."""
@@ -120,9 +126,11 @@ async def seed(
         user_id=user.id,
         account_id=account.id,
         target_date=TARGET,
-        options=(RankedWindow(1, WINDOW[0], WINDOW[1]),),
+        options=options if options is not None else (RankedWindow(1, WINDOW[0], WINDOW[1]),),
         party_size=party_size,
         now=SEED_NOW,
+        group_id=group_id,
+        group_rank=None if group_id is None else 1,
     )
     return Seeded(user=user, account=account, row=row, password=password)
 

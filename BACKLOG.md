@@ -80,6 +80,17 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Multi-user follow-ups
 
+- **Killswitch job names are hand-written** (MU-15a review): `killswitch.bicep` hardcodes
+  `teetime-job-<env>-edt/-est` instead of deriving them from `infra/bicep/release_events.json`.
+  Correct while v1 has one event; derive them (or pin every event's names in the parity test)
+  before a second release event is added.
+- **`test_booking_jobs_are_daily` now reads a comment** (MU-15a review): the crons moved to
+  `release_events.json`, so the `50 9`/`50 10` strings it finds in `compute.bicep` are only its
+  header comment. The real invariant is `test_release_events_crons_match_cron_pair`; retarget or
+  delete the old test.
+- **Collapse residual across events** (MU-R2): the booker collapses only groups whose accounts
+  are all in its run; a worse booking at an account of another release event waits for the
+  watcher's end-of-run collapse (≤ one watch interval of holding two tee times).
 - **Web cancel: test the 60 s lease expiring mid-cancel** (MU-14 review): a slow ForeUP login
   or DELETE could outlive `WEB_LEASE_SECONDS`, and `record_outcomes` should then refuse the write
   (lease no longer held). Pin it with a FakeClock that advances past the lease inside the adapter.
