@@ -40,7 +40,8 @@ user-assigned managed identity in ACA and ``az login`` for a developer); the acc
 Container names are ``tenant`` / ``global`` unless ``CosmosSettings.container_suffix`` is
 ``-ci`` (the integration suite's ``tenant-ci`` / ``global-ci``), which no job ever sets.
 
-Not wired into any command yet (MU-16).
+Opened for every tenant command by ``tenant.wiring.open_tenant_store`` (MU-16a) when
+``TENANT_COSMOS_ENDPOINT`` is set.
 """
 
 from __future__ import annotations

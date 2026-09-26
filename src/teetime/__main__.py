@@ -8,6 +8,7 @@ Commands:
 - tenant-watch: one multi-user tenant-watcher run (MULTIUSER_PLAN §7; not deployed).
 - tenant-run: one multi-user booking run for a release event (MULTIUSER_PLAN §4; not deployed).
 - tenant-plan: print a release event's rows + blind-slot allocation, no ForeUP call.
+- tenant-migrate: run the tenant data migrations (the Manual migrate ACA job).
 """
 
 from __future__ import annotations
@@ -63,18 +64,27 @@ from .courses.foreup.captcha import (
     resolve_invisible_site_key,
 )
 from .courses.foreup.mangrove_bay import MangroveBayAdapter
-from .courses.foreup.token_pool import LeaseKey, SharedCaptchaPool
 from .courses.teeitup.sydney_marovitz import SydneyMarovitzAdapter
 from .dev.fake_adapter import FakeAdapter
 from .notifications.notifier import ConsoleNotifier
 from .persistence.in_memory_store import InMemoryStore
-from .tenant.booking_job import HOSTED_COURSES, event_for, plan_booking_event, run_booking_job
-from .tenant.crypto import KEYRING_ENV_VAR, KeyringError, load_keyring_from_env
-from .tenant.in_memory_store import InMemoryTenantStore
-from .tenant.models import CourseAccount
-from .tenant.notify import UserEvent
-from .tenant.runner import ExitStatus
+from .tenant.booking_job import (
+    TWOCAPTCHA_API_KEY_ENV,
+    HostedAdapterFactory,
+    event_for,
+    plan_booking_event,
+    run_booking_job,
+)
+from .tenant.crypto import KEYRING_ENV_VAR, Keyring, KeyringError, load_keyring_from_env
+from .tenant.migrate import MigrationError, MigrationReport, run_migrations
+from .tenant.runner import EventPlan, ExitStatus, WatchReport
 from .tenant.watch_runner import run_tenant_watch, watch_exit_status
+from .tenant.wiring import (
+    TenantStoreConfigError,
+    hosted_policies,
+    open_tenant_store,
+    user_notifier_from_env,
+)
 from .web.app import WebConfigError, WebSettings, create_app, load_web_settings
 
 # Registry mapping TOML adapter names to adapter classes.
@@ -790,9 +800,9 @@ def web_cmd(host: str, port: int | None) -> None:
     """Serve the multi-user web app (MULTIUSER_PLAN §8) with uvicorn.
 
     Reads its settings from the environment (see `teetime.web.app.WEB_ENV_VARS`) and fails
-    closed on anything missing. MU-12: the tenant store is IN-MEMORY, so users and invites
-    do not survive a restart — the Cosmos store (MU-8b) is wired by MU-16, and this command
-    is not deployed until MU-15a.
+    closed on anything missing. MU-16a: the tenant store is Cosmos when TENANT_COSMOS_ENDPOINT
+    is set (in memory, with a WARNING, otherwise); TENANT_CREDS_KEYRING enables connect /
+    refresh / cancel (without it those actions are refused); ACS_EMAIL_* enables user email.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -808,16 +818,37 @@ def web_cmd(host: str, port: int | None) -> None:
         raise click.ClickException(str(e)) from e
     # E7: exact-literal masking for the secrets that have no recognisable shape (§9.4).
     register_secret_literals(_web_secret_literals(settings))
-    log.warning(
-        "teetime web: tenant store is IN-MEMORY (MU-12) — users/invites reset on restart; "
-        "providers=%s dry_run=%s",
+    keyring = _optional_keyring(command="web")
+    log.info(
+        "teetime web: providers=%s dry_run=%s connect=%s",
         ",".join(settings.enabled_providers),
         settings.dry_run,
+        "on" if keyring is not None else "off",
     )
-    store = InMemoryTenantStore(course_timezones={}, cutoff=BookingCutoffConfig())
-    app = create_app(settings, store=store, clock=RealClock())
     resolved_port = port if port is not None else int(os.environ.get("PORT") or _WEB_DEFAULT_PORT)
-    _serve_web(app, host=host, port=resolved_port)
+    try:
+        asyncio.run(_web_main(settings, keyring=keyring, host=host, port=resolved_port))
+    except TenantStoreConfigError as e:
+        raise click.ClickException(str(e)) from e
+
+
+async def _web_main(
+    settings: WebSettings, *, keyring: Keyring | None, host: str, port: int
+) -> None:
+    """Open the tenant store in THIS event loop (the async Cosmos client is loop-bound), build
+    the app on it and serve until shutdown; the store is closed on exit."""
+    async with open_tenant_store(command="web") as store:
+        app = create_app(
+            settings,
+            store=store,
+            clock=RealClock(),
+            keyring=keyring,
+            notifier=user_notifier_from_env(store, command="web"),
+            policies={str(cid): policy for cid, policy in hosted_policies().items()},
+            # Throwaway login probes only (connect / refresh / cancel): never a CAPTCHA solve.
+            adapter_factory=HostedAdapterFactory(api_key=None),
+        )
+        await _serve_web(app, host=host, port=port)
 
 
 def _web_secret_literals(settings: WebSettings) -> list[str]:
@@ -829,12 +860,37 @@ def _web_secret_literals(settings: WebSettings) -> list[str]:
     return literals
 
 
+def _optional_keyring(*, command: str) -> Keyring | None:
+    """The credential keyring for the web (MU-14): absent -> None with a WARNING (connect /
+    refresh / cancel are refused); present but malformed -> fail closed. Its key material is
+    registered as E7 secret literals before anything can log it."""
+    if not os.environ.get(KEYRING_ENV_VAR, "").strip():
+        logging.getLogger(__name__).warning(
+            "teetime %s: %s is not set — connect / refresh / cancel are disabled",
+            command,
+            KEYRING_ENV_VAR,
+        )
+        return None
+    return _required_keyring()
+
+
+def _required_keyring() -> Keyring:
+    try:
+        keyring = load_keyring_from_env()
+    except KeyringError as e:
+        raise click.ClickException(str(e)) from e
+    # E7 (§9.4): the base64 key strings exactly as they appear in the env value.
+    register_secret_literals(json.loads(os.environ[KEYRING_ENV_VAR])["keys"].values())
+    return keyring
+
+
 _DEFAULT_FORWARDED_ALLOW_IPS = "127.0.0.1"
 
 
-def _serve_web(app: FastAPI, *, host: str, port: int) -> None:
-    """Run uvicorn. `log_config=None` keeps the basicConfig + redaction filter above in charge
-    (uvicorn would otherwise install its own handlers, which the filter is not attached to)."""
+def _uvicorn_config(app: FastAPI, *, host: str, port: int) -> uvicorn.Config:
+    """The uvicorn config. `log_config=None` keeps the basicConfig + redaction filter above in
+    charge (uvicorn would otherwise install its own handlers, which the filter is not attached
+    to)."""
 
     # proxy_headers=True trusts X-Forwarded-* headers (scheme/host/for) from a peer whose
     # address is in forwarded_allow_ips (BACKLOG "scope forwarded_allow_ips", MU-15a). In Azure
@@ -849,7 +905,7 @@ def _serve_web(app: FastAPI, *, host: str, port: int) -> None:
     forwarded_allow_ips = (
         os.environ.get("WEB_FORWARDED_ALLOW_IPS", "").strip() or _DEFAULT_FORWARDED_ALLOW_IPS
     )
-    uvicorn.run(
+    return uvicorn.Config(
         app,
         host=host,
         port=port,
@@ -857,6 +913,11 @@ def _serve_web(app: FastAPI, *, host: str, port: int) -> None:
         proxy_headers=True,
         forwarded_allow_ips=forwarded_allow_ips,
     )
+
+
+async def _serve_web(app: FastAPI, *, host: str, port: int) -> None:
+    """Serve in the CURRENT event loop (so the app shares it with the open tenant store)."""
+    await uvicorn.Server(_uvicorn_config(app, host=host, port=port)).serve()
 
 
 @cli.command(name="tenant-watch")
@@ -869,12 +930,13 @@ def _serve_web(app: FastAPI, *, host: str, port: int) -> None:
     "(MULTIUSER_PLAN §7.8); logins, snapshots and DB-only adoption still run.",
 )
 def tenant_watch_cmd(dry_run: bool) -> None:
-    """One multi-user tenant-watcher run (MULTIUSER_PLAN §7, MU-10b).
+    """One multi-user tenant-watcher run (MULTIUSER_PLAN §7, MU-10b; wired by MU-16a).
 
     Reads the credential keyring from $TENANT_CREDS_KEYRING (fail-closed) and registers its key
-    material as E7 secret literals. MU-10b: the tenant store is IN-MEMORY (empty), no hosted
-    course or adapter factory is wired, and this command is not deployed — the Cosmos store is
-    MU-16, the ACA job MU-15a. Exits non-zero only on a systemic failure (§7.9).
+    material as E7 secret literals; TWOCAPTCHA_API_KEY is required unless dry-run. The tenant
+    store is Cosmos when TENANT_COSMOS_ENDPOINT is set (in memory, with a WARNING, otherwise);
+    users are emailed through ACS when ACS_EMAIL_* is set (logged otherwise). Exits non-zero
+    only on a systemic failure (§7.9).
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -883,33 +945,23 @@ def tenant_watch_cmd(dry_run: bool) -> None:
         stream=sys.stderr,
     )
     install_log_redaction()
-    log = logging.getLogger(__name__)
-    try:
-        keyring = load_keyring_from_env()
-    except KeyringError as e:
-        raise click.ClickException(str(e)) from e
-    # E7 (§9.4): the base64 key strings exactly as they appear in the env value.
-    register_secret_literals(json.loads(os.environ[KEYRING_ENV_VAR])["keys"].values())
-    log.warning(
-        "teetime tenant-watch: tenant store is IN-MEMORY (MU-10b) — no rows, nothing is watched; "
-        "the Cosmos store is wired by MU-16. dry_run=%s",
-        dry_run,
-    )
-    cutoff = BookingCutoffConfig()
-    report = asyncio.run(
-        run_tenant_watch(
-            policies={},
-            store=InMemoryTenantStore(course_timezones={}, cutoff=cutoff),
-            clock=RealClock(),
-            scheduler=SchedulerConfig(),
-            booking_policy=OneBookingPolicyConfig(enabled=True),
-            cutoff=cutoff,
-            keyring=keyring,
-            adapter_factory=_unwired_tenant_adapter_factory,
-            notifier=_LoggingUserNotifier(),
-            dry_run=dry_run,
+    keyring = _required_keyring()
+    api_key = os.environ.get(TWOCAPTCHA_API_KEY_ENV, "").strip() or None
+    if api_key is not None:
+        register_secret_literals([api_key])
+    elif not dry_run:
+        raise click.ClickException(
+            f"tenant-watch: {TWOCAPTCHA_API_KEY_ENV} is not set (required unless --dry-run true)"
         )
-    )
+    logging.getLogger(__name__).info("teetime tenant-watch: dry_run=%s", dry_run)
+    try:
+        report = asyncio.run(
+            _tenant_watch_main(
+                keyring=keyring, api_key=None if dry_run else api_key, dry_run=dry_run
+            )
+        )
+    except TenantStoreConfigError as e:
+        raise click.ClickException(str(e)) from e
     if watch_exit_status(report) is not ExitStatus.OK:
         raise click.ClickException(
             f"tenant-watch: systemic failure (systemic_error={report.systemic_error}, "
@@ -919,25 +971,22 @@ def tenant_watch_cmd(dry_run: bool) -> None:
         )
 
 
-def _unwired_tenant_adapter_factory(
-    *,
-    course_id: CourseId,
-    account: CourseAccount,
-    pool: SharedCaptchaPool | None,
-    lease_key: LeaseKey | None,
-    dry_run: bool,
-) -> CourseAdapter:
-    """No hosted course is wired yet (MU-15a): unreachable over the empty in-memory store."""
-    raise RuntimeError(f"tenant-watch: no adapter factory is wired for {course_id} (MU-15a)")
-
-
-class _LoggingUserNotifier:
-    """Stand-in ``UserNotifier`` until the MU-11 email backend: one INFO line per event, kind +
-    row id only (no PII)."""
-
-    async def send(self, event: UserEvent) -> None:
-        logging.getLogger(__name__).info(
-            "tenant-watch: notify %s for row %s", event.kind, event.row_id
+async def _tenant_watch_main(
+    *, keyring: Keyring, api_key: str | None, dry_run: bool
+) -> WatchReport:
+    cutoff = BookingCutoffConfig()
+    async with open_tenant_store(command="tenant-watch", cutoff=cutoff) as store:
+        return await run_tenant_watch(
+            policies=hosted_policies(),
+            store=store,
+            clock=RealClock(),
+            scheduler=SchedulerConfig(),
+            booking_policy=OneBookingPolicyConfig(enabled=True),
+            cutoff=cutoff,
+            keyring=keyring,
+            adapter_factory=HostedAdapterFactory(api_key=api_key),
+            notifier=user_notifier_from_env(store, command="tenant-watch"),
+            dry_run=dry_run,
         )
 
 
@@ -962,13 +1011,13 @@ class _LoggingUserNotifier:
     "--no-wait (default; TEETIME_WAIT env fallback) skips the gate and the claim retry.",
 )
 def tenant_run_cmd(event_key: str, dry_run: bool, wait: bool | None) -> None:
-    """One multi-user booking run for a release event (MULTIUSER_PLAN §4, MU-9b).
+    """One multi-user booking run for a release event (MULTIUSER_PLAN §4, MU-9b; MU-16a).
 
     Reads TENANT_CREDS_KEYRING (fail-closed), TWOCAPTCHA_API_KEY (unless dry-run) and the
     ACS_EMAIL_CONNECTION / ACS_EMAIL_SENDER / OPERATOR_NOTIFY_EMAIL operator-summary settings.
-    Exits non-zero only for systemic causes (§4.5); a missed drop or one user's bad password
-    exits 0. MU-9b: the tenant store is IN-MEMORY (empty) — the Cosmos store is MU-16, the ACA
-    job MU-15a — so this command is not deployed.
+    The tenant store is Cosmos when TENANT_COSMOS_ENDPOINT is set (in memory, with a WARNING,
+    otherwise). Exits non-zero only for systemic causes (§4.5); a missed drop or one user's bad
+    password exits 0.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -981,22 +1030,20 @@ def tenant_run_cmd(event_key: str, dry_run: bool, wait: bool | None) -> None:
         event_for(event_key)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
-    logging.getLogger(__name__).warning(
-        "teetime tenant-run: tenant store is IN-MEMORY (MU-9b) — no rows, nothing is booked; "
-        "the Cosmos store is wired by MU-16. event=%s dry_run=%s",
-        event_key,
-        dry_run,
-    )
-    code = asyncio.run(
-        run_booking_job(
-            event_key=event_key,
-            dry_run=dry_run,
-            wait=_resolve_wait_mode(wait),
-            store=_tenant_store(),
+    logging.getLogger(__name__).info("teetime tenant-run: event=%s dry_run=%s", event_key, dry_run)
+    try:
+        code = asyncio.run(
+            _tenant_run_main(event_key=event_key, dry_run=dry_run, wait=_resolve_wait_mode(wait))
         )
-    )
+    except TenantStoreConfigError as e:
+        raise click.ClickException(str(e)) from e
     if code:
         raise SystemExit(code)
+
+
+async def _tenant_run_main(*, event_key: str, dry_run: bool, wait: bool) -> int:
+    async with open_tenant_store(command="tenant-run") as store:
+        return await run_booking_job(event_key=event_key, dry_run=dry_run, wait=wait, store=store)
 
 
 @cli.command(name="tenant-plan")
@@ -1005,7 +1052,7 @@ def tenant_plan_cmd(event_key: str) -> None:
     """Print a release event's pending rows and blind-slot allocation (MU-9b).
 
     Makes NO ForeUP call, claim, decrypt or CAPTCHA solve: one store read plus the same pure
-    allocation `tenant-run` performs. MU-9b: the tenant store is IN-MEMORY (empty).
+    allocation `tenant-run` performs. The store is Cosmos when TENANT_COSMOS_ENDPOINT is set.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -1018,22 +1065,51 @@ def tenant_plan_cmd(event_key: str) -> None:
         event_for(event_key)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
-    logging.getLogger(__name__).warning(
-        "teetime tenant-plan: tenant store is IN-MEMORY (MU-9b) — the Cosmos store is MU-16"
-    )
-    plan = asyncio.run(
-        plan_booking_event(event_key=event_key, store=_tenant_store(), clock=RealClock())
-    )
+    try:
+        plan = asyncio.run(_tenant_plan_main(event_key=event_key))
+    except TenantStoreConfigError as e:
+        raise click.ClickException(str(e)) from e
     for line in plan.render():
         click.echo(line)
 
 
-def _tenant_store() -> InMemoryTenantStore:
-    """The tenant store until MU-16 wires Cosmos: in memory, with the hosted courses' zones."""
-    return InMemoryTenantStore(
-        course_timezones={cid: cls.release_policy.timezone for cid, cls in HOSTED_COURSES.items()},
-        cutoff=BookingCutoffConfig(),
+async def _tenant_plan_main(*, event_key: str) -> EventPlan:
+    async with open_tenant_store(command="tenant-plan") as store:
+        return await plan_booking_event(event_key=event_key, store=store, clock=RealClock())
+
+
+@cli.command(name="tenant-migrate")
+def tenant_migrate_cmd() -> None:
+    """Run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2, MU-16a).
+
+    What the Manual `teetime-migrate-<env>` ACA job runs, started by CI on a tenant-mode deploy.
+    Requires the durable store (TENANT_COSMOS_ENDPOINT + TENANT_COSMOS_DATABASE): connects,
+    runs the ordered migration list idempotently (v1 ships none), logs what it did and exits 0;
+    any failure exits non-zero.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(message)s",
+        datefmt="%H:%M:%S",
+        stream=sys.stderr,
     )
+    install_log_redaction()
+    log = logging.getLogger(__name__)
+    try:
+        asyncio.run(_tenant_migrate_main())
+    except (TenantStoreConfigError, MigrationError) as e:
+        log.critical("tenant-migrate: FAILED (%s)", e)
+        raise click.ClickException(str(e)) from e
+    except Exception as e:
+        # A connect / auth / data-plane RBAC failure. The exception CLASS only: an SDK message
+        # can carry request details.
+        log.critical("tenant-migrate: FAILED (%s)", type(e).__name__)
+        raise click.ClickException(f"tenant-migrate failed ({type(e).__name__})") from None
+
+
+async def _tenant_migrate_main() -> MigrationReport:
+    async with open_tenant_store(command="tenant-migrate", require_durable=True) as store:
+        return await run_migrations(store)
 
 
 def main() -> int:

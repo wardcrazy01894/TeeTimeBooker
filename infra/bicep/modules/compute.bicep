@@ -111,6 +111,8 @@ param acsEmailSender string = ''
 
 var acaEnvName = 'cae-teetime-${envName}'
 var watchJobName = 'teetime-watch-job-${envName}'
+// MU-16a: the Manual-trigger tenant data-migration job (<= 32 chars for both envs).
+var migrateJobName = 'teetime-migrate-${envName}'
 
 // The release-event table (MULTIUSER_PLAN §6.2). Single source of truth, shared with
 // killswitch.bicep (job-name derivation) and the pure `core/release_policy.py` helpers
@@ -171,6 +173,10 @@ var replicaCompletionCount = 1
 // never hit the replica cap and turn a recovered run into a Failure. See AZURE_PLAN.md §5.4.
 // (The cron ITSELF is the `watchCron` param above, not a hard-coded var — see its @description.)
 var watchReplicaTimeout = 300
+
+// Migrate job replica timeout (MU-16a). v1 runs no migration (a connect + two point reads); a
+// future backfill must fit 10 min or split itself across runs (every step is idempotent).
+var migrateReplicaTimeout = 600
 
 // Derive the ACR login server from the container image reference. The image is
 // '<registry>.azurecr.io/teetime:<tag>'; the registries[].server entry needs
@@ -268,6 +274,16 @@ var tenantEnv = [
   { name: 'ACS_EMAIL_CONNECTION',    secretRef: 'acs-email-connection' }
   { name: 'ACS_EMAIL_SENDER',        value: acsEmailSender }
   { name: 'OPERATOR_NOTIFY_EMAIL',   secretRef: 'operator-notify-email' }
+]
+
+// The migrate job's env (MU-16a): the tenant store ONLY — no keyring, no ACS, no ForeUP
+// credentials, and so NO Key Vault secret ref (the job cannot fail on a secret the operator has
+// not created). `teetime tenant-migrate` refuses to run without TENANT_COSMOS_ENDPOINT.
+var migrateEnv = [
+  { name: 'TENANT_COSMOS_ENDPOINT',  value: tenantCosmosEndpoint }
+  { name: 'TENANT_COSMOS_DATABASE',  value: envName }
+  { name: 'AZURE_CLIENT_ID',         value: userAssignedIdentityClientId }
+  { name: 'TEETIME_ENV',             value: envName }
 ]
 
 // Resource tags applied to every resource in this module.
@@ -437,6 +453,62 @@ resource watchJob 'Microsoft.App/jobs@2024-03-01' = {
             dryRun ? 'true' : 'false'
           ]
           env: watchMode == 'tenant' ? concat(commonEnv, tenantEnv) : commonEnv
+        }
+      ]
+    }
+  }
+}
+
+// Migrate job (MULTIUSER_PLAN §10.1/§10.2, MU-16a): `teetime tenant-migrate`, the ordered,
+// idempotent tenant data-migration list (v1 ships none — the job connects, runs nothing, exits 0).
+// Deployed ONLY in tenant mode, so today's toml deploys create nothing new. ALWAYS Manual-trigger:
+// it never auto-fires, so it is deliberately NOT a killswitch target (§10.3, asserted by
+// tests/test_migrate_job_infra.py) and ignores enableSchedules. CI starts it and awaits the
+// result right after deploy pass 2 (.github/workflows/azure-iac.yml, "Run tenant migrations"):
+// pass 1 runs every job on the public bootstrap image, so the migration can only run on the real
+// image once pass 2 has also switched the other jobs — safe because readers accept schemaVersion
+// N and N-1 (§10.2). Only an operator or that CI step starts it (the deploy guard forbids agents).
+resource migrateJob 'Microsoft.App/jobs@2024-03-01' = if (bookingMode == 'tenant' || watchMode == 'tenant') {
+  name: migrateJobName
+  location: location
+  tags: tags
+  // Serial provisioning, same cold-environment reason as the watch job.
+  dependsOn: [watchJob]
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${userAssignedIdentityResourceId}': {}
+    }
+  }
+  properties: {
+    environmentId: acaEnv.id
+    configuration: {
+      triggerType: 'Manual'
+      manualTriggerConfig: {
+        parallelism: parallelism
+        replicaCompletionCount: replicaCompletionCount
+      }
+      replicaRetryLimit: replicaRetryLimit
+      replicaTimeout: migrateReplicaTimeout
+      registries: jobRegistries
+      secrets: []
+    }
+    template: {
+      containers: [
+        {
+          image: containerImage
+          name: 'teetime'
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+          command: [
+            'teetime'
+          ]
+          args: [
+            'tenant-migrate'
+          ]
+          env: migrateEnv
         }
       ]
     }
