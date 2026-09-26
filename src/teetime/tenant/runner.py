@@ -23,8 +23,8 @@ import asyncio
 import inspect
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta
 from enum import IntEnum
 from typing import Any, Protocol
@@ -92,6 +92,17 @@ BOOKING_REPLICA_TIMEOUT_S = 1200.0
 # The self-deadline stops the run this long BEFORE the replica timeout, so unfinished rows are
 # written needs_reconcile before ACA kills the replica (§4.2, SF5).
 SELF_DEADLINE_MARGIN_S = 90.0
+# WRITE #2 may run this long past the self-deadline (to write the rows the deadline stopped as
+# needs_reconcile), and no longer: anything still unwritten then is dumped to stdout (#233
+# review). Leaves SELF_DEADLINE_MARGIN_S - WRITER_GRACE_S (60 s) for the operator summary.
+WRITER_GRACE_S = 30.0
+# Every pre-T0 store call (READ #1, each WRITE #1 claim) is abandoned after this long (#233
+# review). Latency assumption: a Cosmos query / IfMatch replace answers in well under a second
+# (single-digit RU, same region), so 20 s is only ever hit by an outage. The 05:50 cron reaches
+# READ #1 at ~05:51 and the prefetch starts at T0 - lead (05:58), so read + claim at their worst
+# still end minutes early; a late start is additionally clamped so no store call can run into
+# the race window [T0 - lead - 1 s, ...) (``_store_call``).
+STORE_CALL_TIMEOUT_S = 20.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +281,7 @@ async def run_release_event(
         owner=owner,
         until=t0 + timedelta(seconds=replica_timeout_s),
         give_up_at=_claim_give_up_at(t0, scheduler) if wait else started,
+        not_after=_race_window_start(t0, scheduler, started=started),
     )
     if isinstance(phase, RunReport):
         return phase
@@ -478,13 +490,16 @@ async def _read_and_claim(
     owner: str,
     until: datetime,
     give_up_at: datetime,
+    not_after: datetime | None,
 ) -> RunReport | tuple[int, frozenset[RowId], list[EventRow]]:
     """READ #1 + WRITE #1 (§4.2): the ONLY store calls before T0 + quiet. Returns a finished
     report (no rows / nothing claimed / a systemic store failure) or (rows loaded, claimed ids,
     the claimed rows)."""
     targets = {cid: target_date_for(policies[cid], started) for cid in event.course_ids}
     try:
-        loaded = await store.load_event_rows(targets=targets, now=started)
+        loaded = await _store_call(
+            store.load_event_rows(targets=targets, now=started), clock=clock, not_after=not_after
+        )
     except Exception as exc:
         return _systemic(event, "load_event_rows", exc)
     # Python re-checks the derived freeze (§4.2): the query filtered cutoff_at > now already.
@@ -500,8 +515,10 @@ async def _read_and_claim(
             until=until,
             clock=clock,
             give_up_at=give_up_at,
+            not_after=not_after,
         )
     except Exception as exc:
+        # A timed-out claim may have landed: those leases (ours) expire at ``until``.
         return _systemic(event, "claim_rows", exc, rows_loaded=len(loaded))
     claimed_rows = [r for r in rows if r.row.id in claimed]
     if not claimed_rows:
@@ -515,6 +532,15 @@ async def _read_and_claim(
         until.isoformat(),
     )
     return len(loaded), claimed, claimed_rows
+
+
+def _race_window_start(
+    t0: datetime, scheduler: SchedulerConfig, *, started: datetime
+) -> datetime | None:
+    """T0 - lead - 1 s (§4.4 proof 1), or None when the run started at or past it (a manual
+    re-run after the drop has no race left to protect)."""
+    start = t0 - timedelta(seconds=scheduler.captcha_prefetch_lead_s + 1)
+    return start if started < start else None
 
 
 def _claim_give_up_at(t0: datetime, scheduler: SchedulerConfig) -> datetime:
@@ -533,9 +559,16 @@ async def _claim(
     until: datetime,
     clock: Clock,
     give_up_at: datetime,
+    not_after: datetime | None,
 ) -> frozenset[RowId]:
-    """WRITE #1 (§4.2), re-trying rows another writer holds until ``give_up_at``."""
-    claimed = set(await store.claim_rows(row_ids, owner=owner, until=until, now=clock.now_utc()))
+    """WRITE #1 (§4.2), re-trying rows another writer holds until ``give_up_at``. Each call is
+    bounded by ``_store_call``."""
+
+    async def claim(ids: Sequence[RowId]) -> frozenset[RowId]:
+        call = store.claim_rows(ids, owner=owner, until=until, now=clock.now_utc())
+        return await _store_call(call, clock=clock, not_after=not_after)
+
+    claimed = set(await claim(row_ids))
     while pending := [r for r in row_ids if r not in claimed]:
         if clock.now_utc() + timedelta(seconds=_CLAIM_RETRY_S) > give_up_at:
             log.warning(
@@ -546,8 +579,40 @@ async def _claim(
             )
             break
         await clock.sleep(_CLAIM_RETRY_S)
-        claimed |= await store.claim_rows(pending, owner=owner, until=until, now=clock.now_utc())
+        claimed |= await claim(pending)
     return frozenset(claimed)
+
+
+async def _store_call[T](
+    call: Awaitable[T],
+    *,
+    clock: Clock,
+    not_after: datetime | None,
+    timeout_s: float = STORE_CALL_TIMEOUT_S,
+) -> T:
+    """Await one store call for at most ``timeout_s``, and never past ``not_after`` (the start
+    of the race window; ``None`` when the run started inside it). Raises ``TimeoutError`` (the
+    call is cancelled) -> a systemic report. The timer runs on the injected clock, so virtual
+    time drives it in tests exactly as wall time does in the job."""
+    budget = timeout_s
+    if not_after is not None:
+        budget = min(budget, (not_after - clock.now_utc()).total_seconds())
+    task = asyncio.ensure_future(call)
+    if budget <= 0:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise TimeoutError("no store budget left before the race window")
+    timer = asyncio.ensure_future(clock.sleep(budget))
+    try:
+        await asyncio.wait([task, timer], return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        timer.cancel()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    if task.cancelled():
+        raise TimeoutError(f"store call exceeded {budget:.1f}s")
+    return task.result()
 
 
 async def _release_leases(store: TenantStore, row_ids: frozenset[RowId], *, owner: str) -> None:
@@ -742,8 +807,9 @@ async def _race(
 
     for event_row in decrypt_failed:
         emit(_decrypt_failed(event_row, at=clock.now_utc(), owner=owner))
+    ledger = _WriteLedger()
     writer = asyncio.create_task(
-        _stream_outcomes(queue, store=store, clock=clock, start_at=write_from)
+        _stream_outcomes(queue, store=store, clock=clock, start_at=write_from, ledger=ledger)
     )
     tasks = {
         a.row.id: asyncio.create_task(_run_account(a, emit=emit, clock=clock, owner=owner))
@@ -767,7 +833,51 @@ async def _race(
             )
         )
     queue.put_nowait(None)
-    return finished, await writer, deadline_hit
+    writer_deadline = deadline + timedelta(seconds=WRITER_GRACE_S)
+    failures = await _await_writer(writer, finished, ledger, clock=clock, deadline=writer_deadline)
+    return finished, failures, deadline_hit
+
+
+@dataclass(slots=True)
+class _WriteLedger:
+    """What WRITE #2 has settled so far — readable even after the writer is cancelled."""
+
+    written: set[RowId] = field(default_factory=set)
+    failed: list[RowId] = field(default_factory=list)
+
+
+async def _await_writer(
+    writer: asyncio.Task[None],
+    finished: Sequence[_Finished],
+    ledger: _WriteLedger,
+    *,
+    clock: Clock,
+    deadline: datetime,
+) -> list[RowId]:
+    """Wait for WRITE #2, but never past ``deadline`` (#233 review): a hung store must not keep
+    the process alive into the replica timeout. Every outcome still unwritten then is dumped to
+    stdout (the watcher reconciles it from live) and counted as a write failure."""
+    delay = max((deadline - clock.now_utc()).total_seconds(), 0.0)
+    timer = asyncio.ensure_future(clock.sleep(delay))
+    try:
+        await asyncio.wait([writer, timer], return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        timer.cancel()
+    if writer.done():
+        writer.result()  # surface a writer bug rather than silently losing outcomes
+        return list(ledger.failed)
+    writer.cancel()
+    await asyncio.gather(writer, return_exceptions=True)
+    settled = ledger.written | set(ledger.failed)
+    unwritten = [f.row for f in finished if f.row.row_id not in settled]
+    log.critical(
+        "tenant-run: outcome writer still busy at its deadline; %d outcome(s) NOT written "
+        "(dumped to stdout)",
+        len(unwritten),
+    )
+    for outcome in unwritten:
+        _dump_outcome(outcome)
+    return [*ledger.failed, *(o.row_id for o in unwritten)]
 
 
 async def _run_account(
@@ -815,18 +925,23 @@ async def _await_accounts(
 
 
 async def _stream_outcomes(
-    queue: asyncio.Queue[_Finished | None], *, store: TenantStore, clock: Clock, start_at: datetime
-) -> list[RowId]:
+    queue: asyncio.Queue[_Finished | None],
+    *,
+    store: TenantStore,
+    clock: Clock,
+    start_at: datetime,
+    ledger: _WriteLedger,
+) -> None:
     """WRITE #2 (§4.2): nothing before ``start_at`` (T0 + quiet), then one ``record_outcomes``
-    call PER ROW, in completion order. Returns the rows whose write did not land."""
+    call PER ROW, in completion order, each settled into ``ledger`` (written / failed)."""
     delay = (start_at - clock.now_utc()).total_seconds()
     if delay > 0:
         await clock.sleep(delay)
-    failures: list[RowId] = []
     while (item := await queue.get()) is not None:
-        if not await _write_outcome(store, item.row, clock=clock):
-            failures.append(item.row.row_id)
-    return failures
+        if await _write_outcome(store, item.row, clock=clock):
+            ledger.written.add(item.row.row_id)
+        else:
+            ledger.failed.append(item.row.row_id)
 
 
 async def _write_outcome(store: TenantStore, outcome: RowOutcome, *, clock: Clock) -> bool:
