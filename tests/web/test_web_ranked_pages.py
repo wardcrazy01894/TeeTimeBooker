@@ -34,6 +34,7 @@ from teetime.web.app import WebSettings, create_app
 
 from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE, TZ
 from .conftest import GitHubIdentity, make_invited, mock_github, sign_in
+from .test_web_pages import _book
 
 MEMBER = "turk@example.test"
 POLICY = ReleasePolicy(advance_days=7, release_time=time(6, 0), timezone=TZ)
@@ -201,3 +202,23 @@ async def test_account_default_price_can_be_changed_from_the_accounts_page(
     assert resp.status_code == 303
     stored = await store.get_account(member.a.id, user_id=member.user.id)
     assert stored is not None and stored.default_max_price == Decimal("70.00")
+
+
+async def test_a_booked_group_row_shows_which_option_it_got(
+    client: httpx.AsyncClient, member: Member, store: InMemoryTenantStore
+) -> None:
+    await _post(client, "/bookings/date", {"target_date": "2026-10-03", **_ranked(member)})
+    (row_a,) = await store.rows_for_account_date(member.a.id, OCT3)
+    await _book(store, row_a)  # 09:30 EDT: inside option 1 (A 09:00-10:00)
+    page = await client.get("/dates")
+    assert "got option 1" in page.text
+
+
+async def test_a_ranked_rule_shows_its_options_and_no_single_window_edit(
+    client: httpx.AsyncClient, member: Member, store: InMemoryTenantStore
+) -> None:
+    await _post(client, "/bookings/weekly", {"weekday": str(SAT), **_ranked(member)})
+    page = await client.get("/rules")
+    assert "09:00\u201310:00, 08:00\u201309:00" in page.text
+    assert 'name="window_earliest"' not in page.text
+    assert 'value="deactivate"' in page.text

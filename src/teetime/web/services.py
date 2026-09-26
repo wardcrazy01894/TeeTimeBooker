@@ -52,6 +52,7 @@ from ..tenant.crypto import (
     decrypt_password,
     encrypt_password,
 )
+from ..tenant.groups import booked_rank
 from ..tenant.materialize import (
     MIN_HORIZON_DAYS,
     MaterializeReport,
@@ -106,6 +107,11 @@ WEEKDAY_NAMES: tuple[str, ...] = (
     "Friday",
     "Saturday",
     "Sunday",
+)
+# MU-R3: the single-window edit form would flatten a ranked weekly booking to one option.
+RANKED_RULE_EDIT_HINT = (
+    "This is part of a ranked weekly booking. To change its options, deactivate it and save "
+    "a new weekly booking."
 )
 # §7.7 round-3 SF2: a rule edit made after the booker's ~05:51 claim does not reach the claimed
 # row, so that morning books the OLD window/weekday. The rules page states it.
@@ -191,6 +197,8 @@ class DashboardRow:
     # MU-14 (§8.5): a BOOKED row whose reservation the ledger owns (the bot made it). An
     # unowned one offers Cancel only behind an explicit confirm.
     owned: bool = False
+    # MU-R3 (§16.2): the rank of the option a BOOKED row got in the user's ranked list.
+    booked_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,6 +443,7 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
                 search_only_last_drop=False,
                 snapshot_label=_snapshot_label(snap, now=now, tz=tz),
                 booked_tee_time_local=booked_local,
+                booked_rank=booked_rank(row),
                 can_rerequest=(
                     row.status is RowStatus.CANCELLED
                     and (row.course_account_id, row.target_date) not in occupied
@@ -586,6 +595,8 @@ async def edit_rule(
     ``version`` is the one the form was rendered from: a stale page is
     ``VersionConflictError`` -> 409."""
     old = await _own_rule(store, user_id=user_id, rule_id=rule_id)
+    if old.group_id is not None or len(old.options) > 1:
+        raise ActionRefusedError(RANKED_RULE_EDIT_HINT)
     new = replace(
         old,
         weekday=rule_input.weekday,
@@ -610,12 +621,29 @@ async def set_rule_active(
     clock: Clock,
 ) -> MaterializeReport:
     """Deactivate (withdraw pending/superseded rows in the §7.7 reset order; booked and skipped
-    rows are kept) or reactivate (re-materialize) a rule."""
+    rows are kept) or reactivate (re-materialize) a rule, and every other rule of its weekly
+    group (§16.2), each at its own current version."""
     old = await _own_rule(store, user_id=user_id, rule_id=rule_id)
     new = replace(old, active=active, version=version)
-    return await _edit(
+    report = await _edit(
         store, user_id=user_id, old=old, new=new, policies=policies, cutoff=cutoff, clock=clock
     )
+    if old.group_id is not None:
+        for sibling in await store.list_rules_for_user(user_id):
+            if sibling.group_id != old.group_id or sibling.id == old.id:
+                continue
+            if sibling.active is active:
+                continue
+            await _edit(
+                store,
+                user_id=user_id,
+                old=sibling,
+                new=replace(sibling, active=active),
+                policies=policies,
+                cutoff=cutoff,
+                clock=clock,
+            )
+    return report
 
 
 # --- dated rows -------------------------------------------------------------------------------
@@ -650,17 +678,53 @@ async def _transition(
     reason: str | None,
     clock: Clock,
 ) -> RequestRow:
+    """Transition one row, then every sibling of its group on the same date that was in the same
+    status (§16.2: a group is ONE request, so skipping or withdrawing it at one course must not
+    leave another course booking the date). A sibling refusal is reported after the rest ran."""
     row = await store.get_row(row_id, user_id=user_id)
     if row is None:
         raise WebNotFoundError
     try:
-        return await store.transition_row(
+        updated = await store.transition_row(
             row_id, user_id=user_id, to=to, actor=Actor.WEB, reason=reason, now=clock.now_utc()
         )
     except TenantNotFoundError as e:
         raise WebNotFoundError from e
     except (RowLeaseError, TransitionRefusedError) as e:
         raise _refused(e, row=row) from e
+    failed: list[str] = []
+    for sibling in await _group_siblings(store, user_id=user_id, row=row):
+        if sibling.status is not row.status:
+            continue
+        try:
+            await store.transition_row(
+                sibling.id,
+                user_id=user_id,
+                to=to,
+                actor=Actor.WEB,
+                reason=reason,
+                now=clock.now_utc(),
+            )
+        except (RowLeaseError, TransitionRefusedError) as e:
+            failed.append(f"{sibling.course_id}: {_refused(e, row=sibling).message}")
+    if failed:
+        raise ActionRefusedError(
+            f"Done at {row.course_id}, but not at every course of this booking. "
+            + "; ".join(failed)
+        )
+    return updated
+
+
+async def _group_siblings(
+    store: TenantStore, *, user_id: UserId, row: RequestRow
+) -> list[RequestRow]:
+    """The user's other rows of ``row``'s group on its date (user-scoped read, §9.1)."""
+    if row.group_id is None:
+        return []
+    rows = await store.list_rows_for_user(
+        user_id, from_date=row.target_date, to_date=row.target_date
+    )
+    return [r for r in rows if r.group_id == row.group_id and r.id != row.id]
 
 
 async def skip_row(

@@ -21,6 +21,7 @@
       <td>
         <span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>
         {% if r.booked_tee_time_local %} {{ r.booked_tee_time_local }}{% endif %}
+        {% if r.booked_rank %} <span class="hint">(got option {{ r.booked_rank }})</span>{% endif %}
       </td>
       <td class="actions">
         {% if r.frozen %}

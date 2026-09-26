@@ -29,7 +29,9 @@ from teetime.tenant.models import (
     derive_account_id,
 )
 from teetime.web import group_services as services
+from teetime.web import services as base
 from teetime.web.booking_form import RankedChoice
+from teetime.web.group_services import GroupRowsReport
 from teetime.web.services import ActionRefusedError, InvalidInputError, WebNotFoundError
 
 from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE, TZ
@@ -227,4 +229,108 @@ async def test_set_default_price_on_a_foreign_account_is_not_found(
     with pytest.raises(WebNotFoundError):
         await services.set_default_price(
             store, user_id=user_id, account_id=stranger.id, raw_price="50"
+        )
+
+
+# --- group-wide actions (§16.2: skipping or withdrawing a date acts on the whole group) --------
+
+
+async def _group_on_oct3(
+    store: InMemoryTenantStore, clock: FakeClock
+) -> tuple[UserId, CourseAccount, CourseAccount, GroupRowsReport]:
+    user_id, a, b = await _member(store)
+    report = await services.create_group_one_off(
+        store, user_id=user_id, target_date=OCT3, choice=_choice(a, b), clock=clock
+    )
+    return user_id, a, b, report
+
+
+async def test_withdrawing_one_row_of_a_group_withdraws_its_siblings(
+    store: InMemoryTenantStore, clock: FakeClock
+) -> None:
+    user_id, a, b, report = await _group_on_oct3(store, clock)
+    await base.withdraw_row(store, user_id=user_id, row_id=report.rows[0].id, clock=clock)
+    for account in (a, b):
+        (row,) = await store.rows_for_account_date(account.id, OCT3)
+        assert row.status is RowStatus.WITHDRAWN
+
+
+async def test_skipping_a_rule_date_skips_every_course_of_the_weekly_group(
+    store: InMemoryTenantStore, clock: FakeClock
+) -> None:
+    user_id, a, b = await _member(store)
+    await services.create_group_rule(
+        store,
+        user_id=user_id,
+        weekday=SAT,
+        choice=_choice(a, b),
+        policies=POLICIES,
+        cutoff=CUTOFF,
+        clock=clock,
+    )
+    (row_a,) = await store.rows_for_account_date(a.id, OCT3)
+    await base.skip_row(store, user_id=user_id, row_id=row_a.id, clock=clock)
+    for account in (a, b):
+        (row,) = await store.rows_for_account_date(account.id, OCT3)
+        assert row.status is RowStatus.SKIPPED
+    await base.unskip_row(store, user_id=user_id, row_id=row_a.id, clock=clock)
+    for account in (a, b):
+        (row,) = await store.rows_for_account_date(account.id, OCT3)
+        assert row.status is RowStatus.PENDING
+
+
+async def test_deactivating_one_rule_of_a_group_deactivates_its_siblings(
+    store: InMemoryTenantStore, clock: FakeClock
+) -> None:
+    user_id, a, b = await _member(store)
+    report = await services.create_group_rule(
+        store,
+        user_id=user_id,
+        weekday=SAT,
+        choice=_choice(a, b),
+        policies=POLICIES,
+        cutoff=CUTOFF,
+        clock=clock,
+    )
+    first = report.rules[0]
+    await base.set_rule_active(
+        store,
+        user_id=user_id,
+        rule_id=first.id,
+        active=False,
+        version=first.version,
+        policies=POLICIES,
+        cutoff=CUTOFF,
+        clock=clock,
+    )
+    rules = await store.list_rules_for_user(user_id)
+    assert [r.active for r in rules] == [False, False]
+
+
+async def test_a_ranked_rule_cannot_be_flattened_by_the_single_window_edit(
+    store: InMemoryTenantStore, clock: FakeClock
+) -> None:
+    user_id, a, b = await _member(store)
+    report = await services.create_group_rule(
+        store,
+        user_id=user_id,
+        weekday=SAT,
+        choice=_choice(a, b),
+        policies=POLICIES,
+        cutoff=CUTOFF,
+        clock=clock,
+    )
+    rule = report.rules[0]
+    with pytest.raises(ActionRefusedError, match="weekly booking"):
+        await base.edit_rule(
+            store,
+            user_id=user_id,
+            rule_id=rule.id,
+            rule_input=base.RuleInput(
+                weekday=SAT, window_earliest=time(7), window_latest=time(8), party_size=2
+            ),
+            version=rule.version,
+            policies=POLICIES,
+            cutoff=CUTOFF,
+            clock=clock,
         )
