@@ -1429,6 +1429,17 @@ checks — they run on push/tags, not PRs.
 **Current required checks:** `test / lint / typecheck`, `docker build`,
 `docker smoke`, `bicep lint`, `secret scan`.
 
+**Local pre-push gate (`.githooks/pre-push`).** Runs every command CI's `test / lint /
+typecheck` job runs (`uv lock --locked`, `ruff check .`, `ruff format --check .`, `mypy`,
+`pytest -m "not integration"`; pip-audit stays CI-only) with `set -euo pipefail`, and BLOCKS the
+push on the first failure. Enable once per clone — worktrees share it:
+`git config core.hooksPath .githooks`. **Why:** PRs kept opening with a failing lint check because
+local checks were read through an output filter (`rtk pipe`) or `| tail -1`, which hide a
+non-zero exit code — a failing `ruff check` looked clean. The hook decides by EXIT CODE only.
+Rules for agents: never `git push --no-verify` for normal work; when YOU run a gate, judge it by
+its exit code, never by filtered/tailed output. `tests/test_prepush_hook.py` fails CI if the hook
+drifts from ci.yml.
+
 ## When in doubt
 
 - Implementing a new milestone task? Read PLAN.md §16 for inputs/outputs/deps.
