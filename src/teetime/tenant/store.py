@@ -48,15 +48,17 @@ SF5/M4). No store call happens inside [T0 - lead - 1 s, T0 + 10 s].
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from contextlib import AbstractAsyncContextManager
+import logging
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Protocol, runtime_checkable
 
 from ..core.clock import Clock
 from ..core.models import BookingResult, CourseId, RequestId
 from ..persistence.in_memory_store import InMemoryStore
+from ..persistence.store import ConcurrentRunError
 from .models import (
     Actor,
     CourseAccount,
@@ -73,6 +75,8 @@ from .models import (
     User,
     UserId,
 )
+
+log = logging.getLogger(__name__)
 
 
 class RowLeaseError(RuntimeError):
@@ -534,5 +538,45 @@ class LeasedBookingStore:
 
     def request_lock(self, request_id: RequestId) -> AbstractAsyncContextManager[None]:
         """Acquire the durable row lease for ``row_for_request[request_id]`` with its
-        fingerprint; else raise ``ConcurrentRunError`` (contention or row changed)."""
-        return self._inner.request_lock(request_id)
+        fingerprint; else raise ``ConcurrentRunError`` (contention, row changed, or no row
+        registered for ``request_id``). Not re-entrant, exactly like ``InMemoryStore``: the inner
+        in-process lock is taken FIRST, so a nested acquire raises before touching the lease."""
+        return self._lease(request_id)
+
+    @asynccontextmanager
+    async def _lease(self, request_id: RequestId) -> AsyncIterator[None]:
+        async with self._inner.request_lock(request_id):
+            registered = self._row_for_request.get(request_id)
+            if registered is None:
+                # A wiring bug, not contention: defer (never act without cross-process
+                # exclusion), but loudly.
+                log.error("leased store: no row registered for request %s; deferring", request_id)
+                raise ConcurrentRunError(f"no row registered for request {request_id}")
+            row_id, fingerprint = registered
+            now = self._clock.now_utc()
+            acquired = await self._tenant.acquire_row_lease(
+                row_id,
+                owner=self._owner,
+                until=now + timedelta(seconds=self._lease_seconds),
+                now=now,
+                expected=fingerprint,
+            )
+            if not acquired:
+                log.info("leased store: row %s leased or changed since the read; deferring", row_id)
+                raise ConcurrentRunError(f"row {row_id} is leased or changed since it was read")
+            try:
+                yield
+            finally:
+                await self._release(row_id)
+
+    async def _release(self, row_id: RowId) -> None:
+        # Never raise from here: an exception in flight (or a cancellation) must not be masked by
+        # a DB blip, and an unreleased lease simply expires after ``lease_seconds``.
+        try:
+            await self._tenant.release_row_lease(row_id, owner=self._owner)
+        except Exception:
+            log.warning(
+                "leased store: release of row %s lease failed; it expires on its own",
+                row_id,
+                exc_info=True,
+            )
