@@ -58,6 +58,13 @@ infra/
                              #   both envs). Requires Microsoft.Communication RP registration +
                              #   "Key Vault Secrets Officer" for the CI deploy identity (operator,
                              #   one-time — see the module header).
+      cosmos.bicep           # NEW (MU-15b): the shared free-tier Cosmos DB account for the
+                             #   multi-user tenant store. DEPLOYED STANDALONE by the operator to
+                             #   rg-teetime-shared (like the shared ACR), never by main.bicep/CI.
+                             #   prod+dev databases at 400 RU/s, totalThroughputLimit 1000, no account
+                             #   keys, index policy = the store's QUERIED_PATHS. Data-plane role
+                             #   assignments are created BY HAND (AZURE_PLAN §7.2a); no module may
+                             #   declare one.
       budget.bicep           # Cost Management budget (subscription-scoped)
       killswitch.bicep       # Cost killswitch: Logic App (Consumption) + Action Group + RBAC
                              #   DEPLOYED TO rg-teetime-dev ONLY (envName=='dev' gate in main.bicep)
