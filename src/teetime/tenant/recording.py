@@ -412,7 +412,15 @@ _OPT_INS: tuple[tuple[type, type, str], ...] = (
     (ReservationSnapshotHealth, _SnapshotHealthRecordingMixin, "SnapshotHealth"),
 )
 
-_BLIND_HOOK_MEMBERS = ("captcha_pool_size", "synthesize_blind_slots", "set_blind_allowlist")
+# Every member the blind variant passes through. `inspect.getattr_static` resolves the
+# `blind_allowlist` PROPERTY to its property object, so the presence check covers it too —
+# an inner shipping only the setter must be refused here, not fail lazily on first access.
+_BLIND_HOOK_MEMBERS = (
+    "captcha_pool_size",
+    "synthesize_blind_slots",
+    "set_blind_allowlist",
+    "blind_allowlist",
+)
 
 
 @functools.cache
@@ -442,7 +450,8 @@ def make_recording_adapter(inner: CourseAdapter, *, clock: Clock) -> RecordingAd
             raise TypeError(
                 f"{type(inner).__name__} reports capabilities.blind_post=True but lacks "
                 f"{', '.join(missing)}; the tenant runner needs captcha_pool_size, "
-                "synthesize_blind_slots and set_blind_allowlist on every blind-capable adapter"
+                "synthesize_blind_slots, set_blind_allowlist and blind_allowlist on every "
+                "blind-capable adapter"
             )
     opt_ins = tuple(isinstance(inner, proto) for proto, _, _ in _OPT_INS)
     cls = _variant_class(opt_ins, blind=blind)
