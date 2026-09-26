@@ -1761,6 +1761,67 @@ class TenantStoreConformance:
         )
         assert [r.id for r in got] == [mine.id, later.id]
 
+    # --- MU-13 web reads (user-scoped, IDOR §9.1) ------------------------------------------
+
+    async def test_get_row_scoped_by_user(self, harness: StoreHarness) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        mallory = await _tenant(s, n=1)
+        mine = await _explicit(s, t)
+        assert await s.get_row(mine.id, user_id=t.user.id) == mine
+        # Another user's row and a missing row are indistinguishable (both None).
+        assert await s.get_row(mine.id, user_id=mallory.user.id) is None
+        assert await s.get_row(RowId(uuid4()), user_id=t.user.id) is None
+
+    async def test_get_row_returns_the_stored_version(self, harness: StoreHarness) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        _, row = await _rule_row(s, t)
+        skipped = await s.transition_row(
+            row.id, user_id=t.user.id, to=RowStatus.SKIPPED, actor=Actor.WEB, reason=None, now=NOW
+        )
+        got = await s.get_row(row.id, user_id=t.user.id)
+        assert got == skipped
+        assert got is not None and got.status is RowStatus.SKIPPED
+
+    async def test_list_accounts_for_user_scoped(self, harness: StoreHarness) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        mallory = await _tenant(s, n=1)
+        other_course = CourseAccount(
+            id=derive_account_id(t.user.id, OTHER_COURSE),
+            user_id=t.user.id,
+            course_id=OTHER_COURSE,
+            provenance=AccountProvenance.USER_SUPPLIED,
+            username=f"golfer-{uuid4().hex[:8]}",
+            password_ciphertext="v1:k1:nonce:ct",
+            key_id="k1",
+            status=AccountStatus.ACTIVE,
+        )
+        await s.upsert_account(other_course)
+        got = await s.list_accounts_for_user(t.user.id)
+        assert sorted(a.id for a in got) == sorted([t.account.id, other_course.id])
+        assert [a.id for a in await s.list_accounts_for_user(mallory.user.id)] == [
+            mallory.account.id
+        ]
+        assert await s.list_accounts_for_user(UserId(uuid4())) == []
+
+    async def test_list_rules_for_user_scoped(self, harness: StoreHarness) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        mallory = await _tenant(s, n=1)
+        active = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        dormant = await s.upsert_rule(_rule(t, weekday=6, active=False), user_id=t.user.id)
+        await s.upsert_rule(_rule(mallory), user_id=mallory.user.id)
+        got = await s.list_rules_for_user(t.user.id)
+        # Active AND inactive rules (the rules page reactivates dormant ones), stored versions.
+        assert sorted((r.id for r in got), key=str) == sorted([active.id, dormant.id], key=str)
+        edited = await s.upsert_rule(replace(active, party_size=3), user_id=t.user.id)
+        assert edited in await s.list_rules_for_user(t.user.id)
+        assert [r.course_account_id for r in await s.list_rules_for_user(mallory.user.id)] == [
+            mallory.account.id
+        ]
+
     async def test_login_probe_counts(self, harness: StoreHarness) -> None:
         s = harness.store
         t = await _tenant(s)

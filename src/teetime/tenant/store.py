@@ -372,6 +372,23 @@ class TenantStore(Protocol):
         self, account_id: CourseAccountId, *, user_id: UserId
     ) -> CourseAccount | None: ...
 
+    async def get_row(self, row_id: RowId, *, user_id: UserId) -> RequestRow | None:
+        """The stored row iff it is on one of ``user_id``'s accounts, else None — a missing row
+        and another user's row are deliberately indistinguishable (IDOR, §9.1; the web answers
+        404 for both). Read-only (MU-13). Cosmos (MU-8b): the user's account ids, then a point
+        read in that partition."""
+        ...
+
+    async def list_accounts_for_user(self, user_id: UserId) -> list[CourseAccount]:
+        """Every course account of ``user_id`` (any status). Read-only, user-scoped (MU-13: the
+        rules / dates forms pick an account from it)."""
+        ...
+
+    async def list_rules_for_user(self, user_id: UserId) -> list[StandingRule]:
+        """Every standing rule (active AND inactive, stored versions) on ``user_id``'s accounts.
+        Read-only, user-scoped (MU-13: the rules page lists, edits and reactivates them)."""
+        ...
+
     async def upsert_account(self, account: CourseAccount) -> None:
         """Enforces uniqueness of (user, course) (derived accountId), (course, username) (a
         claim doc, reclaimed if orphaned), and ``max_accounts_per_course`` (an IfMatch counter
