@@ -18,9 +18,16 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from teetime.core.adapter import CourseAdapter
+from teetime.core.adapter import AdapterError, CourseAdapter
 from teetime.core.config import BookingCutoffConfig, SchedulerConfig
-from teetime.core.models import CourseId, SlotId, TeeTimeSlot
+from teetime.core.models import (
+    BookingRequest,
+    BookingResult,
+    CourseId,
+    ExistingReservation,
+    SlotId,
+    TeeTimeSlot,
+)
 from teetime.core.release_policy import ReleasePolicy
 from teetime.courses.foreup.token_pool import LeaseKey, SharedCaptchaPool
 from teetime.dev.blind_fake_adapter import BlindFakeAdapter
@@ -228,3 +235,125 @@ class FakeAdapterNonBlind(FakeAdapter):
 
     def __init__(self) -> None:
         super().__init__(course_id=MB)
+
+
+class TimedBlindAdapter(BlindFakeAdapter):
+    """``BlindFakeAdapter`` that stamps every ``book()`` SEND instant from the shared clock, so a
+    test can read each account's stagger without reaching into the runner's recorders."""
+
+    def __init__(self, clock: VirtualClock, slots: list[TeeTimeSlot] | None = None) -> None:
+        super().__init__(course_id=MB)
+        self.set_blind_slots(list(GRID if slots is None else slots))
+        self._clock = clock
+        self.sends: list[tuple[SlotId, datetime]] = []
+
+    async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
+        self.sends.append((slot.slot_id, self._clock.now_utc()))
+        return await super().book(slot, request)
+
+    def send_offsets_ms(self) -> list[int]:
+        return [round((at - T0).total_seconds() * 1000) for _, at in self.sends]
+
+
+class SlowBookAdapter(TimedBlindAdapter):
+    """Every ``book()`` first parks on the clock for ``delay_s`` (a slow POST / inline solve)."""
+
+    def __init__(self, clock: VirtualClock, *, delay_s: float) -> None:
+        super().__init__(clock)
+        self._delay_s = delay_s
+
+    async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
+        await self._clock.sleep(self._delay_s)
+        return await super().book(slot, request)
+
+
+class LandedButUncertainAdapter(BlindFakeAdapter):
+    """Every ``book()`` LANDS server-side (the reservation appears in ``list_reservations``) but
+    the POST raises a non-SlotGone error: the §9 UNCERTAIN case the re-guard must find."""
+
+    def __init__(self) -> None:
+        super().__init__(course_id=MB)
+        self.set_blind_slots(list(GRID))
+
+    async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
+        self.book_call_count += 1
+        self.book_slot_ids.append(slot.slot_id)
+        if not self._existing:
+            self._existing.append(
+                ExistingReservation(
+                    course_id=MB,
+                    confirmation_code=f"LANDED-{slot.slot_id}",
+                    tee_time=slot.tee_time,
+                    party_size=len(request.players),
+                )
+            )
+        raise AdapterError("read timeout after POST")
+
+
+class PooledBlindAdapter(TimedBlindAdapter):
+    """A blind-capable fake that uses an injected ``SharedCaptchaPool`` the way ``ForeUpAdapter``
+    does (MU-2): ``prepare_book`` -> ``pool.prefetch(key, count)``, ``captcha_pool_size`` -> the
+    lease size, ``book`` pops one token (lease -> reserve -> inline solve)."""
+
+    def __init__(self, clock: VirtualClock, *, pool: SharedCaptchaPool, key: LeaseKey) -> None:
+        super().__init__(clock)
+        self.pool = pool
+        self.key = key
+        self.tokens_used: list[str] = []
+        self.prefetch_errors: list[str] = []
+
+    async def prepare_book(
+        self, slot: TeeTimeSlot | None, request: BookingRequest, *, count: int = 1
+    ) -> None:
+        self.prepare_book_call_count += 1
+        self.last_prepare_count = count
+        try:
+            await self.pool.prefetch(self.key, count)
+        except Exception as exc:  # the orchestrator swallows it; keep it visible to the test
+            self.prefetch_errors.append(type(exc).__name__)
+            raise
+
+    def captcha_pool_size(self) -> int:
+        return self.pool.lease_size(self.key)
+
+    async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
+        token = self.pool.pop(self.key)
+        self.tokens_used.append(token if token is not None else await self.pool.solve_inline())
+        return await super().book(slot, request)
+
+
+@dataclass
+class PooledFactory:
+    """``AdapterFactory`` that builds a ``PooledBlindAdapter`` on the pool the runner passes."""
+
+    clock: VirtualClock
+    built: dict[Any, PooledBlindAdapter] = field(default_factory=dict)
+
+    def __call__(
+        self,
+        *,
+        course_id: CourseId,
+        account: CourseAccount,
+        pool: SharedCaptchaPool | None,
+        lease_key: LeaseKey | None,
+        dry_run: bool,
+    ) -> CourseAdapter:
+        assert pool is not None and lease_key is not None
+        adapter = PooledBlindAdapter(self.clock, pool=pool, key=lease_key)
+        self.built[account.id] = adapter
+        return adapter
+
+
+@dataclass
+class CountingProvider:
+    """A 2captcha stand-in: each solve takes ``solve_s`` of clock time."""
+
+    clock: VirtualClock
+    solve_s: float = 5.0
+    calls: int = 0
+
+    async def __call__(self) -> str:
+        self.calls += 1
+        n = self.calls
+        await self.clock.sleep(self.solve_s)
+        return f"tok-{n}"

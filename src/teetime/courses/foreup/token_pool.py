@@ -130,6 +130,12 @@ class SharedCaptchaPool:
         self._started_at: datetime | None = None
         self._report: FillReport | None = None
 
+    @property
+    def max_concurrent_solves(self) -> int:
+        """C in §5.3 (the fill's concurrency bound). The tenant runner derives the per-course
+        blind-account cap from it: ``N_blind = C // blind_post_max_count``."""
+        return self._max_concurrent_solves
+
     # --- coordinated-mode setup (tenant runner, pre-T0, before any orchestrator runs) ----
 
     def register(self, key: LeaseKey, count: int) -> None:
