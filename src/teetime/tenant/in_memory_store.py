@@ -720,6 +720,9 @@ class InMemoryTenantStore:
     async def get_account_unscoped(self, account_id: CourseAccountId) -> CourseAccount | None:
         return self._accounts.get(account_id)
 
+    async def get_user_unscoped(self, user_id: UserId) -> User | None:
+        return self._users.get(user_id)
+
     async def rows_for_account_date(
         self, account_id: CourseAccountId, target_date: date
     ) -> list[RequestRow]:
