@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% from "_macros.html" import hhmm, error_block %}
+{% block title %}Rules · TeeTimeBooker{% endblock %}
+
+{% macro rule_fields(weekday, earliest, latest, party) %}
+<label>Day
+  <select name="weekday">
+    {% for name in weekdays %}<option value="{{ loop.index0 }}"{% if loop.index0 == weekday %} selected{% endif %}>{{ name }}</option>{% endfor %}
+  </select>
+</label>
+<label>Earliest <input type="time" name="window_earliest" value="{{ earliest }}" required></label>
+<label>Latest <input type="time" name="window_latest" value="{{ latest }}" required></label>
+<label>Party size <input type="number" name="party_size" min="1" max="4" value="{{ party }}" required></label>
+{% endmacro %}
+
+{% block content %}
+<h1>Standing rules</h1>
+<p class="hint">{{ rule_edit_hint }}</p>
+{{ error_block(error, one_off, csrf_token) }}
+
+{% for v in rules %}
+<section class="rule{% if not v.rule.active %} inactive{% endif %}">
+  <h2>{{ v.weekday_name }}s at {{ v.account.course_id }}{% if not v.rule.active %} (inactive){% endif %}</h2>
+  <form method="post" action="/rules/{{ v.rule.id }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="version" value="{{ v.rule.version }}">
+    <input type="hidden" name="action" value="save">
+    {{ rule_fields(v.rule.weekday, hhmm(v.rule.window_earliest), hhmm(v.rule.window_latest), v.rule.party_size) }}
+    <button type="submit">Save</button>
+  </form>
+  <form method="post" action="/rules/{{ v.rule.id }}" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="version" value="{{ v.rule.version }}">
+    {% if v.rule.active %}
+    <button type="submit" name="action" value="deactivate">Deactivate</button>
+    {% else %}
+    <button type="submit" name="action" value="activate">Reactivate</button>
+    {% endif %}
+  </form>
+</section>
+{% else %}
+<p class="placeholder">No standing rules yet.</p>
+{% endfor %}
+
+<section>
+  <h2>New rule</h2>
+  {% if accounts %}
+  <p class="hint">One active rule per day per course. The bot books each matching date when it opens.</p>
+  <form method="post" action="/rules">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Course
+      <select name="account_id">
+        {% for a in accounts %}<option value="{{ a.id }}">{{ a.course_id }}</option>{% endfor %}
+      </select>
+    </label>
+    {{ rule_fields(5, "08:00", "10:00", 2) }}
+    <button type="submit">Create rule</button>
+  </form>
+  {% else %}
+  <p class="placeholder">Connect a course account first.</p>
+  {% endif %}
+</section>
+{% endblock %}

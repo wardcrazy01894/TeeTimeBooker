@@ -1,8 +1,42 @@
 {% extends "base.html" %}
+{% from "_macros.html" import hhmm, status %}
 {% block title %}Dashboard · TeeTimeBooker{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
-{% if dry_run %}<p class="banner">Dry-run environment: nothing here books or cancels a real tee time.</p>{% endif %}
 <p>Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider }} (subject {{ user.oauth_subject }}).</p>
-<p class="placeholder">Your request rows, standing rules and course accounts appear here once MU-13 lands.</p>
+
+{% if not accounts %}
+<p class="placeholder">No course account is connected yet, so there is nothing to book.</p>
+{% endif %}
+
+<h2>Upcoming dates</h2>
+{% if rows %}
+<p class="hint">Status comes from the bot's records; "as of" is when it last checked your course account. This page never logs in to the course.</p>
+<table>
+  <thead>
+    <tr><th>Date</th><th>Course</th><th>Window</th><th>Party</th><th>Status</th><th>Tee time</th><th>Checked</th></tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ weekdays[r.row.target_date.weekday()][:3] }} {{ r.row.target_date.isoformat() }}</td>
+      <td>{{ r.row.course_id }}</td>
+      <td>{{ hhmm(r.row.window_earliest) }}–{{ hhmm(r.row.window_latest) }}</td>
+      <td>{{ r.row.party_size }}</td>
+      <td>
+        <span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>
+        {% if r.mismatch == "not_seen_at_course" %}<span class="badge">not seen at course</span>{% endif %}
+        {% if r.mismatch == "manual_reservation" %}<span class="badge">manual reservation</span>{% endif %}
+        {% if r.search_only_last_drop %}<span class="badge">search-only this drop</span>{% endif %}
+      </td>
+      <td>{% if r.booked_tee_time_local %}{{ r.booked_tee_time_local }}{% if r.row.booked_confirmation %} <span class="conf">{{ r.row.booked_confirmation }}</span>{% endif %}{% endif %}</td>
+      <td>{{ r.snapshot_label }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="placeholder">No upcoming dates. Add a <a href="/rules">standing rule</a> or a <a href="/dates">one-off date</a>.</p>
+{% endif %}
+<p><a href="/dates">Manage dates</a> · <a href="/rules">Manage rules</a></p>
 {% endblock %}

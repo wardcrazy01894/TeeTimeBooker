@@ -875,6 +875,22 @@ class InMemoryTenantStore:
         account = self._accounts.get(account_id)
         return account if account is not None and account.user_id == user_id else None
 
+    async def get_row(self, row_id: RowId, *, user_id: UserId) -> RequestRow | None:
+        row = self._rows.get(row_id)
+        if row is None:
+            return None
+        account = self._accounts.get(row.course_account_id)
+        return row if account is not None and account.user_id == user_id else None
+
+    async def list_accounts_for_user(self, user_id: UserId) -> list[CourseAccount]:
+        mine = (a for a in self._accounts.values() if a.user_id == user_id)
+        return sorted(mine, key=lambda a: str(a.course_id))
+
+    async def list_rules_for_user(self, user_id: UserId) -> list[StandingRule]:
+        mine = {a.id for a in self._accounts.values() if a.user_id == user_id}
+        rules = (r for r in self._rules.values() if r.course_account_id in mine)
+        return sorted(rules, key=lambda r: (r.weekday, str(r.id)))
+
     async def upsert_account(self, account: CourseAccount) -> None:
         if account.id != derive_account_id(account.user_id, account.course_id):
             raise UniquenessConflictError("account id is not derive_account_id(user, course)")
