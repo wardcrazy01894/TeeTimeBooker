@@ -950,6 +950,42 @@ async def test_tick_isolates_per_rule_failure(caplog: pytest.LogCaptureFixture) 
     assert any(str(sat.id) in r.getMessage() and r.levelno >= logging.ERROR for r in caplog.records)
 
 
+async def test_tick_isolates_policy_lookup_failure_and_still_sweeps(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Review round 1 must-fix: a transient store error in the per-rule POLICY LOOKUP
+    (``get_account_unscoped``) must be isolated like a failure inside ``materialize_rule`` —
+    the other rules still materialize AND the ``rows_no_longer_covered`` sweep still runs."""
+    s = _store()
+    broken = await _tenant(s)
+    healthy = await _tenant(s, n=1)
+    sat = await s.upsert_rule(_rule(broken), user_id=broken.user.id)  # its lookup will fail
+    sun = await s.upsert_rule(_rule(healthy, weekday=SUN), user_id=healthy.user.id)
+    # A straggler for the sweep: a rule deactivated while its row was leased.
+    tue = await s.upsert_rule(_rule(healthy, weekday=1), user_id=healthy.user.id)
+    await _materialize(s, tue)
+    straggler = await _own_row(s, healthy, tue, date(2026, 10, 6))
+    assert await s.claim_rows([straggler.id], owner=BOOKER, until=BOOKER_UNTIL, now=NOW)
+    stored = await _stored_rule(s, tue)
+    await _edit(s, stored, replace(stored, active=False), healthy)
+    assert (await _get(s, straggler)).status is RowStatus.PENDING
+
+    rec, store = _recording(s)
+    rec.failing["get_account_unscoped"] = lambda account_id, *_a, **_k: (
+        account_id == broken.account.id
+    )
+    after_lease = BOOKER_UNTIL + timedelta(seconds=1)
+    with caplog.at_level(logging.ERROR, logger="teetime.tenant.materialize"):
+        reports = await _tick(store, now=after_lease)
+    assert [r.rule_id for r in reports] == [str(sun.id)]
+    assert (await _stored_rule(s, sun)).materialized_through is not None
+    assert (await _stored_rule(s, sat)).materialized_through is None
+    swept = await _get(s, straggler)
+    assert (swept.status, swept.status_reason) == (RowStatus.WITHDRAWN, "rule_deactivated")
+    assert "rows_no_longer_covered" in rec.calls
+    assert any(str(sat.id) in r.getMessage() and r.levelno >= logging.ERROR for r in caplog.records)
+
+
 async def test_tick_skips_rule_whose_course_has_no_policy(caplog: pytest.LogCaptureFixture) -> None:
     s = _store()
     t = await _tenant(s)
