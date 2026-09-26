@@ -48,14 +48,17 @@ SF5/M4). No store call happens inside [T0 - lead - 1 s, T0 + 10 s].
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from contextlib import AbstractAsyncContextManager
+import logging
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Protocol, runtime_checkable
 
+from ..core.clock import Clock
 from ..core.models import BookingResult, CourseId, RequestId
 from ..persistence.in_memory_store import InMemoryStore
+from ..persistence.store import ConcurrentRunError
 from .models import (
     Actor,
     CourseAccount,
@@ -73,7 +76,7 @@ from .models import (
     UserId,
 )
 
-_MU9 = "MULTIUSER_PLAN.md MU-9c"
+log = logging.getLogger(__name__)
 
 
 class RowLeaseError(RuntimeError):
@@ -483,6 +486,13 @@ class TenantStore(Protocol):
 class LeasedBookingStore:
     """``BookingStore`` adapter for the WATCHER and WEB paths (§3.5).
 
+    SINGLE-READ FINGERPRINT (MU-9c review): the ``RowFingerprint`` is captured once per instance
+    and never refreshed. If anything writes the row between two ``request_lock`` acquisitions
+    for the same RequestId (e.g. a ``record_outcomes`` that sets ``needs_reconcile`` and bumps the
+    version), every later acquisition on that row in the same run DEFERS as "moved". A caller
+    that locks a row more than once per run with an intervening write (the watcher's
+    reconcile-then-upgrade) must re-read and build a fresh instance, or refresh the map.
+
     Delegates terminals/attempts/sessions to an ``InMemoryStore`` but maps
     ``request_lock(request_id)`` to the DURABLE row lease of the row registered for that
     RequestId, **matching the ``RowFingerprint`` the runner read** (M5). It raises
@@ -491,8 +501,6 @@ class LeasedBookingStore:
     booker and the web across PROCESSES. The booking runner does NOT use this: its lease is
     already held from ``claim_rows``, and its in-run lock stays a plain ``InMemoryStore`` (no
     DB near T0).
-
-    STUB — implemented in MU-9c. Not yet a structural ``BookingStore`` (methods land with MU-9c).
     """
 
     def __init__(
@@ -502,11 +510,87 @@ class LeasedBookingStore:
         tenant: TenantStore,
         owner: str,
         lease_seconds: float,
+        clock: Clock,
         row_for_request: Mapping[RequestId, tuple[RowId, RowFingerprint]],
     ) -> None:
-        raise NotImplementedError(_MU9)
+        self._inner = inner
+        self._tenant = tenant
+        self._owner = owner
+        self._lease_seconds = lease_seconds
+        self._clock = clock
+        self._row_for_request = dict(row_for_request)
+
+    async def initialize(self) -> None:
+        await self._inner.initialize()
+
+    async def get_terminal(
+        self, request_id: RequestId, resolved_date: date
+    ) -> BookingResult | None:
+        return await self._inner.get_terminal(request_id, resolved_date)
+
+    async def record_terminal(self, result: BookingResult, resolved_date: date) -> None:
+        await self._inner.record_terminal(result, resolved_date)
+
+    async def delete_terminal(self, request_id: RequestId, resolved_date: date) -> None:
+        await self._inner.delete_terminal(request_id, resolved_date)
+
+    async def append_attempt(
+        self,
+        request_id: RequestId,
+        attempt: int,
+        event: str,
+        payload: dict[str, object],
+        at: datetime,
+    ) -> None:
+        await self._inner.append_attempt(request_id, attempt, event, payload, at)
+
+    async def cache_session(self, course_id: CourseId, blob: bytes, expires_at: datetime) -> None:
+        await self._inner.cache_session(course_id, blob, expires_at)
+
+    async def load_session(self, course_id: CourseId) -> bytes | None:
+        return await self._inner.load_session(course_id)
 
     def request_lock(self, request_id: RequestId) -> AbstractAsyncContextManager[None]:
         """Acquire the durable row lease for ``row_for_request[request_id]`` with its
-        fingerprint; else raise ``ConcurrentRunError`` (contention or row changed)."""
-        raise NotImplementedError(_MU9)
+        fingerprint; else raise ``ConcurrentRunError`` (contention, row changed, or no row
+        registered for ``request_id``). Not re-entrant, exactly like ``InMemoryStore``: the inner
+        in-process lock is taken FIRST, so a nested acquire raises before touching the lease."""
+        return self._lease(request_id)
+
+    @asynccontextmanager
+    async def _lease(self, request_id: RequestId) -> AsyncIterator[None]:
+        async with self._inner.request_lock(request_id):
+            registered = self._row_for_request.get(request_id)
+            if registered is None:
+                # A wiring bug, not contention: defer (never act without cross-process
+                # exclusion), but loudly.
+                log.error("leased store: no row registered for request %s; deferring", request_id)
+                raise ConcurrentRunError(f"no row registered for request {request_id}")
+            row_id, fingerprint = registered
+            now = self._clock.now_utc()
+            acquired = await self._tenant.acquire_row_lease(
+                row_id,
+                owner=self._owner,
+                until=now + timedelta(seconds=self._lease_seconds),
+                now=now,
+                expected=fingerprint,
+            )
+            if not acquired:
+                log.info("leased store: row %s leased or changed since the read; deferring", row_id)
+                raise ConcurrentRunError(f"row {row_id} is leased or changed since it was read")
+            try:
+                yield
+            finally:
+                await self._release(row_id)
+
+    async def _release(self, row_id: RowId) -> None:
+        # Never raise from here: an exception in flight (or a cancellation) must not be masked by
+        # a DB blip, and an unreleased lease simply expires after ``lease_seconds``.
+        try:
+            await self._tenant.release_row_lease(row_id, owner=self._owner)
+        except Exception:
+            log.warning(
+                "leased store: release of row %s lease failed; it expires on its own",
+                row_id,
+                exc_info=True,
+            )

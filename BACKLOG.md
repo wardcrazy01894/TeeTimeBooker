@@ -85,6 +85,9 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   race window) would free them on the next watch cycle.
 - **`summary_email_failed` unset when the run was already non-zero** (MU-9b review): exit code is
   correct; add a test + set the flag for the double-failure case.
+- **`LeasedBookingStore` fingerprint is single-read** (MU-9c review): add a regression test pinning
+  that a version-bumping write between two same-row `request_lock`s on one instance makes the
+  second defer, before any refactor moves the watcher onto it.
 - **Durable uncertain-slot carrier for PENDING rows** (PR #235 review must-fix, taken as a
   documented gap): an UNCERTAIN watcher book on a PENDING row records `needs_reconcile` but no
   slot (`booked_tee_time` is BOOKED-only), so a POST that actually landed is adopted UNOWNED on

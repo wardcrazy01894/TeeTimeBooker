@@ -15,8 +15,8 @@ MU-9a (the runner core: ``run_release_event``, ``resolve_credentials``,
 ``assert_blind_methods_present``) and MU-9b (``exit_code_for``, the post-race emails
 ``finish_run``, ``plan_release_event``, the §11.2 log lines, the store-call / writer bounds) are
 IMPLEMENTED; ``teetime tenant-run`` / ``tenant-plan`` (``tenant.booking_job``) run them over an
-in-memory store — nothing on the production path calls them until MU-15a/MU-16. Still a stub:
-``LeasedBookingStore`` (MU-9c). The tenant watcher (MU-10b) lives in ``tenant.watch_runner``.
+in-memory store — nothing on the production path calls them until MU-15a/MU-16. ``LeasedBookingStore``
+(MU-9c, ``tenant.store``) is for the watcher/web only. The tenant watcher (MU-10b) lives in ``tenant.watch_runner``.
 """
 
 from __future__ import annotations
