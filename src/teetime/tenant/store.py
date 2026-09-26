@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Protocol, runtime_checkable
 
+from ..core.clock import Clock
 from ..core.models import BookingResult, CourseId, RequestId
 from ..persistence.in_memory_store import InMemoryStore
 from .models import (
@@ -72,8 +73,6 @@ from .models import (
     User,
     UserId,
 )
-
-_MU9 = "MULTIUSER_PLAN.md MU-9c"
 
 
 class RowLeaseError(RuntimeError):
@@ -484,8 +483,6 @@ class LeasedBookingStore:
     booker and the web across PROCESSES. The booking runner does NOT use this: its lease is
     already held from ``claim_rows``, and its in-run lock stays a plain ``InMemoryStore`` (no
     DB near T0).
-
-    STUB — implemented in MU-9c. Not yet a structural ``BookingStore`` (methods land with MU-9c).
     """
 
     def __init__(
@@ -495,11 +492,47 @@ class LeasedBookingStore:
         tenant: TenantStore,
         owner: str,
         lease_seconds: float,
+        clock: Clock,
         row_for_request: Mapping[RequestId, tuple[RowId, RowFingerprint]],
     ) -> None:
-        raise NotImplementedError(_MU9)
+        self._inner = inner
+        self._tenant = tenant
+        self._owner = owner
+        self._lease_seconds = lease_seconds
+        self._clock = clock
+        self._row_for_request = dict(row_for_request)
+
+    async def initialize(self) -> None:
+        await self._inner.initialize()
+
+    async def get_terminal(
+        self, request_id: RequestId, resolved_date: date
+    ) -> BookingResult | None:
+        return await self._inner.get_terminal(request_id, resolved_date)
+
+    async def record_terminal(self, result: BookingResult, resolved_date: date) -> None:
+        await self._inner.record_terminal(result, resolved_date)
+
+    async def delete_terminal(self, request_id: RequestId, resolved_date: date) -> None:
+        await self._inner.delete_terminal(request_id, resolved_date)
+
+    async def append_attempt(
+        self,
+        request_id: RequestId,
+        attempt: int,
+        event: str,
+        payload: dict[str, object],
+        at: datetime,
+    ) -> None:
+        await self._inner.append_attempt(request_id, attempt, event, payload, at)
+
+    async def cache_session(self, course_id: CourseId, blob: bytes, expires_at: datetime) -> None:
+        await self._inner.cache_session(course_id, blob, expires_at)
+
+    async def load_session(self, course_id: CourseId) -> bytes | None:
+        return await self._inner.load_session(course_id)
 
     def request_lock(self, request_id: RequestId) -> AbstractAsyncContextManager[None]:
         """Acquire the durable row lease for ``row_for_request[request_id]`` with its
         fingerprint; else raise ``ConcurrentRunError`` (contention or row changed)."""
-        raise NotImplementedError(_MU9)
+        return self._inner.request_lock(request_id)
