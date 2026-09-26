@@ -160,6 +160,13 @@ required setting is missing:
 uv run teetime web --host 127.0.0.1 --port 8000
 ```
 
+Pages (MU-13, plain HTML forms, no JavaScript): **`/`** is the dashboard (your dates for the
+next 21 days with status, the booked tee time and when the course account was last checked:
+"as of 07:53"). **`/rules`** creates, edits and deactivates standing weekly rules (course, day,
+window, party size); edits apply from the next drop. **`/dates`** adds a one-off date, skips or
+unskips a rule's date, withdraws a one-off, and re-requests a date after a cancel. Cancelling a
+booked tee time from the site arrives with MU-14.
+
 ---
 
 ## Docker (v1)
