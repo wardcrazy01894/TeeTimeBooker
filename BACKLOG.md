@@ -80,6 +80,11 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Multi-user follow-ups
 
+- **Runner: release leases claimed before a mid-retry claim failure** (MU-9b review should-fix):
+  today they expire at T0+1200 s, blocking the watcher ~20 min; a bounded release (outside the
+  race window) would free them on the next watch cycle.
+- **`summary_email_failed` unset when the run was already non-zero** (MU-9b review): exit code is
+  correct; add a test + set the flag for the double-failure case.
 - **Durable uncertain-slot carrier for PENDING rows** (PR #235 review must-fix, taken as a
   documented gap): an UNCERTAIN watcher book on a PENDING row records `needs_reconcile` but no
   slot (`booked_tee_time` is BOOKED-only), so a POST that actually landed is adopted UNOWNED on
