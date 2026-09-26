@@ -356,7 +356,8 @@ a tenant watcher, and a FastAPI/HTMX Container App. The new modules are on disk 
 stubs that raise `NotImplementedError` with an MU-milestone reference, and the ones already
 implemented per-milestone (`core/release_policy.py`, MU-1; `tenant/allocation.py`, MU-3;
 `tenant/crypto.py`, MU-7; `tenant/models.py`, the `TenantStore` Protocol and
-`tenant/in_memory_store.py` with the `tests/tenant/conformance.py` suite, MU-5) are covered by
+`tenant/in_memory_store.py` with the `tests/tenant/conformance.py` suite, MU-5;
+`dev/virtual_clock.py` + `tenant/recording.py` + `dev/blind_fake_adapter.py`, MU-9a0) are covered by
 their own tests. **Nothing imports them from the production path.**
 (`src/teetime/courses/foreup/token_pool.py` is IMPLEMENTED (MU-2) and backs `ForeUpAdapter`'s
 private CAPTCHA pool with unchanged default behaviour; the shared/injected mode has no caller yet.)
@@ -392,15 +393,50 @@ behaviour and called by nothing in the TOML path): `WatchOrchestrator(reconcile_
 restricts the duplicate reconcile to eligible (owned) reservations, `ForeUpAdapter.
 snapshot_trusted` (`ReservationSnapshotHealth`) says whether the last login's reservation cache
 can be believed, and `core.redaction.register_secret_literals` masks exact secret values in logs.
-See the reconcile, `list_reservations` and log-redaction bullets below. **MU-6 is DONE in code,
+See the reconcile, `list_reservations` and log-redaction bullets below. **MU-9a0 is DONE in code,
+UNWIRED** (the test/runtime primitives MU-9a's runner and MU-10a's watcher build on; nothing in the
+TOML path imports either): `dev/virtual_clock.py::VirtualClock` is a discrete-event `Clock` for
+multi-account timing tests — a sleeper parks on its deadline and time jumps to the EARLIEST pending
+deadline only once every runnable task is blocked, so N concurrent busy-waits and staggered bursts
+each measure their OWN offsets exactly (`FakeClock`'s shared `_now` runs N× fast for the stagger's
+single-read `sleep(delay)` pattern — pinned as the non-vacuity contrast; `FakeClock` is untouched
+and single-account tests keep using it). `tenant/recording.py::make_recording_adapter` wraps an
+account's adapter in an in-memory, zero-I/O recorder that captures everything `Orchestrator.run`
+does not return — see the recorder bullet under the capability notes below, which also explains
+why it is one CONCRETE class per capability set and never a `__getattr__` proxy.
+`dev/blind_fake_adapter.py::BlindFakeAdapter` is the blind-capable `FakeAdapter` variant carrying
+the MU-3 allowlist hook (FakeAdapter's defaults are unchanged); it drives the recorder's race-path
+end-to-end test through the UNMODIFIED `Orchestrator`. **MU-10a is DONE in
+code, UNWIRED** (`tenant/watcher.py`, the tenant watcher's PURE decision layer — no I/O, no store
+or adapter calls; nothing calls it until the MU-10b runner wiring): `group_rows_for_search`
+(one shared search per `(course, date, party_size)` — party is part of the key because MB
+`players=4` returns a SUBSET of `players=2`), `needs_login` (the §7.1 step-3 reasons
+first-match-wins: bookable in-window slot for a PENDING row, a strictly-closer-to-midpoint
+upgrade candidate for a BOOKED row **only when OWNED**, `needs_reconcile`, an expired unreleased
+lease, the reconcile cadence `(account_id.int + run_index) % 6 == 0` — the UUID integer, never a
+per-process-salted `hash()` — and a >90-min-stale snapshot backstop for booked rows),
+`ownership_of`/`is_owned` (OWNED iff the raw id is ledgered `held`/`held_extra`;
+ADOPTED_RECONCILE iff `needs_reconcile` AND an EXACT instant+party match with a recorded
+UNCERTAIN slot the caller passes — fail-safe UNOWNED when nothing is passed), `upgrade_allowed`
+(**the ownership gate MU-10b MUST apply before `_try_upgrade`**, since E5 does not guard the
+upgrade), `classify_missing_booking` (§7.5: only TRUSTED snapshots count, the last two must both
+miss the id and be >=10 min apart, then the M2 exclusions in plan order — upgrade marker or a
+ledgered `cancelled_upgrade`/`cancelled_extra` -> `BOT_CAUSED`, a same-(date, party) replacement
+-> `ADOPT_REPLACEMENT`, else `EXTERNAL_CANCEL`; `cancelled_user` is deliberately NOT an
+exclusion, see the inline note), `dry_run_gate` (§7.8: never upgrade / reconcile-cancel / mark
+`cancelled(external)` in dry-run) and the `SearchSnapshotAdapter` family +
+`make_search_snapshot_adapter` (serves `search()` from the shared group result, delegates the
+rest; ONE concrete class per inner capability set — 16 — with NO `__getattr__`, so
+`runtime_checkable` `isinstance`, which is `getattr_static`-based on >=3.12, reads the proxy
+exactly like the inner). Wall-clock comparisons convert to the row's course timezone first.
+Tests: `tests/tenant/test_watcher_{login,ownership,proxy}.py`. **MU-6 is DONE in code,
 UNWIRED** (`tenant/materialize.py` is real; nothing calls it yet — the web (MU-13) and the tenant
 watcher tick (MU-10b) are its owners): `classify_date_history` (pure), `materialize_rule` (walks the
 FULL `[local_today, local_today + max(21, advance_days + 7)]` horizon every call), `apply_rule_edit`
 (window/party rewrite, weekday move, the reset→withdraw→reset→inactive deactivation, reactivation)
 and `materialize_tick` (due rules + the `rows_no_longer_covered` sweep). It needed two read-only
 `TenantStore` additions — `get_rule_unscoped` / `get_account_unscoped`, system reads with no
-`user_id` (the web never calls them) — conformance-pinned. See the materializer bullet below.
-Tenant store (decided 2026-09-25): a Cosmos DB
+`user_id` (the web never calls them) — conformance-pinned. See the materializer bullet below. Tenant store (decided 2026-09-25): a Cosmos DB
 free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
 "no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path
 is unaffected.
@@ -702,6 +738,45 @@ in `core/` — never directly. This is the cut line for parallel work.
   `AuthStateReportable`, `ReservationSnapshotHealth` (E6) — remain HONEST `runtime_checkable` `isinstance` presence-checks:
   for those "has the method" *is* the capability, so they can't desync the way a flag could
   and are deliberately NOT folded into `AdapterCapabilities`.)
+- **The tenant recorder is one CONCRETE class per capability set — never a `__getattr__` proxy
+  (`tenant/recording.py`, MULTIUSER_PLAN §4.6 SF1, MU-9a0 — unwired).** On Python ≥ 3.12 a
+  `runtime_checkable` `isinstance` uses `inspect.getattr_static`, which does NOT consult
+  `__getattr__`. A forwarding proxy around a ForeUP adapter would therefore FAIL
+  `isinstance(proxy, ReservationCacheRefreshable)`, `_reguard_before_fallback` would fall back to
+  the idempotent `authenticate()`, read the STALE pre-burst snapshot, and could double-book —
+  the same silent failure for `AuthStateReportable` (the soft-login-skip gate) and
+  `ReservationSnapshotHealth` (vanish inference). `make_recording_adapter(inner, clock=…)`
+  instead composes ONE memoised concrete class per inner capability set: a mixin per opt-in
+  Protocol that defines the member EXPLICITLY (`refresh_reservations`, `is_authenticated`,
+  `snapshot_trusted`), selected by `isinstance(inner, Protocol)` — so the ForeUP variant has all
+  three, the FakeAdapter variant only `is_authenticated`, TeeItUp none — on top of
+  `BlindCapableRecordingAdapter` iff `inner.capabilities.blind_post` (the orchestrator CASTS to
+  `BlindPostCapable` and calls `synthesize_blind_slots`/`captcha_pool_size` on the RECORDER; a cast
+  is not a check, so a missing method would fail silently in the pre-warm gather and then fatally
+  at T0). That variant also passes the MU-3 allowlist hook through (`set_blind_allowlist` /
+  `blind_allowlist`) and REFUSES (`TypeError` at wrap time, i.e. at ~05:51 not T0) a blind-capable
+  inner that lacks it. `capabilities`/`course_id` are copied. Pinned by
+  `test_recording_adapter_isinstance_mirrors_inner_for_each_capability`, which DISCOVERS every
+  `runtime_checkable` Protocol in `core/adapter.py` (so a new capability Protocol is covered the
+  day it lands), and by a signature-equality test against the Protocol members. **What it
+  records** (in memory, zero I/O, so the T0 path gains no calls; instants from the injected
+  `Clock`, which must be the SAME clock the orchestrator runs on so a `book()`'s `at` IS its send
+  instant): every BOOKED `book()` (raw id with `TTB:` stripped, slot, send instant); every
+  `book()` that raised anything but `SlotGoneError` — UNCERTAIN, the POST may have landed — by
+  exception CLASS NAME only (messages can carry PII), with the `CaptchaError` family (incl.
+  `OtpChallengeError`) flagged, which is the ONLY place a challenge the blind burst swallowed
+  survives (§4.5 makes the runner exit non-zero on it); every `cancel_reservation` outcome;
+  other members' raises + `authenticate`/`refresh_reservations` call counts. Every recorded
+  exception is re-raised as the SAME object — control flow is untouched. `RecordingLog` derives
+  the §4.6 ownership table: `owned_raw_ids()` = booked ids not later cancelled OK (the kept best
+  AND any `held_extras()` — a surplus whose in-run cancel FAILED stays OWNED so the watcher's
+  owned-only reconcile collapses it); `cancelled_extras()`; `needs_reconcile()` = any UNCERTAIN
+  book or a BOOKED with no confirmation code; a pre-T0/re-guard `ALREADY_BOOKED` recorded no
+  book, so `is_owned(conf)` is False (a manual booking is never upgradable/cancellable by the
+  bot) unless the reguard found a POST the recorder logged UNCERTAIN — then the watcher adopts by
+  EXACT tee time against `book_failures`. Proven through the UNMODIFIED race-path `Orchestrator`
+  on a `VirtualClock` (`test_recording_adapter_blind_capable_end_to_end`: the two staggered POSTs
+  are recorded at exactly −500/−250 ms and the allowlist set on the recorder is honoured).
 - **The T0 blind burst is STAGGERED across the release boundary, not simultaneous
   (STAGGER_PLAN.md).** `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)`) gives
   each POST its own fire offset in ms relative to T0, paired positionally with the RANKED
