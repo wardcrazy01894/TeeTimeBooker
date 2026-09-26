@@ -56,7 +56,7 @@ from ..courses.foreup.token_pool import LeaseKey, SharedCaptchaPool
 from ..persistence.in_memory_store import InMemoryStore
 from .allocation import allocate_blind_slots, draft_order
 from .crypto import Keyring, credential_aad, decrypt_password
-from .groups import group_floor
+from .groups import collapse_group, group_floor
 from .models import (
     Actor,
     BookingSource,
@@ -452,6 +452,8 @@ async def _book_event(
         quiet_s=post_burst_quiet_s,
         started=started,
     )
+    if not dry_run:
+        await _collapse_groups(accounts, store=store, clock=clock, owner=owner, event=event)
     await _close_adapters(accounts)
     await _close_pools(pools)
     by_row = {r.row.id: r for r in claimed_rows}
@@ -777,6 +779,54 @@ async def _apply_group_floor(
             else EventRow(row=replace(r.row, options=floor), account=r.account)
         )
     return out
+
+
+# A group needs this many BOOKED rows before there is anything to collapse (§16.4).
+_DUPLICATE = 2
+
+
+async def _collapse_groups(
+    accounts: Sequence[_Account],
+    *,
+    store: TenantStore,
+    clock: Clock,
+    owner: str,
+    event: ReleaseEvent,
+) -> None:
+    """§16.4 booker join point (review round 2, MF2): runs strictly AFTER every WRITE #2 has
+    committed (``_race`` has returned), off the T0 path. It reads the groups of this run's rows
+    fresh (the rows' new versions are the fingerprints the collapse leases with) and collapses
+    each group that holds two BOOKED rows, cancelling through this run's still-open adapters.
+    A worse booking at an account outside this run has no open adapter here and is left to the
+    watcher's backstop. Rows with no group cost nothing. Never raises."""
+    keys = {(a.row.group_id, a.row.target_date) for a in accounts if a.row.group_id is not None}
+    if not keys:
+        return
+    adapters = {a.event_row.account.id: a.recorder for a in accounts}
+    try:
+        rows = await store.rows_in_groups(keys)
+        by_group: dict[tuple[UUID, date], list[RequestRow]] = {}
+        for r in rows:
+            if r.group_id is not None:
+                by_group.setdefault((r.group_id, r.target_date), []).append(r)
+        for members in by_group.values():
+            if sum(m.status is RowStatus.BOOKED for m in members) < _DUPLICATE:
+                continue
+            report = await collapse_group(
+                members,
+                store=store,
+                adapters=adapters,
+                actor=Actor.BOOKING_RUNNER,
+                owner=owner,
+                clock=clock,
+            )
+            log.info("tenant-run %s: group collapse %s", event.key, report)
+    except Exception as exc:
+        log.critical(
+            "tenant-run %s: group collapse failed (%s); the watcher collapses on its next run",
+            event.key,
+            type(exc).__name__,
+        )
 
 
 async def _read_and_claim(

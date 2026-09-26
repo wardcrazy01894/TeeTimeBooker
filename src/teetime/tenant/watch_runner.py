@@ -72,7 +72,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from ..core.adapter import (
@@ -106,6 +106,7 @@ from ..core.watch_orchestrator import WatchOrchestrator
 from ..notifications.notifier import NoopNotifier
 from ..persistence.in_memory_store import InMemoryStore
 from .crypto import Keyring
+from .groups import collapse_group, group_floor
 from .materialize import materialize_tick
 from .models import (
     Actor,
@@ -251,6 +252,7 @@ async def run_tenant_watch(
             if i:
                 await clock.sleep(_SPACING_S)
             await run.process(work)
+        await run.collapse(rows)
     except _RateLimitedError:
         run.tally.rate_limited = True
     except _SystemicError as exc:
@@ -376,6 +378,10 @@ class _AccountWork:
         return any(w.reason is not None for w in self.rows)
 
 
+# A group needs this many BOOKED rows before there is anything to collapse (§16.4).
+_DUPLICATE = 2
+
+
 @dataclass
 class _Run:
     """Everything one run shares; the methods are the §7.1 steps in order."""
@@ -393,6 +399,8 @@ class _Run:
     owner: str
     tally: _Tally = field(default_factory=_Tally)
     adapters: list[CourseAdapter] = field(default_factory=list)
+    # Logged-in sessions by account, kept for the end-of-run group collapse (§16.4).
+    sessions: dict[CourseAccountId, CourseAdapter] = field(default_factory=dict)
 
     # --- step 1: the reads (tick -> finalizer -> the one watch query) ---------------------------
 
@@ -418,7 +426,98 @@ class _Run:
                 "get_account_unscoped", self.store.get_account_unscoped(row.course_account_id)
             )
             await self._notify(UserEventKind.LOST, row, account=account, detail="frozen unbooked")
-        return rows
+        return await self._group_floor(rows)
+
+    async def _group_floor(self, rows: list[EventRow]) -> list[EventRow]:
+        """§16.3: a PENDING grouped row is searched and booked only for its options ranked
+        better than the best booking its group holds at another account, and dropped from this
+        run if none is. BOOKED rows are untouched (the collapse needs them). Rows with no group
+        cost no read; a failed group read is fail-open (the collapse keeps the best booking)."""
+        keys = {(r.row.group_id, r.row.target_date) for r in rows if r.row.group_id is not None}
+        if not keys:
+            return rows
+        try:
+            siblings = await self.store.rows_in_groups(keys)
+        except Exception as exc:
+            log.warning(
+                "tenant-watch: group read failed (%s); using every option", type(exc).__name__
+            )
+            return rows
+        out: list[EventRow] = []
+        for r in rows:
+            if r.row.status is not RowStatus.PENDING or r.row.group_id is None:
+                out.append(r)
+                continue
+            floor = group_floor(r.row, siblings)
+            if not floor:
+                log.info("tenant-watch: row %s skipped: its group holds a better booking", r.row.id)
+                continue
+            out.append(
+                r
+                if floor == r.row.options
+                else EventRow(row=replace(r.row, options=floor), account=r.account)
+            )
+        return out
+
+    # --- step 5: §16.4 group collapse, after every account was processed ----------------------
+
+    async def collapse(self, rows: Sequence[EventRow]) -> None:
+        """Collapse every group that holds two BOOKED rows (the backstop for the booker's pass,
+        and the second half of a cross-course upgrade booked this run). Cancels go through the
+        sessions this run opened; a losing account with no session is logged in here (only when
+        a group actually needs collapsing). Dry-run cancels nothing (§7.8). Never raises."""
+        keys = {(r.row.group_id, r.row.target_date) for r in rows if r.row.group_id is not None}
+        if not keys:
+            return
+        try:
+            members = await self.store.rows_in_groups(keys)
+            groups: dict[tuple[UUID, date], list[RequestRow]] = {}
+            for m in members:
+                if m.group_id is not None:
+                    groups.setdefault((m.group_id, m.target_date), []).append(m)
+            for group in groups.values():
+                booked = [m for m in group if m.status is RowStatus.BOOKED]
+                if len(booked) < _DUPLICATE:
+                    continue
+                if not self.dry_run:
+                    for m in booked:
+                        await self._ensure_session(m)
+                report = await collapse_group(
+                    group,
+                    store=self.store,
+                    adapters=self.sessions,
+                    actor=Actor.WATCHER,
+                    owner=self.owner,
+                    clock=self.clock,
+                    dry_run=self.dry_run,
+                )
+                log.info("tenant-watch: group collapse %s", report)
+        except Exception as exc:
+            log.critical("tenant-watch: group collapse failed (%s)", type(exc).__name__)
+
+    async def _ensure_session(self, row: RequestRow) -> None:
+        if row.course_account_id in self.sessions:
+            return
+        account = await self.store.get_account_unscoped(row.course_account_id)
+        if account is None:
+            return
+        probe = EventRow(row=row, account=account)
+        resolved, failed = resolve_credentials([probe], keyring=self.keyring)
+        if failed:
+            self.tally.decrypt_failures.append(account.id)
+            return
+        inner = self._build(account.course_id, account)
+        self.tally.logins += 1
+        try:
+            await inner.authenticate(resolved[probe.row.id])
+        except Exception as exc:
+            log.warning(
+                "tenant-watch: collapse login failed for %s (%s)", account.id, type(exc).__name__
+            )
+            return
+        if isinstance(inner, AuthStateReportable) and not inner.is_authenticated:
+            return
+        self.sessions[account.id] = inner
 
     # --- step 2: ONE search per (course, date, party) group --------------------------------------
 
@@ -541,6 +640,7 @@ class _Run:
         snapshot = await self._login(work, inner, creds)
         if snapshot is None:
             return
+        self.sessions[account.id] = inner
         for row_work in sorted(work.rows, key=lambda w: w.row.id):
             await self._act(row_work, inner, creds, snapshot=snapshot, previous=work.previous)
 
