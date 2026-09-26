@@ -502,8 +502,8 @@ Operator steps, once (agents must not run them):
 
 | # | Principal | Role | Scope |
 |---|-----------|------|-------|
-| 1 | prod MI `id-teetime-prod` | Contributor | `/dbs/prod` |
-| 2 | dev MI `id-teetime-dev` | Contributor | `/dbs/dev` |
+| 1 | prod MI `mi-teetime-prod` | Contributor | `/dbs/prod` |
+| 2 | dev MI `mi-teetime-dev` | Contributor | `/dbs/dev` |
 | 3 | developer principal(s) for the integration suite | Contributor | `/dbs/dev/colls/tenant-ci` and `/dbs/dev/colls/global-ci` |
 | 4 | operator's own user (Portal Data Explorer) | **Reader** | `/dbs/prod` and `/dbs/dev` |
 

@@ -16,6 +16,7 @@ These static tests couple the workflow to the latch: CI MUST source `killswitchF
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,20 @@ def _deploy_blocks(workflow: str) -> list[str]:
     return [p.split("- name:")[0] for p in parts]
 
 
+def _passes(block: str, name: str) -> bool:
+    """``name=`` as a whole inline ``--parameters`` token: a substring check would count
+    ``acsEmailSender=`` as passing a param named ``Sender`` (#247 review)."""
+    return re.search(rf"(?<![\w]){re.escape(name)}=", block) is not None
+
+
+def test_param_passing_check_matches_whole_names_only() -> None:
+    block = '--parameters acsEmailSender="${X}" dryRun="${Y}"'
+    assert _passes(block, "acsEmailSender")
+    assert _passes(block, "dryRun")
+    assert not _passes(block, "Sender")
+    assert not _passes(block, "EmailSender")
+
+
 @pytest.mark.parametrize("param_file", [PARAM_DEV, PARAM_PROD])
 def test_every_param_file_value_reaches_every_ci_deploy(workflow: str, param_file: Path) -> None:
     """MU-15a lesson (2026-09-26): CI deploys with INLINE parameters, so a value set only in a
@@ -85,5 +100,5 @@ def test_every_param_file_value_reaches_every_ci_deploy(workflow: str, param_fil
     .bicepparam file declares must be passed by EVERY deploy command in the workflow, so the
     checked-in file stays the single source of truth."""
     for block in _deploy_blocks(workflow):
-        missing = sorted(n for n in _declared_params(param_file) if f"{n}=" not in block)
+        missing = sorted(n for n in _declared_params(param_file) if not _passes(block, n))
         assert missing == [], f"{param_file.name}: not passed to a CI deploy: {missing}"
