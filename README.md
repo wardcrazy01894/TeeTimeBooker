@@ -144,9 +144,9 @@ exits 0. `one_booking_policy` (cancel + rebook to a closer-to-midpoint slot) is 
 `teetime web` serves the invite-only website (FastAPI) with uvicorn. The `teetime-web-<env>`
 Container App exists in Bicep (MU-15a, `infra/bicep/modules/webapp.bicep`) but is **gated off by
 default in both envs** (`deployWebApp=false` — the Google OAuth client and session-secret Key
-Vault secrets do not exist yet), so it is **not actually running anywhere**. Until the Cosmos
-store is wired (MU-16), it keeps users and invites **in memory** regardless — they reset on
-restart. Sign-in is Google OAuth only (operator decision — GitHub is unwired in infra even though
+Vault secrets do not exist yet), so it is **not actually running anywhere**. It keeps users,
+invites and dates in the Cosmos tenant store when `TENANT_COSMOS_ENDPOINT` is set (MU-16a, see
+"Tenant store" below), and **in memory** otherwise — then they reset on restart. Sign-in is Google OAuth only (operator decision — GitHub is unwired in infra even though
 the code supports it), and
 only an email the operator has invited on `/admin/users` can sign in. It fails closed if a
 required setting is missing:
@@ -182,11 +182,14 @@ and a 15-minute pause after 2 attempts on one login), then stores the password A
 and never shows it again. It also re-verifies a login the course rejected, and **Refresh from
 course** re-reads your reservations live (cached for 2 minutes, at most 6 per account per hour;
 a list the course returned unreadably is never saved). Connect / refresh / cancel need the
-credential keyring and a course adapter, which `teetime web` does not wire yet (MU-15a/MU-16),
-so on a local run those actions say "not available".
+credential keyring: with `TENANT_CREDS_KEYRING` set `teetime web` wires it (plus the hosted-course
+adapter factory and policies, MU-16a); without it the site starts with a WARNING and those
+actions say "not available". With `ACS_EMAIL_*` set the user is emailed after a cancel.
 
-Notifications (MU-11, in code, not wired to a job yet) go out as plain-text email through Azure
-Communication Services, called over REST with no SDK. The tenant jobs will read two env vars:
+Notifications (MU-11) go out as plain-text email through Azure Communication Services, called
+over REST with no SDK. `tenant-run`, `tenant-watch` and `web` read two env vars (unset: the
+booker's operator summary fails, so a run with anything to report exits non-zero; the watcher and
+the web only log the user events):
 
 | Env var | Purpose |
 |---------|---------|
@@ -195,11 +198,31 @@ Communication Services, called over REST with no SDK. The tenant jobs will read 
 
 `teetime tenant-watch --dry-run true` runs one multi-user tenant-watcher pass (MU-10b: shared
 searches, logins only on an opportunity, snapshot trust, vanish/adoption, ownership-gated
-upgrades). It needs `TENANT_CREDS_KEYRING` and, until MU-16, runs over an empty in-memory store.
+upgrades) for the hosted courses, with the real ForeUP adapters. It needs `TENANT_CREDS_KEYRING`,
+and `TWOCAPTCHA_API_KEY` unless `--dry-run true`.
+
+**Tenant store (MU-16a).** Every tenant command (`tenant-run`, `tenant-plan`, `tenant-watch`,
+`tenant-migrate`, `web`) opens the store the same way: with `TENANT_COSMOS_ENDPOINT` set, the Cosmos
+store (Entra auth only — the managed identity named by `AZURE_CLIENT_ID` in Azure, your `az login`
+locally); with nothing set, an empty in-memory store and a loud WARNING; anything half-configured
+(an endpoint without a database, or a database without an endpoint) refuses to start.
+
+| Env var | Purpose |
+|---------|---------|
+| `TENANT_COSMOS_ENDPOINT` | Cosmos account endpoint (`https://<account>.documents.azure.com:443/`); unset = in-memory |
+| `TENANT_COSMOS_DATABASE` | `dev` or `prod`; REQUIRED with the endpoint (never defaulted, so prod can never fall back to dev data) |
+| `AZURE_CLIENT_ID` | The user-assigned managed identity's client id (set by Bicep in tenant mode) |
+| `TENANT_COSMOS_CONTAINER_SUFFIX` | `-ci` selects the integration suite's CI containers (dev only); never set by a job |
+
+`teetime tenant-migrate` runs the ordered tenant data migrations (v1 ships none): it requires the
+Cosmos store, checks it can reach both containers, runs the list idempotently, logs what it did
+and exits 0 (non-zero on any failure). It is what the Manual `teetime-migrate-<env>` ACA job runs;
+CI starts that job and waits for it right after deploy pass 2, only in an env whose
+`bookingMode`/`watchMode` is `tenant`.
 
 `teetime tenant-run --event mb0600et [--dry-run true|false] [--wait/--no-wait]` is one
-multi-user booking run for a release event (MU-9b, not deployed; an empty in-memory store until
-MU-16). `--wait` is the cron path: NTP offset, DST gate, then the unchanged per-account race.
+multi-user booking run for a release event (MU-9b; no env runs it until its `bookingMode` is
+`tenant`). `--wait` is the cron path: NTP offset, DST gate, then the unchanged per-account race.
 The exit code is non-zero only for systemic causes (store, keyring, any decrypt failure,
 CAPTCHA/OTP, an UNCERTAIN booking, the self-deadline, a failed outcome write, or an operator
 summary that could not be sent); a missed drop or one user's bad password exits 0 and is carried

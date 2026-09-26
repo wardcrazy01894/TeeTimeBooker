@@ -14,6 +14,8 @@
 // only after the operator has created those three secrets (see the PR body for the exact
 // `az keyvault secret set` commands and the Google Cloud Console steps to obtain the OAuth
 // client — never do this from an agent per the deploy-safety rules, infra/CLAUDE.md).
+// MU-16a: with `tenantCosmosEndpoint` non-empty the app ALSO references TENANT-CREDS-KEYRING and
+// ACS-EMAIL-CONNECTION (see `tenantBackend` below), which must exist first too.
 //
 // Killswitch coupling (MULTIUSER_PLAN §10.1, SF8): `enableIngress` is wired from main.bicep as
 // `effectiveEnableSchedules` (= enableSchedules && !killswitchFired), the SAME latch that gates
@@ -72,6 +74,15 @@ param operatorEmail string = ''
 @description('Permanent dry-run flag for the web app\'s cancel action (MULTIUSER_PLAN §7.8 SF2) — mirrors the ACA Jobs\' dryRun param.')
 param dryRun bool = true
 
+@description('Cosmos DB endpoint for the tenant store (main.bicep\'s tenantCosmosEndpoint, the SAME value the tenant-mode jobs get). Empty (the default) = the web runs on its in-memory store and references NO tenant Key Vault secret. Non-empty = the tenant backend below is wired (MU-16a).')
+param tenantCosmosEndpoint string = ''
+
+@description('ACS Email sender address (plain value). Only wired with the tenant backend.')
+param acsEmailSender string = ''
+
+@description('Client ID of the user-assigned managed identity (identity.bicep), wired as AZURE_CLIENT_ID so the Cosmos client authenticates as the env\'s MI. Only wired with the tenant backend.')
+param userAssignedIdentityClientId string = ''
+
 // ---------------------------------------------------------------------------
 // Variables
 // ---------------------------------------------------------------------------
@@ -107,6 +118,30 @@ var webEnv = [
   { name: 'TEETIME_ENV',                   value: envName }
 ]
 
+// MU-16a: the tenant backend (`teetime web` over tenant/wiring.py): the durable store, the
+// credential keyring (connect / refresh / cancel, MU-14) and ACS (user email). Gated on a
+// non-empty tenantCosmosEndpoint — the SAME param that makes the jobs' tenant mode useful — so a
+// web deployed without Cosmos stays on its in-memory store and references no tenant secret.
+// When the endpoint IS set, TENANT-CREDS-KEYRING and ACS-EMAIL-CONNECTION must already exist in
+// the vault (the operator pre-creates the keyring; email.bicep writes ACS-EMAIL-CONNECTION when
+// deployAcsEmail=true) — the same prerequisites the tenant-mode jobs have (MULTIUSER_PLAN §10.1).
+// No DB secret: Cosmos auth is the MI + a hand-created data-plane role assignment (§10.2/§10.5).
+var tenantBackend = !empty(tenantCosmosEndpoint)
+
+var webTenantSecrets = [
+  { name: 'tenant-creds-keyring',  keyVaultUrl: '${keyVaultUri}secrets/TENANT-CREDS-KEYRING',  identity: userAssignedIdentityResourceId }
+  { name: 'acs-email-connection',  keyVaultUrl: '${keyVaultUri}secrets/ACS-EMAIL-CONNECTION',  identity: userAssignedIdentityResourceId }
+]
+
+var webTenantEnv = [
+  { name: 'TENANT_COSMOS_ENDPOINT', value: tenantCosmosEndpoint }
+  { name: 'TENANT_COSMOS_DATABASE', value: envName }
+  { name: 'AZURE_CLIENT_ID',        value: userAssignedIdentityClientId }
+  { name: 'TENANT_CREDS_KEYRING',  secretRef: 'tenant-creds-keyring' }
+  { name: 'ACS_EMAIL_CONNECTION',  secretRef: 'acs-email-connection' }
+  { name: 'ACS_EMAIL_SENDER',       value: acsEmailSender }
+]
+
 var tags = {
   application: 'teetime'
   environment: envName
@@ -140,7 +175,7 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
         allowInsecure: false
       } : null
       registries: registries
-      secrets: webSecrets
+      secrets: tenantBackend ? concat(webSecrets, webTenantSecrets) : webSecrets
     }
     template: {
       containers: [
@@ -153,7 +188,7 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
           }
           command: ['teetime']
           args: ['web', '--port', '8000']
-          env: webEnv
+          env: tenantBackend ? concat(webEnv, webTenantEnv) : webEnv
         }
       ]
       scale: {

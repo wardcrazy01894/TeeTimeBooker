@@ -1260,7 +1260,9 @@ pull `aiohttp`): **no system packages, no ODBC driver**. The image stays well un
 in AZURE_PLAN §5.2.
 
 **Migrations:** document `schemaVersion` with expand/contract readers; data backfills via the
-Manual `teetime-migrate-<env>` job, which CI starts and awaits **before** deploying jobs and web.
+Manual `teetime-migrate-<env>` job, which CI starts and awaits **before** deploying jobs and web
+(**as built, MU-16a: right AFTER deploy pass 2** — pass 1 puts every job on the bootstrap image,
+so strictly-before would need a third pass; safe because readers accept N−1).
 Image rollback is safe because readers accept N−1 (§10.2).
 
 ### 10.2 The database: Cosmos DB for NoSQL, free tier (decided 2026-09-25)
@@ -1354,7 +1356,7 @@ There is no emulator in CI. The Linux emulator is optional for local use.
 
 **Schema evolution.** Documents carry `schemaVersion`. Readers accept version N and N−1, and
 writers write N (**expand/contract**). Data backfills run as the Manual-trigger
-`teetime-migrate-<env>` job (`tenant-migrate`), started by CI before jobs and web deploy (never by
+`teetime-migrate-<env>` job (`tenant-migrate`), started by CI right after deploy pass 2 (MU-16a; never by
 an agent, per the deploy guard). Containers and index policies are Bicep-owned.
 
 ### 10.3 Killswitch
@@ -1541,7 +1543,8 @@ once their dependencies land.
 | **MU-14** | Connect/verify, refresh (TTL), cancel | `web/services.py` | MU-7, MU-9c, MU-13 | `test_probe_rate_limits`, `test_probe_never_auto_retries`, `test_connect_encrypts_with_aad`, `test_refresh_ttl_serves_cache`, `test_cancel_requires_trusted_snapshot`, `test_cancel_refused_while_booker_lease`, `test_cancel_writes_row_slot_ledger_in_one_batch`, `test_cancel_audit_failure_does_not_undo_cancel` (r2 SF7), `test_unowned_cancel_requires_confirm`, `test_dry_run_web_refuses_cancel` (SF2) | – |
 | **MU-15a** | Infra without the DB: event loop, modes (default toml), webapp, ACS, killswitch lever (c) + latch | `infra/bicep/**` | MU-1, MU-9b, MU-10b, MU-12 (the container runs `tenant-run` / `tenant-watch` / `teetime web`, and `test_tenant_env_refs_wired_in_compute_bicep` reads the settings loaders) | `test_release_events_parity`, `test_compute_default_mode_is_toml`, `test_killswitch_targets_all_derived_jobs_and_web`, `test_webapp_ingress_disabled_when_killswitch_fired` (SF8), `test_tenant_env_refs_wired_in_compute_bicep`, `test_job_names_le_32_chars` | AZURE_PLAN §3/§5/§7/§9, infra/CLAUDE.md, COST_KILLSWITCH_PLAN |
 | **MU-15b** | Shared `cosmos.bicep` (standalone in `rg-teetime-shared`; `prod`/`dev` databases, `tenant`/`global` containers + dev-only `tenant-ci`/`global-ci`, `totalThroughputLimit: 1000`) + the §10.5 hand-run runbook | `infra/bicep/modules/cosmos.bicep`, AZURE_PLAN §7.2 | MU-15a, S-M9 | `test_cosmos_free_tier_and_local_auth_disabled` (incl. `totalThroughputLimit == 1000`, r2 SF6), `test_cosmos_two_databases_400ru_each_le_1000`, `test_cosmos_containers_partition_keys`, `test_cosmos_ci_containers_dev_only`, `test_no_bicep_creates_cosmos_sql_role_assignments` (r2 SF3) | AZURE_PLAN §2.1/§7.2/§9, infra/CLAUDE.md module tree + runbook |
-| **MU-16** | Migrate job + deploy-workflow ordering + `tenant-seed --adopt` | `.github/workflows/azure-iac.yml`, `__main__` | MU-8b, MU-15b | `test_seed_adopt_requires_confirmation`, `test_workflow_runs_migrate_before_jobs` (static YAML) | AZURE_PLAN §8/§10 |
+| **MU-16a** (**DONE in code**) | Wire the tenant commands to real collaborators + migrate job + deploy-workflow step: ONE store builder (`tenant/wiring.py::open_tenant_store` — Cosmos when `TENANT_COSMOS_ENDPOINT` is set, in-memory + WARNING when nothing is, fail-closed on a half-configured env, `TENANT_COSMOS_DATABASE` never defaulted) for `tenant-run`/`tenant-plan`/`tenant-watch`/`web`; the watcher gets the hosted policies, `HostedAdapterFactory` and an ACS `UserNotifier`; `web` gets the keyring (E7), adapter factory, policies and notifier (`webapp.bicep` wires the store/keyring/ACS env iff `tenantCosmosEndpoint` is set); `teetime tenant-migrate` (`tenant/migrate.py`, empty ordered list) + a Manual `teetime-migrate-<env>` job (tenant mode only, no KV secret, not a killswitch target). **Deviation:** the workflow runs it right AFTER deploy pass 2, not before the jobs switch image — pass 1 puts every job on the bootstrap image, so strictly-before needs a third pass; safe because readers accept N−1. The pinning test is named for that: `test_workflow_runs_migrate_after_deploy_pass_2_in_tenant_mode_only` | `tenant/wiring.py`, `tenant/migrate.py`, `__main__`, `compute.bicep`, `webapp.bicep`, `.github/workflows/azure-iac.yml` | MU-8b, MU-15b | `tests/tenant/test_wiring.py`, `tests/tenant/test_migrate.py`, `tests/tenant/test_tenant_cli_wiring.py`, `tests/test_migrate_job_infra.py` (incl. the workflow test above), `tests/test_webapp_bicep.py` additions | README, CLAUDE.md, AZURE_PLAN §5.5/§7.1/§7.3 |
+| **MU-16b** | `tenant-seed --adopt` (only needed for the prod cutover) | `__main__` | MU-16a | `test_seed_adopt_requires_confirmation` | AZURE_PLAN §8/§10 |
 | **MU-17** | Dev cutover (params only) | `main.bicepparam.dev` | all above | – (verification per §11 step 4) | AZURE_PLAN §10 runbook |
 | **MU-18** | Prod cutover (params + tag) + docs (PLAN §12 hosted posture) | `main.bicepparam.prod` | MU-17 soak | – | all "latest infra tag" sites, PLAN §12 |
 | **MU-19** | Retire the TOML job wiring | `compute.bicep`, parity tests | MU-18 + 4 weekends | `test_no_toml_mode_remaining` | per §11.1 |

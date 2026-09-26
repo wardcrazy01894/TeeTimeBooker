@@ -60,8 +60,9 @@ engine's ``request_lock`` is the plain in-process ``InMemoryStore`` lock. The ha
 account flip to ``auth_failed`` needs a ``TenantStore`` write that does not exist yet (the same
 gap MU-9b has); the soft-auth threshold flip is the store's.
 
-UNWIRED: nothing on the production path calls this; ``teetime tenant-watch`` runs it over an
-in-memory store until MU-16 (Cosmos) and MU-15a (infra).
+``teetime tenant-watch`` runs it over the store ``tenant.wiring.open_tenant_store`` opens
+(Cosmos when configured, MU-16a); no env's watch job runs it until its ``watchMode`` is flipped
+to ``tenant`` (MU-17).
 """
 
 from __future__ import annotations

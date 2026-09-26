@@ -246,6 +246,32 @@ jobs:
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime-dev:${{ github.sha }}"
+      # MU-16a: run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2) — ONLY when this env
+      # runs a tenant mode, so today's toml deploys are untouched (compute.bicep creates the
+      # Manual `teetime-migrate-<env>` job only then). It runs right AFTER pass 2, not before the
+      # jobs switch image: pass 1 puts EVERY job (this one included) on the public bootstrap image,
+      # so the migration can only run the real code once pass 2 has also switched the booking/watch
+      # jobs and the web. Safe because readers accept schemaVersion N and N-1 (§10.2), and v1 ships
+      # no migration at all. A failed or timed-out execution fails the deploy job.
+      - name: Run tenant migrations (tenant mode only)
+        if: env.BOOKING_MODE == 'tenant' || env.WATCH_MODE == 'tenant'
+        run: |
+          JOB="teetime-migrate-${ENVNAME}"
+          EXEC=$(az containerapp job start -n "${JOB}" -g "${RESOURCE_GROUP}" --query name -o tsv)
+          test -n "${EXEC}" || { echo "::error::could not start ${JOB}"; exit 1; }
+          echo "Started ${JOB} execution ${EXEC}"
+          STATUS=""
+          for _ in $(seq 1 90); do
+            STATUS=$(az containerapp job execution show -n "${JOB}" -g "${RESOURCE_GROUP}" \
+                       --job-execution-name "${EXEC}" --query properties.status -o tsv)
+            case "${STATUS}" in
+              Succeeded) echo "${JOB} ${EXEC}: Succeeded"; exit 0 ;;
+              Failed|Stopped|Degraded) echo "::error::${JOB} ${EXEC}: ${STATUS}"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::${JOB} ${EXEC}: still '${STATUS}' after 15 min"
+          exit 1
       - name: Budget reminder (operator deploys manually — see AZURE_PLAN.md §9.2)
         # Budgets are subscription-scoped; the CI service principal is RG-scoped by
         # design (least privilege), so it cannot create them. The $20 email budget and
@@ -387,6 +413,32 @@ jobs:
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
+      # MU-16a: run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2) — ONLY when this env
+      # runs a tenant mode, so today's toml deploys are untouched (compute.bicep creates the
+      # Manual `teetime-migrate-<env>` job only then). It runs right AFTER pass 2, not before the
+      # jobs switch image: pass 1 puts EVERY job (this one included) on the public bootstrap image,
+      # so the migration can only run the real code once pass 2 has also switched the booking/watch
+      # jobs and the web. Safe because readers accept schemaVersion N and N-1 (§10.2), and v1 ships
+      # no migration at all. A failed or timed-out execution fails the deploy job.
+      - name: Run tenant migrations (tenant mode only)
+        if: env.BOOKING_MODE == 'tenant' || env.WATCH_MODE == 'tenant'
+        run: |
+          JOB="teetime-migrate-${ENVNAME}"
+          EXEC=$(az containerapp job start -n "${JOB}" -g "${RESOURCE_GROUP}" --query name -o tsv)
+          test -n "${EXEC}" || { echo "::error::could not start ${JOB}"; exit 1; }
+          echo "Started ${JOB} execution ${EXEC}"
+          STATUS=""
+          for _ in $(seq 1 90); do
+            STATUS=$(az containerapp job execution show -n "${JOB}" -g "${RESOURCE_GROUP}" \
+                       --job-execution-name "${EXEC}" --query properties.status -o tsv)
+            case "${STATUS}" in
+              Succeeded) echo "${JOB} ${EXEC}: Succeeded"; exit 0 ;;
+              Failed|Stopped|Degraded) echo "::error::${JOB} ${EXEC}: ${STATUS}"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::${JOB} ${EXEC}: still '${STATUS}' after 15 min"
+          exit 1
       - name: Budget reminder (operator deploys manually — see AZURE_PLAN.md §9.2)
         # Budgets are subscription-scoped; the CI service principal is RG-scoped by
         # design (least privilege), so it cannot create them. The $20 email budget and
