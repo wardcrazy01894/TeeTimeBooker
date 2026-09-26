@@ -39,8 +39,9 @@ def test_deploy_web_app_param_defaults_false(main_bicep: str) -> None:
     assert "param deployWebApp bool = false" in main_bicep
 
 
-def test_deploy_web_app_defaults_false_in_both_param_files() -> None:
-    assert "param deployWebApp = false" in DEV_PARAMS.read_text()
+def test_deploy_web_app_is_on_in_dev_only() -> None:
+    """MU-17 (dev cutover) turns the web app on in dev; prod stays off until MU-18."""
+    assert "param deployWebApp = true" in DEV_PARAMS.read_text()
     assert "param deployWebApp = false" in PROD_PARAMS.read_text()
 
 
@@ -113,8 +114,9 @@ def test_webapp_tenant_backend_is_gated_on_the_cosmos_endpoint(webapp_bicep: str
     # Without an endpoint the web runs on its in-memory store and must NOT reference the
     # tenant KV secrets (ACA validates KV refs at create time).
     assert "var tenantBackend = !empty(tenantCosmosEndpoint)" in webapp_bicep
-    assert "secrets: tenantBackend ? concat(webSecrets, webTenantSecrets) : webSecrets" in (
-        webapp_bicep
+    assert (
+        "secrets: concat(webSecrets, operatorEmailSecrets, tenantBackend ? webTenantSecrets : [])"
+        in webapp_bicep
     )
     assert "env: tenantBackend ? concat(webEnv, webTenantEnv) : webEnv" in webapp_bicep
 
@@ -123,5 +125,26 @@ def test_main_passes_the_tenant_backend_to_the_webapp(main_bicep: str) -> None:
     start = main_bicep.index("module webapp 'modules/webapp.bicep'")
     block = main_bicep[start : main_bicep.index("\n}\n", start)]
     assert "tenantCosmosEndpoint: tenantCosmosEndpoint" in block
-    assert "acsEmailSender: acsEmailSender" in block
+    assert "acsEmailSender: effectiveAcsEmailSender" in block
     assert "userAssignedIdentityClientId: identity.outputs.clientId" in block
+
+
+# --- MU-17: the operator email comes from Key Vault (the repo is public) ---------------------
+
+
+def test_webapp_reads_the_operator_email_from_key_vault_when_the_param_is_empty(
+    webapp_bicep: str,
+) -> None:
+    """The operator's address must not sit in a checked-in (public) param file: with
+    ``operatorEmail`` empty the web reads ``OPERATOR-NOTIFY-EMAIL``, the secret the tenant jobs
+    already use."""
+    assert "var operatorEmailFromVault = empty(operatorEmail)" in webapp_bicep
+    assert "secrets/OPERATOR-NOTIFY-EMAIL" in webapp_bicep
+    assert "secretRef: 'operator-notify-email'" in webapp_bicep
+
+
+def test_no_param_file_carries_an_email_address() -> None:
+    for params in (DEV_PARAMS, PROD_PARAMS):
+        text = params.read_text()
+        assert "param operatorEmail = ''" in text, params.name
+        assert "@gmail.com" not in text, params.name

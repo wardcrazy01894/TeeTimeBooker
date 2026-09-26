@@ -565,7 +565,7 @@ the store) and `integration`-marked against the real `dev` CI containers (README
 tests in `tests/tenant/cosmos/test_cosmos_store.py`. Known residual (documented in the module):
 the user-terminal half of the may-become-active guard is a partition query the batch cannot assert.
 The integration leg has NOT run yet (no Cosmos account exists).
-**MU-15a is DONE (infra without the DB, MULTIUSER_PLAN §10.1/§12): `infra/bicep/release_events.json`
+**MU-17 (the DEV cutover) is in `main.bicepparam.dev`:** dev runs `tenant-run`/`tenant-watch` (still hourly) over the shared Cosmos `dev` database, with the web app (Google sign-in) and ACS email deployed; dev stays `dryRun = true` and PROD IS UNCHANGED until MU-18. With `acsEmailSender = ''` main.bicep derives `DoNotReply@<managed domain>` from the email module output (`effectiveAcsEmailSender`), and with `operatorEmail = ''` the web reads `OPERATOR-NOTIFY-EMAIL` from Key Vault, because the repo is PUBLIC and no email address may sit in a param file (pinned by `tests/test_webapp_bicep.py`). Runbook: AZURE_PLAN §10.7. **MU-15a is DONE (infra without the DB, MULTIUSER_PLAN §10.1/§12): `infra/bicep/release_events.json`
 + `compute.bicep`/`killswitch.bicep` derive their booking-job loop from it (v1: one event,
 `mb0600et`, keeping the legacy `teetime-job-<env>-edt/-est` names); `bookingMode`/`watchMode`
 params (default `toml` in BOTH envs — this PR changes NOTHING about what either env's ACA jobs

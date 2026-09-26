@@ -212,7 +212,7 @@ module compute 'modules/compute.bicep' = {
     watchMode: watchMode
     watchCron: watchCron
     tenantCosmosEndpoint: tenantCosmosEndpoint
-    acsEmailSender: acsEmailSender
+    acsEmailSender: effectiveAcsEmailSender
   }
   // keyvault and logs are already implicit dependencies via their outputs
   // consumed above (vaultUri, workspaceId/Key), so they are NOT listed here
@@ -265,7 +265,7 @@ module webapp 'modules/webapp.bicep' = if (deployWebApp) {
     dryRun: dryRun
     // MU-16a: the web's tenant backend (store + keyring + ACS), wired iff the endpoint is set.
     tenantCosmosEndpoint: tenantCosmosEndpoint
-    acsEmailSender: acsEmailSender
+    acsEmailSender: effectiveAcsEmailSender
     userAssignedIdentityClientId: identity.outputs.clientId
   }
   dependsOn: [sharedAcrPull]
@@ -284,6 +284,13 @@ module email 'modules/email.bicep' = if (deployAcsEmail) {
     keyVaultName: keyvault.outputs.vaultName
   }
 }
+
+// MU-17: the Azure-managed sender domain is generated when the email module first deploys, so
+// an explicit acsEmailSender would need a second PR. Empty param + deployAcsEmail derives
+// DoNotReply@<domain> from the module output. Handing this runtime value to compute and webapp
+// also orders both after the module that writes ACS-EMAIL-CONNECTION into Key Vault, which the
+// tenant containers reference (ACA validates KV refs at create time).
+var effectiveAcsEmailSender = !empty(acsEmailSender) ? acsEmailSender : (deployAcsEmail ? 'DoNotReply@${email.?outputs.mailFromSenderDomain ?? ''}' : '')
 
 // ---------------------------------------------------------------------------
 // Outputs
