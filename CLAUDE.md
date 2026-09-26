@@ -429,7 +429,14 @@ exclusion, see the inline note), `dry_run_gate` (§7.8: never upgrade / reconcil
 rest; ONE concrete class per inner capability set — 16 — with NO `__getattr__`, so
 `runtime_checkable` `isinstance`, which is `getattr_static`-based on >=3.12, reads the proxy
 exactly like the inner). Wall-clock comparisons convert to the row's course timezone first.
-Tests: `tests/tenant/test_watcher_{login,ownership,proxy}.py`. Tenant store (decided 2026-09-25): a Cosmos DB
+Tests: `tests/tenant/test_watcher_{login,ownership,proxy}.py`. **MU-6 is DONE in code,
+UNWIRED** (`tenant/materialize.py` is real; nothing calls it yet — the web (MU-13) and the tenant
+watcher tick (MU-10b) are its owners): `classify_date_history` (pure), `materialize_rule` (walks the
+FULL `[local_today, local_today + max(21, advance_days + 7)]` horizon every call), `apply_rule_edit`
+(window/party rewrite, weekday move, the reset→withdraw→reset→inactive deactivation, reactivation)
+and `materialize_tick` (due rules + the `rows_no_longer_covered` sweep). It needed two read-only
+`TenantStore` additions — `get_rule_unscoped` / `get_account_unscoped`, system reads with no
+`user_id` (the web never calls them) — conformance-pinned. See the materializer bullet below. Tenant store (decided 2026-09-25): a Cosmos DB
 free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
 "no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path
 is unaffected.
@@ -892,6 +899,39 @@ in `core/` — never directly. This is the cut line for parallel work.
   the conformance suite `tests/tenant/conformance.py`, not a docstring**: any `TenantStore`
   (the future `CosmosTenantStore`, MU-8b) must pass `TenantStoreConformance` unchanged; subclass it
   with a `harness` fixture, as `tests/tenant/test_in_memory_store.py` does.
+- **The materializer walks the FULL horizon every call and decides by HISTORY, never by an id
+  collision (MULTIUSER_PLAN §7.7, MU-6 — unwired).** `tenant/materialize.py` turns each active
+  `StandingRule` into dated rule rows over `[local_today, local_today + max(21, advance_days + 7)]`
+  in the COURSE timezone (`ReleasePolicy.timezone`). Per date it reads the account's whole row
+  history (`rows_for_account_date`) and the pure `classify_date_history` orders the decision:
+  frozen (`core.booking_cutoff.frozen_reason`, or past) → user-terminal row present (a cancelled
+  `user`/`external`/`already_gone` row blocks the date for EVERY rule, even a new rule_id; a
+  withdrawn one-off does NOT) → own row (`rule_row_id(rule, date)`: pending/booked/skipped/
+  superseded/lost → nothing; system-withdrawn + slot free → `reactivate_rule_row`, which restores
+  `superseded_from` or PENDING; system-withdrawn + slot held → nothing, the one-off's withdraw
+  batch restores it) → no own row (slot free → create; held → create SUPERSEDED). **Why the full
+  walk:** the §7.7 deactivation is not atomic (reset → withdraw rows → reset → inactive, pinned as
+  the store CALL ORDER by `test_deactivation_order_reset_withdraw_reset_inactive`), so a crash
+  can leave an active rule with a current watermark and withdrawn rows; walking only past the
+  watermark would strand them, the daily tick's full walk reactivates them
+  (`test_tick_reactivates_withdrawn_rows_before_watermark`). `apply_rule_edit` dispatches on
+  (old.active, new.active, weekday): a window/party edit rewrites PENDING, unleased, not-frozen
+  rows in place via `rewrite_pending_rule_row` (BOOKED/SKIPPED/SUPERSEDED/leased/frozen rows keep
+  their old window); a weekday move upserts (which clears the watermark), withdraws the
+  old-weekday PENDING + SUPERSEDED rows `rule_weekday_changed` and materializes the new weekday
+  (a flip-back REACTIVATES the same rows); deactivation withdraws PENDING + SUPERSEDED rows
+  `rule_deactivated` (never BOOKED, never SKIPPED — a skip survives, round-5); reactivation upserts
+  then materializes. **Leased rows are never touched by an edit** (`RowLeaseError` →
+  `MaterializeReport.skipped_leased`); `materialize_tick`'s `rows_no_longer_covered` sweep withdraws
+  them once unleased, naming the reason from the STORED rule via `get_rule_unscoped` (missing →
+  `rule_deleted`, inactive → `rule_deactivated`, else `rule_weekday_changed`). The tick is ONE
+  superset `rules_needing_materialization` read through the farthest course horizon, each due rule
+  materialized to ITS course's horizon (`get_account_unscoped` → course → policy), and a per-rule
+  failure is logged with the rule id and isolated — but `RuleConflictError` /
+  `VersionConflictError` / `RuleNoLongerCoversError` / `TransitionRefusedError` propagate out of
+  `materialize_rule` and `apply_rule_edit` unswallowed. **Not on the Protocol yet:** rule DELETION
+  (MU-5 nit) — a vanished rule's rows are withdrawn `rule_deleted` only by the sweep and
+  `finalize_lost`.
 - **`WatchOrchestrator` and `UpgradeOrchestrator` live in `core/`**. They follow
   the same collaborator-injection pattern as `Orchestrator`. Neither is
   long-running — each is a single-invocation check (one ACA Job execution).
