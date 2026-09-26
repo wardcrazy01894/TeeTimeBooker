@@ -10,7 +10,6 @@ the watcher, not from an engine terminal.
 Backend: Azure Communication Services Email over REST (HMAC-signed via httpx, no SDK), with an
 Azure-managed sender domain (MU-11). Content never includes credentials.
 
-STUB — implemented in MULTIUSER_PLAN MU-11.
 """
 
 from __future__ import annotations
@@ -22,8 +21,6 @@ from typing import Protocol, runtime_checkable
 
 from ..core.models import BookingResult, CourseId
 from .models import RowId, UserId
-
-_MU11 = "MULTIUSER_PLAN.md MU-11"
 
 
 class UserEventKind(StrEnum):
@@ -59,14 +56,23 @@ class UserNotifier(Protocol):
 
 
 class BufferingNotifier:
-    """Engine-``Notifier``-shaped collector: ``notify`` appends to ``results`` and does no I/O."""
+    """Engine-``Notifier``-shaped collector: ``notify`` appends to ``results`` and does no I/O.
+
+    One per account's ``Orchestrator`` in the booking runner, so nothing is sent near T0.
+    After WRITE #2 the runner ``flush()``es it and maps each result to a ``UserEvent``."""
 
     def __init__(self) -> None:
-        raise NotImplementedError(_MU11)
+        self._results: list[BookingResult] = []
 
     async def notify(self, result: BookingResult) -> None:
-        raise NotImplementedError(_MU11)
+        self._results.append(result)
 
     @property
     def results(self) -> tuple[BookingResult, ...]:
-        raise NotImplementedError(_MU11)
+        return tuple(self._results)
+
+    def flush(self) -> tuple[BookingResult, ...]:
+        """Hand over every buffered result (in arrival order) and empty the buffer."""
+        drained = tuple(self._results)
+        self._results.clear()
+        return drained
