@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.0.1: 2026-09-27](#infrav301-2026-09-27)
 - [infra/v3.0.0: 2026-09-27](#infrav300-2026-09-27)
 - [infra/v2.17.0: 2026-09-27 (`main`@`6b8122b`)](#infrav2170-2026-09-27-main6b8122b)
 - [infra/v2.16.0: 2026-08-24 (`main`@`4462f56`)](#infrav2160-2026-08-24-main4462f56)
@@ -37,6 +38,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.0.1` | 2026-09-27 | `3bba87c` | **changed** (watcher) | Tenant watcher search fix: ForeUP `search()` needs no login (#258) |
 | `infra/v3.0.0` | 2026-09-27 | | **changed** | MU-18 stage B: prod booking + watch jobs run the multi-user tenant path (#257) |
 | `infra/v2.17.0` | 2026-09-27 | `6b8122b` | unchanged (jobs stay TOML) | MU-18 stage A: prod web app, ACS email, tenant store; all multi-user code in the image (#256) |
 | `infra/v2.16.0` | 2026-08-24 | `4462f56` | unchanged | Dependency refresh + dep-comment drift guard (#203–#206) |
@@ -54,6 +56,17 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.0.1: 2026-09-27
+
+**Tenant watcher search fix** (#258). Since the tenant watcher went live (dev at MU-17, prod at
+`infra/v3.0.0`) every one of its shared, unauthenticated searches failed with `RuntimeError`:
+`ForeUpAdapter` built its HTTP client only inside `authenticate()`. The watcher therefore could not
+see open tee times to book a missed date or upgrade (its reconcile check-ins still ran); the 05:50
+booker and the web log in first and were unaffected. `search()` now creates the client on first
+use; `book()` still raises `AuthError` without a login, and `list_reservations()` still refuses on
+a client that only a search built (a new `_search_only_client` flag), so the layer-2 pre-book guard
+can never read an empty cache as "no bookings".
 
 ## infra/v3.0.0: 2026-09-27
 
