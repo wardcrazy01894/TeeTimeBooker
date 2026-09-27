@@ -118,7 +118,7 @@ async def test_foreup_authenticate_and_list_reservations_parses_live() -> None:
 async def test_blind_post_template_matches_live_searched_slot() -> None:
     """BLIND_POST_TEMPLATE must still match the SHAPE + identity of a live ForeUP slot.
 
-    Blind-POST (BLIND_POST_PLAN.md) fires book POSTs synthesized from BLIND_POST_TEMPLATE
+    Blind-POST (docs/plans/BLIND_POST_PLAN.md) fires book POSTs synthesized from BLIND_POST_TEMPLATE
     WITHOUT a live search — only `time` + `start_front` are filled per slot. If ForeUP
     changes its slot/teesheet response shape (drops/renames a field, or changes a
     course/schedule identity value), the synthesized POST would silently drift from what

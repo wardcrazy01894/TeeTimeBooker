@@ -1,4 +1,4 @@
-# RACE_PREWARM_PLAN.md — Post-T0 latency reduction for the 06:00 ForeUP booking race
+# docs/plans/RACE_PREWARM_PLAN.md — Post-T0 latency reduction for the 06:00 ForeUP booking race
 
 Status: SHIPPED — LIVE in prod (`infra/v2.4.0`, the RACE_PREWARM bundle; the `#131`
 soft-login-skip fix rode `infra/v2.5.0`). APPROVED (plan-with-review, 2 rounds, BLOCK→APPROVE),
@@ -504,7 +504,7 @@ NOTE: do NOT touch the `cancel_reservation` courtesy sleep — cancel is not on 
 Files: `core/orchestrator.py`, `courses/foreup/base.py` (authenticate idempotency guard),
 `dev/fake_adapter.py` (`set_authenticate_side_effects` — already on disk),
 `tests/test_orchestrator.py`, `tests/test_foreup_adapter.py` (or wherever authenticate is tested).
-Docs: root `CLAUDE.md` (race-path invariant bullet), `PLAN.md` §9, `RACE_PREWARM_PLAN.md` status.
+Docs: root `CLAUDE.md` (race-path invariant bullet), `PLAN.md` §9, `docs/plans/RACE_PREWARM_PLAN.md` status.
 
 **NI9 — the call-site rewire is load-bearing and MUST be in PR1.** Today `run()` (orchestrator.py
 line ~108) calls `await self._prefetch_captcha(request)` on the race path. PR1 REWIRES this to
@@ -542,7 +542,7 @@ Files: `core/adapter.py` (Protocol `prepare_book` `count` param), `courses/foreu
 (signature parity), `tests/test_orchestrator.py`, `tests/test_foreup_adapter.py`,
 new `tests/test_captcha_pool.py`, new parity assertion in `tests/test_container_config_parity.py`.
 Docs: root `CLAUDE.md`, `courses/CLAUDE.md` if the prepare_book contract note lives there,
-`PLAN.md` §9, `RACE_PREWARM_PLAN.md`.
+`PLAN.md` §9, `docs/plans/RACE_PREWARM_PLAN.md`.
 
 ### PR3 — drop leading search courtesy sleep, RACE PATH ONLY (SF5)
 Files: `core/adapter.py` (Protocol `search` gains `*, skip_initial_spacing: bool = False`),

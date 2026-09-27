@@ -1,6 +1,6 @@
-# BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
+# docs/plans/BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
 
-> **BURST TIMING SUPERSEDED (`STAGGER_PLAN.md`, PR #199):** this doc describes the burst as
+> **BURST TIMING SUPERSEDED (`docs/plans/STAGGER_PLAN.md`, PR #199):** this doc describes the burst as
 > N POSTs fired **CONCURRENTLY at one instant** (`T0 − early_arrival_ms`). They are now
 > **STAGGERED ACROSS T0** — each POST sleeps to its own offset from
 > `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)` ms), paired positionally with
@@ -10,7 +10,7 @@
 > rank-0 slot keeps this doc's original fire instant, so the burst's winning behaviour is
 > unchanged; `_keep_best` / `_cancel_extras` / re-guard / watcher reconcile are all untouched.
 > The burst also now RE-RANKS its slots before pairing offsets — ranked order was previously
-> only an adapter convention this doc relied on implicitly. See STAGGER_PLAN.md.
+> only an adapter convention this doc relied on implicitly. See docs/plans/STAGGER_PLAN.md.
 
 > **GATE MECHANISM SUPERSEDED IN PART (#147, `infra/v2.6.0`):** this doc's "Mechanism" /
 > PR-table sections describe the gate as `runtime_checkable BlindPostCapable` + a
@@ -25,7 +25,7 @@
 refactor rode `infra/v2.6.0`). PR0–PR5
 MERGED — the orchestrator blind path is
 live in code (gate + blind burst + keep-best/cancel-extras + reguard + prefetch scaling;
-`core/orchestrator.py`). **Superseded by `RESEARCH_FALLBACK_PLAN.md` (merged):** the concurrent
+`core/orchestrator.py`). **Superseded by `docs/plans/RESEARCH_FALLBACK_PLAN.md` (merged):** the concurrent
 hedge search was DROPPED — the 0-booked path now fires a FRESH search after the re-guard — and
 `blind_post_max_count` was lowered to **3** in the shipped configs (the code default was later
 aligned to 3 as well, full-repo-scan 2026-07-09 #172) with a
@@ -39,7 +39,7 @@ reconcile backstop is in place (`core/watch_orchestrator.py`), and the docs (PLA
 paragraph + README + the opt-in `tests/test_foreup_canary.py` template-drift canary) are landed.
 Real effect is prod-only (the gate requires the `--wait` race path + `not dry_run`); it went live
 with the `infra/v2.5.0` prod deploy that shipped this code at `dryRun=false`. Authoritative
-design for the blind-POST feature. Read `PLAN.md` §6/§9/§12/§13 and `RACE_PREWARM_PLAN.md` first —
+design for the blind-POST feature. Read `PLAN.md` §6/§9/§12/§13 and `docs/plans/RACE_PREWARM_PLAN.md` first —
 this builds directly on the race path they define and does not re-litigate it.
 
 **Scope cut line:** ONE new capability — at T0, for courses that DECLARE support
@@ -171,7 +171,7 @@ in TOML.
 
 **Decision: SHIP a static template + grid in the course module (option b), with the
 real search as the correctness fallback (a fresh post-reguard search on a 0-booked drop —
-the original concurrent "hybrid net" hedge was dropped, see RESEARCH_FALLBACK_PLAN.md).** We reject
+the original concurrent "hybrid net" hedge was dropped, see docs/plans/RESEARCH_FALLBACK_PLAN.md).** We reject
 "harvest from an already-open date during `_prewarm_primary`" (option a) as the
 PRIMARY source for these reasons:
 
@@ -274,7 +274,7 @@ remove.
   hand; an inline solve at T0 is exactly the failure mode we removed.
 - **Etiquette cap (ToS, §9):** N is hard-capped by `blind_post_max_count`. We do NOT fan
   out beyond it (and never beyond the in-window grid). Then cancel N−1 within ~1 s.
-- **0-booked fallback reserve (extends this — see `RESEARCH_FALLBACK_PLAN.md`).** A follow-up
+- **0-booked fallback reserve (extends this — see `docs/plans/RESEARCH_FALLBACK_PLAN.md`).** A follow-up
   ratified plan adds `scheduler.blind_post_fallback_token_reserve` (default 2) so the prefetch
   solves `min(blind_post_max_count, grid) + reserve`: the blind burst pops its N, and the
   reserve tokens REMAIN pooled so the 0-booked **fresh** search fallback books with a pooled
@@ -573,7 +573,7 @@ failing tests FIRST. Docs each PR updates are listed.
   PR2 sets it True (so PR1 asserts the base is non-capable);
   `isinstance(FakeAdapter(supports_blind_post=True), BlindPostCapable)` True;
   default Fake / TeeItUp non-capable.
-- **Docs:** `CLAUDE.md` (new capability-gate invariant); `BLIND_POST_PLAN.md` (this).
+- **Docs:** `CLAUDE.md` (new capability-gate invariant); `docs/plans/BLIND_POST_PLAN.md` (this).
 
 ### PR2 — Mangrove Bay grid capture + `synthesize_blind_slots`  ✅ MERGED
 - **Code:** `mangrove_bay.py` — `BLIND_POST_TEMPLATE` is ALREADY committed (OQ2 closed;
@@ -637,7 +637,7 @@ failing tests FIRST. Docs each PR updates are listed.
   - `test_prefetch_scales_to_blind_fanout` — blind-capable primary → `prepare_book` count
     == `min(blind_post_max_count, len(blind_slots))`, not the fixed `captcha_prefetch_count`.
 - **Docs:** `CLAUDE.md` (race-path blind invariant); `PLAN.md` (new §
-  "Blind-POST at T0" + state-machine note); `BLIND_POST_PLAN.md` status → wired.
+  "Blind-POST at T0" + state-machine note); `docs/plans/BLIND_POST_PLAN.md` status → wired.
 
 ### PR4 — watcher: reconcile >1 reservation on the target date (CRASH-NET backstop only)
 - **Code:** `WatchOrchestrator._check_course` `matching` branch: when >1 reservation
@@ -658,7 +658,7 @@ failing tests FIRST. Docs each PR updates are listed.
   - `test_watch_reconcile_keeps_best_by_rank` — the kept one is the highest
     `rank_slots_for_request` slot.
   - `test_watch_single_reservation_unchanged` — N=1 → today's behavior.
-- **Docs:** `CLAUDE.md` (watcher reconcile note); `BLIND_POST_PLAN.md` §7.
+- **Docs:** `CLAUDE.md` (watcher reconcile note); `docs/plans/BLIND_POST_PLAN.md` §7.
 
 ### PR5 — PLAN.md §12 etiquette + README/config docs + canary
 - **Code:** opt-in integration canary (`tests/test_foreup_canary.py`, `@pytest.mark.
@@ -668,7 +668,7 @@ failing tests FIRST. Docs each PR updates are listed.
 - **Docs:** `PLAN.md` §12 (blind-POST etiquette paragraph, §9 above; INCLUDE the must-fix-3
   residual: PR4's keep-best-cancel-rest would also cancel a deliberate manual second
   booking on the same date+party_size — accepted for this single-user bot); `README.md`
-  (feature + the new `blind_post_max_count` config field, default 12); `BLIND_POST_PLAN.md`
+  (feature + the new `blind_post_max_count` config field, default 12); `docs/plans/BLIND_POST_PLAN.md`
   status banner (now realized: `LIVE in prod`, `infra/v2.5.0`, 2026-06-22).
 
 > **Ordering note:** PR0→PR1→PR2 are prerequisites for PR3. PR4 is independent of

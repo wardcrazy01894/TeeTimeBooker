@@ -3,7 +3,7 @@
 > **Status: SHIPPED (PRs #70–#75), then partly SUPERSEDED.** The Sat+Sun daily-cron
 > re-architecture described here is fully implemented and on `main`. The `target_weekday(s)`
 > config scheme this plan introduces was itself subsequently **superseded by per-day time
-> windows** (`PERDAY_WINDOWS_PLAN.md`, #76/#77): wanted days are now **derived from the
+> windows** (`docs/plans/PERDAY_WINDOWS_PLAN.md`, #76/#77): wanted days are now **derived from the
 > `[[request.time_windows]]` weekdays**, not a separate `target_weekdays` list, and the
 > `target_weekday`/`target_weekdays` keys were removed. Read the design below as historical —
 > the root `CLAUDE.md` is the authoritative description of current behavior.
@@ -14,7 +14,7 @@ upcoming Sunday, same morning window for each — by replacing the booking-weekd
 cron design with **daily crons that self-gate on whether `today + offset` is a wanted
 booking day**.
 
-This re-opens the M6_PLAN.md Sunday-only decision (`50 9/10 * * 0`). M6's `--wait`,
+This re-opens the docs/plans/M6_PLAN.md Sunday-only decision (`50 9/10 * * 0`). M6's `--wait`,
 `core/dst_gate.py`, watcher-enable, target-date anchoring, and the merged PRs #67
 (book-POST 400 → `SlotGoneError` + multi-slot fallback) and #68 (`Orchestrator.prefetch_book`
 two-phase busy-wait, `SchedulerConfig.captcha_prefetch_lead_s`) all **carry over unchanged**.
@@ -423,7 +423,7 @@ def _booking_target_date(cfg: AppConfig) -> date:
 ```
 
 **Stub signatures.** `core/booking_day_gate.py::should_book_today` — already on disk
-(stub raising `NotImplementedError("MULTIDAY_PLAN.md PR2 (booking-day gate)")`). Signature:
+(stub raising `NotImplementedError("docs/plans/MULTIDAY_PLAN.md PR2 (booking-day gate)")`). Signature:
 ```python
 def should_book_today(
     clock: Clock, *, timezone: str, target_offset: int, wanted_weekdays: frozenset[int]
@@ -890,7 +890,7 @@ log. Mostly docs; one verification test that the booking-day-skip log line is em
 it can't silently drop), plus the M6_PLAN superseded note.
 
 **Files touched.**
-- `M6_PLAN.md` — add a top banner: "SUPERSEDED in part by MULTIDAY_PLAN.md: the Sunday-only
+- `docs/plans/M6_PLAN.md` — add a top banner: "SUPERSEDED in part by docs/plans/MULTIDAY_PLAN.md: the Sunday-only
   schedule (PR5) is replaced by daily crons + a booking-day gate; `--wait`/`dst_gate`/
   watcher-enable remain in force."
 - `infra/AZURE_PLAN.md` §10.4 verification: add "5/7 days the booking cron fast-exits with
@@ -1064,7 +1064,7 @@ date list + poll-every-run + the cron cadence.
 | `infra/AZURE_PLAN.md` | §5.3 table `:230-235` (Sunday crons), §5.4 table `:264`, §10.4 verify `:829` grep | daily crons + booking-day gate row; watch grep → `targets=` plural |
 | `src/teetime/courses/CLAUDE.md` | `:45` "Schedule is Sunday only (M6)" | → books wanted morning days (Sat+Sun); daily crons self-gate |
 | `README.md` | `:20` "fire … on Sunday", `:27` "upcoming target Sunday", roadmap | Sat+Sun; daily crons; watcher checks both |
-| `M6_PLAN.md` | top | SUPERSEDED-in-part banner (PR5 schedule replaced; --wait/dst_gate/watcher remain) |
+| `docs/plans/M6_PLAN.md` | top | SUPERSEDED-in-part banner (PR5 schedule replaced; --wait/dst_gate/watcher remain) |
 | `tests/test_compute_bicep_schedule.py` | Sunday-only asserts | → daily asserts (§PR5) |
 | `infra/AZURE_PLAN.md` | §10.4 watch grep `Watch check: target=` | → `Watch check: targets=` |
 

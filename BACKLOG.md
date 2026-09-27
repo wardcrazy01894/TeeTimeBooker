@@ -134,19 +134,19 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Frontend (single-user web UI)
 
-A full, ratified design already exists: **[FRONTEND_PLAN.md](./FRONTEND_PLAN.md)**
+A full, ratified design already exists: **[FRONTEND_PLAN.md](./docs/plans/FRONTEND_PLAN.md)**
 (status: *proposed*, no code yet). Every item below is specced there — this is just
 the index back to it.
 
 | Want | Where it's designed |
 |------|---------------------|
-| A website around the booking engine | FRONTEND_PLAN.md (whole doc) |
+| A website around the booking engine | docs/plans/FRONTEND_PLAN.md (whole doc) |
 | Show all current bookings | Goal 1 / **M-fe-T2** — live `list_reservations()` across courses |
 | Cancel button next to each booking | Goal 2 / **M-fe-T3** — `cancel_reservation()`, managed vs. manual |
 | Cancel **all** bookings | Goal 3 / **M-fe-T4** — list → per-item cancel |
 | Change the time window / day preference | Goal 4 / **M-fe-T5** — edit `[request]` prefs |
 | **Re-rank the courses** (change booking priority) | Goal 4 / **M-fe-T5** — edit `course_preferences` order + `[[one_booking_policy.priority_slots]]` |
-| Auth on the frontend | FRONTEND_PLAN.md **§7 Q2** (open question) |
+| Auth on the frontend | docs/plans/FRONTEND_PLAN.md **§7 Q2** (open question) |
 
 **Two things the plan already flags as the real constraints:**
 

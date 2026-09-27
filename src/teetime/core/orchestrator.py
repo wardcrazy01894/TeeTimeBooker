@@ -307,7 +307,7 @@ class Orchestrator:
                 attempts=0,
             )
 
-        # Blind-POST fast path (BLIND_POST_PLAN.md §6/§11). Two-part capability gate
+        # Blind-POST fast path (docs/plans/BLIND_POST_PLAN.md §6/§11). Two-part capability gate
         # (isinstance AND the boolean) + race path + PRIMARY course + not-dry-run + a
         # positive fan-out cap. Everything else (non-capable, fallback course, dry-run,
         # watcher/local-demo) takes the unchanged search path below.
@@ -367,13 +367,14 @@ class Orchestrator:
         )
         raise _CourseSkippedError()
 
-    # --- blind-POST fast path (BLIND_POST_PLAN.md §6/§7/§11) -----------
+    # --- blind-POST fast path (docs/plans/BLIND_POST_PLAN.md §6/§7/§11) -----------
 
     @staticmethod
     def _is_blind_capable(adapter: CourseAdapter) -> bool:
         """Blind-POST gate: the explicit `capabilities.blind_post` flag (NOT isinstance).
         A True flag promises captcha_pool_size() + synthesize_blind_slots() exist, so callers
-        cast to `BlindPostCapable` to invoke them. See AdapterCapabilities / BLIND_POST_PLAN.md
+        cast to `BlindPostCapable` to invoke them. See AdapterCapabilities /
+        docs/plans/BLIND_POST_PLAN.md
         §3 — this replaces the old `isinstance(adapter, BlindPostCapable) and supports_blind_post`
         double-gate (isinstance was always True for any ForeUP adapter; the boolean was the real,
         hidden guard)."""
@@ -403,11 +404,12 @@ class Orchestrator:
         request: BookingRequest,
     ) -> BookingResult:
         """Fire the top-N ranked in-window blind book POSTs at T0 — concurrently, but each
-        STAGGERED to its own `blind_post_stagger_ms` offset from T0 (STAGGER_PLAN.md) so the
+        STAGGERED to its own `blind_post_stagger_ms` offset from T0
+        (docs/plans/STAGGER_PLAN.md) so the
         burst spans ForeUP's release boundary instead of point-sampling it — keep the best
         that books and cancel the rest IN-RUN. If zero book, re-guard against a landed-but-
         uncertain POST, then fire a FRESH search (AFTER the re-guard) and fall back to the
-        sequential search-book loop. See BLIND_POST_PLAN.md §6 + RESEARCH_FALLBACK_PLAN.
+        sequential search-book loop. See docs/plans/BLIND_POST_PLAN.md §6 + RESEARCH_FALLBACK_PLAN.
 
         NO concurrent hedge search (RESEARCH_FALLBACK_PLAN §2 Q1): the happy path issues zero
         search GETs, and the 0-booked path issues exactly one FRESH search post-re-guard — the
@@ -660,7 +662,7 @@ class Orchestrator:
         """Cancel each surplus reservation by its OWN confirmation_code (PR0 made the
         teetime_id extraction load-bearing). ANY cancel failure is logged CRITICAL (the user
         then holds >1 reservation) but does NOT abort — we still keep the best, and the PR4
-        watch net is the backstop. See BLIND_POST_PLAN.md §7.
+        watch net is the backstop. See docs/plans/BLIND_POST_PLAN.md §7.
 
         The catch is deliberately ``Exception``, not just ``CancelError``: the real adapter
         can also surface ``RateLimitError`` (a throttled DELETE), ``CaptchaError``, or a raw
@@ -848,7 +850,8 @@ class Orchestrator:
         candidates at T0 each consume a pooled token instead of blocking ~75s on a fresh
         solve. N = scheduler.captcha_prefetch_count for the single-POST race path, but SCALES
         to min(blind_post_max_count, in-window grid count) when the primary is blind-capable
-        (BLIND_POST_PLAN.md §5/OQ3) so every concurrent blind POST has a token in hand. Best-
+        (docs/plans/BLIND_POST_PLAN.md §5/OQ3) so every concurrent blind POST has a token in
+        hand. Best-
         effort: any failure is logged and swallowed (book() solves inline). No-op for adapters
         without a CAPTCHA (TeeItUp, Fake).
         """

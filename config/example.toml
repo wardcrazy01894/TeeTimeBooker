@@ -114,7 +114,7 @@ captcha_prefetch_lead_s = 120                  # race path (--wait): start the C
 captcha_prefetch_count  = 3                    # race path: pre-solve this many tokens concurrently
                                                # so the first N ranked candidates each fire instantly
                                                # (RACE_PREWARM_PLAN §4.4)
-blind_post_max_count    = 3                    # blind-POST fan-out cap (BLIND_POST_PLAN.md §5):
+blind_post_max_count    = 3                    # blind-POST fan-out cap (docs/plans/BLIND_POST_PLAN.md §5):
                                                # a blind-capable PRIMARY (Mangrove Bay) fires up to
                                                # this many concurrent book POSTs at T0, keeps the
                                                # best, cancels the rest; CAPTCHA prefetch scales to it.
@@ -126,13 +126,13 @@ blind_post_max_count    = 3                    # blind-POST fan-out cap (BLIND_P
                                                # handles it, live 2026-07-11); accepted cost for the
                                                # hedge. A total miss falls to the sequential fallback.
 blind_post_fallback_token_reserve = 2          # blind-POST 0-booked fallback reserve
-                                               # (RESEARCH_FALLBACK_PLAN.md §2 Q3): EXTRA CAPTCHA
+                                               # (docs/plans/RESEARCH_FALLBACK_PLAN.md §2 Q3): EXTRA CAPTCHA
                                                # tokens pre-solved beyond the blind burst so the
                                                # post-reguard FRESH search books with a fresh POOLED
                                                # token, not a ~75s inline solve. The blind POSTs pop
                                                # their tokens; these REMAIN pooled for the fallback.
                                                # Paid pre-T0 every drop (incl. happy path). 0 = off.
-blind_post_stagger_ms   = [-500, -250, 0]      # blind-POST T0 stagger (STAGGER_PLAN.md): per-POST
+blind_post_stagger_ms   = [-500, -250, 0]      # blind-POST T0 stagger (docs/plans/STAGGER_PLAN.md): per-POST
                                                # fire offsets in MILLISECONDS relative to T0, paired
                                                # positionally with the RANKED blind slots, so the
                                                # burst SPANS ForeUP's release boundary instead of

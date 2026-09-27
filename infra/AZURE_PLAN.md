@@ -134,7 +134,7 @@ Cutover runbook: §10.6.
 ```
 infra/
   AZURE_PLAN.md                # this file
-  COST_KILLSWITCH_PLAN.md      # verified design for the $50 automated killswitch chain
+  docs/plans/COST_KILLSWITCH_PLAN.md      # verified design for the $50 automated killswitch chain
   bicep/
     main.bicep                 # entry point; orchestrates all modules; accepts envName + location params
     main.bicepparam.dev        # dev environment parameter values
@@ -833,7 +833,7 @@ sidesteps a known `az deployment sub create` budget-PUT bug.
 Tier 1 (`budget-teetime`, $20, email-only) is UNCHANGED. Tier 2 (`budget-teetime-killswitch`,
 $50, killswitch-trigger) is a SEPARATE second budget resource in `budget.bicep` (conditional on
 `killswitchActionGroupId`). Both budgets evaluate the same project spend independently. See
-`infra/COST_KILLSWITCH_PLAN.md`.
+`docs/plans/COST_KILLSWITCH_PLAN.md`.
 
 **Deploy note:** `azure-iac.yml` does **not** attempt the budget deploy — the CI service
 principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission),

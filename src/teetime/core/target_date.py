@@ -4,7 +4,8 @@ The booking job books a single date (`today + offset`, gated to a wanted weekday
 `core/booking_day_gate.py`). The watch job runs DAILY and watches the next occurrence of
 EACH wanted weekday within the bookable horizon (the upcoming Sat AND Sun) via
 `next_occurrences_within_horizon`. Wanted weekdays are derived from the configured per-day
-windows (`RequestConfig.wanted_weekday_indices`). See MULTIDAY_PLAN.md / PERDAY_WINDOWS_PLAN.md.
+windows (`RequestConfig.wanted_weekday_indices`). See docs/plans/MULTIDAY_PLAN.md /
+docs/plans/PERDAY_WINDOWS_PLAN.md.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ def next_occurrences_within_horizon(
     is strictly beyond the horizon is omitted.
 
     The watcher passes `horizon_days = max(target_offsets)` so the bookable window is
-    defined in ONE place (config), never hardcoded here. See MULTIDAY_PLAN.md PR3.
+    defined in ONE place (config), never hardcoded here. See docs/plans/MULTIDAY_PLAN.md PR3.
     """
     out: set[date] = set()
     for w in wanted_weekdays:

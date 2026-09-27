@@ -1,7 +1,7 @@
 # TeeTimeBooker — Frontend Plan (v2)
 
 Design doc for putting a UI around the booking engine. Subordinate to
-[PLAN.md](./PLAN.md) (v0 booking engine) and `infra/AZURE_PLAN.md` (v1 hosting) —
+[PLAN.md](../../PLAN.md) (v0 booking engine) and `infra/AZURE_PLAN.md` (v1 hosting) —
 read those first. This file covers ONLY the frontend + the API layer it talks to.
 
 Status: **proposed.** No code written. Decisions below were ratified in a design

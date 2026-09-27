@@ -741,7 +741,7 @@ def _build_booking_request(cfg: AppConfig, *, dry_run: bool, target_date: date) 
     target exactly one date: _first_matching_reservation matches r.tee_time.date() in
     request.target_dates, so a multi-date request would let another wanted day's existing
     reservation vacuously satisfy this date's pre-book guard. RequestId is unaffected (the
-    fingerprint excludes dates). See MULTIDAY_PLAN.md PR2.
+    fingerprint excludes dates). See docs/plans/MULTIDAY_PLAN.md PR2.
     """
     base = _build_request(cfg, dry_run=dry_run)
     return dc_replace(

@@ -8,7 +8,7 @@ Booking page: https://foreupsoftware.com/index.php/booking/19671/2149#/teetimes
 
 This file is intentionally tiny: all behavior lives in base.py, EXCEPT the
 blind-POST template + morning grid + synthesize_blind_slots, which are
-inherently course-specific (BLIND_POST_PLAN.md §4).
+inherently course-specific (docs/plans/BLIND_POST_PLAN.md §4).
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ MANGROVE_BAY_BOOKING_PAGE_URL = (
     f"{FOREUP_BASE_URL}/index.php/booking/{MANGROVE_BAY_COURSE_PK}/{MANGROVE_BAY_BOOKING_CLASS_ID}"
 )
 
-# --- Blind-POST template + grid (BLIND_POST_PLAN.md §4, PR2) ----------------
+# --- Blind-POST template + grid (docs/plans/BLIND_POST_PLAN.md §4, PR2) ----------------
 # The STATIC fields of the book POST body / search-slot raw shape for the Mangrove Bay
-# 18-hole schedule, captured from the live dev book-response (BLIND_POST_PLAN.md §2/§4;
+# 18-hole schedule, captured from the live dev book-response (docs/plans/BLIND_POST_PLAN.md §2/§4;
 # OQ2 CLOSED — this capture IS the template). Date-independent (fact 2): only `time` +
 # `start_front` vary per slot and synthesize_blind_slots overwrites them. This is the
 # SEARCH-slot raw shape; book() overlays players/green_fee/total/captchaid onto slot.raw,
@@ -158,7 +158,8 @@ BLIND_POST_MORNING_GRID: list[str] | None = [
 class MangroveBayAdapter(ForeUpAdapter):
     """Mangrove Bay specialization. Sets the IDs; inherits all HTTP logic from ForeUpAdapter.
 
-    Blind-POST capable (BLIND_POST_PLAN.md + RESEARCH_FALLBACK_PLAN.md): at the 06:00 ET
+    Blind-POST capable (docs/plans/BLIND_POST_PLAN.md + docs/plans/RESEARCH_FALLBACK_PLAN.md):
+    at the 06:00 ET
     drop the race-path Orchestrator fires concurrent book POSTs for the top-N ranked
     in-window slots synthesized from BLIND_POST_TEMPLATE + a computed start_front, keeps the
     best, and cancels the rest. Only if zero POSTs book does a FRESH search run (after the
@@ -226,7 +227,7 @@ class MangroveBayAdapter(ForeUpAdapter):
         max_count: int,
     ) -> list[TeeTimeSlot]:
         """Build up to max_count ranked blind-POST candidate slots for target_date
-        WITHOUT a network search (BlindPostCapable; BLIND_POST_PLAN.md §4/PR2).
+        WITHOUT a network search (BlindPostCapable; docs/plans/BLIND_POST_PLAN.md §4/PR2).
 
         Intersects the EXPLICIT BLIND_POST_MORNING_GRID start times with the request's
         time windows, computes each ForeUP ``start_front`` (``f"{YYYY}{month-1:02d}{DD}
@@ -244,7 +245,7 @@ class MangroveBayAdapter(ForeUpAdapter):
             # Fail loud rather than silently enumerating nothing (BLIND_POST_PLAN nit 3).
             raise NotImplementedError(
                 "BLIND_POST_MORNING_GRID is not populated for Mangrove Bay — refusing to "
-                "synthesize an empty blind grid. See BLIND_POST_PLAN.md PR2."
+                "synthesize an empty blind grid. See docs/plans/BLIND_POST_PLAN.md PR2."
             )
         tz = ZoneInfo(self._timezone)
         candidates: list[TeeTimeSlot] = []

@@ -28,9 +28,9 @@
 // Role definition (custom, pre-created by operator):
 //   Actions: Microsoft.App/jobs/read + write + stop/action
 //   Name: "ACA Job Schedule Manager"
-//   See: infra/COST_KILLSWITCH_PLAN.md §2/Item4 for the exact az CLI command.
+//   See: docs/plans/COST_KILLSWITCH_PLAN.md §2/Item4 for the exact az CLI command.
 //
-// See: infra/COST_KILLSWITCH_PLAN.md (full design + pre-emption items)
+// See: docs/plans/COST_KILLSWITCH_PLAN.md (full design + pre-emption items)
 
 targetScope = 'resourceGroup'
 

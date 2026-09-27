@@ -1,4 +1,4 @@
-# STAGGER_PLAN.md — stagger the T0 blind-POST burst across the open boundary
+# docs/plans/STAGGER_PLAN.md — stagger the T0 blind-POST burst across the open boundary
 
 **Status:** LIVE IN PROD — `infra/v2.14.0`, deployed 2026-08-15 (`main`@`e6a8abb`,
 `dryRun=false`, all three jobs verified on the new image with crons/timeouts unchanged).
@@ -297,7 +297,7 @@ the burst-integration test, which asserts outcomes and ordering rather than timi
 - `PLAN.md` — §6 blind-net description AND **§12 (ToS/etiquette)**, which described the burst
   as "a handful of requests at a single instant". It is a ~500 ms-wide fan-out now; the
   etiquette claim must describe the real request pattern.
-- `BLIND_POST_PLAN.md` — supersession banner on its "fire N POSTs CONCURRENTLY" mechanism.
+- `docs/plans/BLIND_POST_PLAN.md` — supersession banner on its "fire N POSTs CONCURRENTLY" mechanism.
 - `config/example.toml`, `config/container.toml`, `config/local.toml` — new key + comment.
 - `src/teetime/core/config.py` — field comment.
 - `tests/test_container_config_parity.py` — parity/default pin.

@@ -1,4 +1,4 @@
-"""PR2 of BLIND_POST_PLAN.md: ``MangroveBayAdapter.synthesize_blind_slots``.
+"""PR2 of docs/plans/BLIND_POST_PLAN.md: ``MangroveBayAdapter.synthesize_blind_slots``.
 
 Pins the derived morning grid + the ForeUP ``start_front`` computation (0-indexed
 month) + the ``time`` field (1-indexed calendar month) + the BLIND_POST_TEMPLATE

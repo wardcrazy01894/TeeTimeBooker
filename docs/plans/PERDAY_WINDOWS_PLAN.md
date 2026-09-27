@@ -1,4 +1,4 @@
-# PERDAY_WINDOWS_PLAN.md — Per-day (and multiple-per-day) booking windows
+# docs/plans/PERDAY_WINDOWS_PLAN.md — Per-day (and multiple-per-day) booking windows
 
 Status: IMPLEMENTED (PRs #76 schema + scoping, #77 window-list-order priority). Ratified via
 plan-with-review. TDD throughout.
@@ -255,7 +255,7 @@ Error behaviour (PR1 validator):
 - `time_windows` empty → `ValueError("request.time_windows must be non-empty")`.
 - any window missing `weekday` → pydantic "field required" on `TimeWindowConfig.weekday`.
 - `target_weekdays` present → `ValueError("target_weekdays has been removed; tag each
-  [[request.time_windows]] with a weekday instead (see PERDAY_WINDOWS_PLAN.md §7).")`
+  [[request.time_windows]] with a weekday instead (see docs/plans/PERDAY_WINDOWS_PLAN.md §7).")`
 - `target_weekday` present → same removal error, naming the new schema.
 
 To detect the removed keys we keep them as **transient, forbidden** fields on
@@ -289,7 +289,7 @@ window (the afternoon case) so the per-day-multi feature is discoverable:
 ```toml
 # Multiple windows on one day are allowed — the bot still holds at most ONE
 # reservation that day, booked in whichever window yields the best slot.
-# Window LIST ORDER is preference (earlier window preferred) — see PERDAY_WINDOWS_PLAN.md Q1.
+# Window LIST ORDER is preference (earlier window preferred) — see docs/plans/PERDAY_WINDOWS_PLAN.md Q1.
 # [[request.time_windows]]
 # weekday  = "sunday"
 # earliest = 17:00:00
@@ -591,17 +591,17 @@ class RequestConfig(BaseModel):
         """Reject removed keys with a migration error; require non-empty windows;
         validate each weekday; normalise window order by (weekday, earliest).
         Raises NotImplementedError until implemented (PR1)."""
-        raise NotImplementedError("PERDAY_WINDOWS_PLAN.md PR1")
+        raise NotImplementedError("docs/plans/PERDAY_WINDOWS_PLAN.md PR1")
 
     @property
     def wanted_weekday_indices(self) -> frozenset[int]:
         """Derived from the distinct weekdays present in time_windows."""
-        raise NotImplementedError("PERDAY_WINDOWS_PLAN.md PR1")
+        raise NotImplementedError("docs/plans/PERDAY_WINDOWS_PLAN.md PR1")
 
     def windows_for(self, weekday: int) -> tuple[TimeWindowConfig, ...]:
         """The configured windows whose weekday index == `weekday`, in
         (earliest) order. () if none (callers never pass a windowless weekday)."""
-        raise NotImplementedError("PERDAY_WINDOWS_PLAN.md PR1")
+        raise NotImplementedError("docs/plans/PERDAY_WINDOWS_PLAN.md PR1")
 ```
 
 ### `core/models.py` (edit)
@@ -616,8 +616,8 @@ def build_request_fingerprint(
 ) -> str:
     """...windows segment token: '<weekday>:HH:MM-HH:MM', sorted lexically.
     Weekday in the token so a sat-vs-sun window is a distinct request identity.
-    See PERDAY_WINDOWS_PLAN.md §6."""
-    raise NotImplementedError("PERDAY_WINDOWS_PLAN.md PR1")
+    See docs/plans/PERDAY_WINDOWS_PLAN.md §6."""
+    raise NotImplementedError("docs/plans/PERDAY_WINDOWS_PLAN.md PR1")
 ```
 (`TimeWindow` itself is UNCHANGED — weekday lives in config + the fingerprint pair,
 not in the domain `TimeWindow`. §4.)
@@ -627,14 +627,14 @@ not in the domain `TimeWindow`. §4.)
 ```python
 def _windows_for_date(cfg: AppConfig, target_date: date) -> tuple[TimeWindow, ...]:
     """Domain TimeWindows for target_date's weekday. ASSERTS non-empty (§5)."""
-    raise NotImplementedError("PERDAY_WINDOWS_PLAN.md PR3")
+    raise NotImplementedError("docs/plans/PERDAY_WINDOWS_PLAN.md PR3")
 
 def _scope_request_to_date(
     request: BookingRequest, cfg: AppConfig, target_date: date
 ) -> BookingRequest:
     """dc_replace(request, target_dates=(d,), time_windows=_windows_for_date(...)).
     Used by _watch to hand check_once a per-date-scoped request."""
-    raise NotImplementedError("PERDAY_WINDOWS_PLAN.md PR3")
+    raise NotImplementedError("docs/plans/PERDAY_WINDOWS_PLAN.md PR3")
 
 # _build_booking_request: dc_replace(base, target_dates=(target_date,),
 #                                    time_windows=_windows_for_date(cfg, target_date))
@@ -648,7 +648,7 @@ def _scope_request_to_date(
 ```python
 def rank_slots_for_request(slots, request):
     """...sort key (window-list-order = priority): (window_index, midpoint_distance,
-    tee_time). Earlier-listed window always preferred. See PERDAY_WINDOWS_PLAN.md
+    tee_time). Earlier-listed window always preferred. See docs/plans/PERDAY_WINDOWS_PLAN.md
     §2 / Q1 / PR4."""
     ...
 def _matching_window(slot, request) -> tuple[int, TimeWindow] | None:
@@ -665,7 +665,7 @@ def _matching_window(slot, request) -> tuple[int, TimeWindow] | None:
 | `CLAUDE.md` | idempotency-key note (window token now encodes weekday); per-date window scoping in booking/watch; remove `target_weekdays` mentions | PR1, PR3 |
 | `src/teetime/courses/CLAUDE.md:45-46` | "books wanted morning days" + "time window 08:45–10:00" → per-day tagged windows; multi-window-per-day note | PR1 |
 | `config/example.toml` | tagged windows + commented second-same-day-window example | PR2 |
-| `MULTIDAY_PLAN.md` | cross-reference: `target_weekdays` superseded by per-window weekday | PR1 |
+| `docs/plans/MULTIDAY_PLAN.md` | cross-reference: `target_weekdays` superseded by per-window weekday | PR1 |
 | `PLAN.md` §13 (fingerprint) | window token shape | PR1 |
 | `README.md` | if it documents `target_weekdays` / window config | PR1/PR2 |
 | this plan | mark PRs done | each |

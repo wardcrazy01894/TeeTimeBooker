@@ -5,9 +5,9 @@ Status: **RATIFIED 2026-09-25** after three adversarial review rounds (round 1 B
 wired**. Nothing in this document changes current prod behaviour until the cutover PRs (§11, §12)
 land. Subordinate to [PLAN.md](./PLAN.md) (engine), [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md)
 (hosting), and the ratified race-path plans
-([BLIND_POST_PLAN.md](./BLIND_POST_PLAN.md), [RACE_PREWARM_PLAN.md](./RACE_PREWARM_PLAN.md),
-[RESEARCH_FALLBACK_PLAN.md](./RESEARCH_FALLBACK_PLAN.md), [STAGGER_PLAN.md](./STAGGER_PLAN.md)).
-Supersedes [FRONTEND_PLAN.md](./FRONTEND_PLAN.md) once ratified (that plan was single-user by
+([BLIND_POST_PLAN.md](./docs/plans/BLIND_POST_PLAN.md), [RACE_PREWARM_PLAN.md](./docs/plans/RACE_PREWARM_PLAN.md),
+[RESEARCH_FALLBACK_PLAN.md](./docs/plans/RESEARCH_FALLBACK_PLAN.md), [STAGGER_PLAN.md](./docs/plans/STAGGER_PLAN.md)).
+Supersedes [FRONTEND_PLAN.md](./docs/plans/FRONTEND_PLAN.md) once ratified (that plan was single-user by
 design; §8 below keeps its live-read / store-mediated-write principles).
 
 Operator decisions from the 2026-09-25 spike are **inputs**, not open questions. They are cited as
@@ -1462,7 +1462,7 @@ with no POST, within the limits in §11.2.
 | Adapter capability (E1, E2, E6) + MB grid | `src/teetime/courses/CLAUDE.md` MB section; CLAUDE.md capability bullets |
 | Prod tag bump at step 7 | README / CLAUDE.md / PLAN.md "latest infra tag" (all three, enforced by `tests/test_docs_consistency.py`) |
 | New config keys (`captcha_max_concurrent_solves`, `max_accounts_per_course`, `refresh_ttl_s`, …) | `core/config.py` or tenant settings comments; README config walkthrough; parity tests |
-| FRONTEND_PLAN superseded; BACKLOG frontend section | supersession banner on FRONTEND_PLAN.md; BACKLOG.md index |
+| FRONTEND_PLAN superseded; BACKLOG frontend section | supersession banner on docs/plans/FRONTEND_PLAN.md; BACKLOG.md index |
 | TOML retirement (steps 9–10) | CLAUDE.md Status + skip-days bullets; PLAN.md §4.2; LEADTIME_SKIP_PLAN status header; AZURE_PLAN §7.5 |
 
 This plan **does not name a current infra tag** in the root docs, so `tests/test_docs_consistency.py`

@@ -17,7 +17,7 @@ now run as ACA Jobs defined in `compute.bicep`.
 ```
 infra/
   AZURE_PLAN.md              # authoritative Azure design doc
-  COST_KILLSWITCH_PLAN.md    # verified design for the $50 automated killswitch chain
+  docs/plans/COST_KILLSWITCH_PLAN.md    # verified design for the $50 automated killswitch chain
   bicep/
     main.bicep               # entry point (RG-scoped); dryRun param defaults true
     main.bicepparam.dev      # dev parameter values (dryRun=true, enablePurgeProtection=false)

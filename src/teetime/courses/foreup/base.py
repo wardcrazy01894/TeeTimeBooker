@@ -147,7 +147,8 @@ class ForeUpAdapter(CourseAdapter):
 
     course_id: CourseId
 
-    # Blind-POST capability (BLIND_POST_PLAN.md §3). A bare ForeUP course is NOT capable —
+    # Blind-POST capability (docs/plans/BLIND_POST_PLAN.md §3). A bare ForeUP course is NOT
+    # capable —
     # a subclass must ship + validate its own static payload template and tee-time grid, then
     # override `capabilities` with blind_post=True and implement synthesize_blind_slots
     # (Mangrove Bay does so). The orchestrator gates the blind path on
@@ -551,7 +552,7 @@ class ForeUpAdapter(CourseAdapter):
     async def refresh_reservations(self, creds: CourseCredentials) -> None:
         """Force a fresh login so ``list_reservations()`` returns a CURRENT snapshot.
 
-        ``ReservationCacheRefreshable`` capability (BLIND_POST_PLAN.md §6 must-fix).
+        ``ReservationCacheRefreshable`` capability (docs/plans/BLIND_POST_PLAN.md §6 must-fix).
         ``list_reservations()`` reads the cache built from the ``POST /login`` response
         body, and ``authenticate()`` is idempotent — once ``_logged_in`` is True it
         short-circuits before the login POST, so it will NOT rebuild that cache. The
@@ -654,7 +655,7 @@ class ForeUpAdapter(CourseAdapter):
             _log.info("ForeUP: %d slot(s) match filters for %s", len(matched), target_date)
             # Log the matched (in-window) tee times — not just the count — so a real 06:00
             # drop can be diffed against the blind-POST derived grid to detect grid drift
-            # (BLIND_POST_PLAN.md PR2 retroactive validation). Times only → PII-free.
+            # (docs/plans/BLIND_POST_PLAN.md PR2 retroactive validation). Times only → PII-free.
             _log.info(
                 "ForeUP: matched tee times for %s: %s",
                 target_date,
@@ -688,7 +689,7 @@ class ForeUpAdapter(CourseAdapter):
     def captcha_pool_size(self) -> int:
         """Number of pre-solved CAPTCHA tokens currently in this adapter's LEASE.
 
-        BlindPostCapable member (BLIND_POST_PLAN.md §3). The orchestrator sizes the
+        BlindPostCapable member (docs/plans/BLIND_POST_PLAN.md §3). The orchestrator sizes the
         blind burst at ``min(len(blind_slots), captcha_pool_size())`` so every
         concurrent ``book()`` pops a pooled token rather than inline-solving at T0.
         A shared pool's reserve is deliberately excluded (MULTIUSER_PLAN §5.2).
@@ -712,7 +713,7 @@ class ForeUpAdapter(CourseAdapter):
         raise NotImplementedError(
             "This ForeUP course has no committed blind-POST template/grid. "
             "Override synthesize_blind_slots in the course subclass. "
-            "See BLIND_POST_PLAN.md PR2."
+            "See docs/plans/BLIND_POST_PLAN.md PR2."
         )
 
     async def prepare_book(

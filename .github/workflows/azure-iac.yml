@@ -151,7 +151,7 @@ jobs:
       # pass it inline below. CI does NOT deploy from the .bicepparam file (it can't be
       # combined with --template-file), so without this step killswitchFired/enableSchedules
       # would fall back to their bicep defaults and the latch would be inert on the path
-      # that actually runs. Full-repo-scan finding H1 / COST_KILLSWITCH_PLAN.md §2/Item2.
+      # that actually runs. Full-repo-scan finding H1 / docs/plans/COST_KILLSWITCH_PLAN.md §2/Item2.
       - name: Read killswitch latch from param file (authoritative)
         run: |
           PARAM_FILE="infra/bicep/main.bicepparam.${ENVNAME}"
@@ -321,7 +321,7 @@ jobs:
       # pass it inline below. CI does NOT deploy from the .bicepparam file (it can't be
       # combined with --template-file), so without this step killswitchFired/enableSchedules
       # would fall back to their bicep defaults and the latch would be inert on the path
-      # that actually runs. Full-repo-scan finding H1 / COST_KILLSWITCH_PLAN.md §2/Item2.
+      # that actually runs. Full-repo-scan finding H1 / docs/plans/COST_KILLSWITCH_PLAN.md §2/Item2.
       - name: Read killswitch latch from param file (authoritative)
         run: |
           PARAM_FILE="infra/bicep/main.bicepparam.${ENVNAME}"

@@ -1,6 +1,6 @@
 # M6 — First Production Cron Run (implementation plan)
 
-> **⚠️ SUPERSEDED IN PART by `MULTIDAY_PLAN.md` (and then `PERDAY_WINDOWS_PLAN.md`).** The
+> **⚠️ SUPERSEDED IN PART by `docs/plans/MULTIDAY_PLAN.md` (and then `docs/plans/PERDAY_WINDOWS_PLAN.md`).** The
 > **Sunday-only schedule** described here (PR5: two `… * * 0` Sunday crons, jobs `-edt-sun`/
 > `-est-sun`) was replaced by **DAILY crons + a booking-day gate** (`core/booking_day_gate.py`),
 > jobs renamed `-edt`/`-est`, and per-day time windows; the watcher's `target_weekday` anchor +
@@ -404,7 +404,7 @@ def should_proceed(clock: Clock, *, timezone: str, fire_time: time) -> bool:
     --no-wait path (manual/local/on-demand) bypasses this entirely, matching the old
     workflow_dispatch always-proceed semantics. Reads the hour only; sub-hour precision
     is the busy-wait's job. A False return means "wrong DST-season cron — exit 0, this is
-    not an error." See M6_PLAN.md §2 PR2 for the jitter analysis (does NOT proceed once
+    not an error." See docs/plans/M6_PLAN.md §2 PR2 for the jitter analysis (does NOT proceed once
     ET hour reaches fire_time.hour; the watch job is the missed-drop recovery path).
     """
     ...
@@ -574,7 +574,7 @@ poll_interval_s    = 600   # 10 minutes; must be >= 300 (anti-bot floor)
 polling_start_hour = 7     # course-local; no polling before 7 AM ET
 polling_end_hour   = 22    # course-local; no polling after 10 PM ET
 
-# one_booking_policy intentionally NOT enabled in M6 (see M6_PLAN.md §4.4). The watcher
+# one_booking_policy intentionally NOT enabled in M6 (see docs/plans/M6_PLAN.md §4.4). The watcher
 # in M6 only logs/ranks newly available slots; cancel+rebook upgrades are a later,
 # separately-verified step.
 ```
@@ -725,7 +725,7 @@ plus small structured-log additions if the current logs don't already prove the 
   This is the load-bearing verification line for "booker busy-waited and fired at 06:00:00.x".
 - `src/teetime/__main__.py` — on the `--wait` path, log the resolved T0 and the NTP offset
   applied (so logs show the real scheduler was selected, not the demo one).
-- `M6_PLAN.md` is this file; the runbook content also goes into `infra/AZURE_PLAN.md` §10 and a
+- `docs/plans/M6_PLAN.md` is this file; the runbook content also goes into `infra/AZURE_PLAN.md` §10 and a
   README "verifying the first run" subsection — INCLUDING the §6.5 `--fire-time` on-demand
   escape-hatch procedure and the §6.6 "live-Sunday-only timing" exit criterion.
 - `tests/test_orchestrator.py` — assert the new race-complete log line is emitted at/after T0

@@ -1,4 +1,4 @@
-# LEADTIME_SKIP_PLAN.md — Hard booking cutoff + no-redeploy "skip this day"
+# docs/plans/LEADTIME_SKIP_PLAN.md — Hard booking cutoff + no-redeploy "skip this day"
 
 Status: **IMPLEMENTED + DEPLOYED** (ratified via plan-with-review; shipped as PRs
 #107–111). The 4PM-day-before hard booking cutoff (`core/booking_cutoff.py`) and the

@@ -871,7 +871,7 @@ az role definition create --role-definition '{
 | Root `CLAUDE.md` | PR-KS1 | Infra module summary; budget amounts |
 | `README.md` | PR-KS2 | Cost/budget section if present |
 | `PLAN.md` | Neither (no Python changes) | N/A |
-| `infra/COST_KILLSWITCH_PLAN.md` | This file | PR-by-PR plan + operator runbook |
+| `docs/plans/COST_KILLSWITCH_PLAN.md` | This file | PR-by-PR plan + operator runbook |
 
 ---
 

@@ -1,4 +1,4 @@
-"""BLIND_POST_PLAN.md capability surface — now expressed via the explicit
+"""docs/plans/BLIND_POST_PLAN.md capability surface — now expressed via the explicit
 `AdapterCapabilities` record (PR: capability flags over runtime_checkable protocols).
 
 The orchestrator gates the blind path on `adapter.capabilities.blind_post`, NOT on
