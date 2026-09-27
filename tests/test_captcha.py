@@ -131,9 +131,111 @@ async def test_2captcha_submit_http_error_does_not_leak_api_key() -> None:
             api_key="fakekeyfakekeyfakekeyfakekey",
             page_url=_PAGE_URL,
             poll_interval_s=0.0,
+            submit_backoff_s=0.0,
         )
     assert "fakekeyfakekeyfakekeyfakekey" not in str(excinfo.value)
     assert "503" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Transient-failure retries (retry audit 2026-09-27). A single blip used to throw away the
+# whole solve: a submit 5xx / transport error / ERROR_NO_SLOT_AVAILABLE (2captcha's documented
+# "busy, retry shortly"), or ONE failed result poll of an already-paid task.
+# ---------------------------------------------------------------------------
+
+
+def _ready() -> httpx.Response:
+    return httpx.Response(200, json={"status": 1, "request": "tok"})
+
+
+def _queued() -> httpx.Response:
+    return httpx.Response(200, json={"status": 1, "request": "task-7"})
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        httpx.Response(503),
+        httpx.Response(429),
+        httpx.Response(200, json={"status": 0, "request": "ERROR_NO_SLOT_AVAILABLE"}),
+        httpx.ConnectError("blip"),
+    ],
+)
+@respx.mock
+async def test_2captcha_submit_retries_a_transient_failure(first: object) -> None:
+    submit = respx.post(_SUBMIT_URL).mock(side_effect=[first, _queued()])
+    respx.get(_RESULT_URL).mock(return_value=_ready())
+
+    token = await get_foreup_captcha_token_2captcha(
+        api_key="k", page_url=_PAGE_URL, poll_interval_s=0.0, submit_backoff_s=0.0
+    )
+
+    assert token == "tok"
+    assert submit.call_count == 2
+
+
+@respx.mock
+async def test_2captcha_submit_does_not_retry_a_permanent_error() -> None:
+    submit = respx.post(_SUBMIT_URL).mock(
+        return_value=httpx.Response(200, json={"status": 0, "request": "ERROR_ZERO_BALANCE"})
+    )
+    with pytest.raises(RuntimeError, match="ERROR_ZERO_BALANCE"):
+        await get_foreup_captcha_token_2captcha(
+            api_key="k", page_url=_PAGE_URL, poll_interval_s=0.0, submit_backoff_s=0.0
+        )
+    assert submit.call_count == 1
+
+
+@respx.mock
+async def test_2captcha_submit_retries_are_bounded() -> None:
+    submit = respx.post(_SUBMIT_URL).mock(return_value=httpx.Response(502))
+    with pytest.raises(RuntimeError, match="502"):
+        await get_foreup_captcha_token_2captcha(
+            api_key="k", page_url=_PAGE_URL, poll_interval_s=0.0, submit_backoff_s=0.0
+        )
+    assert submit.call_count == 3  # 1 + the default 2 retries
+
+
+@pytest.mark.parametrize("blip", [httpx.Response(502), httpx.ReadTimeout("slow")])
+@respx.mock
+async def test_2captcha_poll_blip_consumes_one_poll_not_the_solve(blip: object) -> None:
+    respx.post(_SUBMIT_URL).mock(return_value=_queued())
+    poll = respx.get(_RESULT_URL).mock(side_effect=[blip, _ready()])
+
+    token = await get_foreup_captcha_token_2captcha(
+        api_key="k", page_url=_PAGE_URL, poll_interval_s=0.0
+    )
+
+    assert token == "tok"
+    assert poll.call_count == 2
+
+
+@respx.mock
+async def test_2captcha_persistent_poll_failures_raise_sanitized() -> None:
+    respx.post(_SUBMIT_URL).mock(return_value=_queued())
+    poll = respx.get(_RESULT_URL).mock(side_effect=httpx.ConnectError("down"))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await get_foreup_captcha_token_2captcha(
+            api_key="fakekeyfakekeyfakekeyfakekey", page_url=_PAGE_URL, poll_interval_s=0.0
+        )
+
+    assert poll.call_count == 3  # the default max_poll_errors consecutive failures
+    assert "fakekeyfakekeyfakekeyfakekey" not in str(excinfo.value)
+    assert "ConnectError" in str(excinfo.value)
+
+
+@respx.mock
+async def test_2captcha_poll_blips_never_extend_the_poll_budget() -> None:
+    respx.post(_SUBMIT_URL).mock(return_value=_queued())
+    not_ready = httpx.Response(200, json={"status": 0, "request": "CAPCHA_NOT_READY"})
+    poll = respx.get(_RESULT_URL).mock(side_effect=[httpx.Response(500), not_ready, not_ready])
+
+    with pytest.raises(TimeoutError):
+        await get_foreup_captcha_token_2captcha(
+            api_key="k", page_url=_PAGE_URL, poll_interval_s=0.0, max_polls=3
+        )
+    assert poll.call_count == 3
 
 
 # ---------------------------------------------------------------------------

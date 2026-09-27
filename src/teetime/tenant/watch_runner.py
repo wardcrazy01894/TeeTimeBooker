@@ -73,6 +73,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
+from functools import partial
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -433,7 +434,7 @@ class _Run:
             self.tally.lost.append(row.id)
             account = await self._read(
                 "get_account_unscoped",
-                lambda row=row: self.store.get_account_unscoped(row.course_account_id),
+                partial(self.store.get_account_unscoped, row.course_account_id),
             )
             await self._notify(UserEventKind.LOST, row, account=account, detail="frozen unbooked")
         return await self._group_floor(rows)
@@ -616,14 +617,14 @@ class _Run:
                 work = accounts.get(account.id)
                 if work is None:
                     previous = await self._read(
-                        "get_snapshot", lambda account=account: self.store.get_snapshot(account.id)
+                        "get_snapshot", partial(self.store.get_snapshot, account.id)
                     )
                     work = _AccountWork(account, previous)
                     accounts[account.id] = work
                 owned = await self._read(
                     "list_owned_bookings",
-                    lambda account=account, row=row: self.store.list_owned_bookings(
-                        account.id, target_date=row.target_date
+                    partial(
+                        self.store.list_owned_bookings, account.id, target_date=row.target_date
                     ),
                 )
                 self._report_orphans(row, owned)
