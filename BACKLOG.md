@@ -153,3 +153,12 @@ site delivered its wants instead:
 | Auth on the frontend | Invite-only OAuth (MU-12) |
 
 Not carried over: a one-click "cancel all bookings".
+
+## Retry follow-up (from the #260 review)
+
+- **WRITE #2 "already applied" false alarm.** If a replayed outcome write follows a first attempt
+  that actually landed, the store refuses it (`check_transition` rejects the self-edge), so the row
+  is flagged `needs_reconcile`, a CRITICAL is logged and the run exits non-zero, although the row is
+  already correct and nothing is written twice. Detect "already applied by me" (compare the re-read
+  row to the outcome's intended state) and treat it as success, in both stores + the conformance
+  suite.
