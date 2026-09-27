@@ -63,7 +63,7 @@ Two paths exist side by side:
 
 | | |
 |---|---|
-| Latest infra tag | latest infra tag `infra/v3.0.0` (2026-09-27, MU-18 stage B: jobs on the tenant path; stage A was `infra/v2.17.0`); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Latest infra tag | latest infra tag `infra/v3.0.1` (2026-09-27, the watcher search fix; the tenant path since `infra/v3.0.0`, MU-18 stage B); history in [docs/RELEASES.md](./docs/RELEASES.md) |
 | Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
 | Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout; `tenant-run --event mb0600et --wait` since MU-18 stage B (was `run --wait`) |
 | Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout; `tenant-watch` since MU-18 stage B |
@@ -317,6 +317,11 @@ a test that proves the new behaviour, and update this section in the same PR.
   MB booking. That was cosmetic for upgrade/cancel (which take the id from `list_reservations`,
   see `WatchOrchestrator._synthesize_managed_booking`) but is **load-bearing for blind-POST
   cancel-extras**, which cancels surplus reservations by the id `book()` returned.
+- **`ForeUpAdapter.search()` needs no login; `book()` does.** `search()` creates the HTTP client on
+  first use when `authenticate()` has not run, which the tenant watcher's shared unauthenticated
+  search relies on (before the fix every such search raised `RuntimeError`, live in prod and dev on
+  2026-09-27, pinned by `test_search_needs_no_login_on_an_adapter_built_without_a_client`).
+  `book()` raises `AuthError` without a login and `cancel_reservation()` keeps requiring the client.
 - **`ForeUpAdapter.list_reservations()` reads a login-response cache, not a live GET.** ForeUP's
   `GET /reservations` returns a ~6 MB profile with `"reservations": false`; the real list comes in
   the `POST /login` body, which `authenticate()` caches. Reservations made after login are

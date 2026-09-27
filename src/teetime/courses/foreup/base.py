@@ -190,6 +190,9 @@ class ForeUpAdapter(CourseAdapter):
         self._client = http_client
         self._owns_client = http_client is None
         self._logged_in = False  # True only after a successful username/password login
+        # True while the client exists only because search() built it (no authenticate() yet):
+        # list_reservations() must still refuse then (its cache is empty, not "no bookings").
+        self._search_only_client = False
         # E6 (ReservationSnapshotHealth): True only when the LATEST login response carried a
         # real `reservations` list. Reset before every login POST so a raise / soft-fail /
         # non-JSON / list-less body can never leave a previous login's trust standing.
@@ -456,6 +459,7 @@ class ForeUpAdapter(CourseAdapter):
         """
         if self._client is None:
             self._client = self._make_client()
+        self._search_only_client = False
         # Idempotency guard (RACE_PREWARM_PLAN §3.1): once a real login has succeeded, a
         # second authenticate() is a no-op — skip the warm-up GET + login POST. Keys ONLY on
         # _logged_in, which a soft login failure (400/401 or rejected body) leaves False, so a
@@ -581,7 +585,14 @@ class ForeUpAdapter(CourseAdapter):
         ``skip_initial_spacing`` (Change D / PR3) drops the leading courtesy sleep before
         the FIRST date's GET — race-path only. The 2nd+ date GETs are always spaced, so the
         watcher's inter-date-check etiquette is untouched even if the flag is ever set.
+
+        Search needs no login, so it creates the HTTP client on first use when ``authenticate()``
+        has not run (the tenant watcher's shared search, MULTIUSER_PLAN §7.2). ``book()`` and
+        ``cancel_reservation()`` keep requiring it.
         """
+        if self._client is None:
+            self._client = self._make_client()
+            self._search_only_client = True
         client = self._c()
         tz = ZoneInfo(self._timezone)
         results: list[TeeTimeSlot] = []
@@ -974,7 +985,7 @@ class ForeUpAdapter(CourseAdapter):
         # Mirror the _c() guard used by search() and book(): if authenticate()
         # was never called, _client is None and we must fail loudly rather than
         # return an empty list that looks like "no existing bookings".
-        if self._client is None:
+        if self._client is None or self._search_only_client:
             raise RuntimeError("authenticate() must be called before list_reservations()")
         tz = ZoneInfo(self._timezone)
         out: list[ExistingReservation] = []
