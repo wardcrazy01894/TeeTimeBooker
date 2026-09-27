@@ -317,6 +317,11 @@ a test that proves the new behaviour, and update this section in the same PR.
   MB booking. That was cosmetic for upgrade/cancel (which take the id from `list_reservations`,
   see `WatchOrchestrator._synthesize_managed_booking`) but is **load-bearing for blind-POST
   cancel-extras**, which cancels surplus reservations by the id `book()` returned.
+- **`ForeUpAdapter.search()` needs no login; `book()` does.** `search()` creates the HTTP client on
+  first use when `authenticate()` has not run, which the tenant watcher's shared unauthenticated
+  search relies on (before the fix every such search raised `RuntimeError`, live in prod and dev on
+  2026-09-27, pinned by `test_search_needs_no_login_on_an_adapter_built_without_a_client`).
+  `book()` raises `AuthError` without a login and `cancel_reservation()` keeps requiring the client.
 - **`ForeUpAdapter.list_reservations()` reads a login-response cache, not a live GET.** ForeUP's
   `GET /reservations` returns a ~6 MB profile with `"reservations": false`; the real list comes in
   the `POST /login` body, which `authenticate()` caches. Reservations made after login are
