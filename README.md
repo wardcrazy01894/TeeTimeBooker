@@ -164,8 +164,8 @@ enabled per date. When the watcher is disabled the command logs a warning and ex
 
 ## Multi-user web app
 
-The invite-only site from [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md). It is **deployed to dev**
-(`teetime-web-dev`, dry-run, MU-17) and not yet to prod (MU-18). Users bring their own ForeUP
+The invite-only site from [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md). It is **deployed to prod**
+(`teetime-web-prod`, MU-18) and to dev (`teetime-web-dev`, dry-run, MU-17). Users bring their own ForeUP
 login (stored AES-GCM-encrypted), pick ranked (course, time window) options, and the tenant jobs
 book for every account at the drop.
 
@@ -368,7 +368,7 @@ cron loop outside. See [PLAN.md](./PLAN.md) and [MULTIUSER_PLAN.md](./MULTIUSER_
 | M-feature-1/2/3 | Cancellation watcher, auto-upgrade, midpoint-distance ranking | Done |
 | Blind-POST | Concurrent T0 book POSTs for the MB morning grid + watcher crash-net, later staggered | Done, live since `infra/v2.5.0` |
 | M-azure | Bicep IaC, container runtime | Done |
-| Multi-user site | MULTIUSER_PLAN MU-1 … MU-17, MU-R1 … MU-R3 | Done in dev; the prod cutover (MU-18) open |
+| Multi-user site | MULTIUSER_PLAN MU-1 … MU-17, MU-R1 … MU-R3 | Done; live in prod since MU-18 (`infra/v3.0.0`) |
 
 Engine milestones in detail: [PLAN.md §16](./PLAN.md) and §20. Multi-user milestones:
 [MULTIUSER_PLAN.md §12](./MULTIUSER_PLAN.md).

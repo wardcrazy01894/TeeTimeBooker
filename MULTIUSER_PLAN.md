@@ -3,8 +3,9 @@
 Status: **RATIFIED 2026-09-25** after three adversarial review rounds (round 1 BLOCK, round 2 BLOCK, round 3 BLOCK on a single one-line item fixed by the coordinator); every item addressed, see the §15 ledgers.
 
 > **Implementation status (2026-09-26):** MU-1 through MU-17 and MU-R1 through MU-R3 are built;
-> **dev runs the tenant path** (MU-17, dry-run) and prod still runs the TOML path until the cutover
-> (MU-18; §11), where the operator runs MU-16b's Adopt action. Row-by-row state is in §12; how each milestone was actually built,
+> **the tenant path runs in prod** since MU-18 (stage A `infra/v2.17.0`, stage B `infra/v3.0.0`,
+> 2026-09-27; the operator adopted the TOML bot's live reservations with MU-16b) and in **dev**
+> (MU-17, dry-run). Row-by-row state is in §12; how each milestone was actually built,
 > deviations included, is in [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md).
 
 Nothing in this document changes prod behaviour until the cutover PRs (§11, §12) land. Subordinate to [PLAN.md](./PLAN.md) (engine), [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md)

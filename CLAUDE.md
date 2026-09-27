@@ -85,7 +85,7 @@ cutover runbook: AZURE_PLAN §10.4/§10.5. The `enableSchedules` Bicep param sil
 Dev auto-deploys from `main` in permanent `dryRun = true`. Since MU-17 its booker and watcher run
 `tenant-run --event mb0600et` / `tenant-watch` (watcher hourly, `0 * * * *`) over the shared Cosmos
 `dev` database, and the `teetime-web-dev` Container App (Google sign-in) and ACS email are
-deployed. Prod is unchanged until MU-18. Runbook: AZURE_PLAN §10.7.
+deployed. Runbook: AZURE_PLAN §10.7 (prod followed at MU-18, §10.8).
 
 The cost killswitch ($50 actual spend → Logic App disables and stops every ACA Job and stops the
 web apps) is armed in dev and manages both envs; the $20 email budget is the early-warning tier.
@@ -114,7 +114,7 @@ actually built, deviations included: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUS
 | MU-16a | Tenant commands on real collaborators + migrate job | Done |
 | MU-16b | Adopt the TOML bot's live reservations as owned: operator-only **Adopt existing bookings** on `/accounts` (`tenant/seed.py`, `web/adopt.py`), used at the prod cutover (AZURE_PLAN §10.8) | Done |
 | MU-17 | Dev cutover | Done, dev dry-run |
-| MU-18 | Prod cutover | Open |
+| MU-18 | Prod cutover: stage A `infra/v2.17.0` (web app, ACS, tenant store), stage B `infra/v3.0.0` (jobs on the tenant path), 2026-09-27 | Done |
 | MU-19 / MU-20 | Retire TOML job wiring / TOML CLI | Open |
 | MU-R1 / R2 / R3 | Ranked options + price / group floor + collapse / ranked form | Done |
 
