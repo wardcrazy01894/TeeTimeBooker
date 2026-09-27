@@ -60,15 +60,15 @@ deploy with effectiveEnableSchedules=false regardless of the enableSchedules val
 any subsequent infra/** merge from re-arming the cron schedules until this bit is explicitly
 cleared. This is the checked-in safety latch that survives across PR merges. To re-enable
 schedules after a killswitch event: fix the root cause, set killswitchFired=false AND
-verify enableSchedules=true, then push. See COST_KILLSWITCH_PLAN.md §2/Item2 for full runbook.
+verify enableSchedules=true, then push. See docs/plans/COST_KILLSWITCH_PLAN.md §2/Item2 for full runbook.
 IMPORTANT: do NOT clear this param until the overspend root cause is diagnosed and resolved.
 ''')
 param killswitchFired bool = false
 
-@description('Enable the cost-killswitch Logic App + Action Group. Defaults false in main.bicep; param files set true (enabled on deploy). See COST_KILLSWITCH_PLAN.md §3/PR-KS1.')
+@description('Enable the cost-killswitch Logic App + Action Group. Defaults false in main.bicep; param files set true (enabled on deploy). See docs/plans/COST_KILLSWITCH_PLAN.md §3/PR-KS1.')
 param enableKillswitch bool = false
 
-@description('GUID of the pre-created "ACA Job Schedule Manager" custom role. Required when enableKillswitch=true. Must be created manually by the operator (subscription-level roleDefinitions/write required). See COST_KILLSWITCH_PLAN.md §2/Item4.')
+@description('GUID of the pre-created "ACA Job Schedule Manager" custom role. Required when enableKillswitch=true. Must be created manually by the operator (subscription-level roleDefinitions/write required). See docs/plans/COST_KILLSWITCH_PLAN.md §2/Item4.')
 param killswitchRbacRoleId string = ''
 
 @description('Which code path the ACA booking jobs run: "toml" (default, byte-identical to pre-MU-15a) or "tenant". See compute.bicep and MULTIUSER_PLAN.md §6.2/§11. Flipped only at the cutover steps in that plan, never by a routine deploy.')
@@ -231,7 +231,7 @@ module compute 'modules/compute.bicep' = {
 // lives in rg-teetime-dev and manages BOTH envs via cross-RG RBAC — a second
 // instance must NOT be created in prod). If enableKillswitch=true but
 // killswitchRbacRoleId='' (role not yet created), the deploy is a clean no-op.
-// See: infra/COST_KILLSWITCH_PLAN.md §2/Item3, §3/PR-KS1
+// See: docs/plans/COST_KILLSWITCH_PLAN.md §2/Item3, §3/PR-KS1
 // ---------------------------------------------------------------------------
 
 module killswitch 'modules/killswitch.bicep' = if (enableKillswitch && !empty(killswitchRbacRoleId) && envName == 'dev') {

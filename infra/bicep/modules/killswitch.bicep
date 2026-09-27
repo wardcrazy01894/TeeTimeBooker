@@ -30,7 +30,7 @@
 //   already tolerates for a deleted/never-created job (see the "Idempotency" note below).
 //     Source: https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/container-apps/stop?view=rest-resource-manager-containerapps-2024-03-01
 //
-// RBAC (VERIFIED — see infra/COST_KILLSWITCH_PLAN.md §2/Item4; extended MU-15a for lever c):
+// RBAC (VERIFIED — see docs/plans/COST_KILLSWITCH_PLAN.md §2/Item4; extended MU-15a for lever c):
 //   Logic App system-assigned MI gets a custom role ("ACA Job Schedule Manager")
 //   with Microsoft.App/jobs/read + Microsoft.App/jobs/write + Microsoft.App/jobs/stop/action
 //   PLUS (MU-15a) Microsoft.App/containerApps/read + Microsoft.App/containerApps/stop/action,
@@ -56,7 +56,7 @@
 //     "AssignableScopes": ["/subscriptions/3f82c7e1-4b1b-4a55-b905-d79f65c6887d"]
 //   }
 //
-// Action Group wiring (VERIFIED — see infra/COST_KILLSWITCH_PLAN.md §2/Item5):
+// Action Group wiring (VERIFIED — see docs/plans/COST_KILLSWITCH_PLAN.md §2/Item5):
 //   Microsoft.Insights/actionGroups@2023-01-01 supports logicAppReceivers[].
 //   callbackUrl is obtained via listCallbackUrl() at deploy time — no secret stored.
 //   Source: https://learn.microsoft.com/en-us/azure/templates/microsoft.insights/2023-01-01/actiongroups
@@ -71,12 +71,12 @@
 //   producing a 404 when the Action Group fires. The trigger name MUST remain
 //   'manual' (exact match, lowercase) in the workflow definition — do not rename it.
 //
-// Idempotency (VERIFIED — see infra/COST_KILLSWITCH_PLAN.md §2/Item6):
+// Idempotency (VERIFIED — see docs/plans/COST_KILLSWITCH_PLAN.md §2/Item6):
 //   PATCH triggerType=Manual on an already-Manual job returns HTTP 200 (no error).
 //   POST /stop when no executions are running returns HTTP 200 with empty list (no error).
 //   Budget alerts re-fire daily while over threshold; both levers are safe to call repeatedly.
 //
-// IMPORTANT — Deploy-clobber risk (see infra/COST_KILLSWITCH_PLAN.md §2/Item2):
+// IMPORTANT — Deploy-clobber risk (see docs/plans/COST_KILLSWITCH_PLAN.md §2/Item2):
 //   A CI deploy with enableSchedules=true will RE-ARM the killswitched jobs.
 //   The deploy-clobber guard is the killswitchFired param in main.bicep: when
 //   set to true in the param files it forces enableSchedules=false regardless of
@@ -85,14 +85,14 @@
 //   (requires full PR flow — minutes). Until that PR merges, concurrent infra
 //   deploys can re-arm the jobs. Budget alerts re-fire at most once per day, so
 //   the re-arm window is up to ~24 hours if the operator is slow. See the gap
-//   window analysis in infra/COST_KILLSWITCH_PLAN.md §2/Item2 for the full
+//   window analysis in docs/plans/COST_KILLSWITCH_PLAN.md §2/Item2 for the full
 //   residual risk statement.
 //
 // Cost: Logic App Consumption is FREE for the first 4,000 actions/month.
 //   This Logic App fires at most 12 HTTP actions per budget-alert evaluation,
 //   and budget alerts fire at most once per day — ~360 actions/month max.
 //   Effective monthly cost: $0.00.
-//   See infra/COST_KILLSWITCH_PLAN.md §2/Item9.
+//   See docs/plans/COST_KILLSWITCH_PLAN.md §2/Item9.
 //
 // Deploy gate: main.bicep's param default for enableKillswitch is false, but both
 // bicepparam files and azure-iac.yml set enableKillswitch=true and supply the custom
@@ -100,13 +100,13 @@
 //
 // Deploy dependency: this module is deployed in rg-teetime-dev. The role
 // assignments target BOTH rg-teetime-dev (inline) and rg-teetime-prod (nested
-// module with cross-RG scope). See infra/COST_KILLSWITCH_PLAN.md §2/Item3 for the
+// module with cross-RG scope). See docs/plans/COST_KILLSWITCH_PLAN.md §2/Item3 for the
 // resolved U3 cross-RG RBAC strategy.
 //
 // NON-REAL-TIME LIMITATION: Azure cost data lags 8–24 hours. This killswitch
 // is a slow-runaway backstop, NOT instant per-run protection. See §4 (Limitations).
 //
-// See: infra/COST_KILLSWITCH_PLAN.md (full verified design + all 10 pre-emption items)
+// See: docs/plans/COST_KILLSWITCH_PLAN.md (full verified design + all 10 pre-emption items)
 //      infra/AZURE_PLAN.md §9.2 (budget), §10 (runbook)
 
 targetScope = 'resourceGroup'
@@ -121,7 +121,7 @@ param envName string
 @description('Azure region for the Logic App and Action Group resources.')
 param location string
 
-@description('GUID of the pre-created "ACA Job Schedule Manager" custom role definition. Must be created manually by the operator (subscription-level Microsoft.Authorization/roleDefinitions/write required — not deployable by the CI service principal). Role actions: Microsoft.App/jobs/read + Microsoft.App/jobs/write + Microsoft.App/jobs/stop/action. See infra/COST_KILLSWITCH_PLAN.md §2/Item4 for the exact role definition JSON.')
+@description('GUID of the pre-created "ACA Job Schedule Manager" custom role definition. Must be created manually by the operator (subscription-level Microsoft.Authorization/roleDefinitions/write required — not deployable by the CI service principal). Role actions: Microsoft.App/jobs/read + Microsoft.App/jobs/write + Microsoft.App/jobs/stop/action. See docs/plans/COST_KILLSWITCH_PLAN.md §2/Item4 for the exact role definition JSON.')
 param killswitchRbacRoleId string
 
 @description('Subscription ID containing both rg-teetime-dev and rg-teetime-prod. Defaults to the current subscription.')
@@ -513,7 +513,7 @@ resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = {
 //   Microsoft.App/jobs/stop/action — POST /stop (Lever b)
 // See COST_KILLSWITCH_PLAN §2/Item4 for the exact az role definition create command.
 //
-// Cross-RG RBAC strategy (resolved — was U3 in COST_KILLSWITCH_PLAN.md):
+// Cross-RG RBAC strategy (resolved — was U3 in docs/plans/COST_KILLSWITCH_PLAN.md):
 //   The rg-teetime-prod role assignment is cross-RG from this module's deployment
 //   scope (rg-teetime-dev). Bicep resourceGroup() in an inline resource always
 //   targets the deployment RG. The solution is a NESTED MODULE with a scope

@@ -7,8 +7,58 @@
 > `src/`.) The bot binary is container-packaged and run as an Azure Container Apps Job on a
 > cron schedule. All decisions listed in the task brief are treated as settled;
 > this document addresses the "anticipate-the-reviewer" items explicitly.
+>
+> **Status:** living doc, implemented. Prod runs the single-user TOML jobs
+> (`dryRun=false`); dev runs the multi-user tenant jobs, web app, ACS email and the shared Cosmos
+> account (MU-17, dry-run). Current prod tag and history: [../docs/RELEASES.md](../docs/RELEASES.md).
+> The killswitch design record is [../docs/plans/COST_KILLSWITCH_PLAN.md](../docs/plans/COST_KILLSWITCH_PLAN.md).
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [1. Architecture overview](#1-architecture-overview)
+- [2. Service selection](#2-service-selection)
+  - [2.1 Shared ACR (one registry for both envs)](#21-shared-acr-one-registry-for-both-envs)
+- [3. Module layout](#3-module-layout)
+- [4. Parameter strategy](#4-parameter-strategy)
+  - [Parameterized (vary by env or operator)](#parameterized-vary-by-env-or-operator)
+  - [Hard-coded (architectural constants, not env-specific)](#hard-coded-architectural-constants-not-env-specific)
+- [5. The 6:00 AM ET race on ACA (pre-emption items 1–3)](#5-the-600-am-et-race-on-aca-pre-emption-items-13)
+  - [5.1 ACA Jobs scheduled trigger jitter](#51-aca-jobs-scheduled-trigger-jitter)
+  - [5.2 Container cold-start](#52-container-cold-start)
+  - [5.3 DST handling on ACA](#53-dst-handling-on-aca)
+  - [5.4 Watch job ACA Job (M-feature-1)](#54-watch-job-aca-job-m-feature-1)
+  - [5.5 Migrate job (MU-16a, tenant mode only)](#55-migrate-job-mu-16a-tenant-mode-only)
+- [6. State persistence (pre-emption items 4 & 10)](#6-state-persistence-pre-emption-items-4--10)
+- [7. Secrets & identity (pre-emption items 6, 7, 11)](#7-secrets--identity-pre-emption-items-6-7-11)
+  - [7.1 Key Vault secret tree](#71-key-vault-secret-tree)
+  - [7.2 Managed identity and RBAC](#72-managed-identity-and-rbac)
+  - [7.2a Cosmos DB tenant store (MU-15b) — deploy + data-plane roles, by hand](#72a-cosmos-db-tenant-store-mu-15b--deploy--data-plane-roles-by-hand)
+  - [7.3 Key Vault secret injection pattern](#73-key-vault-secret-injection-pattern)
+  - [7.4 Secret rotation](#74-secret-rotation)
+  - [7.5 Skip dates — no-redeploy "don't book this day" (LEADTIME_SKIP_PLAN F2)](#75-skip-dates--no-redeploy-dont-book-this-day-leadtime_skip_plan-f2)
+- [8. CI validation pipeline (pre-emption item 9)](#8-ci-validation-pipeline-pre-emption-item-9)
+  - [8.1 Trigger strategy](#81-trigger-strategy)
+  - [8.2 OIDC federated credential setup (one-time, operator)](#82-oidc-federated-credential-setup-one-time-operator)
+  - [8.3 what-if known issue](#83-what-if-known-issue)
+- [9. Cost estimate (pre-emption item 12)](#9-cost-estimate-pre-emption-item-12)
+  - [9.1 Per-component breakdown (East US 2, April 2026)](#91-per-component-breakdown-east-us-2-april-2026)
+  - [9.2 Budget alert](#92-budget-alert)
+- [10. Deploy & cutover runbook (pre-emption items 8 & 13)](#10-deploy--cutover-runbook-pre-emption-items-8--13)
+  - [10.1 First-time setup (operator steps, run once)](#101-first-time-setup-operator-steps-run-once)
+  - [10.1.1 Prod first-time bootstrap (run once, before the first `infra/v*` tag)](#1011-prod-first-time-bootstrap-run-once-before-the-first-infrav-tag)
+  - [10.2 Ongoing deploy (CI-driven)](#102-ongoing-deploy-ci-driven)
+  - [10.3 v0 → v1 cutover (DONE)](#103-v0--v1-cutover-done)
+  - [10.4 M6 verification (dev, dry-run) — proving both jobs work before prod](#104-m6-verification-dev-dry-run--proving-both-jobs-work-before-prod)
+  - [10.5 Prod cutover checklist (in order)](#105-prod-cutover-checklist-in-order)
+  - [10.6 Shared-ACR cutover (one-time — dedicated rg-teetime-shared, see §2.1)](#106-shared-acr-cutover-one-time--dedicated-rg-teetime-shared-see-21)
+  - [10.7 Multi-user DEV cutover (MU-17, MULTIUSER_PLAN §11/§12)](#107-multi-user-dev-cutover-mu-17-multiuser_plan-1112)
+- [11. Security checklist](#11-security-checklist)
+- [12. Open questions for the user](#12-open-questions-for-the-user)
+
+<!-- /toc -->
 
 ## 1. Architecture overview
 
@@ -134,7 +184,7 @@ Cutover runbook: §10.6.
 ```
 infra/
   AZURE_PLAN.md                # this file
-  COST_KILLSWITCH_PLAN.md      # verified design for the $50 automated killswitch chain
+  docs/plans/COST_KILLSWITCH_PLAN.md      # verified design for the $50 automated killswitch chain
   bicep/
     main.bicep                 # entry point; orchestrates all modules; accepts envName + location params
     main.bicepparam.dev        # dev environment parameter values
@@ -833,7 +883,7 @@ sidesteps a known `az deployment sub create` budget-PUT bug.
 Tier 1 (`budget-teetime`, $20, email-only) is UNCHANGED. Tier 2 (`budget-teetime-killswitch`,
 $50, killswitch-trigger) is a SEPARATE second budget resource in `budget.bicep` (conditional on
 `killswitchActionGroupId`). Both budgets evaluate the same project spend independently. See
-`infra/COST_KILLSWITCH_PLAN.md`.
+`docs/plans/COST_KILLSWITCH_PLAN.md`.
 
 **Deploy note:** `azure-iac.yml` does **not** attempt the budget deploy — the CI service
 principal is RG-scoped only (a subscription-scoped budget needs subscription-level permission),

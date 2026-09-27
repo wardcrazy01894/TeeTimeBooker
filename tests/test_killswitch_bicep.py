@@ -321,7 +321,7 @@ def test_main_bicep_killswitch_module_gated(main_bicep: str) -> None:
       (empty killswitchRbacRoleId = clean no-op, safe to merge without the role).
     - Deploying a second Logic App in the prod RG (the killswitch lives in
       rg-teetime-dev and manages BOTH envs via cross-RG RBAC — only one instance
-      is needed). See COST_KILLSWITCH_PLAN.md §2/Item3.
+      is needed). See docs/plans/COST_KILLSWITCH_PLAN.md §2/Item3.
     """
     # The module must be conditional on all three guards.
     assert "enableKillswitch" in main_bicep

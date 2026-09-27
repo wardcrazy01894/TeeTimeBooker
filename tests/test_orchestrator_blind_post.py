@@ -1,4 +1,4 @@
-"""BLIND_POST_PLAN.md + RESEARCH_FALLBACK_PLAN.md: the orchestrator blind-POST race path
+"""docs/plans/BLIND_POST_PLAN.md + docs/plans/RESEARCH_FALLBACK_PLAN.md: the orchestrator blind-POST race path
 + post-reguard fresh-search fallback.
 
 At the 06:00 ET drop, for a blind-CAPABLE primary course on the race path
@@ -13,7 +13,7 @@ The capability gate is the explicit ``adapter.capabilities.blind_post`` flag —
 race-path AND primary AND not-dry-run AND ``blind_post_max_count > 0``. Everything else
 uses the unchanged search path.
 
-Collaborators are FakeAdapter / FakeClock / InMemoryStore (BLIND_POST_PLAN.md §6/§7/§11).
+Collaborators are FakeAdapter / FakeClock / InMemoryStore (docs/plans/BLIND_POST_PLAN.md §6/§7/§11).
 """
 
 from __future__ import annotations

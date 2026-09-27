@@ -1,4 +1,4 @@
-"""STAGGER_PLAN.md: the T0 blind-POST burst fires each POST at its own offset
+"""docs/plans/STAGGER_PLAN.md: the T0 blind-POST burst fires each POST at its own offset
 relative to T0 instead of firing the whole burst at one instant.
 
 Why this exists: every blind-POST drop in the retention window came back 3/3 or 0/3,

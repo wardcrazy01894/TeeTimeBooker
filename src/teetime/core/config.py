@@ -84,7 +84,7 @@ class BookingCutoffConfig(BaseModel):
     makes no new booking AND no upgrade, so the operator can never be surprised by a
     last-minute booking they don't learn about in time. Whatever is held at the cutoff is
     final (held bookings are never auto-cancelled). Default (shipped): 16:00 ET the day
-    before. See LEADTIME_SKIP_PLAN.md §F1.
+    before. See docs/plans/LEADTIME_SKIP_PLAN.md §F1.
 
     ``days_before = 0`` is INTENTIONALLY valid: it places the cutoff at ``time_of_day`` on the
     reservation day itself (e.g. freeze same-day bookings after 16:00). Only a NEGATIVE
@@ -141,7 +141,7 @@ class RequestConfig(BaseModel):
             raise ValueError(
                 "target_weekdays/target_weekday have been removed; tag each "
                 "[[request.time_windows]] with a `weekday` instead (see "
-                "PERDAY_WINDOWS_PLAN.md §7)."
+                "docs/plans/PERDAY_WINDOWS_PLAN.md §7)."
             )
         if not self.time_windows:
             raise ValueError("request.time_windows must be non-empty")
@@ -183,7 +183,7 @@ class SchedulerConfig(BaseModel):
     # 3 balances solve-cost/rate-limit against fallback depth at a competitive drop
     # (RACE_PREWARM_PLAN §4.4). Ignored off the race path (upgrade/inline solve count=1).
     captcha_prefetch_count: int = Field(default=3, ge=1)
-    # Blind-POST fan-out cap (BLIND_POST_PLAN.md §5, OQ3). On the race path, for a
+    # Blind-POST fan-out cap (docs/plans/BLIND_POST_PLAN.md §5, OQ3). On the race path, for a
     # blind-capable PRIMARY course (Mangrove Bay), the orchestrator fires up to this many
     # concurrent book POSTs for the top-N ranked in-window grid slots at T0, keeps the best,
     # and cancels the rest. DECOUPLED from captcha_prefetch_count (the single-POST race
@@ -210,7 +210,7 @@ class SchedulerConfig(BaseModel):
     blind_post_fallback_token_reserve: int = Field(default=2, ge=0)
     # Per-POST fire offsets in MILLISECONDS relative to T0 (negative = before T0), paired
     # positionally with the RANKED blind slots: blind_slots[i] fires at T0 + [i]
-    # (STAGGER_PLAN.md). Replaces firing the whole burst at one instant.
+    # (docs/plans/STAGGER_PLAN.md). Replaces firing the whole burst at one instant.
     #
     # Why: every blind-POST drop in the retention window came back 3/3 or 0/3, never mixed
     # — a shape a genuine slot race cannot produce, since our POSTs land within ~100 ms of

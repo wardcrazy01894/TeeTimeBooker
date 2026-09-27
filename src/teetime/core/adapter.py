@@ -157,7 +157,8 @@ class BlindPostCapable(Protocol):
     """Structural shape the orchestrator casts to in order to CALL the blind-POST methods.
 
     Typing-only cast target — the runtime gate is ``adapter.capabilities.blind_post`` (see
-    ``AdapterCapabilities``), NOT ``isinstance``. See BLIND_POST_PLAN.md §3: blind-POST builds
+    ``AdapterCapabilities``), NOT ``isinstance``. See docs/plans/BLIND_POST_PLAN.md §3:
+    blind-POST builds
     a book payload from a frozen static template plus a *computed* slot id (no live search
     dependency) and fires the top-N ranked in-window candidates CONCURRENTLY at the 06:00 drop,
     keeping the best reservation that books and cancelling the rest.
@@ -169,7 +170,7 @@ class BlindPostCapable(Protocol):
         The orchestrator sizes the blind burst at ``min(len(blind_slots),
         captcha_pool_size())`` so each concurrent ``book()`` pops a pooled token and
         none inline-solves at T0 (the latency failure the feature removes). See
-        BLIND_POST_PLAN.md §5/§6. ``ForeUpAdapter`` returns its captcha-pool LEASE size
+        docs/plans/BLIND_POST_PLAN.md §5/§6. ``ForeUpAdapter`` returns its captcha-pool LEASE size
         (a shared pool's reserve excluded);
         adapters with no CAPTCHA may return a large/scriptable value.
         """
@@ -187,7 +188,7 @@ class BlindPostCapable(Protocol):
         Pure / synchronous: enumerate the course's valid morning tee-time grid that
         falls inside `request.time_windows` for `target_date`, compute each slot's
         deterministic id (ForeUP `start_front` = ``f"{YYYY}{month-1:02d}{DD}{HH}{MM}"``,
-        month 0-indexed — see BLIND_POST_PLAN.md §2 fact 1), and return them RANKED by
+        month 0-indexed — see docs/plans/BLIND_POST_PLAN.md §2 fact 1), and return them RANKED by
         the SAME `slot_utils.rank_slots_for_request` ordering the search path uses (so
         "keep best" across blind + search agree), truncated to `max_count`.
 

@@ -1,5 +1,7 @@
 # RACE_PREWARM_PLAN.md — Post-T0 latency reduction for the 06:00 ForeUP booking race
 
+> **Status:** Shipped (`infra/v2.4.0`; the #131 soft-login-skip fix in `infra/v2.5.0`). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
+
 Status: SHIPPED — LIVE in prod (`infra/v2.4.0`, the RACE_PREWARM bundle; the `#131`
 soft-login-skip fix rode `infra/v2.5.0`). APPROVED (plan-with-review, 2 rounds, BLOCK→APPROVE),
 all PRs landed via strict red-green TDD. **PR1 (login pre-warm + pre-T0 reservation guard + short-circuit) is
@@ -14,6 +16,54 @@ IMPLEMENTED** (`CourseAdapter.search` gains `*, skip_initial_spacing`; ForeUP dr
 courtesy sleep only on the first date when True; the booking Orchestrator threads
 `skip_initial_spacing=self._prefetch_book`, watcher path unchanged). Refines the race path in
 PLAN.md §9 and the root CLAUDE.md "booking race" invariants.
+
+<!-- toc -->
+## Contents
+
+- [Round-2 reviewer disposition](#round-2-reviewer-disposition)
+- [0. Problem](#0-problem)
+  - [What we CANNOT fix (set expectations — change B, context only)](#what-we-cannot-fix-set-expectations--change-b-context-only)
+- [1. The three changes](#1-the-three-changes)
+- [2. The exact pre-T0 sequence (after all three PRs)](#2-the-exact-pre-t0-sequence-after-all-three-prs)
+- [3. Change A — login pre-warm + pre-T0 reservation guard (PR1)](#3-change-a--login-pre-warm--pre-t0-reservation-guard-pr1)
+  - [3.1 Design (MF3 — orchestrator owns the skip, not the adapter)](#31-design-mf3--orchestrator-owns-the-skip-not-the-adapter)
+  - [3.2 Pre-T0 reservation match short-circuit (reviewer pre-empt #6)](#32-pre-t0-reservation-match-short-circuit-reviewer-pre-empt-6)
+  - [3.3 Best-effort contract (reviewer pre-empt #5)](#33-best-effort-contract-reviewer-pre-empt-5)
+  - [3.4 Composition with the "started late" degraded path (reviewer pre-empt #7)](#34-composition-with-the-started-late-degraded-path-reviewer-pre-empt-7)
+  - [3.5 Outer-gather error isolation (MF2 — BOTH conditions required, not either/or)](#35-outer-gather-error-isolation-mf2--both-conditions-required-not-eitheror)
+  - [3.6 MF3 mechanism summary](#36-mf3-mechanism-summary)
+- [4. Change C — multi-token concurrent CAPTCHA prefetch (PR2)](#4-change-c--multi-token-concurrent-captcha-prefetch-pr2)
+  - [4.1 Protocol contract change (reviewer pre-empt #3)](#41-protocol-contract-change-reviewer-pre-empt-3)
+  - [4.2 Token pool semantics in ForeUpAdapter (reviewer pre-empt #1, #2)](#42-token-pool-semantics-in-foreupadapter-reviewer-pre-empt-1-2)
+  - [4.3 Stale/used token at pop → book() must still work (MF1 — highest-risk fix)](#43-staleused-token-at-pop--book-must-still-work-mf1--highest-risk-fix)
+  - [4.3.1 `prepare_book` raise contract (NI10 — N-dependent, made explicit)](#431-prepare_book-raise-contract-ni10--n-dependent-made-explicit)
+  - [4.4 New config field + parity (reviewer pre-empt #8)](#44-new-config-field--parity-reviewer-pre-empt-8)
+  - [4.5 Lead-time sufficiency for N tokens (reviewer pre-empt #8)](#45-lead-time-sufficiency-for-n-tokens-reviewer-pre-empt-8)
+  - [4.7 Multi-course fallback is NOT accelerated (SF4 — stated explicitly)](#47-multi-course-fallback-is-not-accelerated-sf4--stated-explicitly)
+  - [4.6 Cost (reviewer pre-empt #9 + NIT8)](#46-cost-reviewer-pre-empt-9--nit8)
+- [5. Change D — drop the leading courtesy sleep, RACE PATH ONLY (PR3) — SF5 fix](#5-change-d--drop-the-leading-courtesy-sleep-race-path-only-pr3--sf5-fix)
+  - [5.1 The round-1 bug (SF5)](#51-the-round-1-bug-sf5)
+  - [5.2 The fix — make the trim OPT-IN and RACE-PATH-OWNED](#52-the-fix--make-the-trim-opt-in-and-race-path-owned)
+  - [5.3 Alternatives considered](#53-alternatives-considered)
+- [6. PR breakdown](#6-pr-breakdown)
+  - [PR1 — login pre-warm + pre-T0 reservation guard](#pr1--login-pre-warm--pre-t0-reservation-guard)
+  - [PR2 — multi-token concurrent prefetch pool](#pr2--multi-token-concurrent-prefetch-pool)
+  - [PR3 — drop leading search courtesy sleep, RACE PATH ONLY (SF5)](#pr3--drop-leading-search-courtesy-sleep-race-path-only-sf5)
+- [7. TDD test list (failing tests FIRST, per PR)](#7-tdd-test-list-failing-tests-first-per-pr)
+  - [7.1 PR1 tests (red first)](#71-pr1-tests-red-first)
+  - [7.2 PR2 tests (red first)](#72-pr2-tests-red-first)
+  - [7.3 PR3 tests (red first) — SF5-corrected](#73-pr3-tests-red-first--sf5-corrected)
+- [8. Stub surface (signatures only — implementation by follow-up agents)](#8-stub-surface-signatures-only--implementation-by-follow-up-agents)
+  - [8.1 `core/adapter.py` — Protocol changes (PR2 + PR3)](#81-coreadapterpy--protocol-changes-pr2--pr3)
+  - [8.2 `core/orchestrator.py` — new methods + state (PR1 + PR2 + PR3)](#82-coreorchestratorpy--new-methods--state-pr1--pr2--pr3)
+  - [8.3 `courses/foreup/base.py` (PR1 + PR2 + PR3)](#83-coursesforeupbasepy-pr1--pr2--pr3)
+  - [8.4 `dev/fake_adapter.py` (PR1 + PR2 + PR3)](#84-devfake_adapterpy-pr1--pr2--pr3)
+  - [8.5 `courses/teeitup/base.py` (PR2 + PR3)](#85-coursesteeitupbasepy-pr2--pr3)
+  - [8.6 `core/config.py` (PR2)](#86-coreconfigpy-pr2)
+- [9. Resolved questions (round 2)](#9-resolved-questions-round-2)
+- [10. Confidence / unverified](#10-confidence--unverified)
+
+<!-- /toc -->
 
 ## Round-2 reviewer disposition
 
@@ -504,7 +554,7 @@ NOTE: do NOT touch the `cancel_reservation` courtesy sleep — cancel is not on 
 Files: `core/orchestrator.py`, `courses/foreup/base.py` (authenticate idempotency guard),
 `dev/fake_adapter.py` (`set_authenticate_side_effects` — already on disk),
 `tests/test_orchestrator.py`, `tests/test_foreup_adapter.py` (or wherever authenticate is tested).
-Docs: root `CLAUDE.md` (race-path invariant bullet), `PLAN.md` §9, `RACE_PREWARM_PLAN.md` status.
+Docs: root `CLAUDE.md` (race-path invariant bullet), `PLAN.md` §9, `docs/plans/RACE_PREWARM_PLAN.md` status.
 
 **NI9 — the call-site rewire is load-bearing and MUST be in PR1.** Today `run()` (orchestrator.py
 line ~108) calls `await self._prefetch_captcha(request)` on the race path. PR1 REWIRES this to
@@ -542,7 +592,7 @@ Files: `core/adapter.py` (Protocol `prepare_book` `count` param), `courses/foreu
 (signature parity), `tests/test_orchestrator.py`, `tests/test_foreup_adapter.py`,
 new `tests/test_captcha_pool.py`, new parity assertion in `tests/test_container_config_parity.py`.
 Docs: root `CLAUDE.md`, `courses/CLAUDE.md` if the prepare_book contract note lives there,
-`PLAN.md` §9, `RACE_PREWARM_PLAN.md`.
+`PLAN.md` §9, `docs/plans/RACE_PREWARM_PLAN.md`.
 
 ### PR3 — drop leading search courtesy sleep, RACE PATH ONLY (SF5)
 Files: `core/adapter.py` (Protocol `search` gains `*, skip_initial_spacing: bool = False`),

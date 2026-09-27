@@ -182,7 +182,7 @@ def test_container_and_example_captcha_prefetch_match() -> None:
     )
     assert example.get("blind_post_max_count") == container.get("blind_post_max_count"), (
         "blind_post_max_count drift between example.toml and container.toml — keep the "
-        "blind-POST fan-out cap in sync (BLIND_POST_PLAN.md §5)."
+        "blind-POST fan-out cap in sync (docs/plans/BLIND_POST_PLAN.md §5)."
     )
 
 
@@ -212,7 +212,7 @@ def test_container_and_example_blind_fallback_reserve_match() -> None:
 def test_container_and_example_blind_stagger_match() -> None:
     """The blind-POST T0 stagger must agree across the committed configs.
 
-    ``blind_post_stagger_ms`` (STAGGER_PLAN.md) decides WHEN each POST in the T0 burst
+    ``blind_post_stagger_ms`` (docs/plans/STAGGER_PLAN.md) decides WHEN each POST in the T0 burst
     fires relative to the release boundary — the single most race-critical timing knob we
     have, and the one that makes a miss diagnosable at all. A silent drift would mean prod
     straddles the boundary differently than reviewed, and would invalidate the
@@ -223,11 +223,11 @@ def test_container_and_example_blind_stagger_match() -> None:
     container = _load(_CONTAINER_TOML).get("scheduler", {})
     assert example.get("blind_post_stagger_ms") is not None, (
         "example.toml [scheduler] is missing blind_post_stagger_ms — pin the blind-POST T0 "
-        "stagger explicitly (STAGGER_PLAN.md §3.1)."
+        "stagger explicitly (docs/plans/STAGGER_PLAN.md §3.1)."
     )
     assert example.get("blind_post_stagger_ms") == container.get("blind_post_stagger_ms"), (
         "blind_post_stagger_ms drift between example.toml and container.toml — keep the "
-        "blind-POST T0 stagger in sync (STAGGER_PLAN.md §3.1)."
+        "blind-POST T0 stagger in sync (docs/plans/STAGGER_PLAN.md §3.1)."
     )
 
 

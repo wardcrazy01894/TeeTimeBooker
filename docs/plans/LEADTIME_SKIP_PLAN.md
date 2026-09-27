@@ -1,5 +1,7 @@
 # LEADTIME_SKIP_PLAN.md — Hard booking cutoff + no-redeploy "skip this day"
 
+> **Status:** Shipped (PRs #107–#111; live in prod since `infra/v2.1.0`). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
+
 Status: **IMPLEMENTED + DEPLOYED** (ratified via plan-with-review; shipped as PRs
 #107–111). The 4PM-day-before hard booking cutoff (`core/booking_cutoff.py`) and the
 no-redeploy `TEETIME_SKIP_DATES` skip-days lever (`core/skip_dates.py`, fail-open,
@@ -9,6 +11,36 @@ doc is retained as the architect output for the plan-with-review loop; line numb
 are against the files as they existed at the tag `infra/v2.0.0`.
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [1. Architecture summary (one paragraph)](#1-architecture-summary-one-paragraph)
+- [2. Settled decisions baked in (do not re-litigate)](#2-settled-decisions-baked-in-do-not-re-litigate)
+- [3. PR-by-PR plan (dependency order)](#3-pr-by-pr-plan-dependency-order)
+  - [PR1 — Cutoff core predicate + config model](#pr1--cutoff-core-predicate--config-model)
+  - [PR2 — Wire cutoff into watcher + booking-day gate](#pr2--wire-cutoff-into-watcher--booking-day-gate)
+  - [PR3 — Skip-dates parser + config + env resolution](#pr3--skip-dates-parser--config--env-resolution)
+  - [PR4 — Wire skip-dates into watcher + booking-day gate + `--date` guard](#pr4--wire-skip-dates-into-watcher--booking-day-gate----date-guard)
+  - [PR5 — Infra: Key Vault secret + bicep wiring + TOMLs + parity + runbook](#pr5--infra-key-vault-secret--bicep-wiring--tomls--parity--runbook)
+- [4. Config schema additions (exact TOML + model stubs)](#4-config-schema-additions-exact-toml--model-stubs)
+  - [4.1 TOML — add to `[request]` in BOTH `config/local.toml` and `config/container.toml`](#41-toml--add-to-request-in-both-configlocaltoml-and-configcontainertoml)
+  - [4.2 `core/config.py` model changes (stubs)](#42-coreconfigpy-model-changes-stubs)
+- [5. Stub signatures + exact insertion points](#5-stub-signatures--exact-insertion-points)
+  - [5.1 NEW `src/teetime/core/booking_cutoff.py` (PR1)](#51-new-srcteetimecorebooking_cutoffpy-pr1)
+  - [5.2 NEW `src/teetime/core/skip_dates.py` (PR3)](#52-new-srcteetimecoreskip_datespy-pr3)
+  - [5.3 `core/watch_orchestrator.py` wiring (PR2 + PR4)](#53-corewatch_orchestratorpy-wiring-pr2--pr4)
+  - [5.4 `core/booking_day_gate.py` wiring (PR2 cutoff half, PR4 skip half)](#54-corebooking_day_gatepy-wiring-pr2-cutoff-half-pr4-skip-half)
+  - [5.5 `__main__.py` wiring (PR2 + PR4)](#55-__main__py-wiring-pr2--pr4)
+- [6. Bicep / Key Vault wiring snippet (PR5)](#6-bicep--key-vault-wiring-snippet-pr5)
+- [7. RESOLVED: ACA Key Vault secret-refresh semantics (the load-bearing answer)](#7-resolved-aca-key-vault-secret-refresh-semantics-the-load-bearing-answer)
+  - [7.1 Portal edit + verify runbook (for AZURE_PLAN.md §7)](#71-portal-edit--verify-runbook-for-azure_planmd-7)
+- [8. Edge cases & decisions (every pre-emption item)](#8-edge-cases--decisions-every-pre-emption-item)
+- [9. Open questions / spike tasks](#9-open-questions--spike-tasks)
+- [10. File-by-file summary (create / touch)](#10-file-by-file-summary-create--touch)
+- [11. Summary](#11-summary)
+
+<!-- /toc -->
 
 ## 1. Architecture summary (one paragraph)
 

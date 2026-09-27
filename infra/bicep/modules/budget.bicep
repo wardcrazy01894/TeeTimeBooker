@@ -32,7 +32,7 @@
 //     explicitly supported and is the recommended approach for tiered alerting.
 //
 // See: infra/AZURE_PLAN.md §9.2 (budget alert), §4 (parameter strategy)
-// See: infra/COST_KILLSWITCH_PLAN.md §2/Item10 (tier design rationale)
+// See: docs/plans/COST_KILLSWITCH_PLAN.md §2/Item10 (tier design rationale)
 
 targetScope = 'subscription'
 

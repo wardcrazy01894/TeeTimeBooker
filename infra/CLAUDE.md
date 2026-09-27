@@ -10,14 +10,33 @@ do not modify them as part of Azure infra work. The former v0 booking and watch
 workflows (`book.yml`, `watch-tee-time.yml`) have been removed; their schedules
 now run as ACA Jobs defined in `compute.bicep`.
 
+<!-- toc -->
+## Contents
+
+- [Bicep location](#bicep-location)
+- [Logging in for local Azure CLI work](#logging-in-for-local-azure-cli-work)
+- [Agent rules for Azure deployments](#agent-rules-for-azure-deployments)
+- [Pointer to open questions](#pointer-to-open-questions)
+
+<!-- /toc -->
+
 ## Bicep location
 
-**All modules are implemented (M-azure-T1 through M-azure-T7 DONE; storage module removed — state is in-process only). Cost killswitch (PR-KS1) implemented.**
+All modules are implemented (M-azure-T1 to T7, the cost killswitch, and MU-15a/15b/16a/17 for the
+multi-user site). The killswitch design record is
+[`docs/plans/COST_KILLSWITCH_PLAN.md`](../docs/plans/COST_KILLSWITCH_PLAN.md).
+
+| Param | Dev | Prod |
+|-------|-----|------|
+| `dryRun` | `true` | `false` |
+| `bookingMode` / `watchMode` | `tenant` (MU-17) | `toml` |
+| `watchCron` | `0 * * * *` | `*/10 * * * *` |
+| `tenantCosmosEndpoint` | shared Cosmos account | empty |
+| `deployWebApp` / `deployAcsEmail` | `true` | `false` |
 
 ```
 infra/
   AZURE_PLAN.md              # authoritative Azure design doc
-  COST_KILLSWITCH_PLAN.md    # verified design for the $50 automated killswitch chain
   bicep/
     main.bicep               # entry point (RG-scoped); dryRun param defaults true
     main.bicepparam.dev      # dev parameter values (dryRun=true, enablePurgeProtection=false)
@@ -42,8 +61,8 @@ infra/
                              #   (v1: 2 jobs, DST crons, legacy teetime-job-<env>-edt/-est names)
                              #   + 1× watch ACA Job (watchCron param: prod */10 * * * *, dev hourly)
                              #   all jobs: --dry-run passed via dryRun param
-                             #   bookingMode/watchMode params (default 'toml' in both envs, MU-15a):
-                             #   select `run --config .../container.toml` vs `tenant-run --event
+                             #   bookingMode/watchMode params (MU-15a; dev 'tenant' since MU-17,
+                             #   prod 'toml'): select `run --config .../container.toml` vs `tenant-run --event
                              #   <key>`/`tenant-watch`; tenant-only secretRefs/env vars are added
                              #   ONLY inside a mode=='tenant' branch, so the default toml mode
                              #   never references a KV secret the operator has not created.
@@ -52,15 +71,14 @@ infra/
                              #   azure-iac.yml starts + awaits it right after deploy pass 2.
       webapp.bicep           # NEW (MU-15a): Container App teetime-web-<env> (`teetime web`),
                              #   scale-to-zero, same ACA environment as the jobs. Gated on
-                             #   deployWebApp (default false, both envs) — the Google OAuth /
-                             #   session KV secrets do not exist yet. Ingress + max-replicas
+                             #   deployWebApp (dev true since MU-17, prod false). Ingress + max-replicas
                              #   latched to effectiveEnableSchedules (killswitch lever (c) target).
                              #   MU-16a: tenant backend env (Cosmos, AZURE_CLIENT_ID, keyring,
                              #   ACS) wired ONLY when tenantCosmosEndpoint is non-empty.
       email.bicep            # NEW (MU-15a): ACS Communication Service + Email Service +
                              #   Azure-managed domain; writes KV secret ACS-EMAIL-CONNECTION via
-                             #   listKeys() at deploy time. Gated on deployAcsEmail (default false,
-                             #   both envs). Requires Microsoft.Communication RP registration +
+                             #   listKeys() at deploy time. Gated on deployAcsEmail (dev true,
+                             #   prod false). Requires Microsoft.Communication RP registration +
                              #   "Key Vault Secrets Officer" for the CI deploy identity (operator,
                              #   one-time — see the module header).
       cosmos.bicep           # NEW (MU-15b): the shared free-tier Cosmos DB account for the
@@ -105,6 +123,14 @@ workflow; there is no copy under `infra/ci/`.
 file auto-deploy to dev with NO required-reviewer gate (intentional per operator
 request). Prod deploys require a manual approval gate on the GitHub `prod`
 environment and are triggered by `infra/v*` tag pushes.
+
+**Inline parameters:** `azure-iac.yml` deploys with INLINE parameters, so a value set in a
+`.bicepparam` file does nothing until the workflow parses and passes it too (a missed one kept
+dev's watcher at `*/10`). `test_every_param_file_value_reaches_every_ci_deploy` enforces this.
+
+**Public repo:** no email address may sit in a param file. The operator email comes from the
+`OPERATOR-NOTIFY-EMAIL` Key Vault secret and the ACS sender is derived from the email module
+output (`tests/test_webapp_bicep.py`).
 
 Note: compiled ARM JSON (`infra/bicep/**/*.json`) is gitignored — CI deploys from
 the `.bicep` sources directly (`az` compiles on the fly). Do not commit build output.

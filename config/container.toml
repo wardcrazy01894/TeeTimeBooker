@@ -79,7 +79,7 @@ captcha_prefetch_lead_s = 120
 # Race path: pre-solve this many CAPTCHA tokens concurrently during the busy-wait so the
 # first ranked candidate + the next N-1 fallbacks each fire instantly at T0 (RACE_PREWARM_PLAN §4.4).
 captcha_prefetch_count = 3
-# Blind-POST fan-out cap (BLIND_POST_PLAN.md §5): a blind-capable PRIMARY (Mangrove Bay) fires up
+# Blind-POST fan-out cap (docs/plans/BLIND_POST_PLAN.md §5): a blind-capable PRIMARY (Mangrove Bay) fires up
 # to this many concurrent book POSTs for the top-N ranked in-window grid slots at T0, keeps the
 # best, cancels the rest. The CAPTCHA prefetch scales to min(this, in-window grid count). 0 disables
 # blind fan-out (single-POST race path). Bounded further by the pooled-token count at fire time.
@@ -90,13 +90,13 @@ captcha_prefetch_count = 3
 # contested midpoint slot and a lost race left nothing in flight (the 2026-07-18 miss). The 2 surplus
 # POSTs are accepted cost for that hedge. A total miss still falls to the sequential center-out fallback.
 blind_post_max_count = 3
-# Blind-POST 0-booked fallback reserve (RESEARCH_FALLBACK_PLAN.md §2 Q3): EXTRA CAPTCHA tokens
+# Blind-POST 0-booked fallback reserve (docs/plans/RESEARCH_FALLBACK_PLAN.md §2 Q3): EXTRA CAPTCHA tokens
 # pre-solved beyond the blind burst so the post-reguard FRESH search books with a fresh POOLED
 # token instead of a ~75s inline solve. The blind POST(s) pop their tokens; these 2 REMAIN
 # pooled for the fallback. Paid pre-T0 on every drop (incl. the happy path where they go
 # unused). 0 = no reserve.
 blind_post_fallback_token_reserve = 2
-# Blind-POST T0 stagger (STAGGER_PLAN.md). Per-POST fire offsets in MILLISECONDS relative to T0,
+# Blind-POST T0 stagger (docs/plans/STAGGER_PLAN.md). Per-POST fire offsets in MILLISECONDS relative to T0,
 # paired positionally with the RANKED blind slots — so the burst SPANS ForeUP's release boundary
 # instead of point-sampling it at one instant. Every drop in the log retention window came back
 # 3/3 or 0/3, never mixed: a shape a real slot race cannot make (our POSTs land within ~100 ms of

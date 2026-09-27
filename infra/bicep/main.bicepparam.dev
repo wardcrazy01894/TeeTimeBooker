@@ -44,7 +44,7 @@ param enablePurgeProtection = false
 // effectiveEnableSchedules (= enableSchedules && !killswitchFired) goes false and no
 // subsequent merge can re-arm the cron schedules until this bit is cleared.
 // WARNING: do NOT clear this param until the overspend root cause is resolved.
-// See: infra/COST_KILLSWITCH_PLAN.md §2/Item2 + §5 (operator runbook)
+// See: docs/plans/COST_KILLSWITCH_PLAN.md §2/Item2 + §5 (operator runbook)
 param killswitchFired = false
 
 // Cron schedules on/off. Default true (booking + watch jobs auto-fire). Set false to
@@ -57,7 +57,7 @@ param enableSchedules = true
 // Enabled by default per operator decision (2026-05-31): full killswitch chain deploys
 // to dev automatically on merge to main and to prod on the next infra/v* tag push.
 // Requires killswitchRbacRoleId to be set to the pre-created custom role GUID.
-// See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1
+// See: docs/plans/COST_KILLSWITCH_PLAN.md §3/PR-KS1
 param enableKillswitch = true
 
 // GUID of the pre-created "ACA Job Schedule Manager" custom role.
@@ -69,7 +69,7 @@ param enableKillswitch = true
 //   }'
 // Custom role created by operator 2026-05-31; this is its GUID. The killswitch
 // module now ARMS on the next dev auto-deploy (Logic App + Action Group + cross-RG RBAC).
-// See: infra/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
+// See: docs/plans/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
 param killswitchRbacRoleId = '3e2d5a14-96bd-4469-9f96-b9c3270aa9e6'
 
 // --- MU-17 (MULTIUSER_PLAN §11/§12): the DEV cutover ------------------------------------------

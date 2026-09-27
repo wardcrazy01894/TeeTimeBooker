@@ -20,7 +20,7 @@ so the booking-day decision is only ever evaluated at the correct ET wall clock 
 on the correct-season cron the runner lands at ~05:50 ET, unambiguously on the intended
 calendar day. (The wrong-season EDT-cron-in-EST case lands at 04:50 ET — still the same
 calendar day — but it is skipped by the DST gate before this gate runs, so we never rely
-on its ``today``.) See MULTIDAY_PLAN.md §"Booking-day gate" for the full truth table.
+on its ``today``.) See docs/plans/MULTIDAY_PLAN.md §"Booking-day gate" for the full truth table.
 
 Single source of truth for the horizon: the booking run uses ``target_offsets`` from
 config; this gate takes the SAME offset value the run will book with. It does not

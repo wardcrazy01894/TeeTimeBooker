@@ -1,6 +1,6 @@
 """Full-repo-scan finding H1: the killswitchFired clobber-guard latch was inert in CI.
 
-The cost-killswitch design (COST_KILLSWITCH_PLAN.md §2/Item2) is a checked-in safety
+The cost-killswitch design (docs/plans/COST_KILLSWITCH_PLAN.md §2/Item2) is a checked-in safety
 latch: when the $50 budget fires, the operator sets `param killswitchFired = true` in
 the .bicepparam files and pushes, and NO subsequent CI deploy may re-arm the cron
 schedules. But `.github/workflows/azure-iac.yml` passes every parameter INLINE and never

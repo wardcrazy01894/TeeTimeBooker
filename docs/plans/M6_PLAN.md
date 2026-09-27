@@ -1,6 +1,8 @@
 # M6 — First Production Cron Run (implementation plan)
 
-> **⚠️ SUPERSEDED IN PART by `MULTIDAY_PLAN.md` (and then `PERDAY_WINDOWS_PLAN.md`).** The
+> **Status:** Shipped (M6 PRs 1–6: `run --wait`, `core/dst_gate.py`, watcher enablement, `bookingReplicaTimeout`). The Sunday-only schedule was superseded by [MULTIDAY_PLAN.md](./MULTIDAY_PLAN.md) and [PERDAY_WINDOWS_PLAN.md](./PERDAY_WINDOWS_PLAN.md). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
+
+> **⚠️ SUPERSEDED IN PART by `docs/plans/MULTIDAY_PLAN.md` (and then `docs/plans/PERDAY_WINDOWS_PLAN.md`).** The
 > **Sunday-only schedule** described here (PR5: two `… * * 0` Sunday crons, jobs `-edt-sun`/
 > `-est-sun`) was replaced by **DAILY crons + a booking-day gate** (`core/booking_day_gate.py`),
 > jobs renamed `-edt`/`-est`, and per-day time windows; the watcher's `target_weekday` anchor +
@@ -14,6 +16,32 @@ Architect plan for the milestone that takes the **booking** and **watch** ACA Jo
 `dryRun=true`, then cut over to `dryRun=false` in prod.
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [Round-2 responses (reviewer BLOCK)](#round-2-responses-reviewer-block)
+- [1. Executive summary + execution-mode decision](#1-executive-summary--execution-mode-decision)
+  - [1.1 The four gaps (verified in code today)](#11-the-four-gaps-verified-in-code-today)
+  - [1.2 Execution-mode decision (prod cron vs local demo) — **EXTENSION, not change**](#12-execution-mode-decision-prod-cron-vs-local-demo--extension-not-change)
+  - [1.3 Watcher "look but don't book" steady state (NEW user requirement)](#13-watcher-look-but-dont-book-steady-state-new-user-requirement)
+  - [1.4 Headline](#14-headline)
+- [2. PR-by-PR plan (ordered)](#2-pr-by-pr-plan-ordered)
+  - [PR1 — `teetime run --wait/--no-wait` selects the real-timing scheduler](#pr1--teetime-run---wait--no-wait-selects-the-real-timing-scheduler)
+  - [PR2 — DST-half gate in the entrypoint (the wrong-season cron exit)](#pr2--dst-half-gate-in-the-entrypoint-the-wrong-season-cron-exit)
+  - [PR3 — Bicep: booking job passes `--wait`; confirm cold-start lead covers the race](#pr3--bicep-booking-job-passes---wait-confirm-cold-start-lead-covers-the-race)
+  - [PR4 — Enable the watcher in config (look-but-don't-book dev steady state)](#pr4--enable-the-watcher-in-config-look-but-dont-book-dev-steady-state)
+  - [PR5 — Bicep: Sunday-only booking schedule; keep watch cron daily](#pr5--bicep-sunday-only-booking-schedule-keep-watch-cron-daily)
+  - [PR6 — Dev verification runbook + instrumentation + docs sync](#pr6--dev-verification-runbook--instrumentation--docs-sync)
+- [3. DST-gate design (consolidated)](#3-dst-gate-design-consolidated)
+- [4. Watcher enablement (consolidated)](#4-watcher-enablement-consolidated)
+- [5. Sunday-only bicep + watch cron + replica timeout](#5-sunday-only-bicep--watch-cron--replica-timeout)
+- [6. Dev verification procedure (dryRun=true)](#6-dev-verification-procedure-dryruntrue)
+- [7. Prod cutover checklist (dryRun=false)](#7-prod-cutover-checklist-dryrunfalse)
+- [8. Prerequisites / risks / architecture extensions](#8-prerequisites--risks--architecture-extensions)
+- [9. Open questions for the user](#9-open-questions-for-the-user)
+
+<!-- /toc -->
 
 ## Round-2 responses (reviewer BLOCK)
 
@@ -404,7 +432,7 @@ def should_proceed(clock: Clock, *, timezone: str, fire_time: time) -> bool:
     --no-wait path (manual/local/on-demand) bypasses this entirely, matching the old
     workflow_dispatch always-proceed semantics. Reads the hour only; sub-hour precision
     is the busy-wait's job. A False return means "wrong DST-season cron — exit 0, this is
-    not an error." See M6_PLAN.md §2 PR2 for the jitter analysis (does NOT proceed once
+    not an error." See docs/plans/M6_PLAN.md §2 PR2 for the jitter analysis (does NOT proceed once
     ET hour reaches fire_time.hour; the watch job is the missed-drop recovery path).
     """
     ...
@@ -574,7 +602,7 @@ poll_interval_s    = 600   # 10 minutes; must be >= 300 (anti-bot floor)
 polling_start_hour = 7     # course-local; no polling before 7 AM ET
 polling_end_hour   = 22    # course-local; no polling after 10 PM ET
 
-# one_booking_policy intentionally NOT enabled in M6 (see M6_PLAN.md §4.4). The watcher
+# one_booking_policy intentionally NOT enabled in M6 (see docs/plans/M6_PLAN.md §4.4). The watcher
 # in M6 only logs/ranks newly available slots; cancel+rebook upgrades are a later,
 # separately-verified step.
 ```
@@ -725,7 +753,7 @@ plus small structured-log additions if the current logs don't already prove the 
   This is the load-bearing verification line for "booker busy-waited and fired at 06:00:00.x".
 - `src/teetime/__main__.py` — on the `--wait` path, log the resolved T0 and the NTP offset
   applied (so logs show the real scheduler was selected, not the demo one).
-- `M6_PLAN.md` is this file; the runbook content also goes into `infra/AZURE_PLAN.md` §10 and a
+- `docs/plans/M6_PLAN.md` is this file; the runbook content also goes into `infra/AZURE_PLAN.md` §10 and a
   README "verifying the first run" subsection — INCLUDING the §6.5 `--fire-time` on-demand
   escape-hatch procedure and the §6.6 "live-Sunday-only timing" exit criterion.
 - `tests/test_orchestrator.py` — assert the new race-complete log line is emitted at/after T0

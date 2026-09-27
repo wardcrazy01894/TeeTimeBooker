@@ -1,5 +1,7 @@
 # Cost Killswitch Plan — Automated ACA Job Schedule Disable on Budget Overrun
 
+> **Status:** Shipped (PR-KS1 + PR-KS2, 2026-05-31; lever (c) added in MU-15a). Live reference: [infra/AZURE_PLAN.md §9.2](../../infra/AZURE_PLAN.md). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
+
 > **Status:** IMPLEMENTED + DEPLOYED to dev (PR-KS1 + PR-KS2 merged 2026-05-31). See `infra/AZURE_PLAN.md §9.2`.
 > Authoritative Azure infra reference: `infra/AZURE_PLAN.md`. This plan adds a
 > second budget tier ($50) with an automated enforcement chain on top of the
@@ -7,6 +9,35 @@
 > as the early-warning tier.
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [Executive summary](#executive-summary)
+- [1. ARM mechanism — verified API paths](#1-arm-mechanism--verified-api-paths)
+  - [Lever (a): stop future fires — PATCH triggerType to Manual](#lever-a-stop-future-fires--patch-triggertype-to-manual)
+  - [Lever (b): stop in-flight executions — POST .../jobs/{name}/stop](#lever-b-stop-in-flight-executions--post-jobsnamestop)
+  - [Combined action: 14 HTTP calls per killswitch fire (6 PATCH + 6 job-stop + 2 web-app-stop)](#combined-action-14-http-calls-per-killswitch-fire-6-patch--6-job-stop--2-web-app-stop)
+- [2. Pre-emption items — resolved answers](#2-pre-emption-items--resolved-answers)
+  - [Item 1: ARM mechanism reality check](#item-1-arm-mechanism-reality-check)
+  - [Item 2: Re-enable / deploy-clobber conflict](#item-2-re-enable--deploy-clobber-conflict)
+  - [Item 3: Subscription vs RG scope](#item-3-subscription-vs-rg-scope)
+  - [Item 4: Least-privilege RBAC](#item-4-least-privilege-rbac)
+  - [Item 5: Budget → Action Group → Logic App wiring](#item-5-budget--action-group--logic-app-wiring)
+  - [Item 6: Idempotency / repeat-fire](#item-6-idempotency--repeat-fire)
+  - [Item 7: Non-real-time limitation (mandatory disclosure)](#item-7-non-real-time-limitation-mandatory-disclosure)
+  - [Item 8: Testing without spending $50](#item-8-testing-without-spending-50)
+  - [Item 9: Cost of the killswitch itself](#item-9-cost-of-the-killswitch-itself)
+  - [Item 10: Budget tier structure](#item-10-budget-tier-structure)
+- [3. PR-by-PR plan](#3-pr-by-pr-plan)
+  - [PR-KS1 — killswitch.bicep: Logic App + Action Group + RBAC assignment — DONE (merged 2026-05-31)](#pr-ks1--killswitchbicep-logic-app--action-group--rbac-assignment--done-merged-2026-05-31)
+  - [PR-KS2 — budget.bicep: add separate $50 killswitch budget resource — DONE (merged 2026-05-31)](#pr-ks2--budgetbicep-add-separate-50-killswitch-budget-resource--done-merged-2026-05-31)
+- [4. Limitations (mandatory disclosure)](#4-limitations-mandatory-disclosure)
+- [5. Operator re-enable runbook](#5-operator-re-enable-runbook)
+- [6. Module-to-doc mapping (what each PR updates)](#6-module-to-doc-mapping-what-each-pr-updates)
+- [7. Open questions for the user](#7-open-questions-for-the-user)
+
+<!-- /toc -->
 
 ## Executive summary
 
@@ -871,7 +902,7 @@ az role definition create --role-definition '{
 | Root `CLAUDE.md` | PR-KS1 | Infra module summary; budget amounts |
 | `README.md` | PR-KS2 | Cost/budget section if present |
 | `PLAN.md` | Neither (no Python changes) | N/A |
-| `infra/COST_KILLSWITCH_PLAN.md` | This file | PR-by-PR plan + operator runbook |
+| `docs/plans/COST_KILLSWITCH_PLAN.md` | This file | PR-by-PR plan + operator runbook |
 
 ---
 
