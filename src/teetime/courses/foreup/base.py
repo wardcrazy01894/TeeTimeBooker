@@ -571,7 +571,13 @@ class ForeUpAdapter(CourseAdapter):
         ``skip_initial_spacing`` (Change D / PR3) drops the leading courtesy sleep before
         the FIRST date's GET — race-path only. The 2nd+ date GETs are always spaced, so the
         watcher's inter-date-check etiquette is untouched even if the flag is ever set.
+
+        Search needs no login, so it creates the HTTP client on first use when ``authenticate()``
+        has not run (the tenant watcher's shared search, MULTIUSER_PLAN §7.2). ``book()`` and
+        ``cancel_reservation()`` keep requiring it.
         """
+        if self._client is None:
+            self._client = self._make_client()
         client = self._c()
         tz = ZoneInfo(self._timezone)
         results: list[TeeTimeSlot] = []

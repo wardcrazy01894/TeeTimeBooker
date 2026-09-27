@@ -18,6 +18,7 @@ import pytest
 import respx
 
 from teetime.core.adapter import (
+    AuthError,
     CancelError,
     CaptchaError,
     CourseAdapter,
@@ -391,6 +392,33 @@ async def test_search_returns_matching_slots() -> None:
     assert slots[0].price_per_player == Decimal("45.00")
     assert slots[0].holes == 18
     assert slots[0].available_spots == 4
+
+
+@respx.mock
+async def test_search_needs_no_login_on_an_adapter_built_without_a_client() -> None:
+    """The tenant watcher searches on an adapter it never logs in with (one shared search per
+    course/date/party; search needs no login). The production adapter is built WITHOUT an
+    injected client, and used to create it only inside authenticate(), so every such search raised
+    RuntimeError (live in prod and dev, 2026-09-27). search() now creates the client on first use;
+    book() still requires a login."""
+    times = respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[_RAW_SLOT])
+    )
+    adapter = ForeUpAdapter(
+        course_id=CID,
+        course_pk=19671,
+        booking_class_id=2149,
+        schedule_id=2149,
+        timezone="America/New_York",
+    )
+    try:
+        slots = await adapter.search(_request())
+        assert [s.slot_id for s in slots] == [SlotId("99001")]
+        assert times.called
+        with pytest.raises(AuthError):
+            await adapter.book(slots[0], _request())
+    finally:
+        await adapter.aclose()
 
 
 @respx.mock
