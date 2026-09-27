@@ -1,4 +1,6 @@
-# docs/plans/STAGGER_PLAN.md — stagger the T0 blind-POST burst across the open boundary
+# STAGGER_PLAN.md — stagger the T0 blind-POST burst across the open boundary
+
+> **Status:** Shipped (PR #199, `infra/v2.14.0`). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
 
 **Status:** LIVE IN PROD — `infra/v2.14.0`, deployed 2026-08-15 (`main`@`e6a8abb`,
 `dryRun=false`, all three jobs verified on the new image with crons/timeouts unchanged).
@@ -28,6 +30,26 @@ The first real diagnostic reading is still the Sat 2026-08-22 drop (books 8/29).
 2026-07-18 miss (target Sat 2026-07-25).
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [1. The observation](#1-the-observation)
+  - [1.1 What was ruled out](#11-what-was-ruled-out)
+- [2. The change](#2-the-change)
+  - [2.1 Non-regression is the binding constraint](#21-non-regression-is-the-binding-constraint)
+  - [2.2 Interaction with the 1-reservation-per-day rule](#22-interaction-with-the-1-reservation-per-day-rule)
+- [3. Design](#3-design)
+  - [3.1 Config](#31-config)
+  - [3.2 Orchestrator](#32-orchestrator)
+  - [3.3 Observability (the whole point)](#33-observability-the-whole-point)
+- [4. What this plan does NOT do](#4-what-this-plan-does-not-do)
+- [5. Token budget (unchanged)](#5-token-budget-unchanged)
+- [6. Risks](#6-risks)
+- [7. Test plan (TDD, red first)](#7-test-plan-tdd-red-first)
+- [8. Docs to update (change→docs map)](#8-docs-to-update-changedocs-map)
+
+<!-- /toc -->
 
 ## 1. The observation
 

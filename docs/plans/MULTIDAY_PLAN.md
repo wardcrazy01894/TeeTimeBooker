@@ -1,5 +1,7 @@
 # MULTIDAY_PLAN — Saturday + Sunday booking re-architecture
 
+> **Status:** Shipped (PRs #67–#75). Its `target_weekday(s)` config scheme was superseded by [PERDAY_WINDOWS_PLAN.md](./PERDAY_WINDOWS_PLAN.md). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
+
 > **Status: SHIPPED (PRs #70–#75), then partly SUPERSEDED.** The Sat+Sun daily-cron
 > re-architecture described here is fully implemented and on `main`. The `target_weekday(s)`
 > config scheme this plan introduces was itself subsequently **superseded by per-day time
@@ -24,6 +26,29 @@ two-phase busy-wait, `SchedulerConfig.captcha_prefetch_lead_s`) all **carry over
 > settled out of scope.
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [1. Executive summary](#1-executive-summary)
+  - [1.1 What changes](#11-what-changes)
+  - [1.2 What does NOT change (verified in current code)](#12-what-does-not-change-verified-in-current-code)
+  - [1.3 Headline](#13-headline)
+- [2. PR-by-PR sequence (ordered)](#2-pr-by-pr-sequence-ordered)
+  - [PR1 — Config: `target_weekday` (str) → `target_weekdays` (set), backward-compat alias](#pr1--config-target_weekday-str--target_weekdays-set-backward-compat-alias)
+  - [PR2 — Booking-day gate (`core/booking_day_gate.py`) + `_run` wiring](#pr2--booking-day-gate-corebooking_day_gatepy--_run-wiring)
+  - [PR3 — `core/target_date.py`: watcher horizon helper](#pr3--coretarget_datepy-watcher-horizon-helper)
+  - [PR4 — Watcher: multi-date loop + per-date search scoping + poll-every-run](#pr4--watcher-multi-date-loop--per-date-search-scoping--poll-every-run)
+  - [PR5 — Bicep: daily booking crons (keep job count 6, killswitch untouched)](#pr5--bicep-daily-booking-crons-keep-job-count-6-killswitch-untouched)
+  - [PR6 — Docs sync + dev verification](#pr6--docs-sync--dev-verification)
+- [3. Config schema change — consolidated reference](#3-config-schema-change--consolidated-reference)
+- [4. Pre-emption summary (reviewer checklist → where addressed)](#4-pre-emption-summary-reviewer-checklist--where-addressed)
+- [5. Cutover (prod is live with `-sun` jobs + `one_booking_policy` on)](#5-cutover-prod-is-live-with--sun-jobs--one_booking_policy-on)
+- [6. One-booking-per-day invariant — file:line proof (reviewer item 4 + must-fix 1)](#6-one-booking-per-day-invariant--fileline-proof-reviewer-item-4--must-fix-1)
+- [7. Docs to update (specific stale lines)](#7-docs-to-update-specific-stale-lines)
+- [8. Open questions / spikes](#8-open-questions--spikes)
+
+<!-- /toc -->
 
 ## 1. Executive summary
 

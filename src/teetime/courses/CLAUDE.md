@@ -5,6 +5,15 @@ adapter. The root `CLAUDE.md` has the repo-wide architectural invariants
 (including the ForeUP `list_reservations` login-cache behaviour, the TTB: confirmation
 prefix, and the cancel-before-book / `prepare_book` protocol) — read those too.
 
+<!-- toc -->
+## Contents
+
+- [Adding a course](#adding-a-course)
+- [Mangrove Bay specifics (ForeUP)](#mangrove-bay-specifics-foreup)
+- [Sydney R. Marovitz specifics (TeeItUp)](#sydney-r-marovitz-specifics-teeitup)
+
+<!-- /toc -->
+
 ## Adding a course
 
 - **ForeUP course (three steps):**

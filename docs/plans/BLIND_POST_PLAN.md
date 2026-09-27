@@ -1,4 +1,6 @@
-# docs/plans/BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
+# BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
+
+> **Status:** Shipped (PRs #125–#130, `infra/v2.5.0`). Burst timing superseded by [STAGGER_PLAN.md](./STAGGER_PLAN.md); hedge search superseded by [RESEARCH_FALLBACK_PLAN.md](./RESEARCH_FALLBACK_PLAN.md); deployed burst cap is 3. Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
 
 > **BURST TIMING SUPERSEDED (`docs/plans/STAGGER_PLAN.md`, PR #199):** this doc describes the burst as
 > N POSTs fired **CONCURRENTLY at one instant** (`T0 − early_arrival_ms`). They are now
@@ -51,6 +53,31 @@ search→rank→sequential-POST flow if every blind POST fails. Everything else
 (watcher, TeeItUp, Chronogolf, durable store, email) is untouched.
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [1. Why](#1-why)
+- [2. Empirical facts (ground truth, established via dev-account live tests)](#2-empirical-facts-ground-truth-established-via-dev-account-live-tests)
+- [3. The capability gate (MANDATORY — non-config, adapter-owned)](#3-the-capability-gate-mandatory--non-config-adapter-owned)
+- [4. Template + grid sourcing (decision)](#4-template--grid-sourcing-decision)
+- [5. Token budgeting (N) — OQ3 decision](#5-token-budgeting-n--oq3-decision)
+- [6. The hybrid fast-path / fallback (how blind + search interleave)](#6-the-hybrid-fast-path--fallback-how-blind--search-interleave)
+- [7. Multi-POST reconciliation + crash safety](#7-multi-post-reconciliation--crash-safety)
+- [8. confirmation_code extraction fix (PR0 — load-bearing, TDD)](#8-confirmation_code-extraction-fix-pr0--load-bearing-tdd)
+- [9. Anti-bot / ToS posture (honest)](#9-anti-bot--tos-posture-honest)
+- [10. Clock / DST invariants (unchanged)](#10-clock--dst-invariants-unchanged)
+- [11. State-machine relationship (§9.1)](#11-state-machine-relationship-91)
+- [12. PR-by-PR breakdown (each small, test-first)](#12-pr-by-pr-breakdown-each-small-test-first)
+  - [PR0 — `book()` confirmation_code extraction fix (load-bearing prerequisite)  ✅ MERGED](#pr0--book-confirmation_code-extraction-fix-load-bearing-prerequisite---merged)
+  - [PR1 — capability Protocol + FakeAdapter knob (no orchestrator wiring yet)  ✅ MERGED](#pr1--capability-protocol--fakeadapter-knob-no-orchestrator-wiring-yet---merged)
+  - [PR2 — Mangrove Bay grid capture + `synthesize_blind_slots`  ✅ MERGED](#pr2--mangrove-bay-grid-capture--synthesize_blind_slots---merged)
+  - [PR3 — orchestrator blind path + hybrid fallback + keep-best/cancel-extras  ✅ WIRED](#pr3--orchestrator-blind-path--hybrid-fallback--keep-bestcancel-extras---wired)
+  - [PR4 — watcher: reconcile >1 reservation on the target date (CRASH-NET backstop only)](#pr4--watcher-reconcile-1-reservation-on-the-target-date-crash-net-backstop-only)
+  - [PR5 — PLAN.md §12 etiquette + README/config docs + canary](#pr5--planmd-12-etiquette--readmeconfig-docs--canary)
+- [13. Open questions — ALL RESOLVED (round 1)](#13-open-questions--all-resolved-round-1)
+
+<!-- /toc -->
 
 ## 1. Why
 

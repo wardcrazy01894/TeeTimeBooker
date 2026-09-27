@@ -1,4 +1,6 @@
-# docs/plans/RESEARCH_FALLBACK_PLAN.md
+# RESEARCH_FALLBACK_PLAN.md
+
+> **Status:** Shipped (PRs #157–#160, `infra/v2.8.0`). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
 
 > **Status:** IMPLEMENTED (all 3 PRs merged: PR1 config field #158, PR2 prefetch reserve #159,
 > PR3 drop-hedge + fresh post-reguard search). RATIFIED first via plan-with-review (1 round →
@@ -22,6 +24,35 @@
 >    handles the 1/day-rule surplus.)*
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [1. Problem (precise, with file:line)](#1-problem-precise-with-fileline)
+- [2. Resolved design questions](#2-resolved-design-questions)
+  - [Q1 — Drop the concurrent hedge entirely. **RECOMMEND: DROP.**](#q1--drop-the-concurrent-hedge-entirely-recommend-drop)
+  - [Q2 — Ordering: **gather blind → re-guard (match → ALREADY_BOOKED, stop) → fresh search → rank → book.** **CONFIRMED.**](#q2--ordering-gather-blind--re-guard-match--already_booked-stop--fresh-search--rank--book-confirmed)
+  - [Q3 — Token reserve formula + config. **RECOMMEND: new field `blind_post_fallback_token_reserve` (default 2); prefetch = `min(blind_post_max_count, len(grid)) + reserve` for a blind-capable primary.**](#q3--token-reserve-formula--config-recommend-new-field-blind_post_fallback_token_reserve-default-2-prefetch--minblind_post_max_count-lengrid--reserve-for-a-blind-capable-primary)
+  - [Q4 — `skip_initial_spacing` on the fresh search. **RECOMMEND: YES — inherited automatically.**](#q4--skip_initial_spacing-on-the-fresh-search-recommend-yes--inherited-automatically)
+- [3. New control flow (annotated)](#3-new-control-flow-annotated)
+- [4. Timing diagrams (T0 offsets)](#4-timing-diagrams-t0-offsets)
+  - [Happy path (≥1 blind booked)](#happy-path-1-blind-booked)
+  - [0-booked path (all SlotGone, nothing landed)](#0-booked-path-all-slotgone-nothing-landed)
+  - [0-booked-but-landed path (uncertain blind landed)](#0-booked-but-landed-path-uncertain-blind-landed)
+- [5. Stub signatures / diff shapes (no bodies — implementation is for follow-up agents via TDD)](#5-stub-signatures--diff-shapes-no-bodies--implementation-is-for-follow-up-agents-via-tdd)
+  - [5.1 `SchedulerConfig` — new field (`core/config.py`, after `blind_post_max_count`, line 194)](#51-schedulerconfig--new-field-coreconfigpy-after-blind_post_max_count-line-194)
+  - [5.2 `Orchestrator._captcha_prefetch_count_for` — add the reserve (lines 703–722)](#52-orchestrator_captcha_prefetch_count_for--add-the-reserve-lines-703722)
+  - [5.3 `Orchestrator._blind_post_course` — drop the hedge, fresh post-reguard search (lines 343–459)](#53-orchestrator_blind_post_course--drop-the-hedge-fresh-post-reguard-search-lines-343459)
+  - [5.4 `Orchestrator._cancel_task` — DELETE (lines 542–572; no remaining caller)](#54-orchestrator_cancel_task--delete-lines-542572-no-remaining-caller)
+  - [5.5 `FakeAdapter` test scaffolding (`dev/fake_adapter.py`) — additive, for PR3 tests](#55-fakeadapter-test-scaffolding-devfake_adapterpy--additive-for-pr3-tests)
+- [6. PR-by-PR breakdown (small, independently mergeable, TDD red-first)](#6-pr-by-pr-breakdown-small-independently-mergeable-tdd-red-first)
+  - [PR1 — `SchedulerConfig.blind_post_fallback_token_reserve` field + config wiring + parity](#pr1--schedulerconfigblind_post_fallback_token_reserve-field--config-wiring--parity)
+  - [PR2 — Prefetch reserve in `_captcha_prefetch_count_for`](#pr2--prefetch-reserve-in-_captcha_prefetch_count_for)
+  - [PR3 — Drop the hedge + fresh post-reguard search (core control-flow change)](#pr3--drop-the-hedge--fresh-post-reguard-search-core-control-flow-change)
+- [7. Reviewer pre-emption](#7-reviewer-pre-emption)
+- [8. Open questions for the user (surface, do not decide)](#8-open-questions-for-the-user-surface-do-not-decide)
+
+<!-- /toc -->
 
 ## 1. Problem (precise, with file:line)
 

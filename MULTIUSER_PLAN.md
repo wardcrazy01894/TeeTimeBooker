@@ -1,9 +1,13 @@
 # TeeTimeBooker — Multi-User Website Plan (MULTIUSER_PLAN)
 
-Status: **RATIFIED 2026-09-25** after three adversarial review rounds (round 1 BLOCK, round 2 BLOCK, round 3 BLOCK on a single one-line item fixed by the coordinator); every item addressed, see the §15 ledgers. Nothing is wired yet — MU-1+ implement it. Stubs on disk (`src/teetime/tenant/`, `src/teetime/web/`,
-`src/teetime/core/release_policy.py`, `src/teetime/courses/foreup/token_pool.py`); **nothing is
-wired**. Nothing in this document changes current prod behaviour until the cutover PRs (§11, §12)
-land. Subordinate to [PLAN.md](./PLAN.md) (engine), [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md)
+Status: **RATIFIED 2026-09-25** after three adversarial review rounds (round 1 BLOCK, round 2 BLOCK, round 3 BLOCK on a single one-line item fixed by the coordinator); every item addressed, see the §15 ledgers.
+
+> **Implementation status (2026-09-26):** MU-1 through MU-17 and MU-R1 through MU-R3 are built;
+> **dev runs the tenant path** (MU-17, dry-run) and prod still runs the TOML path until the cutover
+> (MU-16b, MU-18; §11). Row-by-row state is in §12; how each milestone was actually built,
+> deviations included, is in [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md).
+
+Nothing in this document changes prod behaviour until the cutover PRs (§11, §12) land. Subordinate to [PLAN.md](./PLAN.md) (engine), [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md)
 (hosting), and the ratified race-path plans
 ([BLIND_POST_PLAN.md](./docs/plans/BLIND_POST_PLAN.md), [RACE_PREWARM_PLAN.md](./docs/plans/RACE_PREWARM_PLAN.md),
 [RESEARCH_FALLBACK_PLAN.md](./docs/plans/RESEARCH_FALLBACK_PLAN.md), [STAGGER_PLAN.md](./docs/plans/STAGGER_PLAN.md)).
@@ -15,6 +19,28 @@ Operator decisions from the 2026-09-25 spike are **inputs**, not open questions.
 and asks, rather than silently picking (§13 Q1 is the only blocking one).
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [1. Goal and scope](#1-goal-and-scope)
+- [2. Architecture](#2-architecture)
+- [3. Data model](#3-data-model)
+- [4. T0 timeline for N accounts, and the "zero new calls at T0" proof](#4-t0-timeline-for-n-accounts-and-the-zero-new-calls-at-t0-proof)
+- [5. Shared per-course CAPTCHA token pool](#5-shared-per-course-captcha-token-pool)
+- [6. Release policy, job derivation, and DST](#6-release-policy-job-derivation-and-dst)
+- [7. Watcher redesign](#7-watcher-redesign)
+- [8. Web app](#8-web-app)
+- [9. Security model](#9-security-model)
+- [10. Infrastructure and cost](#10-infrastructure-and-cost)
+- [11. Migration and cutover (zero missed drops, zero double bookings)](#11-migration-and-cutover-zero-missed-drops-zero-double-bookings)
+- [12. PR-by-PR milestone table](#12-pr-by-pr-milestone-table)
+- [13. Open questions for the operator](#13-open-questions-for-the-operator)
+- [14. What this plan deliberately does NOT do](#14-what-this-plan-deliberately-does-not-do)
+- [15. Review ledgers](#15-review-ledgers)
+- [16. Ranked preferences: one ranked list of course + time options, price per course (operator request 2026-09-26)](#16-ranked-preferences-one-ranked-list-of-course--time-options-price-per-course-operator-request-2026-09-26)
+
+<!-- /toc -->
 
 ## 1. Goal and scope
 

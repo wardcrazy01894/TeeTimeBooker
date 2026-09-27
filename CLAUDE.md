@@ -1,1546 +1,854 @@
 # CLAUDE.md
 
-Operator/agent notes for working in this repo. The authoritative design doc is
-[PLAN.md](./PLAN.md) — read it first if you're new. This file gives the local
-shape, common commands, and architectural notes that aren't obvious from
-filenames.
+Operator and agent notes for this repo: current state, commands, the load-bearing invariants
+that are not obvious from filenames, and the rules for keeping docs in sync. The engine design
+is [PLAN.md](./PLAN.md); read it first if you are new.
 
-Situational detail lives in nested `CLAUDE.md` files that load automatically when
-you work in those subtrees: [`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md)
-(per-course IDs/quirks + adding a course) and [`infra/CLAUDE.md`](./infra/CLAUDE.md)
-(Azure infra + deploy safety rules).
+Nested `CLAUDE.md` files load automatically when you work in their subtree:
+[`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md) (per-course IDs and quirks,
+adding a course) and [`infra/CLAUDE.md`](./infra/CLAUDE.md) (Azure infra and deploy safety).
+
+<!-- toc -->
+## Contents
+
+- [What this is](#what-this-is)
+- [Current status](#current-status)
+  - [Production (TOML path)](#production-toml-path)
+  - [Dev (tenant path, MU-17)](#dev-tenant-path-mu-17)
+  - [Multi-user milestones](#multi-user-milestones)
+  - [Cut from scope](#cut-from-scope)
+- [Where the docs live](#where-the-docs-live)
+- [Package layout](#package-layout)
+- [Common commands](#common-commands)
+- [Architectural invariants](#architectural-invariants)
+  - [Design principles](#design-principles)
+  - [Configuration, dates and time](#configuration-dates-and-time)
+  - [Security and redaction](#security-and-redaction)
+  - [Double booking, idempotency and stores](#double-booking-idempotency-and-stores)
+  - [Search and book error handling](#search-and-book-error-handling)
+  - [The 06:00 booking race (race path only)](#the-0600-booking-race-race-path-only)
+  - [Blind-POST burst (Mangrove Bay)](#blind-post-burst-mangrove-bay)
+  - [Watcher and upgrade](#watcher-and-upgrade)
+  - [Multi-user (tenant) path](#multi-user-tenant-path)
+  - [Email OTP](#email-otp)
+- [Per-course specifics](#per-course-specifics)
+- [Red-green TDD (mandatory)](#red-green-tdd-mandatory)
+- [Documentation standard](#documentation-standard)
+  - [Change→docs map](#changedocs-map)
+- [Required CI checks](#required-ci-checks)
+- [When in doubt](#when-in-doubt)
+- [Azure infra and the deploy safety rule](#azure-infra-and-the-deploy-safety-rule)
+
+<!-- /toc -->
 
 ## What this is
 
-Python 3.12+ bot that books tee times at golf courses (ForeUP and TeeItUp
-platforms). Primary target is **Mangrove Bay Golf Course** (St. Petersburg, FL —
-ForeUP-backed) at 06:00 America/New_York, 7 days in advance. Also supports
-**TeeItUp-backed courses** (e.g. Sydney R. Marovitz, Chicago Park District).
-v0 is single-user, run as Azure Container Apps Jobs (GitHub Actions is CI/deploy only). No frontend.
+A Python 3.12+ bot that books golf tee times on the ForeUP and TeeItUp platforms. The primary
+target is **Mangrove Bay Golf Course** (St. Petersburg, FL; ForeUP), whose online window opens at
+06:00 America/New_York, 7 days ahead; the bot books Saturday and Sunday mornings. TeeItUp courses
+(e.g. Sydney R. Marovitz, Chicago Park District) are also supported. It runs as Azure Container
+Apps (ACA) Jobs; GitHub Actions is CI and deploy only.
 
-## Status
+Two paths exist side by side:
 
-M1 + M2 + M5 + M-feature-1 (watch job) + M-feature-2 (auto-upgrade) + M-feature-3 (slot ranking)
-complete. M2.T3 (a synchronous in-run UNCERTAIN→RECONCILING→BOOKED/LOST path) was
-**CUT**: an UNCERTAIN book (timeout/5xx) raises out of the run loudly and is reconciled
-**asynchronously by the watcher** on its next ≤10-min poll (re-auth + `list_reservations`
-+ the duplicate crash-net). For an unattended single-user bot the ≤10-min unknown window is
-harmless, so the in-run path wasn't worth its durable-state cost — the watcher's uptime is
-now load-bearing. See PLAN.md §9.1. ForeUP adapter
-fully implemented; live dry-run confirmed against Mangrove Bay. TeeItUp adapter
-fully implemented; live booking + cancel confirmed against Sydney Marovitz
-(2026-05-29). M3 (SQLite) and M4 (email notifications) are CUT — `InMemoryStore`
-+ `ConsoleNotifier` are the final production wiring, not stubs.
+- **TOML path** (`teetime run` / `teetime watch`): single-user, configured by a TOML file. This is
+  what **prod** runs.
+- **Tenant path** (`teetime tenant-run` / `tenant-watch` / `web`): the invite-only multi-user site
+  from [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md). It runs the UNMODIFIED `Orchestrator` once per
+  account. This is what **dev** runs since MU-17.
 
-**M6 wiring is DONE** (PRs 1–6): `run --wait` busy-waits to the 06:00:00 ET drop;
-`core/dst_gate.py` exits the wrong-season cron; watcher enabled; `bookingReplicaTimeout=1200`;
-the `enableSchedules` bicep param can silence an env. Verification + cutover runbook in
-AZURE_PLAN §10.4/§10.5. **Prod is DEPLOYED** (`dryRun=false`; latest infra tag `infra/v2.16.0` (2026-08-24) — **dependency refresh + dep-comment drift guard** (#203/#204/#205/#206), **NO booking-behavior change** — nothing touches slot selection, burst size, stagger offsets, timing, or any T0 decision path (same risk class as `infra/v2.13.0`, the previous dependency refresh). Runtime dep IN the image: `idna` 3.18→3.19 — transitive via httpx/anyio, never imported directly, and NOT security-driven (the CVE-2026-45409 boundary is 3.15, cleared two releases ago). NOT in the image (`uv sync --no-dev` excludes the PEP 735 dev group; setup-uv is a CI runner action only): `astral-sh/setup-uv` 9.0.0→10.0.1 (major — v10 disables the cache on sensitive events), `ruff` 0.16.2→0.16.3, `mypy` 2.3.0→2.3.1. Docs/tests only (#206): the `idna` pyproject comment asserted "Floor now tracks the locked version (3.18)" while sitting above `idna>=3.19` — false on merge, and the SECOND drift of that same claim (cleaned in #106, re-drifted by #197/#204), so the comment now names NO tracking version and two guards in `tests/test_docs_consistency.py` pin it (the comment may name no version but the CVE boundary; the floor may never drop below that boundary), with a new change→docs map row for the class. Deployed because no further changes are expected for a while, so there was no next tag to batch these into and prod would otherwise sit indefinitely behind. 761 tests, ruff + ruff format + mypy strict clean, two adversarial review rounds (APPROVE, APPROVE); prior `infra/v2.15.0` (2026-08-16) — **blind-POST rejection reason tagging** (#201), **observability only, NO booking-behavior change** (same risk class as `infra/v2.7.0`/`v2.12.0`): `SlotGoneError` now carries a `reason` (`unavailable` | `daily_limit` | `conflict` | `unknown`) and `ForeUpAdapter._classify_book_rejection` tags ForeUP's HTTP 400 by its `msg` prose. ForeUP returns the SAME 400 for two rejections with OPPOSITE evidential weight — `"Time not available."` (the slot was not bookable: claimed first, OR our POST beat the release flip — the only one bearing on the pre-open-vs-race question) and `"...1 online reservation per day."` (ForeUP bouncing the surplus POSTs of a burst we ALREADY WON) — with no machine-readable discriminator. The burst collapsed both into `gone` and the aggregate line asserted "claimed pre-book" for every 4xx, so the 2026-08-16 drop (1 booked / 2 daily_limit) reported two lost races that never happened — polluting exactly the offset→outcome signal the `v2.14.0` stagger exists to produce, immediately before the Sat 8/22 reading. Now logs `gone[<reason>]` per POST plus `N of M slot(s) rejected (<reason>=<count>, …)`. An ALL-`daily_limit` sweep with nothing booked is deliberately NOT reported as a race wipeout — it means a reservation for that date already existed which this burst did not make, and the re-guard then short-circuits to `ALREADY_BOOKED` without the fallback search the old text promised. Markers are restricted to wordings OBSERVED live (a 35-day prod-log sweep found exactly two distinct bodies); anything else is `unknown` rather than guessed. **Diagnostic only — every reason routes identically (`SlotGoneError` → try-next-slot), so no T0 decision path changes.** 759 tests, mypy strict + ruff clean, two adversarial review rounds (APPROVE, APPROVE); prior `infra/v2.14.0` (2026-08-15) — **the T0 blind-POST stagger** (docs/plans/STAGGER_PLAN.md, #199), a **booking-behavior change** on the race path: the blind burst no longer fires all three POSTs at one instant but staggers each to its own offset from `scheduler.blind_post_stagger_ms` (default `[-500, -250, 0]` ms relative to T0), paired positionally with the rank-ordered slots. Motivation: every drop in the log retention window came back 3/3 or 0/3, never mixed — a shape a genuine slot race cannot produce, since our POSTs land within ~100 ms of the open — while a burst landing before ForeUP's release flip gets the same `400 "Time not available."` a claimed slot does, an ambiguity the 1-second server `Date` header cannot resolve. Staggering is both a hedge (one POST is always SENT no earlier than T0) and a diagnostic (outcomes become ordered by offset). **Non-regression is pinned:** `stagger[0] == -early_arrival_ms`, so the rank-0 nearest-midpoint slot fires at exactly the instant it did before and every drop already won is unchanged; only the surplus POSTs move. Also: the burst re-ranks before pairing offsets (ranked order had been only an adapter convention, now a safety property, since a worse slot POSTing first would let ForeUP's 1-per-day rule reject the better one); a monotonicity validator rejects a descending offset list; and the per-POST diagnostic reports the **measured** send offset, not the planned one, so a late-landing cron cannot make the log claim a ladder that never happened. Two adversarial review rounds (BLOCK → APPROVE), 749 tests green; prior `infra/v2.13.0`).
+## Current status
 
-**Multi-day re-architecture is DONE in code** (docs/plans/MULTIDAY_PLAN.md, PRs #70/#71/#72/#73/#74,
-ratified via plan-with-review). The bot now books BOTH **Saturday and Sunday** mornings
-(wanted days derived from the per-day `[[request.time_windows]]` weekdays), holding one
-reservation PER day:
-- Booking crons fire **DAILY** — two crons, one per DST half: `50 9 * * *` (EDT) and
-  `50 10 * * *` (EST), both 05:50 ET. Jobs renamed `teetime-job-<env>-edt`/`-est`
-  (the `-sun` suffix dropped). Each run computes `today+7` and **fast-exits 0** unless that
-  weekday is wanted (`core/booking_day_gate.py`), after the DST gate.
-- The watcher **polls on every run** (the time-of-day gate was removed) and, on EVERY run
-  regardless of which weekday it executes, checks the next occurrence of EACH wanted weekday
-  within the horizon (`core/target_date.next_occurrences_within_horizon`) — e.g. a run on any
-  day checks the upcoming Saturday AND the upcoming Sunday and can book/upgrade either. The
-  per-date scoping is about pairing each TARGET DATE with its own slots/windows: the search is
-  `dc_replace`d to one target date, so the check for the Saturday *target* books only a Saturday
-  slot and the check for the Sunday *target* only a Sunday slot (it is NOT a restriction based
-  on the day the watcher runs). Removing the hours gate also enables an early-morning recovery
-  booking.
-- Also merged earlier: race-path CAPTCHA pre-fetch (#68) and book-POST 4xx → SlotGoneError
-  multi-slot fallback (#67).
+### Production (TOML path)
 
-**LIVE in PROD** (latest infra tag `infra/v2.16.0` (2026-08-24) — **dependency refresh + dep-comment drift guard** (#203/#204/#205/#206), **NO booking-behavior change** — nothing touches slot selection, burst size, stagger offsets, timing, or any T0 decision path (same risk class as `infra/v2.13.0`, the previous dependency refresh). Runtime dep IN the image: `idna` 3.18→3.19 — transitive via httpx/anyio, never imported directly, and NOT security-driven (the CVE-2026-45409 boundary is 3.15, cleared two releases ago). NOT in the image (`uv sync --no-dev` excludes the PEP 735 dev group; setup-uv is a CI runner action only): `astral-sh/setup-uv` 9.0.0→10.0.1 (major — v10 disables the cache on sensitive events), `ruff` 0.16.2→0.16.3, `mypy` 2.3.0→2.3.1. Docs/tests only (#206): the `idna` pyproject comment asserted "Floor now tracks the locked version (3.18)" while sitting above `idna>=3.19` — false on merge, and the SECOND drift of that same claim (cleaned in #106, re-drifted by #197/#204), so the comment now names NO tracking version and two guards in `tests/test_docs_consistency.py` pin it (the comment may name no version but the CVE boundary; the floor may never drop below that boundary), with a new change→docs map row for the class. Deployed because no further changes are expected for a while, so there was no next tag to batch these into and prod would otherwise sit indefinitely behind. 761 tests, ruff + ruff format + mypy strict clean, two adversarial review rounds (APPROVE, APPROVE); prior `infra/v2.15.0` (2026-08-16) — **blind-POST rejection reason tagging** (#201), **observability only, NO booking-behavior change** (same risk class as `infra/v2.7.0`/`v2.12.0`): `SlotGoneError` now carries a `reason` (`unavailable` | `daily_limit` | `conflict` | `unknown`) and `ForeUpAdapter._classify_book_rejection` tags ForeUP's HTTP 400 by its `msg` prose. ForeUP returns the SAME 400 for two rejections with OPPOSITE evidential weight — `"Time not available."` (the slot was not bookable: claimed first, OR our POST beat the release flip — the only one bearing on the pre-open-vs-race question) and `"...1 online reservation per day."` (ForeUP bouncing the surplus POSTs of a burst we ALREADY WON) — with no machine-readable discriminator. The burst collapsed both into `gone` and the aggregate line asserted "claimed pre-book" for every 4xx, so the 2026-08-16 drop (1 booked / 2 daily_limit) reported two lost races that never happened — polluting exactly the offset→outcome signal the `v2.14.0` stagger exists to produce, immediately before the Sat 8/22 reading. Now logs `gone[<reason>]` per POST plus `N of M slot(s) rejected (<reason>=<count>, …)`. An ALL-`daily_limit` sweep with nothing booked is deliberately NOT reported as a race wipeout — it means a reservation for that date already existed which this burst did not make, and the re-guard then short-circuits to `ALREADY_BOOKED` without the fallback search the old text promised. Markers are restricted to wordings OBSERVED live (a 35-day prod-log sweep found exactly two distinct bodies); anything else is `unknown` rather than guessed. **Diagnostic only — every reason routes identically (`SlotGoneError` → try-next-slot), so no T0 decision path changes.** 759 tests, mypy strict + ruff clean, two adversarial review rounds (APPROVE, APPROVE); prior `infra/v2.14.0` (2026-08-15) — **the T0 blind-POST stagger** (docs/plans/STAGGER_PLAN.md, #199), a **booking-behavior change** on the race path: the blind burst no longer fires all three POSTs at one instant but staggers each to its own offset from `scheduler.blind_post_stagger_ms` (default `[-500, -250, 0]` ms relative to T0), paired positionally with the rank-ordered slots. Motivation: every drop in the log retention window came back 3/3 or 0/3, never mixed — a shape a genuine slot race cannot produce, since our POSTs land within ~100 ms of the open — while a burst landing before ForeUP's release flip gets the same `400 "Time not available."` a claimed slot does, an ambiguity the 1-second server `Date` header cannot resolve. Staggering is both a hedge (one POST is always SENT no earlier than T0) and a diagnostic (outcomes become ordered by offset). **Non-regression is pinned:** `stagger[0] == -early_arrival_ms`, so the rank-0 nearest-midpoint slot fires at exactly the instant it did before and every drop already won is unchanged; only the surplus POSTs move. Also: the burst re-ranks before pairing offsets (ranked order had been only an adapter convention, now a safety property, since a worse slot POSTing first would let ForeUP's 1-per-day rule reject the better one); a monotonicity validator rejects a descending offset list; and the per-POST diagnostic reports the **measured** send offset, not the planned one, so a late-landing cron cannot make the log claim a ladder that never happened. Two adversarial review rounds (BLOCK → APPROVE), 749 tests green; prior `infra/v2.13.0` = `main`@`de90316`, deployed 2026-08-09 — the
-dependency + toolchain refresh, NO booking-behavior change; prior tag `infra/v2.12.0` =
-`main`@`a7a1a6c`, deployed 2026-08-02 — the
-log-redaction filter + 0-match search diagnostics, security + observability with NO
-booking-behavior change; prior tag `infra/v2.11.0` = `main`@`cdf5618`, deployed 2026-07-18 — the
-burst-3 revert (#181, restoring the concurrent T0 slot-race hedge) + server-`Date` early-arrival
-logging (#182); prior tag `infra/v2.10.0` = `main`@`fb2a133`, deployed 2026-07-15 — the
-**email-OTP response batch** (booking-behavior change, see the DEPLOYED paragraph below).
-Prior tag `infra/v2.9.0` = `main`@`a67eccd`, deployed 2026-07-10 — the
-**2026-07-09 full-repo-scan fix batch + python 3.14 base** (booking-behavior + security changes).
-Before that, `infra/v2.8.0` = `main`@`21b24cf`, deployed
-2026-06-29 — the **blind-POST fallback rework + scan hardening** (a booking-behavior change): the
-booking jobs run `blind_post_max_count=3` + `blind_post_fallback_token_reserve=2`, the concurrent
-hedge search is dropped, and the 0-booked path fires a FRESH search strictly after the re-guard
-(docs/plans/RESEARCH_FALLBACK_PLAN.md, PRs #157–#160) plus the robustness fixes #161–#164 (book() 429→RateLimit,
-reguard skip-on-reauth-fail, blind-burst BaseException secures a booked sibling). Before that,
-`infra/v2.7.0` = `main`@`b2c0051`, deployed 2026-06-23; the
-booking/runtime feature set below shipped at `infra/v2.5.0` = `main`@`ddf0112`, deployed 2026-06-22,
-`dryRun=false`. `infra/v2.7.0` was **observability + redaction hardening, no booking-behavior change** —
-booking-job `_run` logs a traceback before exit on a failed run (#154), and `redact_text` Luhn-masks
-PANs in free-text logs (#153). `infra/v2.6.0` was the **infra-only shared-ACR consolidation** — ACR
-moved to a dedicated `rg-teetime-shared` with both envs as non-owners, see AZURE_PLAN §2.1/§10.6):
-multi-day Sat+Sun booking, the 4PM-day-before booking cutoff, the Portal-editable
-skip-days (`TEETIME-SKIP-DATES` KV secret, present in both vaults), within-window
-upgrade (strictly-closer-to-midpoint slot in same tier triggers cancel-before-book; `infra/v2.2.0`),
-watcher today+7 horizon (same-weekday target included when today is a wanted weekday;
-`#119`), captcha TimeoutError recovery (`book()`/`prepare_book()` → `CaptchaError`,
-lead = 120 s; `#120`), the **RACE_PREWARM bundle** (`infra/v2.4.0` — pre-T0 ForeUP login
-pre-warm + layer-2 guard, multi-token concurrent CAPTCHA pool, race-path leading-search-sleep
-trim) with the soft-login-skip fix (`#131` — record the post-T0 re-auth skip only on a
-session-established login), and the **BLIND-POST race feature** (`infra/v2.5.0`, BLIND_POST_PLAN
-PRs #125–#130 — MB-only concurrent blind book POSTs at T0 for the top-N synthesized in-window
-slots, keep-best + cancel-extras in-run, re-guard before search fallback, watcher
->1-reservation reconcile crash-net) are all active. The
-renamed `-edt`/`-est` jobs are deployed in both envs and the old `-edt-sun`/`-est-sun`
-orphans were deleted per the AZURE_PLAN.md §10.2 runbook (the ARM-incremental orphan risk
-is resolved). Known benign quirk: a watch-cron fire that lands mid-deploy can lose one
-10-min cycle (placeholder-image / transient ACR 401) — it self-heals on the next fire.
-No remaining v0 tasks: **M2.T3** (synchronous in-run post-mortem reconciliation) was
-**cut** — the watcher reconciles the UNCERTAIN case asynchronously (PLAN.md §9.1).
+| | |
+|---|---|
+| Latest infra tag | latest infra tag `infra/v2.16.0` (2026-08-24, `main`@`4462f56`); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
+| Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout, `run --wait` |
+| Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout |
+| Books | Sat + Sun, one reservation per day, 7 days ahead, nearest the window midpoint |
 
-**DEPLOYED at `infra/v2.16.0` (2026-08-24, `main`@`4462f56`):** the **dependency refresh +
-dep-comment drift guard** (#203/#204/#205/#206). **NO booking-behavior change** — nothing touches
-slot selection, burst size, stagger offsets, timing, or any T0 decision path (same risk class as
-`infra/v2.13.0`, the previous dependency refresh).
-**Runtime dep IN the image:** `idna` 3.18→3.19 (#204) — transitive via httpx/anyio, never imported
-directly, and NOT security-driven: the CVE-2026-45409 boundary is **3.15**, which prod cleared two
-releases ago.
-**NOT in the image** (`uv sync --no-dev` excludes the PEP 735 dev group; setup-uv is a CI runner
-action only): `astral-sh/setup-uv` 9.0.0→10.0.1 (#203 — a MAJOR bump; v10 disables the cache on
-sensitive events, and it is used only in `ci.yml`), `ruff` 0.16.2→0.16.3 and `mypy` 2.3.0→2.3.1
-(#205).
-**Docs/tests only (#206):** the `idna` comment in `pyproject.toml` asserted "Floor now tracks the
-locked version (3.18)" while sitting above `idna>=3.19` — false the moment it merged, and the
-**second** drift of that same claim (cleaned in #106, re-drifted by #197/#204). Dependabot bumps
-that floor on every idna release, so ANY version literal in the comment is stale by construction;
-the comment now names **no** tracking version and two guards in `tests/test_docs_consistency.py`
-pin it — the comment may name no version but the CVE boundary, and the floor may never drop below
-that boundary. CLAUDE.md's change→docs map gained a row for the class. Known scope limit: the
-guard is **idna-only**, so a NEW tracking comment on another dep would not be caught (no other dep
-carries one today — the `ruff`/`mypy` comments state facts that survive bumps).
-**Why deployed at all:** only `idna` reaches the image and it is not security-driven, so this was
-initially recommended for batching — but with no further changes expected for a while there is no
-next tag to batch into, and prod would otherwise sit indefinitely behind. Operator decision
-2026-08-24.
-Verification: 761 tests, ruff + ruff format + mypy strict clean, `uv lock --locked` ok, two
-adversarial review rounds on #206 (APPROVE, APPROVE), dev auto-deploy green on this commit. Prod
-param latch verified pre-tag (`dryRun=false`, `killswitchFired=false`, `enableSchedules=true`).
-All three prod jobs verified live on `teetime:4462f561b771c8f1dfaaf0f856edb5b39dac9fd8` with crons
-+ timeouts + `dryRun=false` UNCHANGED from the v2.15.0 baseline: `teetime-job-prod-edt`
-`50 9 * * *` / 1200 s, `teetime-job-prod-est` `50 10 * * *` / 1200 s, `teetime-watch-job-prod`
-`*/10 * * * *` / 300 s; post-deploy watch cycle at 16:30 UTC ran clean (authenticated, saw both
-held reservations, checked both target dates). First exercise: the Sat 2026-08-29 05:50 ET drop
-(books 9/5).
+What is live: multi-day Sat+Sun booking with per-day windows, the 16:00-day-before booking cutoff,
+Portal-editable skip-days, within-window upgrade, the race pre-warm bundle (login pre-warm,
+multi-token CAPTCHA pool, search-sleep trim), the Mangrove Bay blind-POST burst (3 POSTs staggered
+`-500/-250/0` ms across T0, keep best, cancel extras, re-guard then fresh-search fallback), the
+watcher's duplicate-reservation crash-net, blind-POST rejection reason tagging, log redaction on
+every handler, and email-OTP challenge detection.
 
-**DEPLOYED at `infra/v2.15.0` (2026-08-16, `main`@`8342b67`):** blind-POST rejection **reason
-tagging** (#201). **NO booking-behavior change** — nothing touches slot selection, burst size,
-timing, or any T0 decision path (same risk class as `infra/v2.7.0`/`v2.12.0`).
-ForeUP returns HTTP 400 for two rejections carrying OPPOSITE evidential weight, with no
-machine-readable discriminator — only the `msg` prose differs: `"Time not available."` (the slot
-was not bookable — claimed first, OR our POST beat the release flip; the ONLY one bearing on the
-pre-open-vs-race question) versus `"...1 online reservation per day."` (ForeUP bouncing the
-SURPLUS POSTs of a burst we ALREADY WON). The burst collapsed both into `gone`, and the aggregate
-line asserted "claimed pre-book" for every 4xx — so the 2026-08-16 drop (1 booked / 2
-`daily_limit`) reported two lost races that never happened, polluting exactly the offset→outcome
-signal `v2.14.0`'s stagger exists to produce, immediately before the Sat 8/22 reading.
-`SlotGoneError` now carries `reason` (`unavailable` | `daily_limit` | `conflict` | `unknown`),
-tagged by `ForeUpAdapter._classify_book_rejection`; `_blind_outcome_label` logs `gone[<reason>]`
-and the aggregate becomes `N of M slot(s) rejected (<reason>=<count>, …)`.
-**Three deliberate design points:** (1) an ALL-`daily_limit` sweep with nothing booked is NOT
-reported as a race wipeout — it means a reservation for that date ALREADY EXISTED which this burst
-did not make, and `_reguard_before_fallback` then short-circuits to `ALREADY_BOOKED` without the
-fallback search the old text promised (it stays WARNING; a reservation the pre-T0 layer-2 guard
-could not see warrants attention); (2) markers cover only wordings OBSERVED live — a 35-day prod
-Log Analytics sweep found exactly TWO distinct book-rejection bodies, so the speculative
-"no longer available" marker was dropped and anything unmatched surfaces as `gone[unknown]` rather
-than being misfiled as race evidence; (3) `reason` is DIAGNOSTIC ONLY — every value routes
-identically (`SlotGoneError` → try-next-slot), verified against every `except SlotGoneError` site.
-**Evidential caution (do not lose this before Sat 8/22):** the 1-booked/2-`daily_limit` shape is
-NOT established as a stagger effect. It was the first non-uniform outcome in the LOG RETENTION
-WINDOW, but the pre-stagger 2026-07-11 drop produced the same shape from a SIMULTANEOUS burst (see
-the `infra/v2.9.0` paragraph), so a simultaneous burst can also serialize behind ForeUP's 1/day
-counter. Treat the shape as uninformative about timing until more drops land.
-**Known open question (BACKLOG):** whether ForeUP's 1/day rule is scoped to the PLAY date or the
-CALENDAR day the booking is made. The multi-day design implies play-date and nothing observed
-contradicts it, but it is unpinned — if it were booking-day scoped, an all-`daily_limit` Sunday
-burst could be caused by Saturday's reservation and the "we already hold a reservation for this
-date" wording would be wrong.
-Verification: 759 tests, ruff + ruff format + mypy strict clean, TWO adversarial review rounds
-(APPROVE, APPROVE — round 2 caught the causal over-claim above). All three prod jobs verified live
-on `teetime:8342b67f2113657b45786191b72a859df25ac4c5` with crons + timeouts + `dryRun=false`
-UNCHANGED from the v2.14.0 baseline: `teetime-job-prod-edt` `50 9 * * *` / 1200 s,
-`teetime-job-prod-est` `50 10 * * *` / 1200 s, `teetime-watch-job-prod` `*/10 * * * *` / 300 s.
-First exercise: the Sat 2026-08-22 05:50 ET drop (books 8/29) — which is also the first real
-diagnostic reading of the stagger itself.
+Known benign quirk: a watch-cron fire that lands mid-deploy can lose one 10-minute cycle
+(placeholder image or a transient ACR 401); it self-heals on the next fire. Verification and
+cutover runbook: AZURE_PLAN §10.4/§10.5. The `enableSchedules` Bicep param silences an env.
 
-**DEPLOYED at `infra/v2.14.0` (2026-08-15, `main`@`e6a8abb`):** the **T0 blind-POST stagger**
-(docs/plans/STAGGER_PLAN.md, #199). **BOOKING-BEHAVIOR CHANGE**, race path only (`--wait` + blind-capable
-primary) — the first since `infra/v2.11.0`.
-The T0 blind burst no longer fires all N POSTs at one instant: each sleeps to its own offset
-from `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)` ms relative to T0), paired
-positionally with the RANK-ordered slots, so the burst SPANS ForeUP's release boundary instead
-of point-sampling it. **Why:** every drop in the Log Analytics retention window came back 3/3
-or 0/3, NEVER mixed — a shape a genuine slot race cannot produce, since our POSTs land within
-~100 ms of the open and nobody books three specific tee times in 100 ms. A burst arriving
-before the release flip gets the SAME `400 {"success":false,"msg":"Time not available."}` a
-claimed slot returns, and the server `Date` header's 1-second resolution (added in
-`infra/v2.11.0` for exactly this question) cannot separate them. Staggering is both a HEDGE
-(one POST is always SENT no earlier than T0, so a wipeout can't take the burst as a unit) and
-a DIAGNOSTIC (outcomes become ordered by offset). Motivated by the 2026-08-15 miss (target Sat
-8/22) and the still-unexplained 2026-07-18 miss.
-**Non-regression is the binding constraint and is pinned mechanically:** `stagger[0] ==
--early_arrival_ms`, so the rank-0 (nearest-midpoint) slot fires at EXACTLY its pre-stagger
-instant and every drop already won is unchanged — only the surplus POSTs move, and those are
-already 400'd by the 1/day rule when rank-0 wins. `tests/test_container_config_parity.py`
-asserts both `stagger[0] == -early_arrival_ms` and `min(stagger) == -early_arrival_ms`
-(operator directive 2026-08-15: nothing may be scheduled EARLIER than today's fire instant).
-The tail offset is `0` — SENT at 06:00:00.000, carried past the open by network latency on
-ARRIVAL — chosen over `+250` to give up the least ground in a genuine race.
-**Three supporting changes:** (1) the burst RE-RANKS with `rank_slots_for_request` before
-pairing offsets — ranked order had been only an adapter convention the simultaneous burst
-never depended on, and is now a safety property, since a worse slot POSTing first would let
-the 1/day rule reject the better one; (2) a `field_validator` rejects a DESCENDING offset list
-(`(-500, 0, -250)` passes every parity assertion while doing exactly that); (3) the per-POST
-diagnostic reports the **MEASURED** send offset, not the planned one — on a run starting past
-T0 every delay is non-positive and all POSTs go out simultaneously, so logging the planned
-ladder would show instants that never happened and an operator reading a 0/N would wrongly
-conclude "unordered ⇒ not the boundary". Known limitation (accepted, BACKLOG.md): offsets
-correlate with slot rank, so the offset→outcome signal is confounded — a control POST (same
-slot at two offsets) and CAPTCHA-token recycling are deferred.
-Verification: 749 tests, ruff + ruff format + mypy strict clean, TWO adversarial review rounds
-(BLOCK → APPROVE), dev deploy green on this commit. All three prod jobs verified live on
-`teetime:e6a8abbe72d4846099864e5d032720ad3017470a` with crons + timeouts + `dryRun=false`
-UNCHANGED from the v2.13.0 baseline: `teetime-job-prod-edt` `50 9 * * *` / 1200 s,
-`teetime-job-prod-est` `50 10 * * *` / 1200 s, `teetime-watch-job-prod` `*/10 * * * *` /
-300 s. First exercise: the Sun 2026-08-16 05:50 ET drop (books 8/23) — a non-regression check
-only, since both 0/3 misses (one explained, one not) fell on SATURDAYS and every Sunday in the
-retention window booked cleanly. First real diagnostic reading: the Sat 2026-08-22 drop.
+### Dev (tenant path, MU-17)
 
-**DEPLOYED at `infra/v2.13.0` (2026-08-09, `main`@`de90316`):** the dependency + toolchain
-refresh. **No booking-behavior change** — nothing touches slot selection, burst size, timing,
-or any T0 decision path (same risk class as `infra/v2.7.0`/`v2.12.0`).
-Runtime deps IN the image: `click` 8.3.3→8.4.2, `idna` 3.17→3.18 (`httpx` 0.28.1 and
-`pydantic` 2.13.4 were already current). Dev toolchain — NOT in the image, `uv sync --no-dev`
-excludes it: `ruff` 0.15.15→0.16.2, `mypy` 2.1.0→2.3.0, `pytest` 9.0.3→9.1.1, `pytest-asyncio`
-1.3.0→1.4.0, `pip-audit` 2.10.0→2.10.1. Floors in `pyproject.toml` were raised to match; they
-had drifted badly (`ruff>=0.5` against a locked 0.15.15), advertising support for untested
-versions.
-**One application-code change, behavior-preserving (#197):** `UpgradeOrchestrator.
-_persist_upgrade` and `._cancel_and_book_slot` are now KEYWORD-ONLY past their leading args.
-`_persist_upgrade` takes `current_booking` AND `new_result`, **both `BookingResult`** — a
-positional transposition type-checked clean and would have silently persisted the OLD booking
-as the upgrade result. mypy cannot catch same-typed adjacent params; the `*` can. Surfaced by
-ruff 0.16 promoting `PLR0917` to stable. Verified argument-by-argument at both call sites and
-covered by `test_upgrade_deletes_then_reinserts_terminal_under_lock`, which fails on a swap.
-`PLR0917` is deliberately NOT ignored globally — only per-file for the three orchestrator
-collaborator-injection ctors (all-distinct types, so mypy catches a swap) and `tests/**`
-date-builders; it stays live everywhere else, verified non-vacuous.
-**Two ruff-0.16 config consequences:** (1) `PLR0917` as above; (2) ruff 0.16 began formatting
-python code blocks INSIDE Markdown, and our plan docs quote FRAGMENTS (bare ctor params) which
-it parses as standalone statements and rewrites WRONGLY — turning `x: T | None = None,` into
-`x: T | None = (None,)`, a TUPLE. Unnoticed, `ruff format .` would have silently corrupted 8
-ratified design docs into describing something other than what shipped. Markdown is now
-excluded (`extend-exclude = ["*.md"]` in `[tool.ruff]`).
-**Supporting CI/config changes, no image effect:** Dependabot now manages Python via the `uv`
-ecosystem (#192) with a WORKING prod/dev split — the first attempt silently collapsed because
-dev deps were a `[project.optional-dependencies]` extra, which Dependabot classifies as
-production, so #193 put pytest/ruff/mypy in the "python-runtime" group; #195 moved them to a
-PEP 735 `[dependency-groups]`, which ALSO made the Dockerfile's `uv sync --no-dev` load-bearing
-(it excludes GROUPS, not extras — previously the image stayed lean only because extras are
-opt-in). `pip` 26.1.1→26.1.2 (#191) let the `PYSEC-2026-196` pip-audit suppression be retired
-(#194), so the CVE gate runs unsuppressed. Dependabot alerts + security updates are ENABLED.
-Verification: ruff clean, ruff format clean, mypy strict clean, 731 tests, pip-audit clean
-unsuppressed, `uv lock --locked` passes, docker build + smoke green, dev deploy green on this
-commit, three adversarial review rounds all APPROVE. Deployed while holding Sat 8/15 09:22 and
-Sun 8/16 09:22; first exercise is the Sat 2026-08-15 05:50 ET drop (books 8/22).
+Dev auto-deploys from `main` in permanent `dryRun = true`. Since MU-17 its booker and watcher run
+`tenant-run --event mb0600et` / `tenant-watch` (watcher hourly, `0 * * * *`) over the shared Cosmos
+`dev` database, and the `teetime-web-dev` Container App (Google sign-in) and ACS email are
+deployed. Prod is unchanged until MU-18. Runbook: AZURE_PLAN §10.7.
 
-**DEPLOYED at `infra/v2.12.0` (2026-08-02, `main`@`a7a1a6c`):** the log-redaction filter +
-0-match search diagnostics. **No booking-behavior change** — nothing touches slot selection,
-burst size, timing, or any T0 decision path (same risk class as `infra/v2.7.0`).
-Security (#187): the 2captcha API key no longer reaches stdout / Log Analytics. httpx logs
-every request at INFO and the 2captcha result-poll URL carries the key as a query param — 71
-such lines in the 2026-08-01 prod run. `core.redaction.RedactingLogFilter` +
-`install_log_redaction()` attach to the root logger's HANDLERS (a logger-level filter does NOT
-see records propagating up from `httpx`) and scrub the rendered message, `%`-args, `exc_info`
-tracebacks and `stack_info`. The leaked key was **rotated** the same day (2026-08-02); both
-Key Vaults hold the new value and the local `.env` was updated. Known gap (accepted): a
-traceback printed by Python's default excepthook bypasses logging entirely.
-Observability (#188): a search that returns inventory but matches NOTHING now logs a
-per-filter rejection tally + the span of tee times actually on offer, against the requested
-window — which distinguishes a course-level block from a lost slot race. That ambiguity cost
-real diagnosis time after the 2026-08-01 miss, whose cause turned out to be Mangrove Bay's
-8 AM shotgun Anniversary Tournament on the 8/8 TARGET date (no public tee time before ~16:07).
-INFO when purely out-of-window (the routine sell-out), WARNING when any other leg fires.
-Also in this tag: Dependabot action bumps (setup-python v7, setup-uv v9, checkout 7.0.1),
-SHA-pins verified against upstream tags. All three prod jobs verified on the
-`teetime:a7a1a6c…` image with crons/timeouts/`dryRun=false` unchanged. First exercise: the
-Sat 2026-08-08 05:50 ET drop (books 8/15).
+The cost killswitch ($50 actual spend → Logic App disables and stops every ACA Job and stops the
+web apps) is armed in dev and manages both envs; the $20 email budget is the early-warning tier.
+See `infra/AZURE_PLAN.md §9.2`.
 
-**DEPLOYED at `infra/v2.11.0` (2026-07-18, `main`@`cdf5618`):** the T0-hedge restore + early-arrival
-diagnostic. Booking-behavior: the blind burst is reverted to **3** (`blind_post_max_count=3`, default
-+ all shipped configs) — burst-of-one (v2.10.0) bet the whole drop on the single nearest-midpoint slot
-and lost that race with nothing else in flight (the 2026-07-18 Sat 7/25 miss, terminal `no_inventory`);
-the top-3 concurrent POSTs restore the slot-race hedge, and ForeUP's 1/day rule 400-rejects the surplus
-once the first lands (`_cancel_extras` keeps the best, proven live 2026-07-11 which booked the 3rd-ranked
-sibling). Observability: `ForeUpAdapter.book()` logs ForeUP's server `Date` response header on every
-book POST — the server clock at processing time disambiguates a **pre-open rejection** (the 500 ms
-`early_arrival_ms` fire landing before the 06:00 ET open → 400 stamped 05:59:59) from a **genuine
-slot-race loss** (06:00:00), which are byte-identical by body (the 2026-07-18 miss couldn't tell them
-apart). All three prod jobs verified on the `teetime:cdf5618` image. First exercise: the Sun 2026-07-19
-05:50 ET drop (books 7/26) — the first burst-3 + Date-log drop.
+### Multi-user milestones
 
-**DEPLOYED at `infra/v2.10.0` (2026-07-15, `main`@`fb2a133`):** the email-OTP response batch
-(#177/#178/#179), shipped the same day MB's email-OTP gate went live. Booking-behavior: the
-blind burst is **burst-of-one** (`blind_post_max_count=1`, default + all shipped configs — ForeUP's
-"1 online reservation per day" rule 400-rejects surplus POSTs, so a wider burst made the winner
-first-processed rather than best-ranked; a miss falls to the sequential center-out fallback with
-the 2 pooled reserve tokens; **superseded 2026-07-18 by `infra/v2.11.0` — burst reverted to 3** after
-burst-of-one's single-slot race loss caused the 2026-07-18 Sat 7/25 miss, see the v2.11.0 paragraph
-above) — and a cancel-DELETE 400 "We can't find that teetime" is treated as
-already-cancelled (ForeUP uses it, not 404, for a missing/expired reservation — observed live).
-OTP posture: the 2026-07-15 live recon showed the email-OTP gate is **UI-only** (the bot's direct
-API book POST books unchallenged, HTTP 200 + instant confirmation), so the OtpSource stays off
-the critical path; `_guard_otp_challenge` → `OtpChallengeError` (CaptchaError subclass) is the
-loud observation signal if ForeUP ever extends enforcement to the API. All three prod jobs
-verified on the `teetime:fb2a133` image. First drop on this image: Sat 2026-07-18 05:50 ET
-(books 7/25) — the first OTP-era drop.
+Plan: [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) §12 (ratified 2026-09-25). How each milestone was
+actually built, deviations included: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md).
 
-**DEPLOYED at `infra/v2.9.0` (2026-07-10):** the 2026-07-09 full-repo-scan fix batch + the
-python 3.14 base. Booking-behavior: a SURPLUS-cancel failure (429/captcha/transport blip while
-cancelling a blind-POST extra) can no longer discard the kept booking — `_cancel_extras` catches
-`Exception` broadly, and the watcher reconcile got the same broadening with the watch-contract
-errors re-raised (#166). Security: the 2captcha result-poll no longer leaks the API key into Log
-Analytics on a non-2xx (sanitized RuntimeError; `redact_text` also masks credential-named URL
-query params) (#167); the container runs as a non-root user on a digest-pinned
-`python:3.14-slim` base, all workflow actions are SHA-pinned, and Dependabot keeps the pins
-fresh (#168, #174 — dev venvs already ran 3.14, the image was the lagging environment).
-Observability: the blind-burst captured-`BaseException` branch now logs, the reguard-reauth-fail
-WARNING + reconcile CRITICAL are test-pinned, and lock-defer logs are visible at INFO (#173).
-Config/docs: `blind_post_max_count` code default aligned to **3**, the `tests/
-test_docs_consistency.py` tag-agreement CI guard + the CLAUDE.md change→docs map exist (#172).
-The prod jobs were rebuilt + redeployed on the `infra/v2.9.0` image (`teetime:a67eccd`, verified
-live on all three jobs); its first real booking exercise (and CPython 3.14's) was the 2026-07-11
-drop — booked Sat 7/18 09:30 (3rd-ranked; the two blind-burst siblings were 400-rejected by the
-1-reservation/day rule, the observation that motivated v2.10.0's burst-of-one).
+| Milestone | What | State |
+|-----------|------|-------|
+| MU-1 | `core/release_policy.py` (E4) | Done |
+| MU-2 | `SharedCaptchaPool` (E1); backs ForeUP's private pool in prod unchanged | Done |
+| MU-3 | MB grid 07:00–12:00 + blind allowlist (E2, E3) + `tenant/allocation.py` | Done |
+| MU-4 | Engine hooks E5 reconcile eligibility, E6 snapshot trust, E7 secret literals | Done |
+| MU-5 | Tenant models, `TenantStore`, `InMemoryTenantStore`, conformance suite | Done |
+| MU-6 | Materializer | Done |
+| MU-7 | `tenant/crypto.py` (AES-GCM passwords) | Done |
+| MU-8a / MU-8b | Cosmos document mapping / `CosmosTenantStore` | Done |
+| MU-9a0 / 9a / 9b / 9c | Virtual clock + recorder / runner core / exit contract + CLI / `LeasedBookingStore` | Done |
+| MU-10a / MU-10b | Tenant watcher decisions / runner + `tenant-watch` | Done |
+| MU-11 | Notifications (ACS Email REST) | Done |
+| MU-12 / 13 / 14 | Web skeleton / dashboard + rules + dates / connect, refresh, cancel | Done |
+| MU-15a / MU-15b | Infra without the DB / Cosmos account | Done |
+| MU-16a | Tenant commands on real collaborators + migrate job | Done |
+| MU-16b | `tenant-seed --adopt` (prod cutover only) | Open |
+| MU-17 | Dev cutover | Done, dev dry-run |
+| MU-18 | Prod cutover | Open |
+| MU-19 / MU-20 | Retire TOML job wiring / TOML CLI | Open |
+| MU-R1 / R2 / R3 | Ranked options + price / group floor + collapse / ranked form | Done |
 
-**Azure v1 IaC is implemented.** All Bicep modules are complete (`identity`,
-`registry`, `keyvault`, `logs`, `compute`, `budget`). Dev auto-deploys on merge
-to main via `.github/workflows/azure-iac.yml` with `dryRun = true` — no real
-bookings fire in dev. State is in-process only (`InMemoryStore`); the bot makes
-no authenticated Azure SDK calls at runtime.
+### Cut from scope
 
-**Cost killswitch (PR-KS1 + PR-KS2) implemented and LIVE in dev.** `killswitch.bicep` + `killswitch-rbac-prod.bicep`
-deploy a Logic App (Consumption) + Action Group in `rg-teetime-dev` that issues 12 HTTP
-calls (6 PATCH + 6 POST /stop) to silence all six ACA Job crons when the $50 actual budget
-threshold fires. Deployed only in dev (Logic App manages both envs via cross-RG RBAC). Gated
-on `enableKillswitch && !empty(killswitchRbacRoleId) && envName=='dev'`. The "ACA Job Schedule
-Manager" custom role (GUID `3e2d5a14-96bd-4469-9f96-b9c3270aa9e6`) is created; the GUID is set
-in both param files and in `azure-iac.yml` — the killswitch **arms on every dev auto-deploy** and
-is live in dev. The `killswitchFired` param (already in both param files) is the CI deploy-clobber
-guard: once set to `true`, no subsequent CI deploy can re-arm the cron schedules. PR-KS2 added the
-separate $50 `budget-teetime-killswitch` resource to `budget.bicep` (conditional on
-`killswitchActionGroupId`; the $20 email budget is untouched) — deployed manually, subscription-
-scoped. **Both budget tiers are DEPLOYED and ARMED (verified live 2026-05-31):** `budget-teetime`
-($20) emails on 80%-actual/100%-forecast, and `budget-teetime-killswitch` ($50) is wired to the
-`ag-teetime-killswitch-dev` Action Group at 100%-actual. The killswitch chain is fully armed
-end-to-end across dev + prod; no operator step remains. See `docs/plans/COST_KILLSWITCH_PLAN.md` and
-`infra/AZURE_PLAN.md §9.2`.
+- **M2.T3** (a synchronous in-run UNCERTAIN → RECONCILING path): an UNCERTAIN book (timeout/5xx)
+  raises out loudly and the watcher reconciles it on its next poll. The watcher's uptime is
+  therefore load-bearing. PLAN.md §9.1.
+- **M3** (SQLite) and **M4** (email) for the TOML path: `InMemoryStore` + `ConsoleNotifier` are
+  the final wiring there, not stubs. The tenant path has its own durable store and email.
 
-**Multi-user website: RATIFIED, NOT WIRED** ([MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md), ratified
-2026-09-25 via a 3-round plan-with-review; ledgers in its §15). This is the plan for turning the single-user bot into an invite-only site: BYO ForeUP accounts
-with AES-GCM-encrypted passwords, dated request rows plus standing rules, one tenant booking job per
-release event running the UNMODIFIED `Orchestrator` per account, a shared per-course CAPTCHA pool,
-a tenant watcher, and a FastAPI/HTMX Container App. The new modules are on disk under
-`src/teetime/tenant/`, `src/teetime/web/`, `src/teetime/core/release_policy.py`,
-`src/teetime/courses/foreup/token_pool.py`, `src/teetime/dev/virtual_clock.py`; most are still
-stubs that raise `NotImplementedError` with an MU-milestone reference, and the ones already
-implemented per-milestone (`core/release_policy.py`, MU-1; `tenant/allocation.py`, MU-3;
-`tenant/crypto.py`, MU-7; `tenant/models.py`, the `TenantStore` Protocol and
-`tenant/in_memory_store.py` with the `tests/tenant/conformance.py` suite, MU-5;
-`dev/virtual_clock.py` + `tenant/recording.py` + `dev/blind_fake_adapter.py`, MU-9a0;
-`tenant/cosmos/documents.py`, MU-8a; `tenant/cosmos/store.py` + `tenant/semantics.py`, MU-8b;
-the `tenant/runner.py` booking-runner core, MU-9a;
-`tenant/notify.py` + `tenant/acs_email.py`, MU-11; `tenant.store.LeasedBookingStore`, MU-9c) are covered by
-their own tests. **Nothing imports them from the production path.**
-(`src/teetime/courses/foreup/token_pool.py` is IMPLEMENTED (MU-2) and backs `ForeUpAdapter`'s
-private CAPTCHA pool with unchanged default behaviour; the shared/injected mode has no caller yet.)
-**Prod behaviour, config, and infra are unchanged**, and the TOML `run`/`watch` path stays the
-production path until the cutover in MULTIUSER_PLAN §11. **MU-1 is DONE in code, UNWIRED**
-(E4): `core/release_policy.py` is real — `ReleasePolicy(advance_days, release_time, timezone,
-hosted_booking)` + pure helpers `target_date_for` (course-local today + advance, NEVER the UTC
-date), `release_instant_for` (zoneinfo, DST-correct), `fire_time_for`, `cron_pair` (a
-`CronPair(daylight, standard)` of UTC crons for release − 10 min; halves classified by
-`utcoffset()` on Jan 1/Jul 1 of `probe_year`, default the CURRENT year since tzdata changes only
-future rules; **`.deduped`/`.jobs`** flag a no-DST zone whose two halves are one instant — MU-15a
-must derive ONE job from `.jobs`, or two runners race one event), `validate_release_policy` (v1
-hour band 04–22: a midnight release would fire on D-1 and book a day late; lead may not cross
-midnight; IANA zone must resolve; **and the fire time must land in hour `release.hour − 1`** —
-`minute < lead <= minute + 60` — because that is the reading `dst_gate.should_proceed` makes, so
-e.g. 06:30 with the default 10-min lead would never book in summer and pass the WRONG cron in
-winter) and `release_key` (`(timezone, release_time)` — the release-EVENT identity that
-groups courses into one job pair). A (release, lead) × transition-day sweep pins "validates ⇒
-exactly one gate-passing cron per UTC day". `MangroveBayAdapter.release_policy` = (7, 06:00, America/New_York)
-and its derived pair is pinned EQUAL to `compute.bicep`'s `50 9 * * *`/`50 10 * * *` by reading the
-bicep in `tests/test_release_policy.py`; today's `dst_gate.should_proceed` semantics are reproduced
-from the policy. `SydneyMarovitzAdapter.release_policy` = (15, **06:00 PLACEHOLDER — S-M4 unconfirmed**,
-America/Chicago, `hosted_booking=False`). Nothing on the production path reads any of it; the
-ACA crons stay hand-written until MU-15a. **MU-3 is DONE in code** (engine
-hooks E2 + E3 + the allocator; `tenant/allocation.py` is real, not a stub): the Mangrove Bay
-`BLIND_POST_MORNING_GRID` spans the full morning 07:00–12:00 and `MangroveBayAdapter.
-set_blind_allowlist` filters `synthesize_blind_slots` before truncation (default `None` = no
-filter). The operator's 08:45–10:00 burst is pinned byte-identical to the pre-widening grid
-(`test_widened_grid_emits_identical_slots_for_0845_1000_window`); nothing in the TOML path calls
-the hook, so this is NOT a booking-behavior change. Details in `src/teetime/courses/CLAUDE.md`.
-**MU-4 is DONE in code, UNWIRED** (engine hooks E5 + E6 + E7, each defaulting to today's
-behaviour and called by nothing in the TOML path): `WatchOrchestrator(reconcile_eligible=…)`
-restricts the duplicate reconcile to eligible (owned) reservations, `ForeUpAdapter.
-snapshot_trusted` (`ReservationSnapshotHealth`) says whether the last login's reservation cache
-can be believed, and `core.redaction.register_secret_literals` masks exact secret values in logs.
-See the reconcile, `list_reservations` and log-redaction bullets below. **MU-9a0 is DONE in code,
-UNWIRED** (the test/runtime primitives MU-9a's runner and MU-10a's watcher build on; nothing in the
-TOML path imports either): `dev/virtual_clock.py::VirtualClock` is a discrete-event `Clock` for
-multi-account timing tests — a sleeper parks on its deadline and time jumps to the EARLIEST pending
-deadline only once every runnable task is blocked, so N concurrent busy-waits and staggered bursts
-each measure their OWN offsets exactly (`FakeClock`'s shared `_now` runs N× fast for the stagger's
-single-read `sleep(delay)` pattern — pinned as the non-vacuity contrast; `FakeClock` is untouched
-and single-account tests keep using it). `tenant/recording.py::make_recording_adapter` wraps an
-account's adapter in an in-memory, zero-I/O recorder that captures everything `Orchestrator.run`
-does not return — see the recorder bullet under the capability notes below, which also explains
-why it is one CONCRETE class per capability set and never a `__getattr__` proxy.
-`dev/blind_fake_adapter.py::BlindFakeAdapter` is the blind-capable `FakeAdapter` variant carrying
-the MU-3 allowlist hook (FakeAdapter's defaults are unchanged); it drives the recorder's race-path
-end-to-end test through the UNMODIFIED `Orchestrator`. **MU-9a is DONE in code, UNWIRED**
-(`tenant/runner.py::run_release_event` + `resolve_credentials` + `assert_blind_methods_present`;
-nothing on the production path calls it; `exit_code_for`/CLI/emails are MU-9b (below); the
-booker never uses `LeasedBookingStore`): DST gate (pure, before ANY store call) → READ #1 `load_event_rows`
-(+ a Python freeze re-check) → WRITE #1 `claim_rows` (a row another writer leases is re-claimed
-every 15 s until T0−150 s, then skipped) → in-process decrypt with every password registered as an
-E7 secret literal (a per-row decrypt failure skips only that row) → one adapter per account from
-the `AdapterFactory` (which now also receives the account's pool `lease_key` = row id), each
-wrapped by `make_recording_adapter` → the SF1 blind-member guard (a failure is SYSTEMIC pre-T0:
-nothing races and the claimed leases are released) → per course, allocation over each blind
-account's UNFILTERED candidates (allowlist cleared first) with `C // burst` blind accounts
-(`SharedCaptchaPool.max_concurrent_solves`, 12 without a pool) and the rest search-only → EVERY
-account of a pooled course registered in draft order (k = its allowlist size, **k = 0 for
-over-cap**) + reserve R + `arm(t0)` → one UNMODIFIED `Orchestrator(prefetch_book=True)` per account
-on S′ (event fire time/zone; reserve 0 when pooled; burst 0 when search-only), all concurrent with
-per-account exception isolation → each outcome built from the returned result + the recorder log
-(§4.6 ownership: kept booking `held` only if THIS run booked its raw id; surplus not cancelled OK
-→ `held_extra`, owned; cancelled OK → `cancelled_extra`; a guard's ALREADY_BOOKED is unowned,
-`needs_reconcile` if an UNCERTAIN POST is on record) and STREAMED: one `record_outcomes` call PER
-ROW, none before T0 + `post_burst_quiet_s` (10 s), 60 s retry, a refused/failed write → CRITICAL +
-the outcome JSON on stdout + `RunReport.outcome_write_failures`. A self-deadline (start +
-replicaTimeout − 90 s) cancels still-running accounts and writes their rows `needs_reconcile`.
-`tenant.allocation.draft_order` now rotates by the WEEK index (`toordinal() // 7`): the raw ordinal
-never rotated at N = 7, because one account's drops recur weekly. Tests:
-`tests/tenant/test_runner{,_race}.py` (VirtualClock throughout). **MU-9b is DONE in code,
-UNWIRED to infra** (`teetime tenant-run --event <key> [--dry-run] [--wait/--no-wait]` and
-`teetime tenant-plan --event <key>` over `tenant/booking_job.py`; the store comes from
-`tenant/wiring.py::open_tenant_store` since MU-16a — Cosmos when configured, else in memory). **Exit contract** `runner.exit_code_for`
-(pure, one test per §4.5 row in `tests/tenant/test_runner_exit.py`): non-zero ONLY for systemic
-causes — `systemic_error` (store read/claim incl. a timeout, keyring, missing 2captcha key, a
-pre-T0 prepare failure), any decrypt failure, a `CaptchaError`/`OtpChallengeError` out of
-`orch.run` (`AccountOutcome.captcha_error`) or one the blind burst swallowed (recorder), any
-UNCERTAIN, the self-deadline, a failed WRITE #2, a failed operator summary (SF6). A miss and a
-per-account `AuthError` exit **0** (a deliberate change from the TOML `ClickException`: one user's
-miss must not mark the job Failed). **Notifications:** each account's `Orchestrator` gets a
-`BufferingNotifier` (no I/O near T0); after WRITE #2 `_row_events` maps rows to `UserEvent`s
-(BOOKED / MISSED_DROP / AUTH_FAILED to the user; decrypt / dry-run / NEEDS_RECONCILE / swallowed
-CAPTCHA / held_extra operator-only), `finish_run` sends the operator summary FIRST via
-`deliver_operator_summary` (its returned exit code is authoritative → `summary_email_failed`),
-then the user events through `StoreUserNotifier` (`TenantStore.get_user_unscoped`, a new
-conformance-pinned system read). An unconfigured `ACS_EMAIL_*`/`OPERATOR_NOTIFY_EMAIL` yields an
-`UnconfiguredEmailSender` whose every send fails, so a run with anything to report exits
-non-zero. The `AuthError` → account `auth_failed` flip has no store write yet:
-`RunReport.auth_failed_accounts` carries it (TODO MU-8b). **Bounds (#233 review):** every READ #1
-/ WRITE #1 store call is abandoned after `STORE_CALL_TIMEOUT_S` (20 s) and never runs into the
-race window (clamped to T0 − lead − 1 s when the run started before it); the WRITE #2 writer stops
-at self-deadline + `WRITER_GRACE_S` (30 s) and dumps anything unwritten to stdout. **Wiring:** the
-runner's `pool_factory` may be async — `HostedPoolFactory` runs the site-key pre-flight once per
-course AFTER the claim (a day with no rows never touches ForeUP) and builds a coordinated
-`SharedCaptchaPool` on the real 2captcha provider; `tenant_scheduler()` is the shipped
-`container.toml` scheduler (parity-pinned), and one account through the runner fires the same
-slots at the same offsets with the same 3 + 2 token budget as the TOML `run`
-(`test_single_account_run_matches_todays_burst`). The §11.2 first-drop lines are emitted verbatim
-(`test_first_drop_emits_section_11_2_log_lines`); line 4 required `ForeUpAdapter.book()`'s pooled-
-token INFO line to name the lease (`(lease <key>: N left)`, `(shared reserve)` for a reserve
-token) — a log-text change on the TOML path too, no behavior change. **MU-10a is DONE in
-code, UNWIRED** (`tenant/watcher.py`, the tenant watcher's PURE decision layer — no I/O, no store
-or adapter calls; nothing calls it until the MU-10b runner wiring): `group_rows_for_search`
-(one shared search per `(course, date, party_size)` — party is part of the key because MB
-`players=4` returns a SUBSET of `players=2`), `needs_login` (the §7.1 step-3 reasons
-first-match-wins: bookable in-window slot for a PENDING row, a strictly-closer-to-midpoint
-upgrade candidate for a BOOKED row **only when OWNED**, `needs_reconcile`, an expired unreleased
-lease, the reconcile cadence `(account_id.int + run_index) % 6 == 0` — the UUID integer, never a
-per-process-salted `hash()` — and a >90-min-stale snapshot backstop for booked rows),
-`ownership_of`/`is_owned` (OWNED iff the raw id is ledgered `held`/`held_extra`;
-ADOPTED_RECONCILE iff `needs_reconcile` AND an EXACT instant+party match with a recorded
-UNCERTAIN slot the caller passes — fail-safe UNOWNED when nothing is passed), `upgrade_allowed`
-(**the ownership gate MU-10b MUST apply before `_try_upgrade`**, since E5 does not guard the
-upgrade), `classify_missing_booking` (§7.5: only TRUSTED snapshots count, the last two must both
-miss the id and be >=10 min apart, then the M2 exclusions in plan order — upgrade marker or a
-ledgered `cancelled_upgrade`/`cancelled_extra` -> `BOT_CAUSED`, a same-(date, party) replacement
--> `ADOPT_REPLACEMENT`, else `EXTERNAL_CANCEL`; `cancelled_user` is deliberately NOT an
-exclusion, see the inline note), `dry_run_gate` (§7.8: never upgrade / reconcile-cancel / mark
-`cancelled(external)` in dry-run) and the `SearchSnapshotAdapter` family +
-`make_search_snapshot_adapter` (serves `search()` from the shared group result, delegates the
-rest; ONE concrete class per inner capability set — 16 — with NO `__getattr__`, so
-`runtime_checkable` `isinstance`, which is `getattr_static`-based on >=3.12, reads the proxy
-exactly like the inner). Wall-clock comparisons convert to the row's course timezone first.
-Tests: `tests/tenant/test_watcher_{login,ownership,proxy}.py`. **MU-10b is DONE in code, UNWIRED**
-(`tenant/watch_runner.py::run_tenant_watch` + `watch_exit_status` + `seeded_terminal`, and the
-`teetime tenant-watch` command, which runs it over an EMPTY in-memory store with a WARNING; no ACA
-job until MU-15a, no Cosmos until MU-16): materializer tick → `finalize_lost` (one `lost` email) →
-the ONE `load_watch_rows` query → ONE `search()` per `(course, date, party)` group on an
-unauthenticated client (≥ 250 ms apart) → `needs_login` per row (a row under another writer's live
-lease is skipped before any login) → per account, sequentially: decrypt (E7) → `authenticate` →
-soft-auth check (counted via `record_soft_auth_failure`, snapshot NEVER persisted, nothing acts) →
-`list_reservations` → `snapshot_trusted` (an UNTRUSTED snapshot is neither persisted nor acted on;
-a trusted one is saved) → per row, under its OWN `acquire_row_lease` with the fingerprint read at
-step 1 (M5): a BOOKED row missing from the snapshot goes through `classify_missing_booking`
-(NOT_YET → nothing, the engine is NOT run; BOT_CAUSED → PENDING + `needs_reconcile`;
-ADOPT_REPLACEMENT → adopt; EXTERNAL_CANCEL → CANCELLED(external) + email, never re-booked); a
-PENDING row whose snapshot shows a (date, party) reservation is ADOPTED (owned iff ledgered, else
-unowned: raw confirmation, no ledger entry); otherwise the UNMODIFIED `WatchOrchestrator` runs over
-`make_search_snapshot_adapter(make_recording_adapter(inner), slots)` and the outcome comes from the
-RECORDER (M2: old id cancelled + new booking → upgraded; old id cancelled and nothing new →
-PENDING + `needs_reconcile`, UNLESS the owned-only reconcile kept an owned `held_extra` still live
-in the snapshot, which the row then follows). **The ownership gate on `_try_upgrade` (E5 does not
-guard it) is two tenant-side layers:** the engine's in-run store is pre-seeded with the row's
-BOOKED terminal carrying `TTB:<raw>` ONLY when `upgrade_allowed` says owned (`seeded_terminal`),
-so `maybe_upgrade`'s managed guard refuses a manual reservation; and the upgrade policy is handed
-to the engine only for an OWNED BOOKED row (never a PENDING row, whose `_check_course` would
-otherwise synthesize `TTB:` from any live match). `set_upgrade_marker` is written under the lease
-before the engine runs on such a row; every outcome write clears it. Dry-run (§7.8): policy off,
-`reconcile_eligible=lambda _: False`, a vanish logged not written, no marker. Exit (§7.9,
-`watch_exit_status`): a 429 anywhere aborts the run with exit 0; `AuthError` and the third
-soft-auth failure are per-account (notified, exit 0); Captcha/OTP, a DB failure, a decrypt failure
-and a refused outcome write are non-zero; an UNCERTAIN book sets `needs_reconcile` and exits 0.
-Deviations: it takes the durable row lease itself around the engine instead of `LeasedBookingStore`
-(MU-9c is now implemented but the watcher was deliberately NOT refactored onto it); a HARD `AuthError` does not flip the account `auth_failed` (no store write
-exists yet, the same gap as MU-9b); the orphan report covers watched dates only. Tests:
-`tests/tenant/test_watch_runner{,_snapshots}.py`, `tests/tenant/test_tenant_watch_cli.py`. **MU-12 is DONE in code, UNWIRED to infra** (`src/teetime/web/`: FastAPI app factory, OAuth sign-in for Google and/or GitHub, INVITE-ONLY — the first sign-in binds the provider subject to a pre-invited user matched only on a VERIFIED email, `users.status` re-read on every request, 12 h absolute signed sessions, CSRF on every POST, CSP/HSTS/frame headers, `/healthz` with no store call, operator-only `/admin/users`; `teetime web` runs it with `basicConfig` then `install_log_redaction()` and registers the session/OAuth secrets as E7 literals; tenant store in memory until MU-16). **MU-13 is DONE in code, UNWIRED to infra** (`web/pages.py` + `web/services.py` + templates; no JavaScript, no inline script or style): the dashboard `/` (the user's rows for the next 21 days: status, booked tee time course-local, the persisted snapshot's age "as of HH:MM (N min ago)", the §7.4 "not seen at course" / "manual reservation" badges from a TRUSTED snapshot only; it never logs in to ForeUP), `/rules` (create / edit / deactivate / reactivate a standing rule, materialized SYNCHRONOUSLY via `materialize_rule` / `apply_rule_edit`; shows "edits apply from the next drop") and `/dates` (add a one-off, skip / unskip a rule date, withdraw a one-off, "Re-request this date" after a cancel; Cancel on a BOOKED row is MU-14, below). Every action is a plain form POST through the app-level CSRF guard, then PRG to a fixed `?notice=` key. **IDOR:** every row / rule / account id is resolved through user-scoped reads, and a missing, malformed or foreign id renders ONE byte-identical 404 page (`WebNotFoundError`); pinned per route by `test_route_rejects_other_users_{row,rule,account}`. Store errors map per §8.2 (`ActionRefusedError` → 409 re-rendering the source page: `RowLeaseError` "booking in progress", `RuleConflictError`, `VersionConflictError`, `RuleNoLongerCoversError` → "This rule no longer covers <date>; add it as a one-off instead" plus a prefilled one-off form, any other `TransitionRefusedError` its message; bad input → 400). `create_app` gained `policies` (`str(course_id)` → `ReleasePolicy`) and `cutoff` for the materializer. It needed three read-only, user-scoped `TenantStore` additions — `get_row(row_id, *, user_id)`, `list_accounts_for_user`, `list_rules_for_user` — conformance-pinned (no write path changed). **MU-14 is DONE in code, UNWIRED to infra** (`web/services.py` + `web/pages.py` + `templates/accounts.html`; since MU-16a `teetime web` passes the keyring (when `TENANT_CREDS_KEYRING` is set), `HostedAdapterFactory`, the hosted policies and an ACS notifier): **connect / re-verify** (`connect_account` / `reverify_account`, §8.4) E7-register the plaintext first, rate-check FIRST from the existing probe docs (5 connect probes / user / h — the user's refresh probes are subtracted —, 3 / username / h across users, 30 site-wide / h, and a lockout on ANY 2 probes of a username in 15 min: the conservative form of the plan's "2 consecutive failures", because `count_login_probes` does not read outcomes), then do ONE `authenticate` on a throwaway adapter (`pool=None`, `dry_run=True`) that is NEVER retried, record the probe, and only on `is_authenticated` encrypt with the account-bound AAD and `upsert_account` (user_supplied, ACTIVE, soft failures reset, `verified_at`); the probe `username_hash` is SHA-256 of `probe|<course>|<casefolded username>`. **Refresh** (`refresh_account`, §8.6): the user-scoped account read comes BEFORE the in-process `RefreshCache` (120 s TTL, one replica), then `auth_failed`/disabled accounts are refused, the 6 / account / h cap is DB-backed as probe docs under `refresh_probe_hash(account_id)` (no new store method), one login (a soft failure is counted via `record_soft_auth_failure`), and an UNTRUSTED list (§7.5 b/c) is neither persisted nor cached (the last trusted snapshot stays). **Cancel** (`cancel_row`, §8.5): user-scoped row read → dry-run refusal (§7.8, before anything else) → BOOKED only → an unowned (unledgered) booking needs `confirm_unowned` → the web's 60 s row lease through `LeasedBookingStore` with the fingerprint just read (a booker/watcher lease or a moved row → "booking in progress", BEFORE any login) → decrypt + E7 → one login that must be authenticated AND trusted (else "nothing was cancelled") → the id absent from the trusted list = CANCELLED(`already_gone`) with no cancel call, else `cancel_reservation` (404 / "can't find that teetime" already succeed per the adapter contract; `CancelError` → refused, nothing written) → ONE `record_outcomes` outcome (row CANCELLED(`user`) + slot release + ledger `cancelled_user`, or `vanished` for already_gone) → then, best-effort and never undoing the cancel: the post-cancel snapshot (the pre-cancel list minus the id, since ForeUP's list is a login cache), the `global` audit doc and the user email. **Deviation:** the snapshot is a separate write right after the batch, not inside it — `RowOutcome` has no snapshot field and store semantics were out of scope; a failed snapshot write only leaves the dashboard one refresh stale. A batch failure after the course cancelled is logged CRITICAL and reported (the watcher's vanish inference reconciles the row). Pages: `/accounts` (connect form, per-account Refresh + Re-verify, snapshot age), a real Cancel form on `/dates` (disabled in dry-run; a confirm checkbox for an unowned booking via `DashboardRow.owned`), `RateLimitedError` → 429, password inputs never carry a value. `create_app` gained `adapter_factory`; connectable courses are the `policies` keys; `CancelRefusedError` is now an `ActionRefusedError` (409). IDOR is pinned by `test_route_rejects_other_users_account_and_row`, and the OAuth exchange by `test_oauth_exchange_never_logs_secret` (the MU-12 BACKLOG item). Tests: `tests/web/test_web_{connect,refresh,cancel,accounts_pages}.py`. **MU-R1 is DONE in code, UNWIRED to infra** (MULTIUSER_PLAN §16, ranked preferences): a row or rule now carries `options: tuple[RankedWindow, ...]` — this course's slice of the user's ONE ranked list of (course, window) options, ranks 1-based, unique and ascending (not necessarily contiguous; overlap allowed; `validate_options` in `__post_init__`) — instead of one `window_earliest/window_latest`; the engine gets them via `options_time_windows` in rank order (so `rank_slots_for_request`'s window-index preference keeps the user's order with no engine change), and `achieved_rank` resolves a booked time first-match in rank order exactly like `core/slot_utils._matching_window`. The watcher's upgrade check is rank-aware (a better-ranked option always wins; the same option needs strictly closer to ITS midpoint). Prices: `CourseAccount.default_max_price` (default `DEFAULT_MAX_PRICE` = $100.00/player) and `max_price` overrides on rows/rules (None = the account default); `StandingRule.group_id/group_rank`, copied onto rule rows with options/party/price through `semantics.RowIntent`. The §16.4 `booked → pending (group_downgrade)` edge is in `check_transition` (reason-scoped: needs_reconcile forbidden on it and required on every other booked → pending; the runner may write it only as a group_downgrade) and `LEASED_EDGES`, with ledger state `cancelled_group`. Cosmos: `SCHEMA_VERSION` 2 stores `options` as a list and money as exact decimal strings; a v1 row/rule document reads back as its single window at rank 1. **MU-R3 is DONE in code, UNWIRED to infra** (`web/booking_form.py` + `web/group_services.py` + the `/bookings/date`, `/bookings/weekly`, `/accounts/{id}/price` routes): ONE ranked form for a date or a weekday (party, up to `MAX_OPTIONS` = 6 (course, window, rank) rows, a price per course), parsed PURE by `parse_ranked_form` (distinct ranks, renumbered 1..N; a foreign account id is the uniform 404), saved as one explicit row / rule PER COURSE sharing a fresh `group_id` with `group_rank` = the best rank and `max_price` = the typed override. Not one transaction (§16.2): courses are written in rank order and a per-course refusal is REPORTED (the page re-renders 409 "Saved for N of M courses"), only an all-failed save raises. Skip / unskip / withdraw (`_transition`) and deactivate / reactivate (`set_rule_active`) act on the whole group via user-scoped reads; the single-window rule edit REFUSES a grouped or multi-option rule (it would flatten it). Price boxes are BLANK with the default as placeholder, not prefilled: a prefilled value would be saved as a frozen override and stop tracking the account default. The dashboard shows `booked_rank` ("got option N"). The old single-window `POST /rows` stays for "Re-request this date" and the "add it as a one-off" follow-up. **MU-R2 is DONE in code, UNWIRED to infra** (§16.3/§16.4): every tenant engine request (booker, watcher row request, the watcher's shared group search at the HIGHEST member cap, and the pure login decision) books under `row_max_price` = the row's override else the account default — before this the tenant path had NO price cap. `tenant/groups.py` holds the pure `booked_rank` (computed, not stored), `group_floor` and `plan_collapse`, plus the `collapse_group` EXECUTOR: per worse OWNED booking, fingerprinted lease → `set_upgrade_marker` BEFORE the course call → `cancel_reservation` → ONE `record_outcomes` (booked → pending `group_downgrade`, ledger `cancelled_group`, marker cleared); a failed cancel/write leaves the row BOOKED with the marker (a later vanish is `BOT_CAUSED`, §7.5, which now also excludes `cancelled_group`) for the next watcher run; a manual worse booking is never cancelled; dry-run cancels nothing. `TenantStore.rows_in_groups` (system read across account partitions; Cosmos `/groupId` is in `QUERIED_PATHS`) feeds the **group floor**, applied in the booker and `tenant-plan` BEFORE the claim and in the watcher's read to PENDING rows only: a grouped row is attempted only for options ranked better than its group's best existing booking, and skipped entirely when none are; rows with no group make no extra read; a failed group read is fail-open. **Collapse points:** the booker's `_collapse_groups` runs strictly AFTER every WRITE #2 (re-reading the group for fresh fingerprints, cancelling through the run's still-open adapters; an account outside the run is left to the watcher), and the watcher's end-of-run `collapse` handles the rest — including the second half of a cross-course upgrade (the better-ranked sibling books through the normal path, then the worse booking is cancelled: book first, since different accounts have no 1-per-day conflict). **MU-11 is DONE in code, UNWIRED** (`tenant/notify.py` + `tenant/acs_email.py`; nothing calls them until the MU-9a/MU-10b runners): `BufferingNotifier` is the engine-`Notifier`-shaped in-race collector (no I/O; `flush()` hands the results over after WRITE #2); `render_user_event` / `render_operator_summary` produce PII-minimal plain text (first name, course, date, tee time, `TTB:` confirmation, reason) and pass every subject and body through `redact_text`, so an E7-registered secret or a stray email in a free-text `detail` never reaches a mailbox; `EmailUserNotifier` is bound to ONE user and refuses another user's event; `deliver_operator_summary` sends when there are events or the exit is non-zero and returns the FINAL exit code — a failed summary send turns a clean exit non-zero (§4.5 SF6). `AcsEmailClient` is the ACS Email REST `EmailSender` over httpx, no SDK: HMAC-SHA256 signing pinned by a known-answer vector, POST `/emails:send` then poll `Operation-Location` within a bounded timeout, bounded 429/5xx/transport retry honouring a capped `Retry-After` with one `repeatability-request-id` per send; it RETURNS an `EmailSendResult` and never raises. `load_acs_settings` reads `ACS_EMAIL_CONNECTION` + `ACS_EMAIL_SENDER` by name and registers the access key as an E7 literal. `UserEventKind` gained the operator-only `NEEDS_RECONCILE`. `FakeEmailSender` is the test double. Tests: `tests/tenant/test_{notify,acs_email}.py`. **MU-9c is DONE in code, UNWIRED** (`tenant.store.LeasedBookingStore`; its first caller is MU-14's web cancel, and the MU-10b watcher could replace its own lease-around-the-engine with it): an engine `BookingStore` over an inner `InMemoryStore` + a `TenantStore` whose `request_lock(request_id)` takes the inner in-process lock FIRST (so a nested acquire raises exactly like `InMemoryStore`) and then `acquire_row_lease` on the row registered for that RequestId with the `RowFingerprint` read at registration; a foreign live lease, a moved row (status/version/booked_raw_id) or an unregistered RequestId raise `ConcurrentRunError`, so the UNMODIFIED engine defers (pinned end-to-end: `maybe_upgrade` on a row the user skipped after the read cancels and books nothing). The lease is released on normal exit, exception and cancellation; a failed release is logged, never raised (the lease expires). Every other method delegates to the inner store. The ctor takes a `clock` (the lease's `now`/`until`), which the stub signature lacked. Tests: `tests/tenant/test_leased_booking_store.py`. **MU-6 is DONE in code,
-UNWIRED** (`tenant/materialize.py` is real; its owners are the web (MU-13, which now calls
-`materialize_rule` / `apply_rule_edit` on rule create / edit) and the tenant watcher tick, which
-`run_tenant_watch` now calls first on every run (MU-10b, itself unwired)): `classify_date_history` (pure), `materialize_rule` (walks the
-FULL `[local_today, local_today + max(21, advance_days + 7)]` horizon every call), `apply_rule_edit`
-(window/party rewrite, weekday move, the reset→withdraw→reset→inactive deactivation, reactivation)
-and `materialize_tick` (due rules + the `rows_no_longer_covered` sweep). It needed two read-only
-`TenantStore` additions — `get_rule_unscoped` / `get_account_unscoped`, system reads with no
-`user_id` (the web never calls them) — conformance-pinned. See the materializer bullet below. **MU-8a is DONE in code, UNWIRED**
-(`tenant/cosmos/documents.py`, pure, no Azure SDK import; MU-8b's store sits on top): `to_*_doc`/`from_*_doc` per persisted type plus `to_doc`/`from_doc` dispatchers,
-returning `Stored(item, etag)` with Cosmos `_etag` read through (never written) for IfMatch.
-Deterministic ids per §3.1 (`account`, `rule|<id>`, `row|rule|<rule_id>|<date>` — a rule row whose
-`RowId` is not `rule_row_id(...)` is refused — `row|x|<uuid>`, `slot|<date>`, `ruleday|<weekday>`,
-`booking|<course_id>|<raw_id>`, `snapshot`) partitioned by `accountId`; `global` docs carry a
-prefixed `pk` (`user:<id>` = id, `claim:<sha256 of kind|key>` = id, `probe:<UTC hour>`,
-`audit:<userId|system>`), and only `probe` (2 h) / `audit` (400 d) carry a per-item `ttl`. camelCase
-keys, UTC ISO instants (a naive datetime is refused), `type` + `schemaVersion` on every doc (readers
-accept N and N−1, refuse anything else; a missing defaulted field reads as its default, a missing
-required one is refused); `row_fingerprint_of` / `event_row_from_docs` are the read projections.
-Tests: `tests/tenant/cosmos/test_documents.py`. Tenant store (decided 2026-09-25): a Cosmos DB
-free-tier account in `rg-teetime-shared` (`prod` + `dev` databases, MI data-plane auth). That retires
-"no Azure SDK calls at runtime" for the tenant path only (MULTIUSER_PLAN §10.2); the current TOML path
-is unaffected. **MU-8b is DONE in code, UNWIRED** (`tenant/cosmos/store.py::CosmosTenantStore`; no
-command constructs it until MU-16, and the account itself is MU-15b): the full `TenantStore` on the
-async `azure-cosmos` SDK (+ `azure-identity`, `aiohttp` as the async transport), with the in-memory
-store's semantics reached through the SAME pure functions (`tenant/semantics.py`, extracted from
-`InMemoryTenantStore` behaviour-preserving). Every multi-doc write is ONE single-partition
-transactional batch with per-op IfMatch: row creates/replaces, the `slot|<date>` ops derived from the
-status change, the `ruleday|<weekday>` pointer asserted by an IfMatch self-replace whenever a rule
-row becomes bookable (the §3.2 rule IfMatch — a concurrent deactivation or weekday move aborts the
-row write), and ledger upserts; `_Batch` refuses an op for another partition. Mapping: 409 row create
-→ exists (`insert_rule_row_if_absent` returns None), 409 slot create → date taken, 412/404 →
-`TransitionRefusedError`, a lost lease race → not acquired, a rule 412 → re-read, then
-`VersionConflictError` only if the version really moved. Cross-partition uniqueness is the §3.2
-claim protocol (pending → write → IfMatch bind; a lost bind deletes/restores what it wrote; a
-PENDING claim is reclaimable only if older than 10 min AND its owner does not hold the key, a BOUND
-one only as a rename orphan) plus an IfMatch `max_accounts_per_course` counter. Auth is an Entra
-token only (`DefaultAzureCredential`; a key-shaped credential is refused), and the `tenant-ci` /
-`global-ci` containers are selected ONLY by `TENANT_COSMOS_CONTAINER_SUFFIX=-ci`. `QUERIED_PATHS`
-lists every path the queries filter on — **MU-15b's index policy must include all of them** (Cosmos
-rejects a filter on an unindexed path; the §3.2 list is too short). Tests: the whole conformance
-suite in CI over `tests/tenant/cosmos/fake_container.py` (a fake of the SDK container API, never
-the store) and `integration`-marked against the real `dev` CI containers (README), plus unit
-tests in `tests/tenant/cosmos/test_cosmos_store.py`. Known residual (documented in the module):
-the user-terminal half of the may-become-active guard is a partition query the batch cannot assert.
-The integration leg has NOT run yet (no Cosmos account exists).
-**MU-17 (the DEV cutover) is in `main.bicepparam.dev`:** dev runs `tenant-run`/`tenant-watch` (still hourly) over the shared Cosmos `dev` database, with the web app (Google sign-in) and ACS email deployed; dev stays `dryRun = true` and PROD IS UNCHANGED until MU-18. With `acsEmailSender = ''` main.bicep derives `DoNotReply@<managed domain>` from the email module output (`effectiveAcsEmailSender`), and with `operatorEmail = ''` the web reads `OPERATOR-NOTIFY-EMAIL` from Key Vault, because the repo is PUBLIC and no email address may sit in a param file (pinned by `tests/test_webapp_bicep.py`). Runbook: AZURE_PLAN §10.7. **MU-15a is DONE (infra without the DB, MULTIUSER_PLAN §10.1/§12): `infra/bicep/release_events.json`
-+ `compute.bicep`/`killswitch.bicep` derive their booking-job loop from it (v1: one event,
-`mb0600et`, keeping the legacy `teetime-job-<env>-edt/-est` names); `bookingMode`/`watchMode`
-params (default `toml` in BOTH envs — this PR changes NOTHING about what either env's ACA jobs
-run) select `run --config .../container.toml` vs `tenant-run --event <key>`/`tenant-watch`, with
-every tenant-only secretRef/env var (`TENANT_CREDS_KEYRING`, `ACS_EMAIL_CONNECTION`,
-`OPERATOR_NOTIFY_EMAIL`, `TENANT_COSMOS_*`, `AZURE_CLIENT_ID`, `ACS_EMAIL_SENDER`) gated behind a
-`== 'tenant'` branch so the default toml mode never references a Key Vault secret the operator
-has not created. Dev's watch cron moved to hourly (`0 * * * *`, operator directive — prod
-untouched at `*/10 * * * *`) via the new per-env `watchCron` param. **CI note (2026-09-26):** `azure-iac.yml` deploys with INLINE
-parameters, so every value a `.bicepparam` file sets must be parsed and passed by the workflow;
-the first MU-15a merge missed this and dev stayed at `*/10`. The workflow now parses all nine
-MU-15a params, and `tests/test_azure_iac_killswitch_latch.py::test_every_param_file_value_reaches_every_ci_deploy`
-fails CI if any declared param is not passed to every deploy. Two new Bicep modules,
-BOTH gated off by default (`deployWebApp`/`deployAcsEmail` = `false` in both envs, so this PR
-cannot break the dev auto-deploy on a missing secret): `webapp.bicep` (the `teetime-web-<env>`
-Container App, scale-to-zero, ingress/max-replicas latched to the SAME `effectiveEnableSchedules`
-killswitch signal as the ACA Jobs) and `email.bicep` (ACS Communication Service + Email Service +
-Azure-managed domain, writing `ACS-EMAIL-CONNECTION` via `listKeys()` at deploy time — needs the
-operator to register the `Microsoft.Communication` RP and grant the CI deploy identity "Key
-Vault Secrets Officer" first). The cost killswitch gained **lever (c)**: a `POST .../stop` on
-each env's web Container App (14 actions total, up from 12); the "ACA Job Schedule Manager"
-custom role needs `Microsoft.App/containerApps/read` + `.../stop/action` added (operator runs
-`az role definition update`, not `create` — same GUID). Also fixed (BACKLOG "scope
-forwarded_allow_ips"): `teetime web`'s uvicorn now passes an explicit `forwarded_allow_ips`
-(default `127.0.0.1` — ACA's ingress sidecar reaches the container over loopback within the same
-pod; override via `WEB_FORWARDED_ALLOW_IPS`) instead of leaving it un-set.
+## Where the docs live
 
-**MU-16a is DONE in code (the tenant commands on real collaborators; no env runs them until MU-17
-flips a mode).** `tenant/wiring.py::open_tenant_store` is the ONE tenant-store builder behind
-`tenant-run`, `tenant-plan`, `tenant-watch`, `tenant-migrate` and `web`: `TENANT_COSMOS_ENDPOINT`
-set -> `CosmosTenantStore` via `cosmos_tenant_store` (Entra/MI auth through `AZURE_CLIENT_ID`,
-client closed on exit); nothing set -> the in-memory store with a loud `IN-MEMORY` WARNING;
-half-configured (endpoint without `TENANT_COSMOS_DATABASE`, or a database/suffix without an
-endpoint, or an invalid suffix) -> `TenantStoreConfigError` before anything opens. The database is
-NEVER defaulted (`CosmosSettings.from_env` would say `dev` — a prod job must not silently use dev
-data), and because compute.bicep always sets `TENANT_COSMOS_DATABASE` in tenant mode, a tenant job
-whose `tenantCosmosEndpoint` param is empty fails closed instead of exiting 0 over nothing.
-`tenant-watch` now gets `hosted_policies()` (the booker's `HOSTED_COURSES`), `HostedAdapterFactory`
-(a 2captcha provider when live; `TWOCAPTCHA_API_KEY` is required unless dry-run) and
-`user_notifier_from_env` (ACS `StoreUserNotifier`, else `LoggingUserNotifier` + WARNING); the
-booker keeps its SF6 `operator_sink_from_env`. `web` opens the store INSIDE its event loop
-(`asyncio.run` -> `uvicorn.Server.serve()`, since the async Cosmos client is loop-bound) and passes
-the keyring (optional: absent -> WARNING and connect/refresh/cancel refused; malformed -> fail
-closed; E7-registered), `HostedAdapterFactory(api_key=None)`, the policies keyed `str(course_id)`
-and the notifier. `webapp.bicep` wires the web's tenant backend (`TENANT_COSMOS_*`,
-`AZURE_CLIENT_ID`, `TENANT_CREDS_KEYRING`, `ACS_EMAIL_*`) iff `tenantCosmosEndpoint` is non-empty.
-`teetime tenant-migrate` (`tenant/migrate.py`: `MIGRATIONS = ()`, each step idempotent, no applied
-ledger) requires Cosmos, runs `TenantStore.initialize()` (a point read per container) then the list,
-exits non-zero on any failure. `compute.bicep` gains the Manual `teetime-migrate-<env>` job (tenant
-mode only, no KV secret, 600 s, excluded from the killswitch — asserted), and `azure-iac.yml` starts
-and awaits it RIGHT AFTER deploy pass 2 when `BOOKING_MODE`/`WATCH_MODE` is `tenant` (a deviation
-from the plan's "before the jobs": pass 1 runs every job on the bootstrap image; readers accept
-N−1). `tenant-seed --adopt` is MU-16b. Known limit: `initialize()` maps a 404 to "not found", so a
-MISSING container is not detected by the migrate job (auth and endpoint failures are).
+| Doc | What it is |
+|-----|-----------|
+| [README.md](./README.md) | Newcomer overview, quick start, config, running, deploy |
+| [PLAN.md](./PLAN.md) | Engine design: state machine, DST math, etiquette, milestones |
+| [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) | Multi-user site design and MU milestone table |
+| [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md) | Azure hosting design, secrets inventory, runbooks |
+| [BACKLOG.md](./BACKLOG.md) | Future wants and deferred items |
+| [docs/RELEASES.md](./docs/RELEASES.md) | Every prod infra tag, newest first |
+| [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md) | Per-milestone build notes for the tenant path |
+| [docs/plans/](./docs/plans/) | Shipped (historical) design plans, each with a status banner |
 
 ## Package layout
 
 ```
 src/teetime/
-  core/             # models, adapter Protocol, orchestrator, config, clock
-  persistence/      # BookingStore Protocol + InMemoryStore
-  notifications/    # Notifier Protocol + ConsoleNotifier
-  courses/foreup/   # Shared ForeUP HTTP base + per-course IDs
-  courses/teeitup/  # Shared TeeItUp/Kenna HTTP base + per-course IDs
-  courses/chronogolf/  # placeholder; not used in v0
-config/             # example.toml; secrets via env-var refs only
-.github/workflows/  # ci.yml (lint / type-check / test / docker-smoke / secret-scan / bicep-lint) + azure-iac.yml (Bicep deploy)
-tests/              # pytest; respx for httpx mocking (no vcrpy cassettes)
+  core/              models, adapter Protocols, orchestrators, config, clock, redaction,
+                     gates (dst, booking-day, cutoff), release_policy, otp
+  persistence/       BookingStore Protocol + InMemoryStore (per-run engine memory)
+  notifications/     Notifier Protocol + ConsoleNotifier
+  courses/foreup/    ForeUP HTTP base, SharedCaptchaPool, Mangrove Bay
+  courses/teeitup/   TeeItUp/Kenna HTTP base, Sydney Marovitz
+  courses/chronogolf/  placeholder, unused
+  tenant/            multi-user: models, TenantStore + in-memory + cosmos/, runner, watcher,
+                     materializer, groups, crypto, notify, wiring, migrate
+  web/               FastAPI app, OAuth, pages, services, templates/, static/
+  dev/               FakeAdapter, BlindFakeAdapter, VirtualClock
+config/              example.toml, container.toml (secrets via env-var names only)
+infra/               AZURE_PLAN.md, bicep/ (main + modules/ + release_events.json)
+docs/                RELEASES.md, MULTIUSER_AS_BUILT.md, plans/ (shipped plans)
+.github/workflows/   ci.yml (lint, types, tests, docker, secret scan, bicep lint), azure-iac.yml (deploy)
+tests/               pytest; respx for httpx mocking; tests/tenant/, tests/web/
 ```
 
-The orchestrator is the only thing that knows about all four subsystems.
-Persistence, notifications, and adapters all see each other via Protocols
-in `core/` — never directly. This is the cut line for parallel work.
+The orchestrator is the only thing that knows all four engine subsystems. Persistence,
+notifications and adapters see each other only through Protocols in `core/`; that is the cut line
+for parallel work. Nothing in `core/`, `courses/` or `persistence/` imports `tenant`.
 
 ## Common commands
 
-| Command                                  | Purpose                                  |
-|------------------------------------------|------------------------------------------|
-| `uv sync`                                | Install deps + dev deps from pyproject.  |
-| `uv run pytest`                          | Run the test suite.                      |
-| `uv run pytest -m "not integration"`     | Skip live-network tests (default in CI). |
-| `uv run mypy`                            | `strict` type-check (must pass to merge).|
-| `uv run ruff check .`                    | Lint.                                    |
-| `uv run ruff format .`                   | Format.                                  |
-| `uv run teetime run --config config/local.toml --dry-run true` | One-shot booking attempt, no final POST. |
-| `uv run teetime show-config --config config/local.toml` | Print resolved AppConfig (with secrets redacted). |
-| `uv run teetime web --port 8000` | Serve the multi-user web app (MU-12; Cosmos store when `TENANT_COSMOS_ENDPOINT` is set, else in memory; `TENANT_CREDS_KEYRING` enables connect/refresh/cancel; not deployed; env vars in README). |
-| `uv run teetime tenant-watch --dry-run true` | One multi-user tenant-watcher run (MU-10b/MU-16a; needs `TENANT_CREDS_KEYRING`, `TWOCAPTCHA_API_KEY` unless dry-run; Cosmos when configured, else an empty in-memory store). |
-| `uv run teetime tenant-run --event mb0600et --dry-run true --no-wait` | One multi-user booking run for a release event (MU-9b; needs `TENANT_CREDS_KEYRING`, `TWOCAPTCHA_API_KEY` unless dry-run; Cosmos when configured, else an empty in-memory store). Exit non-zero only for systemic causes (§4.5). |
-| `uv run teetime tenant-plan --event mb0600et` | Print a release event's pending rows + blind-slot allocation; no ForeUP call (MU-9b). |
-| `uv run teetime tenant-migrate` | Run the tenant data migrations (MU-16a; REQUIRES `TENANT_COSMOS_ENDPOINT` + `TENANT_COSMOS_DATABASE`; v1 runs none, exits 0). What the Manual `teetime-migrate-<env>` job runs. |
+| Command | Purpose |
+|---------|---------|
+| `uv sync` | Install deps + dev deps |
+| `uv run pytest` | Full test suite |
+| `uv run pytest -m "not integration"` | Skip live-network tests (CI default) |
+| `uv run mypy` | Strict type-check (must pass to merge) |
+| `uv run ruff check .` / `uv run ruff format .` | Lint / format |
+| `uv run teetime run --config config/local.toml --dry-run true` | One-shot booking attempt, no final POST |
+| `uv run teetime watch --config config/local.toml --dry-run true` | One watcher pass |
+| `uv run teetime show-config --config config/local.toml` | Resolved AppConfig, secrets redacted |
+| `uv run teetime web --port 8000` | Multi-user web app (MU-12). Cosmos when `TENANT_COSMOS_ENDPOINT` is set, else in memory; `TENANT_CREDS_KEYRING` enables connect/refresh/cancel. Env vars in README |
+| `uv run teetime tenant-watch --dry-run true` | One tenant-watcher run (MU-10b). Needs `TENANT_CREDS_KEYRING`, plus `TWOCAPTCHA_API_KEY` unless dry-run |
+| `uv run teetime tenant-run --event mb0600et --dry-run true --no-wait` | One tenant booking run for a release event (MU-9b). Same env as `tenant-watch`. Non-zero exit only for systemic causes (MULTIUSER_PLAN §4.5) |
+| `uv run teetime tenant-plan --event mb0600et` | Print an event's pending rows + blind-slot allocation; no ForeUP call |
+| `uv run teetime tenant-migrate` | Tenant data migrations (MU-16a). Requires `TENANT_COSMOS_ENDPOINT` + `TENANT_COSMOS_DATABASE`; what the Manual `teetime-migrate-<env>` job runs |
 
-## Architectural notes (non-obvious)
+## Architectural invariants
 
-- **Stubs raise `NotImplementedError`** with a PLAN.md milestone reference. If
-  you implement one, also make its tests pass before merging.
-- **Protocols over ABCs.** Most contracts are `Protocol` (`runtime_checkable`).
-  Subclassing the Protocol is fine for shared state, but tests should not
-  require subclassing — structural typing is the contract.
-- **Clock is injectable everywhere.** Anything that touches wall-clock time
-  takes a `Clock`, not `datetime.now`. Tests use `FakeClock`. The 6:00 AM race
-  is otherwise untestable.
-- **No secrets in TOML.** Config files reference env vars by name. Loader
-  resolves them; missing env raises a clear error.
-- **Hard booking cutoff (LEADTIME_SKIP_PLAN F1).** `request.booking_cutoff`
-  (`{days_before, time_of_day}`, default 16:00 ET the day before) FREEZES a target
-  date once wall-clock passes `time_of_day` on `days_before` days before it: no new
-  booking AND no upgrade — whatever is held at the cutoff is final (held bookings are
-  never auto-cancelled). The cutoff + skip-days decision is composed in ONE shared,
-  pure, clock/now-injected primitive — `core/booking_cutoff.py::frozen_reason(now,
-  target_date, *, timezone, cutoff, skip_dates) -> "cutoff" | "skip" | None` — which
-  BOTH the watcher's stop-acting gate (`_should_stop_acting_on_date`, which adds its
-  own deadline leg) and the booking-day gate (`should_book_today`, which adds its own
-  weekday leg) route through, so the two callers can never silently diverge.
-  `is_past_booking_cutoff` is the cutoff-only convenience (a thin clock-reading wrapper
-  over `frozen_reason`). It is booking POLICY, not request identity — it does NOT feed
-  the RequestId fingerprint.
-- **Skip-days are FAIL-OPEN, resolved at load (LEADTIME_SKIP_PLAN F2).**
-  `request.skip_dates_env` names an env var holding a comma/space-separated ISO date
-  list; `core/skip_dates.parse_skip_dates` resolves it into `request.skip_dates`
-  (`frozenset[date]`) in `load()`. Asymmetry vs credential `*_env`: an unset/empty/
-  malformed skip value is NOT an error — it yields an empty set (absence = no skips), so a
-  fat-fingered Portal edit can never crash the 06:00 booker or the watcher. In prod the env
-  var is injected from a Key Vault secret editable in the Portal with no redeploy. The
-  booking-day gate + watcher honor it; it does NOT feed the RequestId fingerprint.
-- **Credit-card data is platform-specific.** ForeUP keeps card-on-file; the
-  ForeUP path never POSTs PAN/CVV. TeeItUp has no wallet, so the TeeItUp adapter
-  DOES POST PAN + CVV + expiry + billing to `tr.gnsvc.com` on every booking
-  (sourced from `*_env` vars, never committed). This is a deliberate scope
-  expansion past the original "no card data, ever" rule — see PLAN.md §7.
-  Consequence: handling raw PAN/CVV brings PCI scope; card fields are dropped by
-  `core.redaction.redact_payload`, which `BookingStore.append_attempt` applies at the
-  store boundary on every `attempt_log` write (PLAN.md §10.1) — so no caller can leak
-  card data by forgetting to scrub. The card POST uses `follow_redirects=False`.
-- **Log redaction is a HANDLER filter, not a call-site discipline.** `redact_text` only runs
-  where our own code remembers to call it, so THIRD-PARTY loggers bypassed it entirely: httpx
-  logs every request at INFO, and the 2captcha result-poll URL carries the API key as
-  `res.php?key=<API_KEY>&…` — observed live in prod Log Analytics, 71 such lines in one run
-  (2026-08-01). `core.redaction.RedactingLogFilter` + `install_log_redaction()` close that:
-  every entrypoint calls `install_log_redaction()` immediately after its
-  `logging.basicConfig(...)`, attaching the filter to the ROOT LOGGER'S HANDLERS. **Placement
-  is load-bearing** — a `logging.Filter` on a *logger* only sees records created by that
-  logger, NOT records propagating up from children (`httpx`, `httpcore`, …), so a
-  root-*logger* filter would silently miss exactly the records that leak. The filter resolves
-  `%`-args eagerly (the secret is usually IN an arg, not the format string), clears
-  `record.args`, also scrubs `exc_info` tracebacks (pre-rendered into `record.exc_text`) and
-  `stack_info`, is idempotent across multi-handler fan-out, and never drops a record nor
-  raises `Exception` (one from `filter()` propagates to the `log.…()` CALL SITE — logging only
-  guards `emit()` — and at T0 that would kill the booking run; a `BaseException` from a
-  pathological `msg.__str__` still escapes, deliberately undefended). **Ordering is load-bearing
-  too:** `basicConfig` CREATES the handler, so installing first attaches to nothing and
-  leaves the leak open. `tests/test_log_redaction.py` pins the ORDER by source position (a
-  functional test cannot: under pytest the root logger already has handlers, so the wrong
-  order still attaches and `basicConfig` no-ops) and separately pins, through a real CLI
-  entrypoint, that the wiring EXISTS at all.
-  **Exact-literal secrets (E7, MULTIUSER_PLAN §9.4, MU-4 — unwired).** Keyring keys and
-  decrypted ForeUP passwords have no recognisable shape, so no pattern catches them.
-  `core.redaction.register_secret_literals(values)` adds them to a process-wide registry that
-  `redact_text` applies FIRST (so a secret containing an email/PAN-shaped substring is masked
-  whole, as `<redacted-secret>`) — the filter therefore covers the message, `%`-args,
-  `exc_text` and `stack_info` with no change of its own, and call-site `redact_text` gets it
-  too. Additive + idempotent; longest literal wins on overlap (regex-escaped alternation);
-  values shorter than `SECRET_LITERAL_MIN_LEN = 8` are IGNORED (a 1-char literal would shred
-  every line — so a <8-char password is NOT masked) as are values occurring inside a
-  redaction marker (they would break idempotency across handler fan-out); refused values are
-  COUNTED in one DEBUG line (never logged), and the call returns how many distinct values are
-  now masked so a caller can detect a refused password. A bare `str` raises `TypeError` (it is
-  an `Iterable[str]` and would otherwise register nothing, silently). The (set, pattern)
-  state is swapped as one tuple under a lock, so a logging thread never sees a mismatch. An
-  EMPTY registry is a strict no-op — the TOML path registers nothing. `tests/conftest.py`
-  restores the registry around every test (same vacuous-assert hazard as the handler filters).
-  **Known gap (accepted):** a traceback printed by Python's default excepthook never passes
-  through logging, so the filter cannot see it (`_run` logs `exc_info=True` then re-raises;
-  the interpreter prints it again to stderr). Keeping credentials out of exception messages
-  at the source stays the primary defence — this filter is depth, not a replacement.
-  **Testing note:** `install_log_redaction()` attaches to EVERY root handler, including
-  pytest's session-scoped `LogCaptureHandler`, so `tests/conftest.py` carries an autouse
-  fixture restoring handler filters after each test. Without it the first test to touch a CLI
-  entrypoint silently redacts `caplog` for the rest of the session — and a future
-  `assert secret not in caplog.text` would pass VACUOUSLY.
-- **Double-booking defense is layered.** Live pre-book `list_reservations`
-  check, single-attempt-per-slot rule, in-process advisory lock, ACA Job
-  concurrency (`parallelism=1`, one execution per job). There is no durable cross-run idempotency
-  record; the live remote check is the primary cross-run guard. PLAN.md §9
-  has the full flow; §9.1 has the explicit state machine that M2.T1
-  implements. `list_reservations` is on the `CourseAdapter` Protocol from
-  M0 — it is NOT optional.
-- **A 0-match search on a NON-empty teesheet logs WHY (INFO when purely out-of-window,
-  WARNING otherwise).** `got 27 raw slot(s) …
-  0 slot(s) match filters` cannot distinguish a genuinely blocked/sold-out window from a
-  misconfigured filter — diagnosing the 2026-08-01 Mangrove Bay miss (target Sat 8/8; the course ran an 8 AM
-  shotgun tournament, so nothing was bookable before ~16:00) required hand-calling the live
-  ForeUP API to establish which it was. `search()` now tallies each rejected slot by reason
-  (`_rejection_reason`: `out-of-window` / `wrong-holes` / `insufficient-spots` / `over-price`,
-  first-match-wins so the counts PARTITION the rejects) and, when inventory existed but
-  nothing matched, `_log_zero_match_diagnostics` emits ONE line with the tally, the span of
-  tee times actually on offer, and the requested window/holes/party-size. Times + counts only
-  → PII-free. **Level is split deliberately:** INFO when every rejection is `out-of-window`
-  (a sold-out/blocked window is the ROUTINE outcome — the watcher searches ~300x/day, and at
-  WARNING this would bury the `dropped N/M unparseable slot(s)` schema-break canary — the
-  WARNING in `search()` that most needs to stay visible); WARNING when any other leg fires,
-  since for ForeUP those are all should-not-happen conditions (see the `_log_zero_match_
-  diagnostics` docstring — `insufficient-spots` is unreachable at MB, so it firing means the
-  platform changed its contract). Diagnostic value is level-independent — the
-  neighbouring lines are already INFO and the jobs run at INFO. **Gated on a non-empty parsed
-  list**: an unpublished date legitimately returns [], on every watcher cycle, and diagnosing
-  that would drown the signal.
-- **A book-POST 4xx is a try-next-slot signal, not a crash — and slot exhaustion is
-  graceful, not a crash either.** `ForeUpAdapter.book()` maps both `409` and `400` to
-  `SlotGoneError`: a 4xx rejection means ForeUP definitively created NO reservation (the
-  prod 2026-06-07 failure was a `400` when the prime slot was claimed in the ~100 s between
-  search and book), so the orchestrator's candidate loop (`_run_course`) falls through to the
-  next-ranked slot instead of dying with an uncaught `HTTPStatusError`. **When EVERY ranked
-  candidate for a course is gone, `_run_course` raises the internal `_CourseSkippedError`
-  (not the `SlotGoneError`)** — so `run()` advances to the next course preference, and if no
-  course books, it records a `NO_INVENTORY` terminal and notifies, rather than crashing the
-  job with a non-zero exit and no terminal. **`TeeItUpAdapter.book()` has the same parity**
-  via `_raise_for_booking_step`: a non-409 4xx at any pre-payment step (cart-item, lock,
-  create-order, order-teetime) also maps to `SlotGoneError`. In BOTH adapters this is
-  distinct from the §9 UNCERTAIN case (timeout/5xx — ambiguous whether the POST landed),
-  which still propagates (a 5xx at a TeeItUp pre-payment step goes through `raise_for_status`,
-  not the SlotGone mapping). `ForeUpAdapter.book()` ALSO logs the full status + response body
-  on any non-2xx before raising (the body used to be discarded by `raise_for_status`, leaving
-  us blind to the reason). A captcha-challenge `400` is still classified as `CaptchaError`
-  first (the `_guard_captcha` check runs before the 400→SlotGone mapping). Caveat: each
-  fallback candidate re-solves a fresh CAPTCHA (~75 s, single-use token), so at a competitive
-  drop the fallbacks are best-effort.
-- **A `RateLimitError` (HTTP 429) anywhere in a course's flow skips the course — it does NOT
-  crash the booking job.** `run()`'s per-course loop catches `RateLimitError` (raised from the
-  search GET, the ForeUP `book()` POST, the blind-POST 0-booked fresh fallback search, or — TeeItUp
-  only — a pre-payment book step; one catch covers all paths since they all propagate through `_run_course`), logs it with `retry_after_s`,
-  and `continue`s to the
-  next course preference exactly like an empty course. A 429 is rejected by the platform BEFORE
-  processing, so no reservation was created (unlike the §9 UNCERTAIN timeout/5xx case), making the
-  course-skip safe. (For the only LIVE adapter, ForeUP `book()` ALSO maps a 429 → `RateLimitError`
-  — parity with `search()`/`cancel`, so a throttle on the booking POST skips the course cleanly
-  instead of surfacing as a raw `HTTPStatusError` that would crash the sequential / blind-fallback
-  `_book_from_candidates` path. 409/400 still map to `SlotGoneError` FIRST, so a 429 only arises
-  when ForeUP genuinely throttles the POST. The TeeItUp book-POST disjunct stays out of deployed
-  scope.) If no course books, `run()` records the clean `NO_INVENTORY` terminal +
-  notifies (the booking command then exits non-zero via a `ClickException`, no traceback) rather
-  than dying with an uncaught error and no record. **`CaptchaError`/`AuthError` are deliberately
-  NOT caught here** — they are operator-action errors and must still propagate for a non-zero exit
-  (a broken CAPTCHA/credential pipeline must not hide behind a clean `NO_INVENTORY`). This mirrors
-  the watcher's contract (which also exits 0 on a 429 and reserves non-zero for Captcha/Auth),
-  except the booking job tries the next course first instead of aborting the whole run.
-- **Transient-failure retry is for IDEMPOTENT ForeUP calls only.** `ForeUpAdapter.
-  _send_with_retry` retries on `httpx.TransportError` (read/connect timeouts,
-  network blips — the observed prod failure was a lone `httpx.ReadTimeout` that
-  wasted a whole 10-min watch cycle) around the warm-up GET, login POST, search
-  GET, and cancel DELETE. It does NOT retry HTTP status errors (those surface via
-  `raise_for_status` after it returns) and **`book()`'s POST is never wrapped** —
-  that stays single-attempt (§9; a timed-out book is the UNCERTAIN case the watcher
-  reconciles asynchronously, not a safe in-run re-fire). Tuned by ctor `max_retries` (default 2) /
-  `retry_backoff_s` (default 0.5s, linear); tests pass `retry_backoff_s=0`. The
-  watch ACA Job's `replicaTimeout` is 300s (not 120s) to give these retries
-  headroom — see `compute.bicep` / AZURE_PLAN §5.4.
-- **DST handled by `zoneinfo`** (the bot computes T0 in `America/New_York`,
-  which resolves the ambiguous/skipped-hour edge cases) + two DAILY ACA Job
-  booking crons (one per DST half; the booking-day gate restricts to wanted weekdays) in
-  `infra/bicep/modules/compute.bicep`. Math
-  in PLAN.md §6.3. The booking and watch schedules run as ACA Jobs;
-  `book.yml`/`watch-tee-time.yml` have been removed. The precise T0 busy-wait is
-  wired (M6 PR1): `teetime run --wait` uses the real `cfg.scheduler` (busy-waits to
-  06:00:00 ET); `--no-wait` (default; `TEETIME_WAIT` env fallback) keeps immediate
-  local-demo timing via `_local_demo_scheduler`. The ACA booking job will pass
-  `--wait` in M6 PR3. The wall-clock **"DST-half" gate** (which suppresses the
-  wrong-season cron so only one of a day's two crons books) now lives in
-  `core/dst_gate.py` (`should_proceed`, M6 PR2) — re-homed from the deleted
-  `book.yml` `dst` step. It is a pure function of `(clock, timezone, fire_time)`
-  evaluated in `_run` ONLY on the `--wait` path, BEFORE the busy-wait: proceed iff
-  the ET wall-clock hour == `fire_time.hour - 1` (i.e. 5 for a 06:00 drop). A
-  wrong-season cron exits 0 without booking. `--no-wait` bypasses the gate (matching
-  the old `workflow_dispatch` always-proceed). See PLAN.md §6.3.
-- **`teetime run --fire-time HH:MM:SS`** is a DEV/TEST-ONLY override of the scheduler
-  fire_time, hard-refused unless `--dry-run true`. It makes an on-demand `--wait`
-  busy-wait reachable at any wall-clock hour (it cannot shift a real booking). See
-  `_with_fire_time_override` and AZURE_PLAN §6.5.
-- **Watcher is ENABLED in the v1 configs** (`config/container.toml` +
-  `config/local.toml`, `watcher.enabled = true`, M6 PR4). Under `--dry-run true` (dev)
-  it does ALL the looking/ranking/logging and suppresses ONLY the final POST
-  (`WatchOrchestrator` returns `DRY_RUN` before the lock+POST). `one_booking_policy`
-  (cancel+rebook upgrade) is **ENABLED** (`config/*.toml`): when a higher-ranked slot
-  opens for a booked day — a higher-priority tier, or the SAME tier strictly closer
-  to that day's window midpoint (within-window upgrade; midpoint ties never upgrade)
-  — the watcher cancels and rebooks it. Safe because the watch request is scoped per target date, so it
-  only ever upgrades within the intended date+window; real effect is prod-only (dry-run suppresses the
-  POSTs). The watch cron runs every 10 min year-round.
-- **The watcher POLLS ON EVERY RUN — no time-of-day gate** (multi-day PR4; the old
-  `polling_start_hour`/`polling_end_hour` gate + config fields are REMOVED). It blinded us at
-  the 6 AM drop. The only remaining skip is `_is_past_watch_deadline` (don't poll a date that
-  already passed). Rate limiting = the 10-min cron cadence + the `poll_interval_s >= 300`
-  floor. Consequence: an early-morning run that finds the just-dropped window open will BOOK it
-  (a recovery path if the 06:00 booker raced/failed) — safe per-date via the in-lock
-  `get_terminal` re-check.
-- **A `RateLimitError` (HTTP 429) ABORTS the whole watch run — it is NOT a try-next-course
-  transient blip.** `check_once` catches `RateLimitError` explicitly (before the generic
-  `except Exception`), logs it honouring `retry_after_s`, and re-raises — so it does NOT fall
-  through to the next course (which would keep hammering the throttled platform) and `_watch`
-  stops polling further dates. `_watch` catches it at the date loop and **exits 0** (the 10-min
-  cron is the backoff floor; PLAN §12). Non-zero watch exit stays reserved for `CaptchaError`/
-  `AuthError` (operator action). Distinct from the generic transient handler, which DOES
-  `continue` to the next course on a network blip.
-- **The watcher checks MULTIPLE dates per run — the next occurrence of each wanted weekday**
-  within the horizon (`core/target_date.next_occurrences_within_horizon`, multi-day PR4);
-  `_watch` loops `check_once` over them (no `break`). **`_check_course` scopes the search to
-  each `target_date` (`dc_replace`) AND filters ranked candidates to that date** — a Saturday
-  watch can NEVER book a Sunday slot (one reservation PER date; the per-date `(RequestId,
-  date)` store key keeps Sat and Sun independent). `--date` still overrides to a single date.
-- **Time windows are bound to weekdays; wanted days are DERIVED from them** (per-day windows,
-  PERDAY_WINDOWS_PLAN). Each `[[request.time_windows]]` carries a `weekday`; multiple windows
-  may share a day (one reservation per day — best window wins; list order = preference).
-  `RequestConfig.wanted_weekday_indices` is derived from the windows' weekdays (the separate
-  `target_weekdays`/`target_weekday` keys were REMOVED — hard cutover, un-tagged config errors
-  loudly). The domain `TimeWindow` stays weekday-free; per-invocation scoping narrows the
-  request's windows to the TARGET DATE's weekday: `_build_booking_request` (booker) and
-  `_scope_request_to_date` (the `_watch` loop, called once per target date) pin
-  `time_windows=_windows_for_date(...)`, so the check for a Saturday-dated target searches/ranks
-  Saturday's windows and a Sunday-dated target uses Sunday's. (This is per TARGET DATE, not per
-  execution day — a single watcher run still checks every wanted upcoming date.) The RequestId
-  fingerprint encodes the window weekday (`<wd>:HH:MM-HH:MM`) so a Sat vs Sun window is a
-  distinct identity.
-- **Target date(s):** the booking job books a SINGLE gated date (`today + offset`, gated by
-  `core/booking_day_gate.py` to a wanted weekday); the watcher uses
-  `next_occurrences_within_horizon` over the derived wanted days. `--date` still overrides for
-  the watch command (errors if that weekday has no window).
-- **Idempotency key is `(RequestId, resolved_date)`**, NOT just `RequestId`.
-  This lets `target_offsets = [7]` produce one stable RequestId within a run
-  while still targeting a fresh date each week. The key is held in-process
-  only (InMemoryStore); there is no durable record across runs. See PLAN.md §13.1.
-- **Player PII redacted before write** to `attempt_log` (SHA-256 prefix).
-  See PLAN.md §10.1. The attempt_log lives in InMemoryStore (in-process only,
-  not persisted to disk or any external store).
-- **`cancel_reservation` is on the `CourseAdapter` Protocol** (breaking — all
-  adapters must implement it). Raises `CancelError` on failure. Returns normally
-  on 404 (already-cancelled is the desired post-condition) — and, for ForeUP, also
-  on the 400 "We can't find that teetime" variant the platform actually uses for a
-  missing/expired reservation (observed live 2026-07-15). See `core/adapter.py`.
-- **Blind-POST is an ADAPTER CAPABILITY, never a config flag — gated by an explicit
-  `AdapterCapabilities` record (`core/adapter.py`, docs/plans/BLIND_POST_PLAN.md).** Every adapter
-  exposes `capabilities: AdapterCapabilities` (frozen dataclass); the orchestrator gate is
-  the single flag `adapter.capabilities.blind_post`. `BlindPostCapable` survives ONLY as a
-  typing cast-target (`captcha_pool_size() -> int`, `synthesize_blind_slots(request,
-  target_date, *, max_count) -> list[TeeTimeSlot]`) the orchestrator casts to in order to
-  CALL those methods once the flag says they exist — it is NOT `isinstance`-checked anymore.
-  This REPLACED the old footgun: `BlindPostCapable` was `runtime_checkable` and the base
-  shipped the methods, so EVERY ForeUP adapter satisfied `isinstance(a, BlindPostCapable)`
-  and the `supports_blind_post` boolean was the real (hidden) guard. The flag makes it
-  explicit and unfoolable. The `ForeUpAdapter` base sets `capabilities=AdapterCapabilities(
-  blind_post=False)` and its `synthesize_blind_slots` raises `NotImplementedError` (a bare
-  ForeUP course has no committed template/grid); Mangrove Bay overrides with
-  `blind_post=True` + `synthesize_blind_slots`. TeeItUp + the default FakeAdapter are
-  `blind_post=False`. So a non-capable course can never reach the blind path even with a
-  mis-edited config. (The other opt-in capabilities — `ReservationCacheRefreshable`,
-  `AuthStateReportable`, `ReservationSnapshotHealth` (E6) — remain HONEST `runtime_checkable` `isinstance` presence-checks:
-  for those "has the method" *is* the capability, so they can't desync the way a flag could
-  and are deliberately NOT folded into `AdapterCapabilities`.)
-- **The tenant recorder is one CONCRETE class per capability set — never a `__getattr__` proxy
-  (`tenant/recording.py`, MULTIUSER_PLAN §4.6 SF1, MU-9a0 — unwired).** On Python ≥ 3.12 a
-  `runtime_checkable` `isinstance` uses `inspect.getattr_static`, which does NOT consult
-  `__getattr__`. A forwarding proxy around a ForeUP adapter would therefore FAIL
-  `isinstance(proxy, ReservationCacheRefreshable)`, `_reguard_before_fallback` would fall back to
-  the idempotent `authenticate()`, read the STALE pre-burst snapshot, and could double-book —
-  the same silent failure for `AuthStateReportable` (the soft-login-skip gate) and
-  `ReservationSnapshotHealth` (vanish inference). `make_recording_adapter(inner, clock=…)`
-  instead composes ONE memoised concrete class per inner capability set: a mixin per opt-in
-  Protocol that defines the member EXPLICITLY (`refresh_reservations`, `is_authenticated`,
-  `snapshot_trusted`), selected by `isinstance(inner, Protocol)` — so the ForeUP variant has all
-  three, the FakeAdapter variant only `is_authenticated`, TeeItUp none — on top of
-  `BlindCapableRecordingAdapter` iff `inner.capabilities.blind_post` (the orchestrator CASTS to
-  `BlindPostCapable` and calls `synthesize_blind_slots`/`captcha_pool_size` on the RECORDER; a cast
-  is not a check, so a missing method would fail silently in the pre-warm gather and then fatally
-  at T0). That variant also passes the MU-3 allowlist hook through (`set_blind_allowlist` /
-  `blind_allowlist`) and REFUSES (`TypeError` at wrap time, i.e. at ~05:51 not T0) a blind-capable
-  inner that lacks it. `capabilities`/`course_id` are copied. Pinned by
-  `test_recording_adapter_isinstance_mirrors_inner_for_each_capability`, which DISCOVERS every
-  `runtime_checkable` Protocol in `core/adapter.py` (so a new capability Protocol is covered the
-  day it lands), and by a signature-equality test against the Protocol members. **What it
-  records** (in memory, zero I/O, so the T0 path gains no calls; instants from the injected
-  `Clock`, which must be the SAME clock the orchestrator runs on so a `book()`'s `at` IS its send
-  instant): every BOOKED `book()` (raw id with `TTB:` stripped, slot, send instant); every
-  `book()` that raised anything but `SlotGoneError` — UNCERTAIN, the POST may have landed — by
-  exception CLASS NAME only (messages can carry PII), with the `CaptchaError` family (incl.
-  `OtpChallengeError`) flagged, which is the ONLY place a challenge the blind burst swallowed
-  survives (§4.5 makes the runner exit non-zero on it); every `cancel_reservation` outcome;
-  other members' raises + `authenticate`/`refresh_reservations` call counts. Every recorded
-  exception is re-raised as the SAME object — control flow is untouched. `RecordingLog` derives
-  the §4.6 ownership table: `owned_raw_ids()` = booked ids not later cancelled OK (the kept best
-  AND any `held_extras()` — a surplus whose in-run cancel FAILED stays OWNED so the watcher's
-  owned-only reconcile collapses it); `cancelled_extras()`; `needs_reconcile()` = any UNCERTAIN
-  book or a BOOKED with no confirmation code; a pre-T0/re-guard `ALREADY_BOOKED` recorded no
-  book, so `is_owned(conf)` is False (a manual booking is never upgradable/cancellable by the
-  bot) unless the reguard found a POST the recorder logged UNCERTAIN — then the watcher adopts by
-  EXACT tee time against `book_failures`. Proven through the UNMODIFIED race-path `Orchestrator`
-  on a `VirtualClock` (`test_recording_adapter_blind_capable_end_to_end`: the two staggered POSTs
-  are recorded at exactly −500/−250 ms and the allowlist set on the recorder is honoured).
-- **The T0 blind burst is STAGGERED across the release boundary, not simultaneous
-  (docs/plans/STAGGER_PLAN.md).** `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)`) gives
-  each POST its own fire offset in ms relative to T0, paired positionally with the RANKED
-  slots; `_fire_blind_post` sleeps to `T0 + offset` (a non-positive delay fires immediately,
-  so a late-landing cron never waits). **Why:** every drop in the log retention window came
-  back 3/3 or 0/3, never mixed — a shape a genuine slot race cannot produce, since our POSTs
-  land within ~100 ms of the open. A single simultaneous burst POINT-SAMPLES ForeUP's release
-  flip, and arriving before it returns the SAME `400 {"success":false,"msg":"Time not
-  available."}` a claimed slot returns; the server `Date` header's 1-second resolution
-  (added in `infra/v2.11.0` for exactly this) cannot separate them. Staggering makes the
-  outcome ORDERED BY OFFSET — a clean cutoff is a pre-open rejection, an unordered one is a
-  real race — and guarantees one POST is SENT no earlier than T0 (the shipped tail offset
-  is `0`: sent at 06:00:00.000 and carried past the open by network latency on arrival,
-  the tightest post-open probe available. **Nothing is ever scheduled earlier than
-  `stagger[0]`** — operator directive 2026-08-15, pinned by the parity test). `_blind_outcome_label` +
-  the per-POST `blind-POST sent %s (planned %+dms) slot %s → %s` INFO line are that diagnostic; it is
-  the whole point of the feature, so **don't drop it when touching the burst loop**.
-- **A blind-POST rejection is tagged with WHY (`SlotGoneError.reason`) — the burst diagnostic
-  is unreadable without it.** ForeUP returns HTTP 400 for two rejections carrying OPPOSITE
-  evidential weight, with no machine-readable discriminator (only the `msg` prose differs), so
-  `ForeUpAdapter._classify_book_rejection` tags the raised `SlotGoneError`:
-  `"unavailable"` (`"Time not available."` — the slot was not bookable: claimed first, OR our
-  POST beat the release flip; the ONLY reason that bears on the pre-open-vs-race question),
-  `"daily_limit"` (`"...1 online reservation per day."` — if ANY sibling booked, ForeUP bouncing
-  the surplus POSTs of a burst WE ALREADY WON, carrying NO race information; if NOTHING booked it
-  means the opposite and is highly informative — a reservation for that date already existed which
-  this burst did not make, so `_rejection_summary` reports "we already hold a reservation" and
-  suppresses the misleading "TOTAL wipeout, falling back to a fresh search" text, since the
-  re-guard then usually short-circuits to `ALREADY_BOOKED` with no search — "usually" because the
-  re-guard matches date AND party size, so a manual booking with a different party size still
-  falls through to the fallback search, which is harmless but is why the text says "re-guard will
-  confirm"), `"conflict"` (ForeUP 409), `"unknown"` (the
-  fail-soft default, so non-ForeUP adapters and unobserved wordings are never MISFILED under an
-  observed reason). It is **diagnostic only** — every reason routes identically
-  (`SlotGoneError` → try-next-slot), so this can never change booking behaviour. It surfaces in
-  `_blind_outcome_label` as `gone[<reason>]` and in the aggregate `blind-POST N of M slot(s)
-  rejected (<reason>=<count>, …)` line. **Why it exists:** that aggregate line used to assert
-  "claimed pre-book" for EVERY 4xx, so the 2026-08-16 drop (1 booked / 2 daily_limit) reported
-  two lost races that never happened. `daily_limit` alongside a booked sibling is an ORDINARY
-  shape for a WON drop — plausibly the 250 ms gaps letting the rank-0 booking commit before its
-  siblings are processed, though **the stagger is NOT established as the cause**: every OTHER
-  drop in the log retention window booked 2–3 and cancelled extras, but the pre-stagger
-  2026-07-11 drop produced the same 1-booked/2-`daily_limit` shape from a SIMULTANEOUS burst
-  (see the `infra/v2.9.0` paragraph above). Treat the 1/2 shape as uninformative about timing
-  until more drops land. Keep the markers
-  (`_BOOK_DAILY_LIMIT_MARKERS` / `_BOOK_UNAVAILABLE_MARKERS`) matching the stable prose tail:
-  the daily-limit body has been observed as both "make" and "have 1 online reservation per day".
-  **Two load-bearing details:** (1) `stagger[0] == -early_arrival_ms`, so the rank-0 slot
-  keeps its pre-stagger fire instant and drops we already win are unchanged — pinned by
-  `tests/test_container_config_parity.py`; (2) the burst RE-RANKS with
-  `rank_slots_for_request` before pairing offsets. Ranked order used to be only an adapter
-  convention (`synthesize_blind_slots` is contracted to return ranked; Mangrove Bay does),
-  which the simultaneous burst never depended on. Now it is a safety property: offsets
-  ascend with position, so the best slot must POST FIRST or ForeUP's 1-reservation-per-day
-  rule could reject the better sibling in favour of a worse one that fired earlier.
-  Offsets earlier than `-early_arrival_ms` are clamped to it and logged (NOT a config
-  error — the fire path already self-clamps, and validating it would couple this key to
-  `early_arrival_ms` across every config for no behavioural gain). `()` = legacy
-  simultaneous firing; `_local_demo_scheduler` sets it, since the no-wait demo path has no
-  T0 race to straddle.
-- **The orchestrator blind path fires at T0, RACE PATH ONLY (BLIND_POST_PLAN PR3).**
-  `_run_course` consults `_should_blind_post(adapter, course_id, request)` after the layer-2
-  pre-book guard and BEFORE the sequential search — a five-part gate, ALL required:
-  `not request.dry_run` AND `self._prefetch_book` (the `--wait` race path) AND
-  `scheduler.blind_post_max_count > 0` AND `_is_blind_capable(adapter)` (the explicit
-  `adapter.capabilities.blind_post` flag) AND the course is the PRIMARY
-  (first-preference) adapter. Any miss → the normal search-book loop. When it passes,
-  `_blind_post_course` fires the top-`N` ranked in-window `synthesize_blind_slots` POSTs
-  **STAGGERED ACROSS T0** (`asyncio.create_task` + `gather(return_exceptions=True)`), where
-  `N = min(len(blind_slots), captcha_pool_size())` (token-bounded). **There is NO concurrent
-  hedge search** (RESEARCH_FALLBACK_PLAN §2 Q1): the happy path issues zero search GETs and the
-  0-booked path issues exactly one FRESH search post-re-guard. Outcomes: (a) **≥1 BOOKED** →
-  `_keep_best` re-ranks the booked slots with the SAME `rank_slots_for_request` the search path
-  uses, returns the winner, `_cancel_extras` cancels every other booked reservation by its
-  `book()` `confirmation_code` (a `None` conf or ANY cancel failure — `CancelError`, a 429
-  `RateLimitError`, `CaptchaError`, a transport blip — → `log.critical`, never crashes and never
-  discards the kept booking; the catch is deliberately `Exception`-broad because with a booking in
-  hand nothing a SURPLUS cancel does may lose it — load-bearing reason the TTID/teetime_id
-  id-extraction fix matters); it returns WITHOUT any search. (b) **0 BOOKED** → `_reguard_before_fallback` FORCE-REFRESHES the reservation snapshot
-  THEN `list_reservations` (a landed-but-uncertain POST may have booked silently): a match
-  short-circuits to `ALREADY_BOOKED` (no fallback book, NO search); else it fires a FRESH
-  `_poll_for_slots` search STRICTLY AFTER the re-guard re-auth (freshest post-burst snapshot, no
-  shared-client cookie race — RESEARCH_FALLBACK_PLAN §2 Q1/Q2) and falls through to the sequential
-  `_book_from_candidates` loop, raising `_CourseSkippedError` if that too finds nothing. `SlotGoneError` from a blind POST is dropped (try the others); a non-SlotGone
-  exception is logged + dropped (the §9 UNCERTAIN ambiguity is what the reguard covers). A
-  **`BaseException` captured in `gather`'s results** (a child `book()` raising
-  `asyncio.CancelledError`, or any other `BaseException` subclass) is CAPTURED, not raised
-  mid-loop: a booked SIBLING is secured first (kept + returned BOOKED) and it is re-raised only if
-  NOTHING booked (#e1). Scope (verified): `gather(return_exceptions=True)` re-raises
-  `KeyboardInterrupt`/`SystemExit` out of the `await` (they never reach the results), a default
-  SIGTERM kills the process with no Python exception, and the parent task's own cancellation also
-  bypasses the results — so this is defensive depth for the exotic child-`BaseException` case, not
-  a real shutdown handler. The CAPTCHA
-  prefetch SCALES on the race path: `_captcha_prefetch_count_for` returns
-  `min(blind_post_max_count, len(synthesize_blind_slots(...))) + scheduler.blind_post_fallback_token_reserve`
-  for a blind-capable primary — the burst portion gives each blind POST a pooled token, and the
-  `blind_post_fallback_token_reserve` (default 2) spare tokens REMAIN pooled so the 0-booked
-  fresh-search fallback books with a pooled token instead of a ~75s inline solve
-  (RESEARCH_FALLBACK_PLAN §2 Q3). A 0-grid blind case adds NO reserve and falls back to the fixed
-  `scheduler.captcha_prefetch_count` (default 3), as does any non-capable primary.
-- **`delete_terminal` is on the `BookingStore` Protocol** (all stores must
-  implement it; `InMemoryStore` does). Used only by `UpgradeOrchestrator` after
-  a successful cancel+rebook to clear the old in-process idempotency record
-  before inserting the new one. Must be called under the advisory lock.
-  See `persistence/store.py`.
-- **Two stores, two jobs: `BookingStore` vs `TenantStore` (MULTIUSER_PLAN §3.7, MU-5).**
-  `persistence.BookingStore` (`InMemoryStore`) is UNCHANGED and stays the engine's per-run memory
-  (terminals, attempt log, in-process `request_lock`); nothing durable. `tenant.store.TenantStore`
-  is its sibling for the multi-user path: durable intent + ownership (users, course accounts,
-  standing rules, dated request rows, the ownership ledger, snapshots, row leases). Neither imports
-  the other's implementation, and nothing in `core/`/`courses/`/`persistence/` imports `tenant`.
-  `tenant.in_memory_store.InMemoryTenantStore` is the reference implementation and reproduces the
-  Cosmos semantics the plan relies on: deterministic ids (`rule_row_id`, `derive_account_id`), the
-  `slot|<date>` pointer that makes "one ACTIVE row per (account, date)" a uniqueness fact (and the
-  `ruleday|<weekday>` pointer for one active rule per weekday), IfMatch-style rule versions, and
-  all-or-nothing batches with IfMatch-style checks. The §3.4 state machine is the pure
-  `tenant.models.check_transition`/`check_create` (actor + frozen + reason guards); the store adds
-  the lease guards (every web/materializer write requires the row unleased, M4; `record_outcomes`
-  status changes require an UNEXPIRED lease held by the writer) and the `RowFingerprint` check on lease acquire (M5). The bridge between them is
-  `tenant.store.LeasedBookingStore` (MU-9c): a `BookingStore` for the watcher/web whose
-  `request_lock` IS the fingerprinted durable row lease (refusal → `ConcurrentRunError`, the
-  engine's existing defer); the booker never uses it (its lease is held from `claim_rows`). **The contract is
-  the conformance suite `tests/tenant/conformance.py`, not a docstring**: any `TenantStore`
-  (`CosmosTenantStore`, MU-8b, runs it over a fake container in CI) must pass
-  `TenantStoreConformance` unchanged; subclass it
-  with a `harness` fixture, as `tests/tenant/test_in_memory_store.py` does.
-- **The materializer walks the FULL horizon every call and decides by HISTORY, never by an id
-  collision (MULTIUSER_PLAN §7.7, MU-6 — unwired).** `tenant/materialize.py` turns each active
-  `StandingRule` into dated rule rows over `[local_today, local_today + max(21, advance_days + 7)]`
-  in the COURSE timezone (`ReleasePolicy.timezone`). Per date it reads the account's whole row
-  history (`rows_for_account_date`) and the pure `classify_date_history` orders the decision:
-  frozen (`core.booking_cutoff.frozen_reason`, or past) → user-terminal row present (a cancelled
-  `user`/`external`/`already_gone` row blocks the date for EVERY rule, even a new rule_id; a
-  withdrawn one-off does NOT) → own row (`rule_row_id(rule, date)`: pending/booked/skipped/
-  superseded/lost → nothing; system-withdrawn + slot free → `reactivate_rule_row`, which restores
-  `superseded_from` or PENDING; system-withdrawn + slot held → nothing, the one-off's withdraw
-  batch restores it) → no own row (slot free → create; held → create SUPERSEDED). **Why the full
-  walk:** the §7.7 deactivation is not atomic (reset → withdraw rows → reset → inactive, pinned as
-  the store CALL ORDER by `test_deactivation_order_reset_withdraw_reset_inactive`), so a crash
-  can leave an active rule with a current watermark and withdrawn rows; walking only past the
-  watermark would strand them, the daily tick's full walk reactivates them
-  (`test_tick_reactivates_withdrawn_rows_before_watermark`). `apply_rule_edit` dispatches on
-  (old.active, new.active, weekday): a window/party edit rewrites PENDING, unleased, not-frozen
-  rows in place via `rewrite_pending_rule_row` (BOOKED/SKIPPED/SUPERSEDED/leased/frozen rows keep
-  their old window); a weekday move upserts (which clears the watermark), withdraws the
-  old-weekday PENDING + SUPERSEDED rows `rule_weekday_changed` and materializes the new weekday
-  (a flip-back REACTIVATES the same rows); deactivation withdraws PENDING + SUPERSEDED rows
-  `rule_deactivated` (never BOOKED, never SKIPPED — a skip survives, round-5); reactivation upserts
-  then materializes. **Leased rows are never touched by an edit** (`RowLeaseError` →
-  `MaterializeReport.skipped_leased`); `materialize_tick`'s `rows_no_longer_covered` sweep withdraws
-  them once unleased, naming the reason from the STORED rule via `get_rule_unscoped` (missing →
-  `rule_deleted`, inactive → `rule_deactivated`, else `rule_weekday_changed`). The tick is ONE
-  superset `rules_needing_materialization` read through the farthest course horizon, each due rule
-  materialized to ITS course's horizon (`get_account_unscoped` → course → policy), and a per-rule
-  failure is logged with the rule id and isolated — but `RuleConflictError` /
-  `VersionConflictError` / `RuleNoLongerCoversError` / `TransitionRefusedError` propagate out of
-  `materialize_rule` and `apply_rule_edit` unswallowed. **Not on the Protocol yet:** rule DELETION
-  (MU-5 nit) — a vanished rule's rows are withdrawn `rule_deleted` only by the sweep and
-  `finalize_lost`.
-- **`WatchOrchestrator` and `UpgradeOrchestrator` live in `core/`**. They follow
-  the same collaborator-injection pattern as `Orchestrator`. Neither is
-  long-running — each is a single-invocation check (one ACA Job execution).
-- **`BookingResult.confirmation_code` stores `TTB:<raw_foreup_id>`** (not the
-  raw ForeUP id) when booked by this system (Option A, MF-1). `ForeUpAdapter.
-  cancel_reservation()` strips the prefix before calling ForeUP. `ExistingReservation.
-  confirmation_code` (from `list_reservations`) stores the raw server id — no
-  prefix — so `is_managed` returns False for server-sourced reservations, as
-  expected. `FakeAdapter.book()` stamps `TTB:FAKE-<slot_id>` in `BookingResult`
-  and stores the raw `FAKE-<slot_id>` in `_existing` to mirror this behaviour.
-  **The `book()` id-extraction chain reads `TTID`/`teetime_id` last** (the SAME two
-  flat-response fields `_parse_reservation` reads — keep the relative order in sync).
-  Real Mangrove Bay book responses are a FLAT dict whose id lives only in those
-  fields; before BLIND_POST_PLAN PR0 the chain missed them, so `confirmation_code`
-  was `None` on every live MB booking. That was cosmetic for the upgrade/cancel path
-  (which sources the id from `list_reservations`, not `book()` — see
-  `WatchOrchestrator._synthesize_managed_booking`), but it is **load-bearing for
-  blind-POST cancel-extras**, which cancels each surplus reservation by the id its
-  own `book()` returned. PR0 fixed the extraction.
-- **`ForeUpAdapter.list_reservations()` reads a login-response cache, NOT a live
-  GET.** ForeUP's `GET /reservations` endpoint returns a ~6 MB user-profile
-  with `"reservations": false` (a lazy-load flag). Actual reservations come from
-  the `POST /login` response body. `authenticate()` caches the list; subsequent
-  `list_reservations()` reads from that snapshot. Consequence: reservations made
-  AFTER `authenticate()` completes (e.g. a manual booking during the bot's run
-  window) are not visible to `list_reservations()` in the same run. For the
-  pre-book layer-2 guard this is acceptable (seconds of staleness). Any path that
-  needs to see a booking made AFTER the initial login — the watcher's reconciliation
-  of an UNCERTAIN booking, and the blind-POST `_reguard_before_fallback` — must force
-  a fresh snapshot before calling `list_reservations()` (via `refresh_reservations`,
-  next bullet). `list_reservations()` raises
-  `RuntimeError` if `authenticate()` has never been called — preventing a silent
-  empty-list from vacuously passing the pre-book guard in misconfigured deployments.
-  **Snapshot trust (E6, MULTIUSER_PLAN §7.5, MU-4 — read only by tenant code).** Three quiet
-  `authenticate()` degradations leave that cache empty (or STALE from an earlier login) while
-  `list_reservations()` returns it without complaint: (a) a soft login failure (400/401/rejected
-  body), (b) a 200 whose body is not JSON, (c) a JSON success whose `reservations` is missing or
-  not a list (round-2 SF3). `ForeUpAdapter.snapshot_trusted` — the opt-in `runtime_checkable`
-  `ReservationSnapshotHealth` capability in `core/adapter.py` — is True ONLY when the latest
-  login parsed a real list (an EMPTY list is a genuine "no reservations" and IS trusted). It is
-  reset at the start of every real login attempt (before the warm-up GET, so a refresh that
-  raises can never leave the previous login's trust standing); an idempotent short-circuited
-  `authenticate()` keeps the last login's value. `list_reservations()` and the cache itself are
-  UNCHANGED — the flag only says whether an ABSENCE may be believed (the tenant watcher's vanish
-  inference / adoption must ignore an untrusted snapshot, or it would read `[]` as an external
-  cancel and re-book: a double booking).
-- **Forcing a fresh reservation snapshot mid-run = `refresh_reservations`, NOT a
-  second `authenticate()`.** Because `authenticate()` is IDEMPOTENT (`if self._logged_in:
-  return` short-circuits before the login POST — RACE_PREWARM_PLAN §3.1), calling it again
-  does NOT rebuild the login-response cache: `list_reservations()` would return the STALE
-  pre-login snapshot. The `ReservationCacheRefreshable` capability Protocol (`core/adapter.py`,
-  `runtime_checkable`) exposes `refresh_reservations(creds)`, which `ForeUpAdapter` implements
-  as "reset `_logged_in`, then `authenticate()`" — forcing the warm-up GET + login POST so the
-  cache is current. **Load-bearing in `Orchestrator._reguard_before_fallback`** (the blind-POST
-  0-booked path): it must see a landed-but-uncertain blind reservation taken AFTER the T0 burst,
-  so it calls `refresh_reservations` when the adapter is `ReservationCacheRefreshable` (else
-  falls back to `authenticate()` for live-GET stores). A plain re-auth there would silently miss
-  the landed booking and let the fallback double-book.
-- **`WatchOrchestrator.check_once` does NOT acquire `request_lock`**. It is
-  read-only. If it delegates to `UpgradeOrchestrator.maybe_upgrade`, THAT method
-  acquires and releases the lock itself. Never call `maybe_upgrade` while already
-  holding the lock — that deadlocks.
-- **`WatchOrchestrator` upgrade wiring**: Gate 3 (store already has BOOKED terminal)
-  and `_check_course()` (live reservation found, no store record) both delegate to
-  `_try_upgrade()` when `one_booking_policy.enabled = true`. `_try_upgrade()` builds
-  a fresh `UpgradeOrchestrator` and calls `maybe_upgrade()`. For the no-store-record
-  path, `_synthesize_managed_booking()` constructs a TTB:-prefixed `BookingResult`
-  from the live `ExistingReservation` so the managed-booking guard in
-  `maybe_upgrade()` passes.
-- **The watcher reconciles >1 live reservation per date — a CRASH-NET BACKSTOP
-  (BLIND_POST_PLAN PR4).** When `_check_course` finds MORE THAN ONE live reservation
-  matching `(target_date, party_size)` AND `one_booking_policy.enabled`, it calls
-  `_reconcile_duplicate_reservations` BEFORE the upgrade. **The reconcile ALSO runs on the
-  Gate-3 short-circuit path:** when the store already holds a `BOOKED` terminal for the date,
-  `check_once` returns before reaching `_check_course`, so `_reconcile_booked_course` runs the
-  same reconcile on the booked course there — otherwise a duplicate stranded by a failed in-run
-  `_cancel_extras` (which still records `BOOKED` for the kept slot) would persist on every watch
-  run, undetected. (An `ALREADY_BOOKED` terminal deliberately does NOT short-circuit — it falls
-  through to `_check_course`, getting the live reconcile AND a recovery-book for free.) The
-  Gate-3 reconcile pre-check (`authenticate`/`list_reservations`) swallows a TRANSIENT blip
-  (logs + skips this cycle — `check_once`'s "all other exceptions → None return" contract holds),
-  and the whole Gate-3 policy block (reconcile + upgrade) DEFERS on `ConcurrentRunError` (a
-  concurrent run holds `request_lock`) rather than crashing — the held `BOOKED` terminal stays
-  valid and the next run retries. Either way the reconcile keeps the best-ranked (the same
-  `rank_slots_for_request` midpoint-distance order the booking path uses — `_rank_reservations`
-  builds a slot per reservation, ranks, and appends any out-of-window ones by `tee_time` so the
-  order is TOTAL), cancel the rest, UNDER the `request_lock`. This is the BACKSTOP — the
-  blind-POST happy path's in-run `_cancel_extras` (Orchestrator, PR3) is the PRIMARY mechanism;
-  this recovers a crash (or a failed in-run cancel) that left duplicates on a FRESH watch run
-  (which re-authenticates, rebuilding ForeUP's login-response reservation snapshot, before
-  `list_reservations`). Best-effort: a `ConcurrentRunError` defers (returns `matching` unchanged —
-  another run is acting), and ANY non-contract cancel failure on an extra (`CancelError`, a
-  transport blip, …) is logged `CRITICAL` and retried next run; neither crashes. The per-extra
-  catch deliberately re-raises the watch-contract errors — `RateLimitError` (a 429 mid-reconcile
-  aborts the run rather than hammering a throttled platform) and `CaptchaError`/`AuthError`
-  (operator-action, must reach `check_once`'s notify+re-raise path). **Documented residual (single-user accepted):** a deliberate MANUAL
-  second booking on the same date+party_size would also be cancelled — server-sourced reservations
-  are all `is_managed=False` (raw id, no `TTB:` prefix), so the N matches are indistinguishable.
-  N=1 and `policy.enabled=false` leave reservations untouched.
-  **E5 eligibility hook (MULTIUSER_PLAN §2.3/§7.6, MU-4 — unwired):** `WatchOrchestrator` takes a
-  keyword-only `reconcile_eligible: Callable[[ExistingReservation], bool] | None = None`, honoured
-  on BOTH reconcile paths (`_check_course` and the Gate-3 `_reconcile_booked_course`). `None` (the
-  default, and all the TOML path ever passes) = every match eligible = the unchanged branch
-  above. When set, only ELIGIBLE reservations are cancel candidates: the kept one is the best
-  ELIGIBLE reservation (an ineligible one is never kept-in-place-of nor cancelled, even when it
-  outranks every eligible one), the other eligible ones are cancelled, and with ≤1 eligible
-  nothing is cancelled and the lock is not taken (an owned + a manual booking for the same
-  date+party therefore BOTH stay held — the §7.6 documented residual). When ≥1 reservation is
-  eligible the survivors are returned eligible-first, so `_check_course`'s `matching[0]` is one
-  the caller owns (except when `request_lock` is held by another run — the defer returns
-  `matching` unchanged, so `matching[0]` may be manual). **E5 does NOT guard the upgrade:** with
-  ZERO eligible (or a single manual
-  match, where the reconcile never runs) `matching[0]` is a MANUAL reservation and
-  `_check_course` still synthesizes a `TTB:` booking from it and calls `_try_upgrade`, which can
-  cancel it — pinned as today's behaviour by
-  `test_unadopted_manual_match_reaches_try_upgrade_unguarded`. The hosted path closes this in
-  tenant code (MU-10 adoption + a pre-seeded non-`TTB:` terminal, and it MUST gate `_try_upgrade`
-  on ownership — MULTIUSER_PLAN §7.6). This is what resolves the "manual second booking would be cancelled" residual for the
-  hosted path (it passes "owned by the bot"; a dry-run env passes `lambda _: False`).
-- **Cancel-before-book protocol** in `UpgradeOrchestrator`: ForeUP rejects a second
-  book POST with HTTP 400 while an existing reservation is live. The orchestrator
-  therefore cancels first, then books. This leaves a ~1-2 second no-booking window
-  (two HTTP round-trips). If book() fails after cancel, the next watch invocation
-  recovers by booking any available slot.
-- **`prepare_book(slot, request, *, count=1)` on `CourseAdapter` Protocol**: pre-fetches
-  expensive prerequisites (CAPTCHA tokens, ~15-60 s each). `ForeUpAdapter.prepare_book()`
-  solves `count` tokens **CONCURRENTLY** (one `asyncio.gather(return_exceptions=True)`) and
-  appends each success to a FIFO pool `self._captcha_tokens` (a `collections.deque`); `book()`
-  pops the OLDEST (`popleft`, single-use, never returned) so a late-firing fallback keeps the
-  freshest token, falling back to an inline solve when the pool is dry (RACE_PREWARM_PLAN
-  Change C). **NI10 raise contract:** `count == 1` + total solve failure RE-RAISES (a
-  `TimeoutError` → `CaptchaError`) so the upgrade caller aborts; `count > 1` (race prefetch)
-  NEVER raises (best-effort; pool ends up with however many succeeded, possibly zero).
-  **MF1 stale-token recovery:** a POOLED token rejected as a captcha challenge (likely solved
-  pre-T0 and now expired) triggers exactly ONE inline re-solve + re-POST of the same slot
-  (`_is_captcha_challenge` is the non-raising sibling of `_guard_captcha`); the re-POST is
-  classified normally (a 2nd challenge → `CaptchaError`, no loop). An INLINE-solved token gets
-  no such retry. **Concurrent inline solves are SEMAPHORE-BOUNDED** (`SharedCaptchaPool.
-  solve_inline` / `_inline_sem`; for the default private pool it is sized by the adapter ctor's
-  `max_concurrent_captcha_solves`, default 6): in the blind-POST burst many `book()`s can
-  reach the inline solve (pool dry OR MF1 re-solve) at once — without the bound that is an
-  N-way herd of ~75 s 2captcha solves at T0, threatening the booking `replicaTimeout` and the
-  provider rate limit. Single-book paths (upgrade, sequential fallback) are single-threaded so
-  the bound never blocks them; the pre-T0 `prepare_book` prefetch is intentionally UNbounded by
-  it (it calls the provider directly, off the critical path). **The pool is a
-  `SharedCaptchaPool` (`courses/foreup/token_pool.py`, MULTIUSER_PLAN §5, MU-2).** DEFAULT
-  (no `captcha_pool=` passed — every current caller): the adapter builds a PRIVATE,
-  uncoordinated pool whose single lease IS `_captcha_tokens` and whose inline bound is
-  `max_concurrent_captcha_solves`, so everything above is unchanged (`tests/test_captcha_pool.py`
-  is the unmodified gate). INJECTED (`captcha_pool=` + `captcha_lease_key=`, tenant runner only,
-  not wired yet): adapters of one course share the pool; with demand `register`ed, the first
-  `prepare_book` starts ONE fill (≤ `max_concurrent_solves` in flight, `count` ignored, returns
-  on wave 1 or at T0−10 s, never raises on solve failures — and ALWAYS returns, even if the fill
-  is cancelled by `aclose()` or dies), leases are granted round-robin in draft
-  order, later arrivals + `release`d leases go to a shared reserve, `book()` pops own lease →
-  reserve → inline (both pooled for MF1), `captcha_pool_size()` counts the lease only, and the
-  inline bound AND provider are the POOL's (per course; the adapter's own bound is ignored and a
-  pool built with another `course_id` is refused). Misconfiguration raises `RuntimeError` from
-  `prepare_book` (the orchestrator logs it and `book()` inline-solves): a coordinated pool that
-  was never `arm(t0=…)`ed, or a key that was never `register`ed (over-cap accounts must register
-  with k=0, else they would solve outside the C bound). Adapters with no pre-fetch cost
-  (FakeAdapter, TeeItUpAdapter, future
-  Chronogolf) implement it as a no-op (they accept `count` for parity and ignore it). Its
-  `slot` arg is `TeeTimeSlot | None` (the CAPTCHA is page-level, slot-independent). **Two
-  callers:** (1) `UpgradeOrchestrator` calls it with the chosen slot + `count=1` BEFORE
-  `cancel_reservation()`, shrinking the cancel-to-book no-booking window from ~60 s to ~1-2 s;
-  (2) the main booking `Orchestrator`, on the race path only, calls it with `slot=None` +
-  `count=scheduler.captcha_prefetch_count` (default **3**) DURING the pre-T0 busy-wait (next bullet).
-- **The booking race pre-fetches the CAPTCHA before T0 (`Orchestrator(prefetch_book=True)`).**
-  The 2026-06-07 prod Sunday booker fired at T0 perfectly but then solved the CAPTCHA
-  (~78 s) AFTER the drop, posting the booking ~100 s late → the prime slot was gone →
-  HTTP 400 → no tee time. Fix: on the `--wait` race path the orchestrator does a
-  TWO-PHASE busy-wait — wait to `T0 − scheduler.captcha_prefetch_lead_s` (default 120 s =
-  2 min), `_prefetch_captcha()` (first-preference adapter, best-effort: failures are logged
-  and swallowed, book() then solves inline) which now pre-solves
-  `scheduler.captcha_prefetch_count` tokens (default **3**) CONCURRENTLY into the FIFO pool so
-  the first 3 ranked candidates each fire near-instantly instead of re-solving inline, then
-  wait the remainder to exactly T0 — so the post-T0 `book()` POST fires within seconds of the
-  drop with a token already in hand.
-  `prefetch_book` is set **only** by the `--wait` ACA booking job (`__main__._run` passes
-  `prefetch_book=wait`). The watcher and local-demo runs leave it False: a token is
-  solved only when actually about to book (the watcher's upgrade path still pre-fetches
-  inside `maybe_upgrade`, just-in-time). Lead = 120 s = 24 polls × 5 s (the provider
-  timeout), so the pre-fetch typically completes before T0; and token age at T0 ≤ lead ≤ the
-  ~120 s reCAPTCHA freshness window. Both `book()` and `prepare_book()` catch `TimeoutError`
-  from the inline/prefetch solve and re-raise as `CaptchaError` — on the prefetch (race) path
-  `_prefetch_captcha` swallows `CaptchaError` and the job continues with an inline solve; on
-  the inline `book()` path or the upgrade path it surfaces as a clean non-zero exit.
-  If the run STARTS past `T0 − lead` (the DST gate admits all of hour 5, so a late-landing
-  cron can begin with too little runway), the lead can't be honored and the POST may fire
-  after T0 — the orchestrator logs a `prefetch lead not fully honored` WARNING and still
+Each bullet is a rule that code, tests or incidents have made load-bearing. Change one only with
+a test that proves the new behaviour, and update this section in the same PR.
+
+### Design principles
+
+- **Stubs raise `NotImplementedError`** with a milestone reference. Implementing one means making
+  its tests pass in the same PR.
+- **Protocols over ABCs.** Contracts are `runtime_checkable` `Protocol`s. Subclassing for shared
+  state is fine, but tests must not require it: structural typing is the contract.
+- **Clock is injectable everywhere.** Anything touching wall-clock time takes a `Clock`, never
+  `datetime.now`. Tests use `FakeClock` (single account) or `VirtualClock` (many concurrent
+  sleepers); the 06:00 race is otherwise untestable.
+- **No secrets in TOML.** Configs name env vars; the loader resolves them and a missing one raises
+  a clear error.
+- **Each run is independent.** No state is shared between the watch job and the booking job; the
+  live `list_reservations()` call is the cross-run source of truth. ACA Job concurrency serializes
+  runs; in-process advisory locks serialize writes within a run.
+- **`WatchOrchestrator` and `UpgradeOrchestrator` live in `core/`** and use the same
+  collaborator-injection pattern as `Orchestrator`. Neither is long-running: each is one check per
+  ACA Job execution.
+
+### Configuration, dates and time
+
+- **DST is handled by `zoneinfo` plus two daily crons.** T0 is computed in `America/New_York`.
+  Two booking crons (one per DST half) live in `infra/bicep/modules/compute.bicep`; math in
+  PLAN.md §6.3. `teetime run --wait` busy-waits to 06:00:00 ET with the real `cfg.scheduler` and is
+  what the ACA booking job passes; `--no-wait` (default; `TEETIME_WAIT` env fallback) keeps
+  immediate local-demo timing via `_local_demo_scheduler`. The **DST-half gate**
+  (`core/dst_gate.py::should_proceed`) runs in `_run` only on the `--wait` path, before the
+  busy-wait: proceed iff the ET hour equals `fire_time.hour - 1` (5 for a 06:00 drop). The
+  wrong-season cron exits 0 without booking; `--no-wait` bypasses the gate.
+- **`teetime run --fire-time HH:MM:SS` is dev/test only**, hard-refused unless `--dry-run true`.
+  It makes a `--wait` busy-wait reachable at any hour and cannot shift a real booking
+  (`_with_fire_time_override`, AZURE_PLAN §6.5).
+- **Time windows are bound to weekdays; wanted days are derived from them** (PERDAY_WINDOWS_PLAN).
+  Each `[[request.time_windows]]` has a `weekday`; several may share a day (one reservation per
+  day, best window wins, list order = preference). `RequestConfig.wanted_weekday_indices` comes
+  from the windows (the old `target_weekdays`/`target_weekday` keys were removed; untagged config
+  errors loudly). The domain `TimeWindow` stays weekday-free: `_build_booking_request` (booker)
+  and `_scope_request_to_date` (each watcher target date) pin
+  `time_windows=_windows_for_date(...)`. Scoping is per TARGET DATE, not per execution day. The
+  RequestId fingerprint encodes the weekday (`<wd>:HH:MM-HH:MM`), so a Sat and a Sun window are
+  distinct identities.
+- **Target dates.** The booking job books ONE gated date (`today + offset`, gated to a wanted
+  weekday by `core/booking_day_gate.py`). The watcher checks
+  `core/target_date.next_occurrences_within_horizon` over the wanted days. `watch --date`
+  overrides to a single date (and errors if that weekday has no window).
+- **The idempotency key is `(RequestId, resolved_date)`**, not `RequestId` alone, so
+  `target_offsets = [7]` keeps one RequestId while targeting a new date each week. It lives
+  in-process only (`InMemoryStore`); there is no durable cross-run record (PLAN.md §13.1).
+- **Hard booking cutoff** (LEADTIME_SKIP_PLAN F1). `request.booking_cutoff`
+  (`{days_before, time_of_day}`, default 16:00 ET the day before) FREEZES a date: no new booking
+  and no upgrade after it; held bookings are never auto-cancelled. Cutoff + skip-days are decided
+  by ONE pure primitive, `core/booking_cutoff.py::frozen_reason(now, target_date, *, timezone,
+  cutoff, skip_dates) -> "cutoff" | "skip" | None`, which both the watcher's
+  `_should_stop_acting_on_date` (adds a deadline leg) and the booking-day gate
+  `should_book_today` (adds a weekday leg) call, so they cannot diverge. `is_past_booking_cutoff`
+  is a thin clock-reading wrapper. This is policy, not identity: it does NOT feed the RequestId.
+- **Skip-days are FAIL-OPEN and resolved at load** (LEADTIME_SKIP_PLAN F2).
+  `request.skip_dates_env` names an env var with a comma/space-separated ISO date list;
+  `core/skip_dates.parse_skip_dates` resolves it into `request.skip_dates` in `load()`. Unlike
+  credential `*_env` vars, unset/empty/malformed yields an empty set, so a fat-fingered Portal
+  edit can never crash the 06:00 booker. In prod it comes from a Key Vault secret editable with
+  no redeploy. It does NOT feed the RequestId.
+
+### Security and redaction
+
+- **Card data is platform-specific.** ForeUP keeps a card on file and the ForeUP path never POSTs
+  PAN/CVV. TeeItUp has no wallet, so its adapter POSTs PAN + CVV + expiry + billing to
+  `tr.gnsvc.com` on every booking (from `*_env` vars, `follow_redirects=False`). That brings PCI
+  scope (PLAN.md §7): `BookingStore.append_attempt` applies `core.redaction.redact_payload` at the
+  store boundary on every `attempt_log` write (PLAN.md §10.1), so no caller can leak card data.
+- **Player PII is redacted before any `attempt_log` write** (SHA-256 prefix, PLAN.md §10.1). The
+  log lives in `InMemoryStore` only.
+- **Log redaction is a HANDLER filter, not call-site discipline.** Third-party loggers bypass
+  `redact_text`: httpx logs every request at INFO and the 2captcha result-poll URL carries
+  `res.php?key=<API_KEY>` (71 such lines in one prod run, 2026-08-01).
+  `core.redaction.RedactingLogFilter` + `install_log_redaction()` fix this; every entrypoint
+  calls `install_log_redaction()` immediately AFTER `logging.basicConfig(...)`.
+  - **Placement is load-bearing:** the filter goes on the ROOT LOGGER'S HANDLERS. A filter on a
+    logger sees only that logger's own records, not those propagating from `httpx`/`httpcore`.
+  - **Ordering is load-bearing:** `basicConfig` creates the handler, so installing first attaches
+    to nothing. `tests/test_log_redaction.py` pins the order by source position (under pytest
+    the root logger already has handlers, so a functional test cannot) and pins through a real
+    CLI entrypoint that the wiring exists.
+  - The filter resolves `%`-args eagerly (the secret is usually in an arg), clears `record.args`,
+    scrubs `exc_info` (via `record.exc_text`) and `stack_info`, is idempotent across handler
+    fan-out, and never drops a record or raises `Exception` (a raise from `filter()` reaches the
+    `log.…()` call site and at T0 would kill the run; a `BaseException` from a pathological
+    `msg.__str__` still escapes, deliberately).
+  - **Exact-literal secrets (E7, MULTIUSER_PLAN §9.4).** Keyring keys and decrypted passwords
+    have no shape a pattern can catch. `core.redaction.register_secret_literals(values)` adds them
+    to a process-wide registry that `redact_text` applies FIRST (masked whole as
+    `<redacted-secret>`), so the filter and call-site `redact_text` both cover them. Additive and
+    idempotent; longest literal wins on overlap; values shorter than
+    `SECRET_LITERAL_MIN_LEN = 8` are ignored (a <8-char password is NOT masked), as are values
+    inside a redaction marker; refused values are counted in one DEBUG line, and the call returns
+    how many distinct values are masked. A bare `str` raises `TypeError`. The (set, pattern) state
+    swaps as one tuple under a lock. An empty registry is a strict no-op (the TOML path registers
+    nothing).
+  - **Known gap (accepted):** a traceback printed by Python's default excepthook never passes
+    through logging (`_run` logs `exc_info=True` then re-raises). Keeping credentials out of
+    exception messages stays the primary defence.
+  - **Testing note:** `install_log_redaction()` attaches to every root handler, including
+    pytest's `LogCaptureHandler`, so `tests/conftest.py` restores handler filters AND the secret
+    registry around every test. Without that, `caplog` stays redacted for the session and an
+    `assert secret not in caplog.text` passes vacuously.
+
+### Double booking, idempotency and stores
+
+- **Double-booking defense is layered:** a live pre-book `list_reservations` check, one attempt
+  per slot, the in-process advisory lock, and ACA Job concurrency (`parallelism=1`). The live
+  remote check is the primary cross-run guard. Flow in PLAN.md §9, state machine in §9.1.
+  `list_reservations` is on the `CourseAdapter` Protocol and is NOT optional.
+- **`cancel_reservation` is on the `CourseAdapter` Protocol.** It raises `CancelError` on failure
+  and returns normally on 404 (already cancelled is the desired end state). For ForeUP it also
+  returns normally on the 400 "We can't find that teetime" that the platform uses for a
+  missing/expired reservation (observed 2026-07-15).
+- **`delete_terminal` is on the `BookingStore` Protocol.** Only `UpgradeOrchestrator` uses it,
+  after a successful cancel+rebook, to clear the old record before inserting the new one, and it
+  must be called under the advisory lock (`persistence/store.py`).
+- **`BookingResult.confirmation_code` stores `TTB:<raw_foreup_id>`** when this system booked it.
+  `ForeUpAdapter.cancel_reservation()` strips the prefix. `ExistingReservation.confirmation_code`
+  (from `list_reservations`) is the raw id, so `is_managed` is False for server-sourced
+  reservations. `FakeAdapter.book()` mirrors this (`TTB:FAKE-<slot_id>` returned, raw id stored).
+  **The `book()` id-extraction chain reads `TTID`/`teetime_id` last** (the same two flat-response
+  fields `_parse_reservation` reads; keep the order in sync). Mangrove Bay returns a FLAT dict
+  with the id only there; before BLIND_POST_PLAN PR0 `confirmation_code` was `None` on every live
+  MB booking. That was cosmetic for upgrade/cancel (which take the id from `list_reservations`,
+  see `WatchOrchestrator._synthesize_managed_booking`) but is **load-bearing for blind-POST
+  cancel-extras**, which cancels surplus reservations by the id `book()` returned.
+- **`ForeUpAdapter.list_reservations()` reads a login-response cache, not a live GET.** ForeUP's
+  `GET /reservations` returns a ~6 MB profile with `"reservations": false`; the real list comes in
+  the `POST /login` body, which `authenticate()` caches. Reservations made after login are
+  invisible to `list_reservations()` in the same run. That is fine for the pre-book guard; any
+  path that must see a later booking (watcher reconciliation of an UNCERTAIN book, the blind-POST
+  `_reguard_before_fallback`) must call `refresh_reservations` first. `list_reservations()`
+  raises `RuntimeError` if `authenticate()` never ran, so a misconfigured deployment cannot pass
+  the guard with a silent empty list.
+  - **Snapshot trust (E6, MULTIUSER_PLAN §7.5; read only by tenant code).** Three quiet
+    `authenticate()` degradations leave the cache empty or stale: (a) a soft login failure
+    (400/401/rejected body), (b) a 200 whose body is not JSON, (c) a JSON success whose
+    `reservations` is missing or not a list. `ForeUpAdapter.snapshot_trusted` (the opt-in
+    `ReservationSnapshotHealth` capability) is True only when the latest login parsed a real list
+    (an EMPTY list is trusted). It resets at the start of every real login attempt, before the
+    warm-up GET; an idempotent short-circuited `authenticate()` keeps the last value. The cache is
+    unchanged; the flag only says whether an ABSENCE may be believed. Tenant vanish inference and
+    adoption must ignore an untrusted snapshot, or `[]` reads as an external cancel and re-books.
+- **Forcing a fresh snapshot = `refresh_reservations`, never a second `authenticate()`.**
+  `authenticate()` is idempotent (`if self._logged_in: return`, RACE_PREWARM_PLAN §3.1), so calling
+  it again returns the stale cache. The `ReservationCacheRefreshable` Protocol exposes
+  `refresh_reservations(creds)`; ForeUP implements it as "reset `_logged_in`, then
+  `authenticate()`". **Load-bearing in `Orchestrator._reguard_before_fallback`**: it must see a
+  landed-but-uncertain blind reservation, so it calls `refresh_reservations` when available (else
+  `authenticate()` for live-GET stores). A plain re-auth there would let the fallback double-book.
+- **Two stores, two jobs: `BookingStore` vs `TenantStore`** (MULTIUSER_PLAN §3.7, MU-5).
+  `persistence.BookingStore` (`InMemoryStore`) is the engine's per-run memory (terminals, attempt
+  log, in-process `request_lock`), unchanged and not durable. `tenant.store.TenantStore` is the
+  multi-user sibling: durable intent + ownership (users, course accounts, standing rules, dated
+  request rows, the ownership ledger, snapshots, row leases). Neither imports the other's
+  implementation. `tenant.in_memory_store.InMemoryTenantStore` is the reference implementation
+  and reproduces the Cosmos semantics: deterministic ids (`rule_row_id`, `derive_account_id`), the
+  `slot|<date>` pointer that makes "one ACTIVE row per (account, date)" a uniqueness fact, the
+  `ruleday|<weekday>` pointer (one active rule per weekday), IfMatch-style rule versions, and
+  all-or-nothing batches. The §3.4 state machine is the pure
+  `tenant.models.check_transition`/`check_create` (actor, frozen and reason guards); the store adds
+  lease guards (web/materializer writes need the row unleased, M4; `record_outcomes` status
+  changes need an UNEXPIRED lease held by the writer) and the `RowFingerprint` check on lease
+  acquire (M5). The bridge is `tenant.store.LeasedBookingStore` (MU-9c): a `BookingStore` whose
+  `request_lock` IS the fingerprinted row lease (refusal → `ConcurrentRunError`, the engine's
+  existing defer); the booker never uses it (it holds its lease from `claim_rows`). **The
+  contract is `tests/tenant/conformance.py`, not a docstring:** every `TenantStore` (including
+  `CosmosTenantStore`, run in CI over a fake container) must pass `TenantStoreConformance`
+  unchanged; subclass it with a `harness` fixture as `tests/tenant/test_in_memory_store.py` does.
+
+### Search and book error handling
+
+- **A 0-match search on a non-empty teesheet logs WHY.** `search()` tallies each rejected slot by
+  `_rejection_reason` (`out-of-window` / `wrong-holes` / `insufficient-spots` / `over-price`,
+  first match wins, so counts partition the rejects), and `_log_zero_match_diagnostics` emits one
+  PII-free line with the tally, the span of tee times on offer, and the requested
+  window/holes/party. Motivation: the 2026-08-01 miss (an 8 AM shotgun tournament on the target
+  date) needed hand-calls to the live API to diagnose. **Level is split on purpose:** INFO when
+  every rejection is `out-of-window` (a sold-out window is routine; at WARNING it would bury the
+  `dropped N/M unparseable slot(s)` schema-break canary), WARNING when any other leg fires (for
+  ForeUP those should not happen; `insufficient-spots` is unreachable at MB, so it firing means
+  the platform changed). **Gated on a non-empty parsed list:** an unpublished date legitimately
+  returns `[]` on every watcher cycle.
+- **A book-POST 4xx means try the next slot, and slot exhaustion is graceful.**
+  `ForeUpAdapter.book()` maps `409` and `400` to `SlotGoneError` (ForeUP created NO reservation;
+  prod 2026-06-07 was a 400 after the slot was taken between search and book), so `_run_course`
+  falls through to the next-ranked slot. When EVERY candidate is gone, `_run_course` raises the
+  internal `_CourseSkippedError`, `run()` moves to the next course, and if nothing books it
+  records a `NO_INVENTORY` terminal and notifies instead of crashing. `TeeItUpAdapter.book()` has
+  parity via `_raise_for_booking_step` (a non-409 4xx at cart-item, lock, create-order or
+  order-teetime → `SlotGoneError`). In both adapters the §9 UNCERTAIN case (timeout/5xx) still
+  propagates. `ForeUpAdapter.book()` logs the full status + body on any non-2xx before raising. A
+  captcha-challenge 400 is classified as `CaptchaError` first (`_guard_captcha` runs before the
+  400 → SlotGone mapping). Caveat: each fallback candidate re-solves a CAPTCHA (~75 s,
+  single-use token) unless a pooled token is left, so at a competitive drop fallbacks are
+  best-effort.
+- **A `RateLimitError` (429) in a course's flow skips the course; it does not crash the booking
+  job.** `run()`'s per-course loop catches it (from the search GET, ForeUP `book()`, the
+  blind-POST fresh fallback search, or a TeeItUp pre-payment step; all propagate through
+  `_run_course`), logs `retry_after_s`, and continues to the next course. A 429 is rejected before
+  processing, so no reservation exists and skipping is safe. ForeUP `book()` maps 429 →
+  `RateLimitError` for parity with `search()`/cancel (409/400 still map to `SlotGoneError` first),
+  so a throttled POST cannot surface as a raw `HTTPStatusError` in `_book_from_candidates`. If
+  nothing books, `run()` records `NO_INVENTORY` + notifies and the command exits non-zero via a
+  `ClickException`. **`CaptchaError`/`AuthError` are deliberately NOT caught:** a broken CAPTCHA or
+  credential pipeline must not hide behind a clean `NO_INVENTORY`.
+- **Transient-failure retry is for IDEMPOTENT ForeUP calls only.**
+  `ForeUpAdapter._send_with_retry` retries `httpx.TransportError` (timeouts, blips; a lone
+  `ReadTimeout` once cost a whole watch cycle) around the warm-up GET, login POST, search GET and
+  cancel DELETE. It does not retry HTTP status errors, and **`book()`'s POST is never wrapped**: a
+  timed-out book is the UNCERTAIN case the watcher reconciles, not a safe re-fire. Tuned by
+  `max_retries` (default 2) and `retry_backoff_s` (0.5 s, linear; tests pass 0). The watch job's
+  `replicaTimeout` is 300 s to leave room for retries (AZURE_PLAN §5.4).
+
+### The 06:00 booking race (race path only)
+
+The race path is `Orchestrator(prefetch_book=True)`, set only by the `--wait` ACA booking job
+(`__main__._run` passes `prefetch_book=wait`). The watcher and local demo never pre-warm or
+pre-fetch.
+
+- **`prepare_book(slot, request, *, count=1)` is on the `CourseAdapter` Protocol** and pre-fetches
+  expensive prerequisites (CAPTCHA tokens, ~15–60 s each). `slot` is `TeeTimeSlot | None` (the
+  CAPTCHA is page-level). Adapters with no pre-fetch cost (Fake, TeeItUp) implement it as a no-op
+  that accepts `count`.
+  - `ForeUpAdapter.prepare_book()` solves `count` tokens CONCURRENTLY (one
+    `gather(return_exceptions=True)`) into a FIFO pool; `book()` pops the OLDEST (single use), so
+    a late fallback keeps the freshest token, and inline-solves when the pool is dry
+    (RACE_PREWARM_PLAN Change C).
+  - **NI10 raise contract:** `count == 1` + total failure RE-RAISES (`TimeoutError` →
+    `CaptchaError`) so the upgrade caller aborts; `count > 1` never raises (the pool ends with
+    however many succeeded).
+  - **MF1 stale-token recovery:** a POOLED token rejected as a captcha challenge triggers exactly
+    ONE inline re-solve + re-POST of the same slot (`_is_captcha_challenge` is the non-raising
+    sibling of `_guard_captcha`); a second challenge → `CaptchaError`. An inline-solved token gets
+    no retry.
+  - **Inline solves are semaphore-bounded** (`SharedCaptchaPool.solve_inline`; the private pool
+    uses the adapter's `max_concurrent_captcha_solves`, default 6), so a blind burst cannot start
+    an N-way herd of ~75 s solves at T0. Single-book paths never hit the bound; the pre-T0
+    prefetch calls the provider directly and is unbounded by it.
+  - **The pool is a `SharedCaptchaPool`** (`courses/foreup/token_pool.py`, MULTIUSER_PLAN §5,
+    MU-2). DEFAULT (no `captcha_pool=`, every TOML caller): a PRIVATE uncoordinated pool whose one
+    lease is `_captcha_tokens`, so behaviour is unchanged (`tests/test_captcha_pool.py` is the
+    unmodified gate). INJECTED (`captcha_pool=` + `captcha_lease_key=`, tenant runner): adapters
+    of one course share it; with demand `register`ed, the first `prepare_book` starts ONE fill
+    (≤ `max_concurrent_solves` in flight, `count` ignored, returns on wave 1 or at T0−10 s, never
+    raises on solve failures, always returns even if the fill is cancelled); leases are granted
+    round-robin in draft order; late arrivals and `release`d leases go to a shared reserve;
+    `book()` pops own lease → reserve → inline (both pooled for MF1); `captcha_pool_size()`
+    counts the lease only; the inline bound and provider are the pool's, and a pool for another
+    `course_id` is refused. Misconfiguration raises `RuntimeError` from `prepare_book` (logged;
+    `book()` then inline-solves): a coordinated pool never `arm(t0=…)`ed, or a key never
+    `register`ed (over-cap accounts must register with k=0).
+  - Two callers: `UpgradeOrchestrator` (chosen slot, `count=1`, BEFORE `cancel_reservation()`,
+    shrinking the no-booking window from ~60 s to ~1–2 s) and the race-path `Orchestrator`
+    (`slot=None` during the pre-T0 busy-wait).
+- **The race pre-fetches the CAPTCHA before T0.** Motivation: on 2026-06-07 the booker fired at
+  T0 but solved the CAPTCHA (~78 s) afterwards, POSTed ~100 s late, and lost the slot. The
+  busy-wait is TWO-PHASE: wait to `T0 − scheduler.captcha_prefetch_lead_s` (default 120 s),
+  `_prefetch_captcha()` (first-preference adapter, best-effort, failures logged and swallowed),
+  then wait to exactly T0. Lead 120 s = 24 polls × 5 s, so the solve usually finishes before T0
+  and token age at T0 stays within the ~120 s reCAPTCHA window. `book()` and `prepare_book()`
+  turn a solve `TimeoutError` into `CaptchaError`: swallowed on the prefetch path (inline solve
+  follows), a clean non-zero exit on the inline `book()` or upgrade paths. If the run starts past
+  `T0 − lead` (the DST gate admits all of hour 5), it logs `prefetch lead not fully honored` and
   pre-fetches immediately.
-- **The race ALSO pre-warms the ForeUP login before T0 (RACE_PREWARM_PLAN PR1).** On the
-  `--wait` race path the orchestrator's `_prewarm_primary()` runs, CONCURRENTLY with the
-  CAPTCHA solve (one `asyncio.gather(return_exceptions=True)`), `_prewarm_login()` for the
-  first-preference adapter: `authenticate()` (warm-up GET + login POST, ~2 s) + the layer-2
-  `list_reservations` "already-booked" guard. So at T0 only `search` + `book` remain on the
-  critical path (login no longer costs ~2 s post-T0). Both legs are best-effort (catch +
-  swallow + log); a pre-warm hiccup never costs the booking. **The post-T0 re-auth skip is
-  ORCHESTRATOR-owned** (`self._prewarmed_course_ids`, threaded into `_run_course` as
-  `prewarmed_course_ids`): a course in the set is NOT re-authenticated at T0. This is
-  deliberately independent of any adapter idempotency guard (FakeAdapter/TeeItUp have none);
-  `ForeUpAdapter.authenticate()` ALSO has a defensive `if self._logged_in: return` guard, but
-  it is hygiene, not load-bearing. **The skip is recorded ONLY on a session-established login
-  (RACE_PREWARM_PLAN §3.1 SF#1).** ForeUP SOFT-FAILS a 400/401/rejected-body login —
-  `authenticate()` returns WITHOUT raising and leaves `_logged_in` False (search still works;
-  only `book()` needs the login). So `_prewarm_login` gates `_prewarmed_course_ids.add` on
-  `_login_established(adapter)`, which reads `is_authenticated` for an `AuthStateReportable`
-  adapter (ForeUP exposes `_logged_in`; adapters with no soft-fail path treat a clean return as
-  success). Without this gate a transient pre-T0 401 would mark the course prewarmed, `run()`
-  would skip the T0 re-auth, and `book()` would raise `AuthError` on a never-logged-in session —
-  a transient blip silently losing the booking. A soft-fail now leaves the set unchanged so the
-  T0 inline re-auth retries the login. Only the PRIMARY (first-preference) adapter is pre-warmed —
-  a fallback course authenticates + solves inline at T0 (no shared session/token pool). If the
-  pre-T0 guard finds we are **already booked**, the run **short-circuits before T0**: it logs
-  `race: short-circuited pre-T0 …` (the SF6 verification surface, since the normal
-  `race: busy-wait complete` line is skipped), records `ALREADY_BOOKED`, notifies, and returns
-  WITHOUT busy-waiting to T0 or searching. `prefetch_book=True` (the `--wait` job) is the only
-  thing that enables any of this; the watcher/local-demo never pre-warm.
-- **The race drops the leading search courtesy sleep — RACE PATH ONLY (RACE_PREWARM_PLAN PR3).**
-  `CourseAdapter.search()` takes a keyword-only `skip_initial_spacing: bool = False`. The booking
-  `Orchestrator` threads `skip_initial_spacing=self._prefetch_book` into `_poll_for_slots`'s
-  `search()` call, so only the `--wait` race path skips the 250 ms `_MIN_BETWEEN_S` courtesy sleep
-  before the FIRST per-date GET (where that GET leads the post-T0 burst and there is nothing to
-  space from). 2nd+ per-date GETs are ALWAYS spaced, so a multi-date search still paces. The
-  **watcher never passes the flag** (it issues one date per `search()` call, and that leading
-  sleep is its ONLY inter-date-check spacing — see RACE_PREWARM_PLAN §5.1) — its etiquette is
-  untouched. `cancel_reservation`'s courtesy sleep is also untouched (cancel is off the race path).
-- **Each run is independent** — there is no shared state cache between the watch
-  job and the main booking job. The live `list_reservations()` call is the source
-  of truth across runs. Concurrent-run serialization is handled by ACA Job /
-  GH Actions `concurrency:` groups. In-process advisory locks serialise writes
-  within a single run.
-- **Email OTP (MB books require a six-digit emailed code from 2026-07-15) — mailbox
-  side ONLY so far.** `core/otp.py` holds the `OtpSource` Protocol plus
-  `ImapOtpSource` (polls the dedicated Gmail inbox that the course's OTP mail is
-  forwarded to; fresh IMAP connection per poll, checks Spam too, Clock-injected,
-  never logs the code value) and `FakeOtpSource` — mirroring `clock.py`'s
-  Protocol+real+fake layout. `fetch_code(sent_after=..., timeout_s=...)` scopes the
-  search to the CURRENT attempt so a stale code from an earlier attempt is never
-  returned — minus a `freshness_grace_s` (default 60 s) skew allowance, because the
-  mail server's Date header comes from ITS clock and rejecting a live code as stale
-  is the fatal direction at the 06:00 drop. A transient blip on any single poll
-  (connect/TLS/login) consumes that poll, never the whole window; the socket is
-  bounded by `connect_timeout_s` (a hung connect runs in a thread the deadline
-  can't interrupt). **Live recon (2026-07-15): enforcement is UI-ONLY.** The web
-  flow does select → pending hold + code email → enter code; the direct API book
-  POST the bot uses was NOT challenged (a live recon booking returned HTTP 200 +
-  instant confirmation email, no code). So the OtpSource is NOT on the booking
-  critical path — the only wired piece is **detection**:
-  `ForeUpAdapter._guard_otp_challenge` (called in `book()` after `_guard_captcha`,
-  BEFORE the 400→SlotGone mapping) raises `OtpChallengeError` — a **CaptchaError
-  subclass**, so the CaptchaError operator-loud paths fire for free (booking run()
-  doesn't catch it → non-zero exit; the watcher's check_once notify+re-raises) —
-  when a book response's `msg` matches the challenge markers
-  (`_OTP_CHALLENGE_MARKERS`, best-effort: the API challenge's wording is
-  unobserved; a captcha-marker match wins if a body somehow matches both, since
-  `_guard_captcha` runs first — test-pinned). Without it a challenge 400 would
-  misread as SlotGone → try-next-slot → a clean NO_INVENTORY masking the real
-  problem. Two scoped carve-outs inherit CaptchaError's pre-existing softer
-  handling: (a) the UpgradeOrchestrator's rebook-after-cancel logs-and-continues on
-  any book() failure — an OTP challenge there is a WARNING and the week's slot can
-  be lost (the accepted upgrade-loss risk); (b) **documented residual (accepted):**
-  a challenge on a blind-burst POST is dropped like any non-SlotGone error, and if
-  the post-reguard fresh search then finds ZERO slots the run degrades to a generic
-  NO_INVENTORY (still non-zero exit) with the challenge surviving only as a
-  per-slot WARNING — in the common case the fresh search finds slots and the
-  sequential book re-raises the challenge loudly.
-  The fetch→verify wiring lands only if/when ForeUP extends enforcement to the
-  API (OtpChallengeError firing is the observation signal); it will need a UI HAR
-  trace for the verify endpoint. Recon extras: a UI pending hold shows in
-  `list_reservations` (party-size'd), blocks the slot publicly, self-expires
-  server-side if the code is never entered, and does NOT count toward the
-  1-online-reservation/day limit. **Open design constraint for the eventual
-  wiring:** `fetch_code` has no per-attempt correlation token, so CONCURRENT book
-  attempts sharing one mailbox could steal each other's codes — moot while OTP
-  enforcement stays UI-only (off the book critical path), but note the burst is back
-  to 3 as of 2026-07-18, so the concurrent-code-stealing risk is live the moment OTP
-  enforcement reaches the API; the wiring plan must serialize OTP-requiring books or
-  extend the Protocol before then.
+- **CAPTCHA prefetch count scales with the blind burst.** `_captcha_prefetch_count_for` returns
+  `min(blind_post_max_count, len(synthesize_blind_slots(...))) +
+  scheduler.blind_post_fallback_token_reserve` for a blind-capable primary; the reserve (default
+  2) stays pooled so the 0-booked fresh-search fallback books without a ~75 s inline solve
+  (RESEARCH_FALLBACK_PLAN §2 Q3). A 0-grid blind case adds no reserve and, like any non-capable
+  primary, uses the fixed `scheduler.captcha_prefetch_count` (default 3).
+- **The race pre-warms the ForeUP login before T0** (RACE_PREWARM_PLAN PR1). `_prewarm_primary()`
+  runs `_prewarm_login()` concurrently with the CAPTCHA solve: `authenticate()` + the layer-2
+  `list_reservations` already-booked guard, so only `search` + `book` remain after T0. Both legs
+  are best-effort. **The post-T0 re-auth skip is ORCHESTRATOR-owned** (`_prewarmed_course_ids`,
+  passed into `_run_course`), independent of any adapter idempotency guard. **The skip is recorded
+  ONLY on a session-established login** (§3.1 SF#1): ForeUP soft-fails a 400/401/rejected login
+  (returns without raising, `_logged_in` stays False), so `_prewarm_login` adds the course only if
+  `_login_established(adapter)` (reads `is_authenticated` for an `AuthStateReportable` adapter).
+  Otherwise a transient pre-T0 401 would skip the T0 re-auth and `book()` would raise `AuthError`.
+  Only the PRIMARY adapter is pre-warmed. If the pre-T0 guard finds we are already booked, the run
+  **short-circuits before T0**: logs `race: short-circuited pre-T0 …` (the SF6 verification
+  surface), records `ALREADY_BOOKED`, notifies, returns without searching.
+- **The race drops the leading search courtesy sleep** (RACE_PREWARM_PLAN PR3).
+  `CourseAdapter.search()` takes keyword-only `skip_initial_spacing: bool = False`; the booking
+  `Orchestrator` passes `skip_initial_spacing=self._prefetch_book` so only the race path skips the
+  250 ms `_MIN_BETWEEN_S` sleep before the FIRST per-date GET. Later per-date GETs are always
+  spaced. **The watcher never passes the flag:** that leading sleep is its only inter-date spacing
+  (§5.1). `cancel_reservation`'s courtesy sleep is untouched.
 
-## Per-course specifics → `src/teetime/courses/CLAUDE.md`
+### Blind-POST burst (Mangrove Bay)
 
-Course-specific IDs, URLs, and quirks (Mangrove Bay / ForeUP, Sydney R. Marovitz /
-TeeItUp) and the step-by-step for adding a new course live in
-[`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md) — a nested
-guide that loads automatically when you work on an adapter.
+- **Blind-POST is an ADAPTER CAPABILITY, never a config flag.** Every adapter exposes
+  `capabilities: AdapterCapabilities` (frozen dataclass, `core/adapter.py`); the orchestrator gate
+  is `adapter.capabilities.blind_post`. `BlindPostCapable` (`captcha_pool_size()`,
+  `synthesize_blind_slots(request, target_date, *, max_count)`) is only a typing cast target used
+  once the flag says the methods exist; it is NOT `isinstance`-checked. (It used to be, and every
+  ForeUP adapter satisfied it because the base shipped the methods; a hidden boolean was the real
+  guard.) The ForeUP base sets `blind_post=False` and its `synthesize_blind_slots` raises
+  `NotImplementedError`; Mangrove Bay sets `blind_post=True`. TeeItUp and the default FakeAdapter
+  are `False`. The other opt-in capabilities (`ReservationCacheRefreshable`,
+  `AuthStateReportable`, `ReservationSnapshotHealth`) stay honest `runtime_checkable` presence
+  checks, because for them having the method IS the capability.
+- **The blind path fires at T0, race path only** (BLIND_POST_PLAN PR3). After the layer-2 guard
+  and before the sequential search, `_should_blind_post` requires ALL of: `not request.dry_run`,
+  `self._prefetch_book`, `scheduler.blind_post_max_count > 0`, `_is_blind_capable(adapter)`, and
+  the course being the PRIMARY. Otherwise the normal search-book loop runs. `_blind_post_course`
+  fires the top `N = min(len(blind_slots), captcha_pool_size())` ranked in-window slots,
+  staggered across T0 (`create_task` + `gather(return_exceptions=True)`). There is **no
+  concurrent hedge search** (RESEARCH_FALLBACK_PLAN §2 Q1).
+  - **≥1 booked:** `_keep_best` re-ranks the booked slots with the same `rank_slots_for_request`
+    the search path uses and keeps the winner; `_cancel_extras` cancels the rest by their `book()`
+    `confirmation_code`. A `None` code or ANY cancel failure (`CancelError`, 429, `CaptchaError`,
+    a transport blip) is `log.critical`, never a crash, and never loses the kept booking: the
+    catch is deliberately `Exception`-broad. No search runs.
+  - **0 booked:** `_reguard_before_fallback` force-refreshes the snapshot, then
+    `list_reservations`; a match short-circuits to `ALREADY_BOOKED` (no book, no search).
+    Otherwise it fires ONE fresh `_poll_for_slots` search strictly AFTER the re-guard re-auth
+    (freshest snapshot, no shared-client cookie race; §2 Q1/Q2) and falls through to
+    `_book_from_candidates`, raising `_CourseSkippedError` if that finds nothing.
+  - A blind `SlotGoneError` is dropped; any other exception is logged and dropped (the re-guard
+    covers the UNCERTAIN case). A `BaseException` captured in `gather`'s results (e.g. a child's
+    `CancelledError`) is held: a booked sibling is secured first and it is re-raised only if
+    nothing booked (#e1). This is defensive depth, not a shutdown handler: `KeyboardInterrupt` /
+    `SystemExit` escape the `await`, SIGTERM kills the process, and the parent's own cancellation
+    bypasses the results.
+- **The burst is STAGGERED across the release boundary** (STAGGER_PLAN).
+  `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)`) gives each POST its own offset
+  from T0, paired positionally with the RANKED slots; `_fire_blind_post` sleeps to `T0 + offset`
+  (a non-positive delay fires immediately, so a late cron never waits). Why: every drop in the log
+  window came back 3/3 or 0/3, which a real slot race cannot produce; a simultaneous burst
+  point-samples ForeUP's release flip, and a pre-open POST gets the same `400 "Time not
+  available."` as a claimed slot (the server `Date` header, logged since `infra/v2.11.0`, has only
+  1 s resolution). Staggering orders outcomes by offset (clean cutoff = pre-open rejection,
+  unordered = real race) and guarantees one POST is SENT no earlier than T0 (tail offset `0`).
+  - **`stagger[0] == -early_arrival_ms`**, so the rank-0 slot keeps its pre-stagger instant and
+    drops we already win are unchanged; **nothing is ever scheduled earlier than `stagger[0]`**
+    (operator directive 2026-08-15). Both pinned by `tests/test_container_config_parity.py`.
+  - **The burst RE-RANKS with `rank_slots_for_request` before pairing offsets.** Offsets ascend
+    with position, so the best slot must POST first or the 1-per-day rule could reject it in
+    favour of a worse sibling. A `field_validator` rejects a descending offset list.
+  - Offsets earlier than `-early_arrival_ms` are clamped and logged, not rejected. `()` means
+    legacy simultaneous firing; `_local_demo_scheduler` uses it.
+  - The per-POST INFO line `blind-POST sent %s (planned %+dms) slot %s → %s` reports the MEASURED
+    send offset (a late run fires everything at once, and logging the plan would show a ladder
+    that never happened). With `_blind_outcome_label` it is the whole point of the feature:
+    **don't drop it when touching the burst loop.**
+- **A blind-POST rejection is tagged with WHY (`SlotGoneError.reason`).** ForeUP returns HTTP 400
+  for two rejections with opposite meaning and no machine-readable discriminator, so
+  `ForeUpAdapter._classify_book_rejection` tags by the `msg` prose:
+  - `unavailable` (`"Time not available."`): claimed first, OR our POST beat the release flip.
+    The only reason that bears on the pre-open-vs-race question.
+  - `daily_limit` (`"...1 online reservation per day."`): alongside a booked sibling, ForeUP is
+    bouncing the surplus of a burst WE WON (no race information). With NOTHING booked it means a
+    reservation for that date already existed; `_rejection_summary` then says "we already hold a
+    reservation" instead of "TOTAL wipeout, falling back", because the re-guard usually
+    short-circuits to `ALREADY_BOOKED` ("usually": it matches date AND party size, so a manual
+    booking with another party size still falls through to the harmless fallback search).
+  - `conflict` (409) and `unknown` (fail-soft default, so other adapters and unobserved wordings
+    are never misfiled).
+  It is **diagnostic only**: every reason routes identically (`SlotGoneError` → next slot). It
+  surfaces as `gone[<reason>]` and `blind-POST N of M slot(s) rejected (<reason>=<count>, …)`.
+  The markers (`_BOOK_DAILY_LIMIT_MARKERS` / `_BOOK_UNAVAILABLE_MARKERS`) match only wordings
+  observed live, on the stable prose tail ("make" and "have 1 online reservation per day" both
+  seen). Evidential caution: a 1-booked / 2-`daily_limit` shape is NOT evidence of a stagger
+  effect; a simultaneous pre-stagger burst produced it on 2026-07-11.
 
-## How we write code in this repo: red-green TDD
+### Watcher and upgrade
 
-**Mandatory.** Every behavior change lands as test-first. The exact loop:
+- **The watcher is enabled in the configs** (`watcher.enabled = true`). Under `--dry-run true` it
+  does all the looking, ranking and logging and suppresses only the final POST
+  (`WatchOrchestrator` returns `DRY_RUN` before the lock + POST). `one_booking_policy` (cancel +
+  rebook upgrade) is enabled: a booked day is upgraded when a higher-priority tier opens, or the
+  SAME tier strictly closer to that day's window midpoint (ties never upgrade). Safe because the
+  watch request is scoped per target date. Prod watch cron: every 10 min, year-round.
+- **The watcher polls on every run; there is no time-of-day gate** (the old
+  `polling_start_hour`/`polling_end_hour` fields are removed; they blinded us at the 06:00 drop).
+  The only skip is `_is_past_watch_deadline`. Rate limiting is the cron cadence plus the
+  `poll_interval_s >= 300` floor. An early-morning run that finds the just-dropped window open
+  BOOKS it (a recovery path), safe per date via the in-lock `get_terminal` re-check.
+- **The watcher checks multiple dates per run:** the next occurrence of each wanted weekday
+  (`_watch` loops `check_once`, no `break`). `_check_course` scopes the search to each
+  `target_date` (`dc_replace`) AND filters ranked candidates to it, so a Saturday check can never
+  book a Sunday slot; the per-date `(RequestId, date)` key keeps the days independent.
+- **A 429 ABORTS the whole watch run.** `check_once` catches `RateLimitError` before the generic
+  `except Exception`, logs `retry_after_s` and re-raises, so it neither tries the next course nor
+  polls further dates. `_watch` catches it at the date loop and **exits 0** (the cron is the
+  backoff; PLAN §12). Non-zero watch exit is reserved for `CaptchaError`/`AuthError`. The generic
+  transient handler, by contrast, continues to the next course.
+- **`WatchOrchestrator.check_once` does NOT take `request_lock`.** It is read-only; when it
+  delegates to `UpgradeOrchestrator.maybe_upgrade`, that method takes and releases the lock.
+  Never call `maybe_upgrade` while holding the lock: it deadlocks.
+- **Upgrade wiring.** Gate 3 (store already has a BOOKED terminal) and `_check_course()` (live
+  reservation, no store record) both call `_try_upgrade()` when `one_booking_policy.enabled`,
+  which builds a fresh `UpgradeOrchestrator` and calls `maybe_upgrade()`. For the no-record path,
+  `_synthesize_managed_booking()` builds a `TTB:`-prefixed `BookingResult` from the live
+  reservation so the managed-booking guard passes.
+- **Cancel-before-book** in `UpgradeOrchestrator`: ForeUP rejects a second book POST (400) while a
+  reservation is live, so it cancels first, leaving a ~1–2 s no-booking window. If `book()` fails
+  after the cancel, the next watch run books any available slot.
+- **The watcher reconciles >1 live reservation per date: a CRASH-NET BACKSTOP** (BLIND_POST_PLAN
+  PR4). When `_check_course` finds more than one reservation matching `(target_date, party_size)`
+  and the policy is enabled, `_reconcile_duplicate_reservations` keeps the best-ranked (the same
+  midpoint order; `_rank_reservations` appends out-of-window ones by `tee_time` so the order is
+  total) and cancels the rest under `request_lock`, BEFORE the upgrade.
+  - It also runs on the Gate-3 short-circuit (`_reconcile_booked_course`), or a duplicate left by
+    a failed in-run `_cancel_extras` (which still records BOOKED) would persist forever. An
+    `ALREADY_BOOKED` terminal does not short-circuit, so it gets the live reconcile and a
+    recovery book. The Gate-3 pre-check swallows a transient blip (skips the cycle), and the whole
+    Gate-3 policy block DEFERS on `ConcurrentRunError`.
+  - Best-effort: `ConcurrentRunError` defers (returns `matching` unchanged); any non-contract
+    cancel failure is logged CRITICAL and retried next run. The per-extra catch re-raises the
+    watch-contract errors (`RateLimitError`, `CaptchaError`, `AuthError`). The in-run
+    `_cancel_extras` is the PRIMARY mechanism; this recovers crashes on a fresh run.
+  - **Documented residual (single-user, accepted):** a deliberate MANUAL second booking on the
+    same date + party size would be cancelled too; server-sourced reservations are all
+    `is_managed=False`, so they are indistinguishable. N=1 or a disabled policy leaves
+    reservations alone.
+  - **E5 eligibility hook** (MULTIUSER_PLAN §2.3/§7.6): keyword-only
+    `reconcile_eligible: Callable[[ExistingReservation], bool] | None = None`, honoured on both
+    reconcile paths. `None` (all the TOML path passes) = unchanged. When set, only ELIGIBLE
+    reservations are cancel candidates: the best eligible one is kept, other eligible ones
+    cancelled, an ineligible one is never kept-in-place-of nor cancelled; with ≤1 eligible nothing
+    is cancelled and the lock is not taken (an owned + a manual booking both stay held, §7.6).
+    Survivors are returned eligible-first, so `matching[0]` is owned (except on a defer).
+    **E5 does NOT guard the upgrade:** with zero eligible, or a single manual match, `matching[0]`
+    is MANUAL and `_try_upgrade` can cancel it (pinned as TOML behaviour by
+    `test_unadopted_manual_match_reaches_try_upgrade_unguarded`). The tenant watcher closes this
+    with its own ownership gate (next section).
 
-1. **Red.** Write the smallest test that captures the desired behavior. Run it
-   and confirm it fails for the right reason (missing impl, wrong return, etc.)
-   — not for an unrelated import error or fixture typo.
-2. **Green.** Write the minimum implementation that makes the test pass. No
-   extra fields, no future-proofing, no untested branches.
-3. **Refactor.** With the safety net of green tests, clean up names,
-   duplication, and structure. Re-run tests; they must stay green.
-4. **Commit boundary.** A meaningful unit of red→green→refactor is a fine
-   commit. Don't bundle ten unrelated cycles.
+### Multi-user (tenant) path
 
-Per-milestone rules:
+Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md).
 
-- A stub's `NotImplementedError` is the test's red phase already on disk —
-  the next thing you write is the test that exercises the contract, then
-  the body. Don't implement the body before the test exists.
-- For Protocol implementations (Clock, BookingStore, Notifier, CourseAdapter):
-  the test should verify the structural contract (`isinstance(impl, Protocol)`)
-  and at least one behavioral path. See `tests/test_adapter_stub.py` for the
-  reference pattern.
-- For the §9.1 state-machine work (M2.T1): each transition listed in
-  the diagram needs its own failing test before the orchestrator branch that
-  implements it. The state machine is too subtle to backfill tests onto.
-  (The in-run RECONCILING transition — M2.T3 — was cut; the watcher owns
-  reconciliation asynchronously, §9.1.)
-- `pytest -k <name>` for fast inner-loop iteration; full suite before commit.
-- If you find a bug in already-merged code, write the failing test that
-  reproduces it FIRST, then fix. The test is the regression guard.
+- **The tenant path runs the UNMODIFIED `Orchestrator`/`WatchOrchestrator` per account.** Engine
+  changes are the hooks E1–E7 only, each defaulting to today's behaviour (MULTIUSER_PLAN §2.3).
+  Engine code never imports `tenant`.
+- **The tenant recorder is one CONCRETE class per capability set, never a `__getattr__` proxy**
+  (`tenant/recording.py`, §4.6 SF1). On Python ≥ 3.12 a `runtime_checkable` `isinstance` uses
+  `inspect.getattr_static`, which ignores `__getattr__`; a forwarding proxy would fail
+  `isinstance(proxy, ReservationCacheRefreshable)`, the re-guard would read the stale snapshot,
+  and could double-book (same for `AuthStateReportable` and `ReservationSnapshotHealth`).
+  `make_recording_adapter(inner, clock=…)` composes one memoised class per inner capability set,
+  with an explicit mixin per opt-in Protocol, plus `BlindCapableRecordingAdapter` iff
+  `inner.capabilities.blind_post` (a cast is not a check, so a missing
+  `synthesize_blind_slots` would fail only at T0). That variant passes the MU-3 allowlist through
+  and REFUSES at wrap time (~05:51) a blind-capable inner lacking it. Pinned by
+  `test_recording_adapter_isinstance_mirrors_inner_for_each_capability`, which discovers every
+  `runtime_checkable` Protocol in `core/adapter.py`. The same rule applies to the watcher's
+  `SearchSnapshotAdapter` family (one class per capability set, 16).
+  - **What it records** (in memory, zero I/O, instants from the SAME `Clock` the orchestrator
+    uses): every BOOKED `book()` (raw id, slot, send instant); every `book()` raising anything but
+    `SlotGoneError` (UNCERTAIN) by exception CLASS NAME only, flagging the `CaptchaError` family
+    (the only place a challenge swallowed by the burst survives); every `cancel_reservation`
+    outcome; call counts. Exceptions are re-raised as the same object.
+  - `RecordingLog` derives ownership (§4.6): `owned_raw_ids()` = booked and not later cancelled
+    OK (the kept best AND `held_extras()`, surplus whose cancel failed); `cancelled_extras()`;
+    `needs_reconcile()` = any UNCERTAIN book or a BOOKED with no confirmation code. A guard's
+    `ALREADY_BOOKED` recorded no book, so it is unowned unless the re-guard found a POST the
+    recorder logged UNCERTAIN (then the watcher adopts by EXACT tee time).
+- **Ownership gates every cancel and upgrade.** A reservation is OWNED iff its raw id is ledgered
+  `held`/`held_extra`. The tenant watcher applies `upgrade_allowed` before the engine can reach
+  `_try_upgrade`: it pre-seeds a `TTB:` terminal only for an owned BOOKED row
+  (`seeded_terminal`) and hands the upgrade policy only to such rows, and passes
+  `reconcile_eligible` = owned. A manual reservation is never upgraded or cancelled by the bot.
+- **Dry-run environments never mutate reservations** (§7.8): no upgrade, no reconcile-cancel, no
+  `cancelled(external)` write, and the web refuses cancel.
+- **Tenant exit codes are non-zero only for systemic causes** (`runner.exit_code_for`,
+  `watch_exit_status`, §4.5/§7.9): store failures, keyring, decrypt failures, CAPTCHA/OTP,
+  UNCERTAIN (booker), the self-deadline, a failed outcome write, a failed operator summary. One
+  user's miss or `AuthError` exits 0 and is carried by email. A 429 aborts the watch run with 0.
+- **No store call inside the race window.** The booker reads and claims rows before T0, writes
+  outcomes one row at a time only after T0 + `post_burst_quiet_s`, and every pre-T0 store call is
+  bounded by `STORE_CALL_TIMEOUT_S` (20 s).
+- **One store builder, and the database is never defaulted.** `tenant/wiring.py::open_tenant_store`
+  serves every tenant command: `TENANT_COSMOS_ENDPOINT` set → Cosmos (Entra auth only; a
+  key-shaped credential is refused); nothing set → in-memory with a loud `IN-MEMORY` WARNING; half
+  configured → `TenantStoreConfigError`. `TENANT_COSMOS_DATABASE` is required with the endpoint so
+  prod can never silently use dev data. The `-ci` containers are selected only by
+  `TENANT_COSMOS_CONTAINER_SUFFIX=-ci`.
+- **The Cosmos index policy must equal `CosmosTenantStore.QUERIED_PATHS`** (Cosmos rejects a
+  filter on an unindexed path). A new query filter path means updating `cosmos.bicep` too;
+  `tests/test_cosmos_bicep.py` fails CI otherwise.
+- **The materializer walks the FULL horizon every call and decides by HISTORY, never by an id
+  collision** (`tenant/materialize.py`, §7.7). It covers
+  `[local_today, local_today + max(21, advance_days + 7)]` in the COURSE timezone and, per date,
+  classifies the row history (`classify_date_history`): frozen (`frozen_reason`, or past) →
+  user-terminal row (a cancelled `user`/`external`/`already_gone` row blocks the date for every
+  rule; a withdrawn one-off does not) → own row (pending/booked/skipped/superseded/lost: nothing;
+  system-withdrawn + slot free: `reactivate_rule_row`; slot held: nothing) → no own row (slot free:
+  create; held: create SUPERSEDED). Why the full walk: deactivation is not atomic (reset →
+  withdraw → reset → inactive, pinned by `test_deactivation_order_reset_withdraw_reset_inactive`),
+  so a crash can strand withdrawn rows before the watermark; the tick reactivates them.
+  `apply_rule_edit` rewrites only PENDING, unleased, not-frozen rows; a weekday move withdraws the
+  old weekday's PENDING + SUPERSEDED rows and materializes the new one; deactivation never touches
+  BOOKED or SKIPPED rows. **Leased rows are never touched by an edit** (`skipped_leased`); the
+  tick's `rows_no_longer_covered` sweep withdraws them later with a reason from the stored rule.
+  Conflict errors propagate out of `materialize_rule`/`apply_rule_edit` unswallowed. Rule
+  DELETION is not on the Protocol yet.
+- **Public repo: no email address in any param file.** The operator email is read from the
+  `OPERATOR-NOTIFY-EMAIL` Key Vault secret and the ACS sender is derived from the email module
+  output (pinned by `tests/test_webapp_bicep.py`).
 
-Anti-patterns we don't accept:
-- Writing implementation, then tests that "describe" what the code does
-  (tests written this way encode bugs as features).
-- Mocking the type under test. Mock collaborators, never the SUT.
-- Skipping red — "obviously this passes" is how silent regressions ship.
-- Tests that pass on `pytest` but only because they don't actually call
-  the code path. Always verify the test fails before you write the impl.
+### Email OTP
+
+- **Mangrove Bay requires an emailed six-digit code from 2026-07-15, but enforcement is UI-only.**
+  Live recon showed the bot's direct API book POST is not challenged (HTTP 200 + instant
+  confirmation), so the OTP source is NOT on the booking critical path.
+  - `core/otp.py` holds the `OtpSource` Protocol, `ImapOtpSource` (polls the dedicated Gmail
+    inbox, fresh IMAP connection per poll, checks Spam, clock-injected, never logs the code) and
+    `FakeOtpSource`. `fetch_code(sent_after=..., timeout_s=...)` scopes to the current attempt
+    minus `freshness_grace_s` (default 60 s), because the mail server's clock may lag and
+    rejecting a live code is the fatal direction. A blip consumes one poll, not the window;
+    `connect_timeout_s` bounds a hung connect.
+  - **Detection is wired:** `ForeUpAdapter._guard_otp_challenge` runs in `book()` after
+    `_guard_captcha` and before the 400 → SlotGone mapping, and raises `OtpChallengeError`, a
+    `CaptchaError` subclass, so every operator-loud CaptchaError path fires (booking exits
+    non-zero; the watcher notifies and re-raises). Markers (`_OTP_CHALLENGE_MARKERS`) are
+    best-effort since the API wording is unobserved; a captcha match wins if both match
+    (test-pinned). Without it a challenge would read as SlotGone and end as a clean NO_INVENTORY.
+  - Carve-outs inherited from CaptchaError: the upgrade's rebook-after-cancel logs and continues
+    (the week's slot can be lost; accepted), and a challenge on a blind-burst POST is dropped like
+    any non-SlotGone error (if the fresh search then finds nothing, the run ends as a non-zero
+    NO_INVENTORY with the challenge only in a WARNING; accepted residual).
+  - Recon extras: a UI pending hold shows in `list_reservations`, blocks the slot, self-expires,
+    and does NOT count toward the 1-per-day limit.
+  - **Open constraint for any future fetch → verify wiring:** `fetch_code` has no per-attempt
+    correlation, so concurrent books sharing a mailbox could steal each other's codes. With the
+    burst at 3, the wiring must serialize OTP-requiring books or extend the Protocol first.
+
+## Per-course specifics
+
+Course IDs, URLs and quirks (Mangrove Bay / ForeUP, Sydney R. Marovitz / TeeItUp) and the
+step-by-step for adding a course live in
+[`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md).
+
+## Red-green TDD (mandatory)
+
+Every behaviour change lands test-first:
+
+1. **Red.** Write the smallest test for the desired behaviour; confirm it fails for the right
+   reason, not an import error or fixture typo.
+2. **Green.** Write the minimum implementation that passes. No extra fields, no untested branches.
+3. **Refactor.** Clean up with the tests green; re-run them.
+4. **Commit boundary.** One meaningful red → green → refactor unit per commit.
+
+Rules:
+
+- A stub's `NotImplementedError` is the red phase already on disk: write the test next, then the
+  body.
+- Protocol implementations get a structural test (`isinstance(impl, Protocol)`) and at least one
+  behavioural path (reference: `tests/test_adapter_stub.py`).
+- State-machine work (PLAN §9.1, MULTIUSER_PLAN §3.4): one failing test per transition before its
+  branch. The state machine is too subtle to backfill.
+- `pytest -k <name>` for the inner loop; the full suite before commit.
+- A bug in merged code gets its reproducing test FIRST.
+
+Anti-patterns we reject: tests written after the code to describe it (they encode bugs as
+features); mocking the type under test (mock collaborators only); skipping red; tests that pass
+without calling the code path.
 
 ## Documentation standard
 
-Every PR must leave the docs in sync with the code. Before opening a PR,
-check each of these and update any that the PR makes stale:
+Every PR leaves the docs in sync with the code. Not every PR touches every doc, but every PR checks
+the rows below that apply. A new CLI flag, env var or milestone with no doc update is incomplete.
 
-| Doc | Update when… |
+| Doc | Update when |
 |-----|-------------|
-| `README.md` | Milestone status changes; new prerequisites, commands, or env vars; architecture diagram changes; roadmap table |
-| `CLAUDE.md` | New architectural invariants; changes to common commands; new subsystems, protocols, or agent rules |
-| `PLAN.md` | Milestone marked done or scope changes; open questions resolved or added; new spikes |
-| `infra/AZURE_PLAN.md` | Azure open questions resolved; new Key Vault secrets; IaC module changes; OIDC/RBAC changes |
+| `README.md` | Status or roadmap changes; new prerequisites, commands, env vars; architecture changes |
+| `CLAUDE.md` | New invariants or agent rules; command changes; new subsystems or Protocols; status changes |
+| `PLAN.md` | Engine milestone done or re-scoped; open questions resolved; new spikes |
+| `MULTIUSER_PLAN.md` | MU milestone done (§12 row) or re-scoped; tenant design changes |
+| `docs/MULTIUSER_AS_BUILT.md` | A tenant milestone lands or deviates from the plan |
+| `docs/RELEASES.md` | Every prod infra tag |
+| `infra/AZURE_PLAN.md` | Azure questions resolved; new Key Vault secrets; IaC module changes; OIDC/RBAC changes; runbooks |
+| `BACKLOG.md` | A deferred item is added or retired |
 
-A PR that introduces a new CLI flag, env var, or milestone task with no
-corresponding doc update is incomplete. Not every PR touches every doc —
-the rule is to check and update the ones that are now stale.
+Style: every doc over ~150 lines carries a `<!-- toc -->` block (CI checks that its links resolve);
+prefer tables for facts, short paragraphs, one `> **Status:**` callout at the top of a plan.
+Shipped plans move to `docs/plans/` with a status banner and keep their bodies.
 
-### Change→docs map (which docs a given KIND of change makes stale)
+### Change→docs map
 
-The table above says when each DOC changes; this map inverts it — start from what
-your PR changes and it lists every doc site that claim lives in. The repeated
-full-repo-scan finding is a claim updated in most-but-not-all of its homes, so when
-a row names several sites, grep and update ALL of them in the same PR.
+Start from what your PR changes; each row lists every doc site that claim lives in. The recurring
+full-repo-scan finding is a claim updated in most but not all of its homes, so grep and update ALL
+of them in the same PR.
 
 | Change | Doc sites to update (all of them) |
 |--------|-----------------------------------|
-| Prod infra tag bump / deploy | README.md status (§top + IaC section), CLAUDE.md Status paras, PLAN.md (scope note + §16 M6.T3 row). Mechanically enforced: `tests/test_docs_consistency.py` fails CI if the three docs name different "latest infra tag" versions |
-| Dependency floor bump / dep-comment edit | `pyproject.toml` (bump the floor AND check the comment above it) — a dep comment must name NO tracking version, since Dependabot bumps the floor out from under it. Mechanically enforced: `tests/test_docs_consistency.py` fails CI if the `idna` comment names any version but the CVE boundary, or if the floor drops below it. This claim has drifted TWICE (cleaned in #106, re-drifted by #204) |
-| New/changed config key or default | `core/config.py` field comment, `config/example.toml` + `container.toml` + `local.toml`, README config walkthrough, `tests/test_container_config_parity.py` (add the parity/default pin), CLAUDE.md invariant bullet if load-bearing |
-| Orchestrator/watcher behavior change | CLAUDE.md invariant bullets, PLAN.md §9/§9.1/§12, the owning plan doc's status header (and a supersession banner on any plan it retires) |
-| New CLI flag or env var | README, AZURE_PLAN §7.3 env inventory + `compute.bicep`/`keyvault.bicep` if deployed, CLAUDE.md common commands |
-| Adapter capability / course quirk | `src/teetime/courses/CLAUDE.md` (per-course section), CLAUDE.md capability bullet |
-| ACA job/cron/timeout change | `compute.bicep` comments, CLAUDE.md + README schedule claims, AZURE_PLAN §5, killswitch job-name coupling (`killswitch.bicep` + its parity test) |
-| New CI validation job | CLAUDE.md "Required CI checks" list + branch protection (same PR — see below) |
-| Milestone/feature done or cut | PLAN.md §16 row, README status/roadmap, CLAUDE.md Status, BACKLOG.md if it retires an item |
+| Prod infra tag bump / deploy | README.md Status + Azure hosting, CLAUDE.md Current status table, PLAN.md (scope note + §16 M6.T3 row), a new section in `docs/RELEASES.md`. Enforced: `tests/test_docs_consistency.py` fails if README/CLAUDE/PLAN name different "latest infra tag" versions |
+| Dependency floor bump / dep-comment edit | `pyproject.toml`: bump the floor AND check the comment above it. A dep comment must name NO tracking version. Enforced for `idna` (only the CVE boundary may be named; the floor may not drop below it). Drifted twice (#106, #204) |
+| New/changed config key or default | `core/config.py` field comment, `config/example.toml` + `container.toml` + `local.toml`, README Configuration, `tests/test_container_config_parity.py` pin, CLAUDE.md invariant if load-bearing |
+| Engine orchestrator/watcher behaviour (`core/*orchestrator*.py`, gates) | CLAUDE.md invariants, PLAN.md §9/§9.1/§12, the owning plan's status banner (and a supersession banner on any plan it retires) |
+| Adapter capability / course quirk (`courses/**`) | `src/teetime/courses/CLAUDE.md`, CLAUDE.md capability bullet |
+| Tenant logic (`src/teetime/tenant/**`) | `docs/MULTIUSER_AS_BUILT.md` (milestone section), MULTIUSER_PLAN.md (§12 row + the section it implements), CLAUDE.md Multi-user invariants and milestone table if state changes |
+| Tenant store semantics or schema (`tenant/store.py`, `in_memory_store.py`, `cosmos/**`, `semantics.py`) | `tests/tenant/conformance.py` (the contract), MULTIUSER_PLAN §3, `QUERIED_PATHS` + `cosmos.bicep` index policy if a new filter path, CLAUDE.md Two-stores bullet |
+| Web app (`src/teetime/web/**`, templates, routes) | README Multi-user web app section (pages, env vars), MULTIUSER_PLAN §8 (`web/routes.py::ROUTES` is the contract table), `docs/MULTIUSER_AS_BUILT.md` |
+| New CLI command, flag or env var | README, CLAUDE.md Common commands, AZURE_PLAN §7.3 env inventory + `compute.bicep`/`webapp.bicep`/`keyvault.bicep` if deployed |
+| Key Vault secret added/renamed | `keyvault.bicep` / the consuming module, AZURE_PLAN §7.3 secret inventory, README env-var tables, `tests/test_keyvault_bicep.py` or the module's test |
+| ACA job, cron or timeout (`compute.bicep`) | `compute.bicep` comments, CLAUDE.md + README schedule claims, AZURE_PLAN §5, killswitch job-name coupling (`killswitch.bicep` + `tests/test_killswitch_job_parity.py`) |
+| Release event (`infra/bicep/release_events.json`, `core/release_policy.py`) | `tests/test_release_events_parity.py`, MULTIUSER_PLAN §6.2, AZURE_PLAN §5, `src/teetime/courses/CLAUDE.md` per-course policy |
+| New Bicep module or param (`infra/bicep/**`: `cosmos`, `webapp`, `email`, …) | `infra/CLAUDE.md` module tree, AZURE_PLAN (module + runbook), both `.bicepparam` files, `azure-iac.yml` inline params (pinned by `test_every_param_file_value_reaches_every_ci_deploy`), killswitch levers if it runs compute |
+| CI workflow change (`.github/workflows/**`) | CLAUDE.md Required CI checks + branch protection for a new validation job, `.githooks/pre-push` (pinned by `tests/test_prepush_hook.py`) |
+| Milestone or feature done or cut | PLAN.md §16 row or MULTIUSER_PLAN §12 row, README status/roadmap, CLAUDE.md Current status, BACKLOG.md if it retires an item |
+| Doc moved, renamed or retired | Every link to it (grep the whole repo incl. src docstrings, tests, bicep, workflows), the Where-the-docs-live table here, README Documentation list. Enforced: `tests/test_docs_consistency.py` fails on a broken relative markdown link |
 
-When a sweep fixes a stale claim, ask "can a cheap test pin this?" — the
-tag-agreement check in `tests/test_docs_consistency.py` exists because the same
-claim went stale twice; add sibling checks there when a new claim class recurs.
+When a sweep fixes a stale claim, ask whether a cheap test can pin it; add sibling checks to
+`tests/test_docs_consistency.py` when a claim class recurs.
 
 ## Required CI checks
 
-Any NEW CI validation job added to `ci.yml` (a job that runs on PRs and should
-gate merge — e.g. a new lint/test/scan/build check) **MUST be added to `main`'s
-branch-protection required status checks in the same PR**:
+A NEW validation job in `ci.yml` (one that runs on PRs and should gate merge) **must be added to
+`main`'s branch-protection required checks in the same PR**. Validation checks are required by
+default; do not add an advisory-only merge gate. Deploy jobs are not required checks.
 
 ```bash
 gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_status_checks \
   -F strict=true \
   -f 'contexts[]=<job-name-1>' \
-  -f 'contexts[]=<job-name-2>' \
-  # ... include the FULL current list every time (replaces, not appends)
+  -f 'contexts[]=<job-name-2>'
+  # include the FULL current list every time (it replaces, not appends)
 ```
 
-Validation checks are required by default; do NOT add a merge-gating check that
-is only advisory. Deploy jobs (`deploy-dev` / `deploy-prod`) are NOT required
-checks — they run on push/tags, not PRs.
+**Current required checks:** `test / lint / typecheck`, `docker build`, `docker smoke`,
+`bicep lint`, `secret scan`.
 
-**Current required checks:** `test / lint / typecheck`, `docker build`,
-`docker smoke`, `bicep lint`, `secret scan`.
-
-**Local pre-push gate (`.githooks/pre-push`).** Runs every command CI's `test / lint /
-typecheck` job runs (`uv lock --locked`, `ruff check .`, `ruff format --check .`, `mypy`,
-`pytest -m "not integration"`; pip-audit stays CI-only) with `set -euo pipefail`, and BLOCKS the
-push on the first failure. Enable once per clone — worktrees share it:
-`git config core.hooksPath .githooks`. **Why:** PRs kept opening with a failing lint check because
-local checks were read through an output filter (`rtk pipe`) or `| tail -1`, which hide a
-non-zero exit code — a failing `ruff check` looked clean. The hook decides by EXIT CODE only.
-Rules for agents: never `git push --no-verify` for normal work; when YOU run a gate, judge it by
-its exit code, never by filtered/tailed output. `tests/test_prepush_hook.py` fails CI if the hook
-drifts from ci.yml.
+**Local pre-push gate (`.githooks/pre-push`).** Runs every command of CI's `test / lint /
+typecheck` job (`uv lock --locked`, `ruff check .`, `ruff format --check .`, `mypy`,
+`pytest -m "not integration"`; pip-audit stays CI-only) with `set -euo pipefail` and blocks the
+push on the first failure. Enable once per clone (worktrees share it):
+`git config core.hooksPath .githooks`. It exists because checks read through an output filter
+(`rtk pipe`, `| tail -1`) hid non-zero exits and PRs opened with failing lint. Agents: never
+`git push --no-verify` for normal work, and judge every gate by its EXIT CODE, never by filtered
+output. `tests/test_prepush_hook.py` fails CI if the hook drifts from `ci.yml`.
 
 ## When in doubt
 
-- Implementing a new milestone task? Read PLAN.md §16 for inputs/outputs/deps.
-- Adding a new course (ForeUP / TeeItUp / Chronogolf)? See the step-by-step and
-  per-course IDs in [`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md).
-- Touching the orchestrator? Make sure FakeAdapter + FakeClock + InMemoryStore
-  tests still cover your change. Tests construct these collaborators inline (see
-  `tests/test_orchestrator.py::_build`); the race-window test is the canary.
-- Modifying anti-bot etiquette? Re-read PLAN.md §12 first. ToS posture is not
-  ours to negotiate around.
+- New engine milestone task: PLAN.md §16 has inputs, outputs and dependencies.
+- New tenant task: MULTIUSER_PLAN.md §12, then the milestone's section in
+  `docs/MULTIUSER_AS_BUILT.md`.
+- Adding a course: [`src/teetime/courses/CLAUDE.md`](./src/teetime/courses/CLAUDE.md).
+- Touching the orchestrator: FakeAdapter + FakeClock + InMemoryStore tests must still cover it
+  (collaborators are built inline, see `tests/test_orchestrator.py::_build`); the race-window test
+  is the canary.
+- Anti-bot etiquette: re-read PLAN.md §12 first. ToS posture is not ours to negotiate around.
 
-## v1 Azure infra → `infra/CLAUDE.md`
+## Azure infra and the deploy safety rule
 
-The Azure hosting work (Bicep layout, `az login` runbook, the **agent deploy
-safety rules**, and the open-questions pointer) lives in
-[`infra/CLAUDE.md`](./infra/CLAUDE.md), with the authoritative design in
-`infra/AZURE_PLAN.md`. Both load automatically when you work under `infra/`.
+Bicep layout, the `az login` runbook and the agent deploy safety rules are in
+[`infra/CLAUDE.md`](./infra/CLAUDE.md); the design is `infra/AZURE_PLAN.md`. Both load when you
+work under `infra/`.
 
-**Safety rule that always applies (also enforced by `.claude/hooks/az-deploy-guard.sh`):**
-an agent MUST NOT run `az deployment … create`, `az containerapp job start`,
-`az keyvault secret set/delete` or vault-level `az keyvault purge/delete`, or
-`az group delete` without explicit user approval. Read-only `az` (list/show/validate/
-what-if) and `az bicep build` are fine. (The guard's block-list is regression-tested in
-`tests/test_az_deploy_guard.py`.)
+- **`azure-iac.yml` deploys with INLINE parameters,** so every value a `.bicepparam` file sets must
+  also be parsed and passed by the workflow (a missed one kept dev's watcher at `*/10`).
+  `tests/test_azure_iac_killswitch_latch.py::test_every_param_file_value_reaches_every_ci_deploy`
+  enforces it.
+
+**Safety rule that always applies (enforced by `.claude/hooks/az-deploy-guard.sh`, regression-tested
+in `tests/test_az_deploy_guard.py`):** an agent MUST NOT run `az deployment … create`,
+`az containerapp job start`, `az keyvault secret set/delete`, vault-level
+`az keyvault purge/delete`, or `az group delete` without explicit user approval. Read-only `az`
+(list/show/validate/what-if) and `az bicep build` are fine.

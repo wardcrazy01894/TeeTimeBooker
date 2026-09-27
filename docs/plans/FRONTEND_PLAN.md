@@ -1,5 +1,7 @@
 # TeeTimeBooker — Frontend Plan (v2)
 
+> **Status:** Superseded, never built. Replaced by the multi-user web app in [MULTIUSER_PLAN.md](../../MULTIUSER_PLAN.md) (MU-12 to MU-14). Kept only because MULTIUSER_PLAN §8.5 cites its §2, §3 and §4.3.
+
 Design doc for putting a UI around the booking engine. Subordinate to
 [PLAN.md](../../PLAN.md) (v0 booking engine) and `infra/AZURE_PLAN.md` (v1 hosting) —
 read those first. This file covers ONLY the frontend + the API layer it talks to.
@@ -8,6 +10,29 @@ Status: **proposed.** No code written. Decisions below were ratified in a design
 conversation; the open questions in §7 are the only unsettled points.
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [1. Goal](#1-goal)
+- [2. Core decision: live-fetch for reads, store-mediated for writes](#2-core-decision-live-fetch-for-reads-store-mediated-for-writes)
+- [3. Read/write shapes](#3-readwrite-shapes)
+- [4. Architecture](#4-architecture)
+  - [4.1 What the design already gives us for free](#41-what-the-design-already-gives-us-for-free)
+  - [4.2 New components](#42-new-components)
+  - [4.3 Anti-bot etiquette (PLAN.md §12)](#43-anti-bot-etiquette-planmd-12)
+- [5. Milestones](#5-milestones)
+  - [M-fe-T1 — Engine-wiring extraction (prerequisite, no behavior change)](#m-fe-t1--engine-wiring-extraction-prerequisite-no-behavior-change)
+  - [M-fe-T2 — `list_reservations` aggregation + API read endpoint](#m-fe-t2--list_reservations-aggregation--api-read-endpoint)
+  - [M-fe-T3 — Cancel (single) endpoint](#m-fe-t3--cancel-single-endpoint)
+  - [M-fe-T4 — Cancel-all endpoint](#m-fe-t4--cancel-all-endpoint)
+  - [M-fe-T5 — Preferences editing (needs durable mutable state — M3 was cut; see §7 Q1)](#m-fe-t5--preferences-editing-needs-durable-mutable-state--m3-was-cut-see-7-q1)
+  - [M-fe-T6 — Frontend UI](#m-fe-t6--frontend-ui)
+- [6. Contract changes required](#6-contract-changes-required)
+- [7. Open questions](#7-open-questions)
+- [8. What this plan deliberately does NOT do](#8-what-this-plan-deliberately-does-not-do)
+
+<!-- /toc -->
 
 ## 1. Goal
 

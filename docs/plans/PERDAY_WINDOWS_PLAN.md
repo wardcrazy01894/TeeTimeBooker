@@ -1,7 +1,48 @@
-# docs/plans/PERDAY_WINDOWS_PLAN.md — Per-day (and multiple-per-day) booking windows
+# PERDAY_WINDOWS_PLAN.md — Per-day (and multiple-per-day) booking windows
+
+> **Status:** Shipped (PRs #76, #77). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
 
 Status: IMPLEMENTED (PRs #76 schema + scoping, #77 window-list-order priority). Ratified via
 plan-with-review. TDD throughout.
+
+<!-- toc -->
+## Contents
+
+- [1. Executive summary](#1-executive-summary)
+- [2. The `rank_slots_for_request` multi-window analysis (the subtle one)](#2-the-rank_slots_for_request-multi-window-analysis-the-subtle-one)
+  - [The disjoint-window consequence (OPEN QUESTION — see §13, Q1)](#the-disjoint-window-consequence-open-question--see-13-q1)
+- [3. Schema decision: (A) flat tagged list vs (B) nested day_windows](#3-schema-decision-a-flat-tagged-list-vs-b-nested-day_windows)
+  - [(A) Flat list, each window carries `weekday` (CHOSEN)](#a-flat-list-each-window-carries-weekday-chosen)
+  - [(B) Nested day_windows](#b-nested-day_windows)
+  - [Decision: **(A)**, for these reasons](#decision-a-for-these-reasons)
+  - [New helper](#new-helper)
+- [4. Domain-model impact (`core/models.py`)](#4-domain-model-impact-coremodelspy)
+  - [Fingerprint / RequestId (`models.py:43-70`) — see §6](#fingerprint--requestid-modelspy43-70--see-6)
+- [5. Wanted-days derivation + the gate/watcher](#5-wanted-days-derivation--the-gatewatcher)
+- [6. Fingerprint / RequestId impact](#6-fingerprint--requestid-impact)
+- [7. Backward-compat / migration: **HARD CUTOVER**](#7-backward-compat--migration-hard-cutover)
+  - [Migrated TOML (all three files, PR2) — SAME current values, per-day](#migrated-toml-all-three-files-pr2--same-current-values-per-day)
+- [8. Per-date window scoping (the spine)](#8-per-date-window-scoping-the-spine)
+  - [Booking run — `_build_booking_request` (`__main__.py:632-642`)](#booking-run--_build_booking_request-__main__py632-642)
+  - [Watcher — `_check_course` (`core/watch_orchestrator.py:305`)](#watcher--_check_course-corewatch_orchestratorpy305)
+  - [Upgrade path — `UpgradeOrchestrator` (reviewer item 9)](#upgrade-path--upgradeorchestrator-reviewer-item-9)
+- [9. What does NOT change (per-date independence — reviewer items 6, 7)](#9-what-does-not-change-per-date-independence--reviewer-items-6-7)
+- [10. PR-by-PR sequence](#10-pr-by-pr-sequence)
+  - [PR0 (Spike S1): pydantic extra-keys policy](#pr0-spike-s1-pydantic-extra-keys-policy)
+  - [PR1 — Schema: `weekday` on `TimeWindowConfig`, derive wanted-days, remove `target_weekdays`](#pr1--schema-weekday-on-timewindowconfig-derive-wanted-days-remove-target_weekdays)
+  - [PR2 — Migrate the committed TOML configs](#pr2--migrate-the-committed-toml-configs)
+  - [PR3 — Per-date window scoping (booking run + watcher + upgrade fallback)](#pr3--per-date-window-scoping-booking-run--watcher--upgrade-fallback)
+  - [PR4 (OPTIONAL, gated on Q1) — Window-list-order = priority ranking](#pr4-optional-gated-on-q1--window-list-order--priority-ranking)
+- [11. Stub signatures (NOT applied — follow-up agents implement test-first)](#11-stub-signatures-not-applied--follow-up-agents-implement-test-first)
+  - [`core/config.py` (edits)](#coreconfigpy-edits)
+  - [`core/models.py` (edit)](#coremodelspy-edit)
+  - [`__main__.py` (edits / new helpers)](#__main__py-edits--new-helpers)
+  - [`core/slot_utils.py` (edit, PR4 only, gated on Q1)](#coreslot_utilspy-edit-pr4-only-gated-on-q1)
+- [12. Docs-to-update checklist](#12-docs-to-update-checklist)
+- [13. OPEN QUESTIONS](#13-open-questions)
+- [14. Parallel-execution note](#14-parallel-execution-note)
+
+<!-- /toc -->
 
 ## 1. Executive summary
 

@@ -163,3 +163,135 @@ def test_idna_floor_never_drops_below_cve_boundary() -> None:
         f"idna floor {match.group('floor')} is below the CVE-2026-45409 boundary "
         f"{_IDNA_CVE_BOUNDARY} — the resolver could pick a vulnerable idna."
     )
+
+
+# --- markdown structure: links resolve, long docs carry a working TOC -------------------
+#
+# 2026-09-26 docs cleanup: the shipped plan docs moved to docs/plans/ and per-release history
+# moved to docs/RELEASES.md. A moved or renamed doc silently breaks every relative link to it,
+# and a heading rename silently breaks every TOC entry pointing at it. Both are cheap to check
+# mechanically, so CI does: every relative markdown link must resolve to an existing file, and
+# every doc over _TOC_MIN_LINES lines must carry a `<!-- toc -->` block whose `#anchor` links
+# all name a heading in that doc (GitHub's slug rules). The TOC check does NOT require the TOC
+# to list every heading — only that nothing it lists is dangling.
+
+_TOC_MIN_LINES = 150
+_TOC_BLOCK_RE = re.compile(r"<!-- toc -->(.*?)<!-- /toc -->", re.S)
+_MD_LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+
+
+def _markdown_docs() -> list[Path]:
+    roots = [REPO_ROOT.glob("*.md")]
+    for sub in ("docs", "infra", "src", ".claude/skills"):
+        roots.append((REPO_ROOT / sub).rglob("*.md"))
+    return sorted({p for gen in roots for p in gen})
+
+
+def _strip_code(text: str) -> str:
+    """Drop fenced code blocks and inline code spans, which may contain link-like text."""
+    kept: list[str] = []
+    fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if not fence:
+            kept.append(re.sub(r"`[^`]*`", "", line))
+    return "\n".join(kept)
+
+
+def _github_slug(title: str) -> str:
+    title = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", title)
+    title = re.sub(r"[^\w\- ]", "", title.strip().lower())
+    return title.replace(" ", "-")
+
+
+def _heading_anchors(text: str) -> set[str]:
+    anchors: set[str] = set()
+    counts: dict[str, int] = {}
+    for line in _strip_code_fences_only(text).splitlines():
+        m = _HEADING_RE.match(line)
+        if not m:
+            continue
+        slug = _github_slug(m.group(2))
+        n = counts.get(slug, 0)
+        counts[slug] = n + 1
+        anchors.add(slug if n == 0 else f"{slug}-{n}")
+    return anchors
+
+
+def _strip_code_fences_only(text: str) -> str:
+    kept: list[str] = []
+    fence = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if not fence:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _broken_relative_links(doc: Path, text: str) -> list[str]:
+    broken: list[str] = []
+    for target in _MD_LINK_RE.findall(_strip_code(text)):
+        if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("#"):
+            continue
+        path = target.split("#", 1)[0]
+        if not (doc.parent / path).exists():
+            broken.append(target)
+    return broken
+
+
+def _dangling_toc_anchors(text: str) -> list[str] | None:
+    """None when the doc has no TOC block; else the TOC anchors naming no heading."""
+    block = _TOC_BLOCK_RE.search(text)
+    if block is None:
+        return None
+    anchors = _heading_anchors(text)
+    return [a for a in re.findall(r"\]\(#([^)\s]+)\)", block.group(1)) if a not in anchors]
+
+
+def test_doc_guards_are_not_vacuous() -> None:
+    """The helpers flag a broken link and a dangling TOC entry (else the guards pass on anything)."""
+    fake = REPO_ROOT / "CLAUDE.md"
+    assert _broken_relative_links(fake, "see [x](./no/such/file.md) and [y](./README.md)") == [
+        "./no/such/file.md"
+    ]
+    toc = "<!-- toc -->\n- [A](#a-heading)\n- [B](#gone)\n<!-- /toc -->\n## A heading\n"
+    assert _dangling_toc_anchors(toc) == ["gone"]
+    assert _markdown_docs(), "no markdown docs found — the doc globs are wrong"
+
+
+def test_relative_markdown_links_resolve() -> None:
+    """Every relative link in every repo doc points at a file that exists."""
+    failures = {
+        str(doc.relative_to(REPO_ROOT)): bad
+        for doc in _markdown_docs()
+        if (bad := _broken_relative_links(doc, doc.read_text(encoding="utf-8")))
+    }
+    assert not failures, (
+        f"Broken relative markdown links (a doc moved or was renamed?): {failures}. "
+        "Fix the link targets in the same PR as the move."
+    )
+
+
+def test_long_docs_have_a_working_toc() -> None:
+    """Docs over _TOC_MIN_LINES lines carry a `<!-- toc -->` block with no dangling anchors."""
+    missing: list[str] = []
+    dangling: dict[str, list[str]] = {}
+    for doc in _markdown_docs():
+        text = doc.read_text(encoding="utf-8")
+        name = str(doc.relative_to(REPO_ROOT))
+        result = _dangling_toc_anchors(text)
+        if result is None:
+            if len(text.splitlines()) > _TOC_MIN_LINES:
+                missing.append(name)
+        elif result:
+            dangling[name] = result
+    assert not missing, (
+        f"Docs over {_TOC_MIN_LINES} lines without a `<!-- toc -->` ... `<!-- /toc -->` "
+        f"block: {missing}. Add a '## Contents' list of the doc's sections."
+    )
+    assert not dangling, f"TOC entries that match no heading (a heading was renamed?): {dangling}"

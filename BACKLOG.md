@@ -3,9 +3,21 @@
 A running list of things to add when there's time. **Not ratified, not scheduled** —
 this is the "ideas that would otherwise live in phone notes" file. Detailed designs
 live in their own `*_PLAN.md` docs; this file is the index plus the not-yet-designed
-items. Add freely; promote an item to a real plan/milestone when you decide to build it.
+items. Add freely; promote an item to a real plan/milestone when you decide to build it, and
+delete it here when it ships.
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [Courses to add](#courses-to-add)
+- [Observability / reliability](#observability--reliability)
+- [Multi-user website](#multi-user-website)
+- [Multi-user follow-ups](#multi-user-follow-ups)
+- [Frontend (single-user web UI): superseded](#frontend-single-user-web-ui-superseded)
+
+<!-- /toc -->
 
 ## Courses to add
 
@@ -71,10 +83,10 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ## Multi-user website
 
-- **Multi-user hosted site (BYO ForeUP accounts, rules/dates/skips, per-user email).**
-  RATIFIED 2026-09-25 in [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) (stubs on disk, nothing wired).
-  It supersedes the single-user FRONTEND_PLAN below. Store: Cosmos DB free tier (decided
-  2026-09-25, MULTIUSER_PLAN §10.2).
+- **Multi-user hosted site** (BYO ForeUP accounts, rules/dates/skips, per-user email):
+  RATIFIED 2026-09-25 in [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) and built through MU-17 (live in
+  dev, dry-run). Open: MU-16b (`tenant-seed --adopt`), the prod cutover MU-18, and retiring the
+  TOML path (MU-19/MU-20). Store: Cosmos DB free tier (MULTIUSER_PLAN §10.2).
 
 ---
 
@@ -118,13 +130,9 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
   `RowOutcome`, the Cosmos mapping and `_uncertain_times`, with a round-trip test.
 - **`needs_reconcile` on a PENDING row cannot be cleared via `record_outcomes`**, so that account
   logs in on every watch run (6/hour) until the row books or freezes. Add a flag-clear outcome.
-- **Scope uvicorn `forwarded_allow_ips` to the ACA ingress** in MU-15a (today it trusts any peer).
-- **MU-15b: the Cosmos index policy must cover `CosmosTenantStore.QUERIED_PATHS`** (MU-8b). The
-  §3.2 list (`/type`, `/courseId`, `/targetDate`, `/status`, `/cutoffAt`, `/userId`) is too short:
-  the store also filters on `/source`, `/rowId`, `/ruleId`, `/active`, `/rawReservationId`,
-  `/oauthProvider`, `/oauthSubject`, `/usernameHash`, and Cosmos rejects a filter on an excluded
-  path. Then run the integration conformance leg (README) once the account exists: it has never
-  run against real Cosmos.
+- **Run the Cosmos integration conformance leg** (README, Development): the index policy now
+  equals `CosmosTenantStore.QUERIED_PATHS` (pinned by `tests/test_cosmos_bicep.py`), but the suite
+  had not yet been run against the real account when MU-15b landed.
 - **Rule deletion must clear the `ruleday|<weekday>` pointer atomically** (surfaced in the MU-6
   review). The store has no rule delete yet; when MU-8b (Cosmos) or MU-13 (web) adds one, it must
   remove the rule doc and its weekday pointer in ONE batch, or that weekday is blocked to every new
@@ -132,31 +140,16 @@ items. Add freely; promote an item to a real plan/milestone when you decide to b
 
 ---
 
-## Frontend (single-user web UI)
+## Frontend (single-user web UI): superseded
 
-A full, ratified design already exists: **[FRONTEND_PLAN.md](./docs/plans/FRONTEND_PLAN.md)**
-(status: *proposed*, no code yet). Every item below is specced there — this is just
-the index back to it.
+The single-user [FRONTEND_PLAN.md](./docs/plans/FRONTEND_PLAN.md) was never built; the multi-user
+site delivered its wants instead:
 
-| Want | Where it's designed |
-|------|---------------------|
-| A website around the booking engine | docs/plans/FRONTEND_PLAN.md (whole doc) |
-| Show all current bookings | Goal 1 / **M-fe-T2** — live `list_reservations()` across courses |
-| Cancel button next to each booking | Goal 2 / **M-fe-T3** — `cancel_reservation()`, managed vs. manual |
-| Cancel **all** bookings | Goal 3 / **M-fe-T4** — list → per-item cancel |
-| Change the time window / day preference | Goal 4 / **M-fe-T5** — edit `[request]` prefs |
-| **Re-rank the courses** (change booking priority) | Goal 4 / **M-fe-T5** — edit `course_preferences` order + `[[one_booking_policy.priority_slots]]` |
-| Auth on the frontend | docs/plans/FRONTEND_PLAN.md **§7 Q2** (open question) |
+| Want | Where it landed |
+|------|-----------------|
+| Show all current bookings | Dashboard `/` (MU-13), from the persisted trusted snapshot |
+| Cancel a booking | `/dates` Cancel (MU-14), ownership-aware |
+| Change time window / day preference, re-rank courses | Ranked booking form (MU-R3) |
+| Auth on the frontend | Invite-only OAuth (MU-12) |
 
-**Two things the plan already flags as the real constraints:**
-
-- **Auth is not optional if the UI is exposed.** The API holds course credentials and
-  can cancel bookings, so it can't be unauthenticated on a public surface. Resolution
-  (local-only / basic auth / behind the Azure perimeter) is open — FRONTEND_PLAN §7 Q2.
-- **Editing preferences (windows, day, course rank) needs durable mutable state.**
-  M3 (`SqliteStore`) was cut from v0, so there's an open persistence decision —
-  FRONTEND_PLAN §7 Q1. List + cancel + cancel-all ship with **no** durable store; only
-  preference-editing carries this dependency.
-
-The whole frontend is a "maybe someday" — the v0 cron/ACA-Jobs booking + watch engine
-stands on its own without it.
+Not carried over: a one-click "cancel all bookings".

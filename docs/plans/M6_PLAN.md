@@ -1,5 +1,7 @@
 # M6 — First Production Cron Run (implementation plan)
 
+> **Status:** Shipped (M6 PRs 1–6: `run --wait`, `core/dst_gate.py`, watcher enablement, `bookingReplicaTimeout`). The Sunday-only schedule was superseded by [MULTIDAY_PLAN.md](./MULTIDAY_PLAN.md) and [PERDAY_WINDOWS_PLAN.md](./PERDAY_WINDOWS_PLAN.md). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
+
 > **⚠️ SUPERSEDED IN PART by `docs/plans/MULTIDAY_PLAN.md` (and then `docs/plans/PERDAY_WINDOWS_PLAN.md`).** The
 > **Sunday-only schedule** described here (PR5: two `… * * 0` Sunday crons, jobs `-edt-sun`/
 > `-est-sun`) was replaced by **DAILY crons + a booking-day gate** (`core/booking_day_gate.py`),
@@ -14,6 +16,32 @@ Architect plan for the milestone that takes the **booking** and **watch** ACA Jo
 `dryRun=true`, then cut over to `dryRun=false` in prod.
 
 ---
+
+<!-- toc -->
+## Contents
+
+- [Round-2 responses (reviewer BLOCK)](#round-2-responses-reviewer-block)
+- [1. Executive summary + execution-mode decision](#1-executive-summary--execution-mode-decision)
+  - [1.1 The four gaps (verified in code today)](#11-the-four-gaps-verified-in-code-today)
+  - [1.2 Execution-mode decision (prod cron vs local demo) — **EXTENSION, not change**](#12-execution-mode-decision-prod-cron-vs-local-demo--extension-not-change)
+  - [1.3 Watcher "look but don't book" steady state (NEW user requirement)](#13-watcher-look-but-dont-book-steady-state-new-user-requirement)
+  - [1.4 Headline](#14-headline)
+- [2. PR-by-PR plan (ordered)](#2-pr-by-pr-plan-ordered)
+  - [PR1 — `teetime run --wait/--no-wait` selects the real-timing scheduler](#pr1--teetime-run---wait--no-wait-selects-the-real-timing-scheduler)
+  - [PR2 — DST-half gate in the entrypoint (the wrong-season cron exit)](#pr2--dst-half-gate-in-the-entrypoint-the-wrong-season-cron-exit)
+  - [PR3 — Bicep: booking job passes `--wait`; confirm cold-start lead covers the race](#pr3--bicep-booking-job-passes---wait-confirm-cold-start-lead-covers-the-race)
+  - [PR4 — Enable the watcher in config (look-but-don't-book dev steady state)](#pr4--enable-the-watcher-in-config-look-but-dont-book-dev-steady-state)
+  - [PR5 — Bicep: Sunday-only booking schedule; keep watch cron daily](#pr5--bicep-sunday-only-booking-schedule-keep-watch-cron-daily)
+  - [PR6 — Dev verification runbook + instrumentation + docs sync](#pr6--dev-verification-runbook--instrumentation--docs-sync)
+- [3. DST-gate design (consolidated)](#3-dst-gate-design-consolidated)
+- [4. Watcher enablement (consolidated)](#4-watcher-enablement-consolidated)
+- [5. Sunday-only bicep + watch cron + replica timeout](#5-sunday-only-bicep--watch-cron--replica-timeout)
+- [6. Dev verification procedure (dryRun=true)](#6-dev-verification-procedure-dryruntrue)
+- [7. Prod cutover checklist (dryRun=false)](#7-prod-cutover-checklist-dryrunfalse)
+- [8. Prerequisites / risks / architecture extensions](#8-prerequisites--risks--architecture-extensions)
+- [9. Open questions for the user](#9-open-questions-for-the-user)
+
+<!-- /toc -->
 
 ## Round-2 responses (reviewer BLOCK)
 
