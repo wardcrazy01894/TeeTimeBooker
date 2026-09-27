@@ -422,6 +422,29 @@ async def test_search_needs_no_login_on_an_adapter_built_without_a_client() -> N
 
 
 @respx.mock
+async def test_list_reservations_still_refuses_after_a_search_without_authenticate() -> None:
+    """search() may now build the client, but list_reservations() must still raise until
+    authenticate() has run: an empty login cache must never pass the pre-book guard vacuously
+    (PLAN §9 layer 2)."""
+    respx.get(f"{FOREUP_BASE_URL}{TIMES_PATH}").mock(
+        return_value=httpx.Response(200, json=[_RAW_SLOT])
+    )
+    adapter = ForeUpAdapter(
+        course_id=CID,
+        course_pk=19671,
+        booking_class_id=2149,
+        schedule_id=2149,
+        timezone="America/New_York",
+    )
+    try:
+        await adapter.search(_request())
+        with pytest.raises(RuntimeError, match="authenticate"):
+            await adapter.list_reservations()
+    finally:
+        await adapter.aclose()
+
+
+@respx.mock
 async def test_search_logs_matched_tee_times_for_retroactive_validation(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
