@@ -29,7 +29,7 @@ from ..core.models import CourseId
 from ..tenant.crypto import Keyring
 from ..tenant.models import CourseAccountId, RowId, RuleId, User
 from ..tenant.runner import AdapterFactory
-from . import auth, group_services, services
+from . import adopt, auth, group_services, services
 from .booking_form import MAX_OPTIONS, parse_ranked_form
 from .services import (
     RULE_EDIT_HINT,
@@ -64,6 +64,7 @@ _NOTICES = {
     "account_verified": "Course account re-verified: the bot will log in with it again.",
     "refreshed": "Reservations refreshed from the course.",
     "cancelled": "Tee time cancelled.",
+    "adopted": "Existing reservations adopted: the bot now treats them as its own bookings.",
     "group_saved": "Saved. The bot books the highest-ranked option that is available.",
     "group_rule_saved": "Weekly booking saved and its dates added.",
     "price_saved": "Default price saved.",
@@ -151,6 +152,16 @@ class _Pages:
             ctx.store, user_id=user.id, clock=ctx.clock, policies=ctx.policies
         )
         context["courses"] = sorted(ctx.policies)
+        context["adoptions"] = (
+            {
+                str(v.account.id): await adopt.preview(
+                    ctx.store, user_id=user.id, account=v.account, clock=ctx.clock
+                )
+                for v in context["views"]  # type: ignore[attr-defined]
+            }
+            if context["is_operator"]
+            else {}
+        )
         context["error"] = error
         return ctx.page(request, "accounts.html", context, status_code=status_code)
 
@@ -190,6 +201,7 @@ def register_page_routes(app: FastAPI, ctx: "_Ctx", *, current_user: _Dependency
     _register_row_routes(app, pages, current_user=current_user)
     _register_account_routes(app, pages, current_user=current_user)
     _register_booking_routes(app, pages, current_user=current_user)
+    adopt.register_adopt_routes(app, pages, current_user=current_user)
 
 
 def _register_read_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependency) -> None:
@@ -409,10 +421,14 @@ def _partial(
     failures: tuple[group_services.GroupFailure, ...],
     saved: int,
     course_of: dict[CourseAccountId, CourseId],
+    course_name: Callable[[object], str],
 ) -> ActionRefusedError:
     """A group saved for SOME courses (§16.2: not one transaction) re-renders the page with what
-    was not saved; the saved rows show in the list."""
-    detail = "; ".join(f"{course_of.get(f.account_id, '?')}: {f.message}" for f in failures)
+    was not saved (by course NAME); the saved rows show in the list."""
+    detail = "; ".join(
+        f"{course_name(c) if (c := course_of.get(f.account_id)) else '?'}: {f.message}"
+        for f in failures
+    )
     return ActionRefusedError(
         f"Saved for {saved} of {saved + len(failures)} courses. Not saved: {detail}"
     )
@@ -441,7 +457,7 @@ def _register_booking_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
                 clock=ctx.clock,
             )
             if report.failures:
-                raise _partial(report.failures, len(report.rows), courses)
+                raise _partial(report.failures, len(report.rows), courses, ctx.course_name)
             return "/dates?notice=group_saved"
 
         return await pages.act(request, user, action, on_error=pages.dates)
@@ -461,7 +477,7 @@ def _register_booking_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
                 clock=ctx.clock,
             )
             if report.failures:
-                raise _partial(report.failures, len(report.rules), courses)
+                raise _partial(report.failures, len(report.rules), courses, ctx.course_name)
             return "/rules?notice=group_rule_saved"
 
         return await pages.act(request, user, action, on_error=pages.rules)

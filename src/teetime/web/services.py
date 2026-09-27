@@ -43,6 +43,7 @@ from ..core.config import BookingCutoffConfig
 from ..core.models import MANAGED_BOOKING_TAG, CourseCredentials, CourseId, ExistingReservation
 from ..core.redaction import register_secret_literals
 from ..core.release_policy import ReleasePolicy
+from ..courses.names import course_display_name
 from ..persistence.in_memory_store import InMemoryStore
 from ..persistence.store import ConcurrentRunError
 from ..tenant.crypto import (
@@ -651,15 +652,15 @@ async def set_rule_active(
     if failed:
         account = await _own_account(store, user_id=user_id, account_id=old.course_account_id)
         raise ActionRefusedError(
-            f"Done at {account.course_id}, but not at every course of this booking. "
-            + "; ".join(failed)
+            f"Done at {course_display_name(account.course_id)}, but not at every course of "
+            "this booking. " + "; ".join(failed)
         )
     return report
 
 
 async def _course_of(store: TenantStore, *, user_id: UserId, account_id: CourseAccountId) -> str:
     account = await store.get_account(account_id, user_id=user_id)
-    return str(account.course_id) if account is not None else "another course"
+    return course_display_name(account.course_id) if account is not None else "another course"
 
 
 # --- dated rows -------------------------------------------------------------------------------
@@ -722,13 +723,15 @@ async def _transition(
                 now=clock.now_utc(),
             )
         except (RowLeaseError, TransitionRefusedError) as e:
-            failed.append(f"{sibling.course_id}: {_refused(e, row=sibling).message}")
+            failed.append(
+                f"{course_display_name(sibling.course_id)}: {_refused(e, row=sibling).message}"
+            )
         except TenantNotFoundError:
-            failed.append(f"{sibling.course_id}: not found")
+            failed.append(f"{course_display_name(sibling.course_id)}: not found")
     if failed:
         raise ActionRefusedError(
-            f"Done at {row.course_id}, but not at every course of this booking. "
-            + "; ".join(failed)
+            f"Done at {course_display_name(row.course_id)}, but not at every course of "
+            "this booking. " + "; ".join(failed)
         )
     return updated
 

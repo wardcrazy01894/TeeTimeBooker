@@ -1267,6 +1267,49 @@ database. **Dev stays `dryRun = true`; prod is untouched until MU-18.**
 - **Rollback:** set `bookingMode`/`watchMode` back to `'toml'` (and `deployWebApp = false` to stop
   the site) and merge; the jobs return to `run`/`watch` on the TOML config.
 
+### 10.8 Multi-user PROD cutover (MU-18, MULTIUSER_PLAN §11 steps 5-7)
+
+Operator-driven. The plan's gate is a Mon-Thu, 09:00-20:00 ET flip, away from the 05:50 ET
+drops; prod keeps running the TOML bot until step 3. Two PRs, each shipped by an `infra/v*` tag
+(prod requires the manual approval in `azure-iac.yml`).
+
+**0. Operator prerequisites (prod vault `kv-teetime-prod-4jte`, verified missing 2026-09-26):**
+
+| Secret / grant | Value |
+|---|---|
+| `TENANT-CREDS-KEYRING` | a NEW keyring (never reuse dev's): `{"active":"k1","keys":{"k1":"<openssl rand -base64 32>"}}` |
+| `WEB-SESSION-SECRET` | `openssl rand -base64 48` |
+| `OPERATOR-NOTIFY-EMAIL` | the operator's address |
+| `OAUTH-GOOGLE-CLIENT-ID` / `-SECRET` | the SAME Google client as dev, after adding the prod redirect URI `https://teetime-web-prod.wittydesert-02f9f0cd.eastus2.azurecontainerapps.io/auth/google/callback` |
+| Key Vault Secrets Officer on the prod vault | for the CI SP `teetime-iac-ci` (object id `4c27be56-ac00-4026-ac98-8d6d2675160e`), so `email.bicep` can write `ACS-EMAIL-CONNECTION` |
+
+The prod MI already holds its Cosmos data-plane role on `/dbs/prod` (§7.2a).
+
+**1. PR A: infra with the modes still `toml` (plan step 5).** `main.bicepparam.prod`:
+`deployWebApp = true`, `deployAcsEmail = true`, `tenantCosmosEndpoint =
+'https://cosmos-teetime-shared.documents.azure.com:443/'`, `webPublicBaseUrl =
+'https://teetime-web-prod.wittydesert-02f9f0cd.eastus2.azurecontainerapps.io'`; `operatorEmail`
+and `acsEmailSender` stay `''`. Tag + approve. Gate: the deploy is green, `/healthz` answers, and
+the three TOML jobs are unchanged (`run`/`watch`, same crons).
+
+**2. Seed (plan step 6).** In the PROD site: sign in, connect the operator's Mangrove Bay account
+on **Accounts**, save the weekly booking (Sat and Sun 08:45-10:00, party of 4) on **Rules**, then
+**Refresh from course** and **Adopt existing bookings** (operator-only, MU-16b, `web/adopt.py`):
+it lists the live reservations that match a row's date, party size and time window, and records
+them as OWNED (`adopted_owned`) once the confirm box is ticked. Gate: the dashboard shows the next
+three weeks correctly and `teetime tenant-plan --event mb0600et` prints what you expect.
+
+**3. PR B: the flip (plan step 7).** `bookingMode = 'tenant'`, `watchMode = 'tenant'`. Tag +
+approve on a Mon-Thu. **Immediately after the deploy:** Refresh from course and Adopt again, so an
+upgrade the TOML watcher made during the deploy window is recorded as owned (a re-pointed row
+shows as `repoint`). Gate: the next watcher run is clean; the first tenant drop passes the §11.2
+log-line checklist.
+
+**Rollback:** set both modes back to `'toml'` and tag. TOML still has the MB credentials and
+`TEETIME-SKIP-DATES`, and the tenant path's bookings are visible to the TOML pre-book guard, so a
+rollback cannot double-book. Diff the web's rules and one-off dates against `container.toml` first
+(TOML can express only the Sat/Sun windows).
+
 ## 11. Security checklist
 
 | Item | Status | Detail |

@@ -189,7 +189,11 @@ rule per course sharing a group; the bot books the best-ranked option available,
 time per day, and moves to a better-ranked option if one opens. If one course cannot be saved the
 others still are, and the page says which. Skip, withdraw and deactivate act on the whole group.
 
-Plain HTML forms, no JavaScript. Sign-in is Google OAuth in every deployed env (GitHub is supported
+Plain HTML forms; the one script (`/static/app.js`, same-origin) only adds conveniences such as
+"Add another time slot", and every page works without it. Courses are shown by name ("Mangrove
+Bay", from `courses/names.py`), never by course id; one stylesheet with light and dark themes.
+The operator also gets **Adopt existing bookings** on `/accounts`, used once at the prod cutover to
+record the old bot's live reservations as the bot's own (MU-16b). Sign-in is Google OAuth in every deployed env (GitHub is supported
 in code but unwired in infra); only an email the operator invited can sign in. Without
 `TENANT_CREDS_KEYRING`, connect/refresh/cancel answer "not available".
 
@@ -363,7 +367,7 @@ cron loop outside. See [PLAN.md](./PLAN.md) and [MULTIUSER_PLAN.md](./MULTIUSER_
 | M-feature-1/2/3 | Cancellation watcher, auto-upgrade, midpoint-distance ranking | Done |
 | Blind-POST | Concurrent T0 book POSTs for the MB morning grid + watcher crash-net, later staggered | Done, live since `infra/v2.5.0` |
 | M-azure | Bicep IaC, container runtime | Done |
-| Multi-user site | MULTIUSER_PLAN MU-1 … MU-17, MU-R1 … MU-R3 | Done in dev; MU-16b and the prod cutover (MU-18) open |
+| Multi-user site | MULTIUSER_PLAN MU-1 … MU-17, MU-R1 … MU-R3 | Done in dev; the prod cutover (MU-18) open |
 
 Engine milestones in detail: [PLAN.md §16](./PLAN.md) and §20. Multi-user milestones:
 [MULTIUSER_PLAN.md §12](./MULTIUSER_PLAN.md).

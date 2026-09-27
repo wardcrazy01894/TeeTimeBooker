@@ -45,6 +45,7 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("POST", "/accounts/{id}/reverify", "reverify_account", AuthLevel.USER, True, "MU-14"),
     RouteSpec("POST", "/accounts/{id}/refresh", "refresh_account", AuthLevel.USER, True, "MU-14"),
     RouteSpec("POST", "/accounts/{id}/price", "set_default_price", AuthLevel.USER, True, "MU-R3"),
+    RouteSpec("POST", "/accounts/{id}/adopt", "adopt_bookings", AuthLevel.OPERATOR, True, "MU-16b"),
     RouteSpec("POST", "/bookings/date", "book_date", AuthLevel.USER, True, "MU-R3"),
     RouteSpec("POST", "/bookings/weekly", "book_weekly", AuthLevel.USER, True, "MU-R3"),
     RouteSpec("GET", "/rules", "list_rules", AuthLevel.USER, False, "MU-13"),

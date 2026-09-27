@@ -112,7 +112,7 @@ actually built, deviations included: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUS
 | MU-12 / 13 / 14 | Web skeleton / dashboard + rules + dates / connect, refresh, cancel | Done |
 | MU-15a / MU-15b | Infra without the DB / Cosmos account | Done |
 | MU-16a | Tenant commands on real collaborators + migrate job | Done |
-| MU-16b | `tenant-seed --adopt` (prod cutover only) | Open |
+| MU-16b | Adopt the TOML bot's live reservations as owned: operator-only **Adopt existing bookings** on `/accounts` (`tenant/seed.py`, `web/adopt.py`), used at the prod cutover (AZURE_PLAN §10.8) | Done |
 | MU-17 | Dev cutover | Done, dev dry-run |
 | MU-18 | Prod cutover | Open |
 | MU-19 / MU-20 | Retire TOML job wiring / TOML CLI | Open |
@@ -692,6 +692,18 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
 - **Public repo: no email address in any param file.** The operator email is read from the
   `OPERATOR-NOTIFY-EMAIL` Key Vault secret and the ACS sender is derived from the email module
   output (pinned by `tests/test_webapp_bicep.py`).
+- **The website works with JavaScript off, and never shows a raw course id.** CSP is
+  `script-src 'self'; style-src 'self'`: no inline script or style. The only script is the
+  same-origin `web/static/app.js`, progressive enhancement over plain forms (the ranked form's
+  rows 2-6 live in a `<details>` the server parses whether or not JS ran). Every course name shown
+  to a person, on pages, in messages and in emails, comes from
+  `courses/names.py::course_display_name`; add a new course there. Every form is a CSRF-guarded POST
+  and every id is resolved through user-scoped reads (a foreign id is the uniform 404). Pinned by
+  `tests/web/test_web_ui_polish.py` and the web security tests.
+- **Adopting reservations is operator-only and confirmed** (MU-16b, `web/adopt.py`): it re-plans
+  server-side from a trusted snapshot at most 15 minutes old and writes nothing without the
+  confirm box; it cannot tell the bot's bookings from a manual one for the same slot, which is why
+  the operator confirms.
 
 ### Email OTP
 

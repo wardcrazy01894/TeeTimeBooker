@@ -1,6 +1,10 @@
-{# Shared page fragments (MU-13). No script and no inline style anywhere: the CSP forbids both. #}
+{# Shared page fragments (MU-13). No script and no inline style anywhere: the CSP forbids both.
+   Course ids are storage keys: every template shows `course_id | course_name` instead. #}
 
 {% macro hhmm(t) %}{{ t.strftime('%H:%M') }}{% endmacro %}
+
+{# A date as a reader wants it ("Sat Oct 3"); the ISO date stays machine-readable. #}
+{% macro nice_date(d) %}<time datetime="{{ d.isoformat() }}"><span class="dow">{{ d.strftime('%a') }}</span>{{ d.strftime('%b') }} {{ d.day }}</time>{% endmacro %}
 
 {# A row's or rule's ranked options (§16.2), best first. #}
 {% macro windows(options) %}{% for o in options %}{{ o.earliest.strftime('%H:%M') }}–{{ o.latest.strftime('%H:%M') }}{% if not loop.last %}, {% endif %}{% endfor %}{% endmacro %}
@@ -18,7 +22,7 @@
   <input type="hidden" name="window_earliest" value="{{ hhmm(earliest) }}">
   <input type="hidden" name="window_latest" value="{{ hhmm(latest) }}">
   <input type="hidden" name="party_size" value="{{ party }}">
-  <button type="submit">{{ label }}</button>
+  <button type="submit" class="small">{{ label }}</button>
 </form>
 {% endmacro %}
 
@@ -33,47 +37,62 @@
 {% endif %}
 {% endmacro %}
 
+{# One (course, time window) option of the ranked form. Option 1 always has a course; the others
+   start blank ("(none)"), and a blank row is ignored by the server. #}
+{% macro option_row(i, accounts, first) %}
+<div class="option{% if not first %} extra{% endif %}" data-option="{{ i }}">
+  <label>Rank <input type="number" name="opt{{ i }}_rank" min="1" max="99" value="{{ i }}" aria-label="Rank of option {{ i }}"></label>
+  <label class="course">Course
+    <select name="opt{{ i }}_account" aria-label="Course of option {{ i }}">
+      {% if not first %}<option value="">(none)</option>{% endif %}
+      {% for a in accounts %}<option value="{{ a.id }}">{{ a.course_id | course_name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>From <input type="time" name="opt{{ i }}_earliest" value="08:00" aria-label="Earliest time of option {{ i }}"></label>
+  <label>To <input type="time" name="opt{{ i }}_latest" value="10:00" aria-label="Latest time of option {{ i }}"></label>
+  {% if first %}<span></span>{% else %}<button type="button" class="small link remove" hidden aria-label="Remove option {{ i }}">Remove</button>{% endif %}
+</div>
+{% endmacro %}
+
 {# MU-R3 (§16.1): ONE ranked list of (course, time window) options, for a date or every week.
-   No script (CSP), so order is a rank number per option; blank course rows are ignored. #}
+   Order is a rank number per option. Option 1 shows up front; the rest wait behind "Add another
+   time slot" (a <details> without script; one row at a time with /static/app.js). #}
 {% macro ranked_form(csrf_token, accounts, action, option_slots, weekdays, weekly) %}
 <form method="post" action="{{ action }}" class="ranked">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  {% if weekly %}
-  <label>Every
-    <select name="weekday">
-      {% for name in weekdays %}<option value="{{ loop.index0 }}"{% if loop.index0 == 5 %} selected{% endif %}>{{ name }}</option>{% endfor %}
-    </select>
-  </label>
-  {% else %}
-  <label>Date <input type="date" name="target_date" required></label>
-  {% endif %}
-  <label>Party size <input type="number" name="party_size" min="1" max="4" value="2" required></label>
-  <table>
-    <thead><tr><th>Rank</th><th>Course</th><th>Earliest</th><th>Latest</th></tr></thead>
-    <tbody>
-      {% for i in option_slots %}
-      <tr>
-        <td><input type="number" name="opt{{ i }}_rank" min="1" max="99" value="{{ i }}" aria-label="Rank of option {{ i }}"></td>
-        <td>
-          <select name="opt{{ i }}_account" aria-label="Course of option {{ i }}">
-            {% if not loop.first %}<option value="">(none)</option>{% endif %}
-            {% for a in accounts %}<option value="{{ a.id }}">{{ a.course_id }}</option>{% endfor %}
-          </select>
-        </td>
-        <td><input type="time" name="opt{{ i }}_earliest" value="08:00" aria-label="Earliest time of option {{ i }}"></td>
-        <td><input type="time" name="opt{{ i }}_latest" value="10:00" aria-label="Latest time of option {{ i }}"></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="form-row">
+    {% if weekly %}
+    <label>Every
+      <select name="weekday">
+        {% for name in weekdays %}<option value="{{ loop.index0 }}"{% if loop.index0 == 5 %} selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select>
+    </label>
+    {% else %}
+    <label>Date <input type="date" name="target_date" required></label>
+    {% endif %}
+    <label>Players <input type="number" name="party_size" min="1" max="4" value="2" required></label>
+  </div>
+  <div class="options">
+    <h3>Time slots, best first</h3>
+    {% for i in option_slots %}{% if loop.first %}{{ option_row(i, accounts, true) }}{% endif %}{% endfor %}
+    <details class="more-options">
+      <summary>Add another time slot</summary>
+      {% for i in option_slots %}{% if not loop.first %}{{ option_row(i, accounts, false) }}{% endif %}{% endfor %}
+    </details>
+    <button type="button" class="small add-option" hidden>+ Add another time slot</button>
+  </div>
   <fieldset>
     <legend>Max price per player</legend>
-    {% for a in accounts %}
-    <label>{{ a.course_id }} $<input type="number" name="price_{{ a.id }}" min="0" max="1000" step="0.01" placeholder="{{ a.default_max_price }}"></label>
-    {% endfor %}
+    <div class="prices">
+      {% for a in accounts %}
+      <label>{{ a.course_id | course_name }} $<input type="number" name="price_{{ a.id }}" min="0" max="1000" step="0.01" placeholder="{{ a.default_max_price }}"></label>
+      {% endfor %}
+    </div>
     <p class="hint">Blank uses the course's default (set on the Accounts page).</p>
   </fieldset>
   <p class="hint">The bot books the highest-ranked option that is available (inside one option, the time closest to the middle of the window). It holds at most one tee time per day, and moves to a better-ranked option if one opens later.</p>
-  <button type="submit">{% if weekly %}Save weekly booking{% else %}Book this date{% endif %}</button>
+  <div class="actions">
+    <button type="submit">{% if weekly %}Save weekly booking{% else %}Book this date{% endif %}</button>
+  </div>
 </form>
 {% endmacro %}

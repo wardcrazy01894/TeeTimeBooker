@@ -85,7 +85,7 @@ delete it here when it ships.
 
 - **Multi-user hosted site** (BYO ForeUP accounts, rules/dates/skips, per-user email):
   RATIFIED 2026-09-25 in [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) and built through MU-17 (live in
-  dev, dry-run). Open: MU-16b (`tenant-seed --adopt`), the prod cutover MU-18, and retiring the
+  dev, dry-run). Open: the prod cutover MU-18 and retiring the
   TOML path (MU-19/MU-20). Store: Cosmos DB free tier (MULTIUSER_PLAN §10.2).
 
 ---

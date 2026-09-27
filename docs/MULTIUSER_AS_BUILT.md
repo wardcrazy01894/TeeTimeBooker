@@ -32,11 +32,13 @@ CLAUDE.md invariant bullets on `prepare_book` and on the two stores; MU-7 is `te
 - [MU-14: Connect / refresh / cancel](#mu-14-connect--refresh--cancel)
 - [MU-15a: Infra without the database](#mu-15a-infra-without-the-database)
 - [MU-16a: Tenant commands on real collaborators + migrate job](#mu-16a-tenant-commands-on-real-collaborators--migrate-job)
+- [MU-16b: Adopt the TOML bot's reservations (prod-cutover seed)](#mu-16b-adopt-the-toml-bots-reservations-prod-cutover-seed)
 - [MU-17: Dev cutover](#mu-17-dev-cutover)
 - [MU-R1: Ranked options + per-course price (model, store, Cosmos)](#mu-r1-ranked-options--per-course-price-model-store-cosmos)
 - [MU-R2: Price cap, group floor, group collapse, cross-course upgrade](#mu-r2-price-cap-group-floor-group-collapse-cross-course-upgrade)
 - [MU-R3: Ranked booking form](#mu-r3-ranked-booking-form)
 - [MU-15b: Cosmos DB account](#mu-15b-cosmos-db-account)
+- [Website UI polish](#website-ui-polish)
 
 <!-- /toc -->
 
@@ -322,7 +324,7 @@ E7 literals; tenant store in memory until MU-16).
 
 ## MU-13: Dashboard, rules and dates pages
 
-(`web/pages.py` + `web/services.py` + templates; no JavaScript, no inline script or style): the
+(`web/pages.py` + `web/services.py` + templates; no inline script or style — the only script is the same-origin `web/static/app.js`, see Website UI polish): the
 dashboard `/` (the user's rows for the next 21 days: status, booked tee time course-local, the
 persisted snapshot's age "as of HH:MM (N min ago)", the §7.4 "not seen at course" / "manual
 reservation" badges from a TRUSTED snapshot only; it never logs in to ForeUP), `/rules` (create /
@@ -442,8 +444,25 @@ non-zero on any failure. `compute.bicep` gains the Manual `teetime-migrate-<env>
 only, no KV secret, 600 s, excluded from the killswitch — asserted), and `azure-iac.yml` starts and
 awaits it RIGHT AFTER deploy pass 2 when `BOOKING_MODE`/`WATCH_MODE` is `tenant` (a deviation from
 the plan's "before the jobs": pass 1 runs every job on the bootstrap image; readers accept N−1).
-`tenant-seed --adopt` is MU-16b. Known limit: `initialize()` maps a 404 to "not found", so a MISSING
+The prod-cutover seed is MU-16b (below). Known limit: `initialize()` maps a 404 to "not found", so a MISSING
 container is not detected by the migrate job (auth and endpoint failures are).
+
+## MU-16b: Adopt the TOML bot's reservations (prod-cutover seed)
+
+MULTIUSER_PLAN §11 steps 6-7. `tenant/seed.py::plan_adoptions` (pure) matches a TRUSTED persisted
+snapshot against the account's rows by course-local date, party size and an in-window option (best
+rank, then earliest) and plans `BOOK` (pending -> booked), `LEDGER` (a booked row the watcher
+adopted unowned gets its ledger entry) or `REPOINT` (the TOML watcher upgraded: booked -> booked on
+the new id, the old one `cancelled_upgrade`). `apply_adoptions` writes each under the row's lease
+with the plan-time fingerprint (a moved row is skipped, never overwritten), ledger source
+`adopted_owned`, actor `WATCHER`. It is exposed as the operator-only **Adopt existing bookings**
+action on `/accounts` (`web/adopt.py`, `POST /accounts/{id}/adopt`): the preview and the write both
+re-plan server-side from a snapshot at most 15 minutes old (else "Refresh from course first"), and
+nothing is written without the confirm box; a member gets 403. A deliberate deviation from the
+plan's `tenant-seed --adopt` CLI: the site already has the managed identity, keyring and adapters,
+so the operator needs no local secrets and no write role on the prod database. Opening the Cosmos
+store also lowers the `azure` logger to WARNING (the SDK logged every request's headers at INFO).
+Prod runbook: AZURE_PLAN §10.8.
 
 ## MU-17: Dev cutover
 
@@ -521,3 +540,15 @@ and the "add it as a one-off" follow-up.
 dev-only `tenant-ci` / `global-ci` containers. Deploy and data-plane role runbook:
 [infra/AZURE_PLAN.md §7.2a](../infra/AZURE_PLAN.md). Its index policy must cover
 `CosmosTenantStore.QUERIED_PATHS` (see MU-8b).
+
+## Website UI polish
+
+Operator request 2026-09-26 (#254). Courses render by name via the `course_name` Jinja filter over
+`courses/names.py::COURSE_DISPLAY_NAMES` (`create_app(course_names=…)` overrides it; an unknown id
+falls back to the raw id), never as a raw course id — also in the partial-save/group messages and in
+user emails (`StoreUserNotifier`). One stylesheet (`web/static/base.css`: CSS variables, light/dark
+via `prefers-color-scheme`, restyled selects, cards, status pills, a cleaner dashboard table). The
+ranked booking form shows ONE option row up front; rows 2-6 sit in an "Add another time slot"
+`<details>` that works with JavaScript off, and the same-origin `web/static/app.js` (the ONLY script;
+CSP `script-src 'self'`) reveals rows one at a time with a Remove link that blanks the row so the
+server skips it. The nav's "Rules" is labelled "Weekly". Pinned by `tests/web/test_web_ui_polish.py`.
