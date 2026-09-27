@@ -46,6 +46,7 @@ from ..tenant.notify import UserNotifier
 from ..tenant.runner import AdapterFactory
 from ..tenant.store import TenantStore
 from . import auth
+from .auth import ForbiddenError
 from .oauth import (
     PROVIDERS,
     OAuthFlowError,
@@ -195,14 +196,6 @@ def load_web_settings(env: Mapping[str, str] | None = None) -> WebSettings:
 
 class LoginRequiredError(Exception):
     """No (valid, unexpired) session: the handler redirects to ``/login``."""
-
-
-class ForbiddenError(Exception):
-    """Signed in (or just signed in) but not allowed: rendered as the 403 page."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
 
 
 class _SecurityHeadersMiddleware:

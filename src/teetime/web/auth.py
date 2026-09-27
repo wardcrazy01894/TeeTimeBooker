@@ -66,6 +66,14 @@ def is_expired(identity: SessionIdentity, *, now: datetime, max_age_s: int) -> b
     return now - identity.issued_at >= timedelta(seconds=max_age_s)
 
 
+class ForbiddenError(Exception):
+    """Signed in (or just signed in) but not allowed: rendered as the 403 page."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def is_operator(user: User, *, operator_email: str | None) -> bool:
     """Operator = the ``users.role`` says so, OR the (invite-bound, provider-verified) email
     equals the configured operator email. The setting is what bootstraps the first operator;

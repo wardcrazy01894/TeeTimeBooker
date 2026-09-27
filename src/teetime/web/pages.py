@@ -29,7 +29,7 @@ from ..core.models import CourseId
 from ..tenant.crypto import Keyring
 from ..tenant.models import CourseAccountId, RowId, RuleId, User
 from ..tenant.runner import AdapterFactory
-from . import auth, group_services, services
+from . import adopt, auth, group_services, services
 from .booking_form import MAX_OPTIONS, parse_ranked_form
 from .services import (
     RULE_EDIT_HINT,
@@ -64,6 +64,7 @@ _NOTICES = {
     "account_verified": "Course account re-verified: the bot will log in with it again.",
     "refreshed": "Reservations refreshed from the course.",
     "cancelled": "Tee time cancelled.",
+    "adopted": "Existing reservations adopted: the bot now treats them as its own bookings.",
     "group_saved": "Saved. The bot books the highest-ranked option that is available.",
     "group_rule_saved": "Weekly booking saved and its dates added.",
     "price_saved": "Default price saved.",
@@ -151,6 +152,16 @@ class _Pages:
             ctx.store, user_id=user.id, clock=ctx.clock, policies=ctx.policies
         )
         context["courses"] = sorted(ctx.policies)
+        context["adoptions"] = (
+            {
+                str(v.account.id): await adopt.preview(
+                    ctx.store, user_id=user.id, account=v.account, clock=ctx.clock
+                )
+                for v in context["views"]  # type: ignore[attr-defined]
+            }
+            if context["is_operator"]
+            else {}
+        )
         context["error"] = error
         return ctx.page(request, "accounts.html", context, status_code=status_code)
 
@@ -190,6 +201,7 @@ def register_page_routes(app: FastAPI, ctx: "_Ctx", *, current_user: _Dependency
     _register_row_routes(app, pages, current_user=current_user)
     _register_account_routes(app, pages, current_user=current_user)
     _register_booking_routes(app, pages, current_user=current_user)
+    adopt.register_adopt_routes(app, pages, current_user=current_user)
 
 
 def _register_read_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependency) -> None:

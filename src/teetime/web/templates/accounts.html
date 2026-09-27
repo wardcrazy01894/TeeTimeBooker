@@ -37,6 +37,7 @@
       <button type="submit" class="small">Re-verify</button>
     </form>
   </div>
+  {% if is_operator %}{% include "_adopt.html" %}{% endif %}
 </section>
 {% endfor %}
 
