@@ -39,10 +39,10 @@ def test_deploy_web_app_param_defaults_false(main_bicep: str) -> None:
     assert "param deployWebApp bool = false" in main_bicep
 
 
-def test_deploy_web_app_is_on_in_dev_only() -> None:
-    """MU-17 (dev cutover) turns the web app on in dev; prod stays off until MU-18."""
+def test_deploy_web_app_is_on_in_both_envs() -> None:
+    """MU-17 turned the web app on in dev; MU-18 stage A turns it on in prod."""
     assert "param deployWebApp = true" in DEV_PARAMS.read_text()
-    assert "param deployWebApp = false" in PROD_PARAMS.read_text()
+    assert "param deployWebApp = true" in PROD_PARAMS.read_text()
 
 
 def test_webapp_is_container_app_not_a_job(webapp_bicep: str) -> None:

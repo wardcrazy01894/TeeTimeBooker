@@ -68,23 +68,30 @@ param enableKillswitch = true
 // See: docs/plans/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
 param killswitchRbacRoleId = '3e2d5a14-96bd-4469-9f96-b9c3270aa9e6'
 
-// --- MU-15a (MULTIUSER_PLAN §12): infra without the tenant DB ------------------------------
-// Prod stays 'toml' — UNCHANGED behaviour. Prod is frozen until the operator explicitly cuts
-// over (MULTIUSER_PLAN §11 steps 5-7), which is its OWN PR with its own tag, not this one.
+// --- MU-18 (MULTIUSER_PLAN §11 steps 5-7, AZURE_PLAN §10.8): the PROD cutover, stage A ----------
+// Stage A: the web app, ACS email and the shared Cosmos endpoint go live, but the booking and
+// watch jobs STAY on the TOML path, so the operator can connect the Mangrove Bay account, create
+// the weekly booking and adopt the live reservations (MU-16b) before anything books through the
+// tenant path. Stage B (its own PR + tag) flips these two to 'tenant'.
 param bookingMode = 'toml'
 param watchMode = 'toml'
 
-// Prod watch cadence is UNCHANGED (every 10 min, year-round — AZURE_PLAN §5.4). Only dev's
-// param file (above) goes hourly; this value must stay the pre-MU-15a default.
+// Prod watch cadence is UNCHANGED (every 10 min, year-round — AZURE_PLAN §5.4). Only dev goes
+// hourly.
 param watchCron = '*/10 * * * *'
 
-// Tenant Cosmos/ACS values stay empty — toml mode never reads them (MULTIUSER_PLAN §10.1).
-param tenantCosmosEndpoint = ''
+// The shared free-tier account in rg-teetime-shared (MU-15b); the database is the env name
+// (`prod`), where the prod MI holds its data-plane role. Empty sender = main.bicep derives
+// DoNotReply@<the ACS managed domain> from the email module output.
+param tenantCosmosEndpoint = 'https://cosmos-teetime-shared.documents.azure.com:443/'
 param acsEmailSender = ''
 
-// Web app + ACS: OFF by default in prod, same reasoning as dev (the KV secrets do not exist
-// yet). Prod behaviour is otherwise completely unaffected by this PR.
-param deployWebApp = false
-param deployAcsEmail = false
-param webPublicBaseUrl = ''
+// Needs, in kv-teetime-prod-4jte: WEB-SESSION-SECRET, OAUTH-GOOGLE-CLIENT-ID/SECRET,
+// TENANT-CREDS-KEYRING, OPERATOR-NOTIFY-EMAIL, and Key Vault Secrets Officer for the CI SP (so
+// email.bicep can write ACS-EMAIL-CONNECTION). The URL is teetime-web-prod.<the prod ACA
+// environment's default domain> and must match the Google client's redirect URI.
+param deployWebApp = true
+param deployAcsEmail = true
+param webPublicBaseUrl = 'https://teetime-web-prod.wittydesert-02f9f0cd.eastus2.azurecontainerapps.io'
+// Empty = the web reads OPERATOR-NOTIFY-EMAIL from Key Vault (the repo is public).
 param operatorEmail = ''

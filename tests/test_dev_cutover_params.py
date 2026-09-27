@@ -34,15 +34,10 @@ def test_dev_stays_dry_run() -> None:
     assert "param dryRun = true" in DEV
 
 
-def test_prod_is_untouched_by_the_dev_cutover() -> None:
-    for line in (
-        "param bookingMode = 'toml'",
-        "param watchMode = 'toml'",
-        "param tenantCosmosEndpoint = ''",
-        "param deployWebApp = false",
-        "param deployAcsEmail = false",
-        "param dryRun = false",
-    ):
+def test_prod_jobs_stay_on_the_toml_path_until_stage_b() -> None:
+    """MU-18 stage A turns on prod's web app (tests/test_prod_cutover_params.py); its booking and
+    watch jobs stay on the TOML path until stage B."""
+    for line in ("param bookingMode = 'toml'", "param watchMode = 'toml'", "param dryRun = false"):
         assert line in PROD, line
 
 
