@@ -1,13 +1,356 @@
-/* Minimal, same-origin stylesheet: the CSP forbids inline styles (MULTIUSER_PLAN §8.3). */
-:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-body { margin: 0; max-width: 60rem; padding: 0 1rem; margin-inline: auto; line-height: 1.5; }
-header.site { display: flex; align-items: center; justify-content: space-between; padding: 1rem 0; border-bottom: 1px solid #8884; }
-header.site .brand { font-weight: 700; text-decoration: none; }
-header.site nav { display: flex; gap: 1rem; align-items: center; }
-form.inline { display: inline; }
-ul.providers { list-style: none; padding: 0; display: flex; gap: 1rem; flex-wrap: wrap; }
-a.button, button { display: inline-block; padding: 0.5rem 1rem; border: 1px solid #8888; border-radius: 0.4rem; background: transparent; color: inherit; text-decoration: none; cursor: pointer; font: inherit; }
-label { display: block; margin: 0.5rem 0; }
-.banner, .notice { padding: 0.5rem 1rem; border-radius: 0.4rem; background: #fd08; }
+/* TeeTimeBooker's one stylesheet. Same-origin only: the CSP forbids inline styles
+   (MULTIUSER_PLAN §8.3), and no external font or framework is loaded. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f5f7f4;
+  --surface: #ffffff;
+  --surface-2: #f0f3ef;
+  --text: #1d2a22;
+  --muted: #5d6b62;
+  --border: #dde3dc;
+  --accent: #2f7d4f;
+  --accent-strong: #236140;
+  --accent-soft: #e3f1e8;
+  --on-accent: #ffffff;
+  --danger: #b3261e;
+  --danger-soft: #fbe9e7;
+  --warn-soft: #fff4d6;
+  --warn-text: #6b4e00;
+  --info-soft: #e6f0fb;
+  --info-text: #1d4f82;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgb(16 24 20 / 6%), 0 2px 8px rgb(16 24 20 / 5%);
+  --focus: 0 0 0 3px rgb(47 125 79 / 30%);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111713;
+    --surface: #182019;
+    --surface-2: #1e2820;
+    --text: #e3ebe5;
+    --muted: #9aa99f;
+    --border: #2c392f;
+    --accent: #5fbf85;
+    --accent-strong: #7fd3a0;
+    --accent-soft: #1f3a2a;
+    --on-accent: #0c1a11;
+    --danger: #f2877e;
+    --danger-soft: #3a1d1b;
+    --warn-soft: #3a3016;
+    --warn-text: #f1d589;
+    --info-soft: #182b40;
+    --info-text: #a9ccf1;
+    --shadow: 0 1px 2px rgb(0 0 0 / 40%);
+    --focus: 0 0 0 3px rgb(95 191 133 / 35%);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+a { color: var(--accent-strong); }
+a:hover { text-decoration-thickness: 2px; }
+
+h1 { font-size: 1.6rem; margin: 1.5rem 0 1rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.15rem; margin: 0 0 0.75rem; }
+h3 { font-size: 1rem; margin: 0 0 0.5rem; }
+
+/* ---- header ---------------------------------------------------------------------------- */
+
+header.site {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+header.site .bar {
+  max-width: 64rem;
+  margin-inline: auto;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+header.site .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--text);
+  text-decoration: none;
+}
+header.site .brand .mark {
+  display: inline-grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.95rem;
+}
+header.site nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+}
+header.site nav a {
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 500;
+}
+header.site nav a:hover { background: var(--surface-2); color: var(--text); }
+header.site nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-strong); }
+header.site .who { color: var(--muted); font-size: 0.9rem; margin: 0 0.25rem 0 0.75rem; }
+
+/* ---- layout ---------------------------------------------------------------------------- */
+
+main {
+  max-width: 64rem;
+  margin-inline: auto;
+  padding: 0 1rem 3rem;
+}
+
+section, .card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.25rem;
+  margin: 0 0 1.25rem;
+}
+section.inactive { opacity: 0.75; }
+.page-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.page-head p { margin: 0; }
+
+.hint, .placeholder, .muted { color: var(--muted); font-size: 0.92rem; }
+.placeholder { padding: 1rem; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); }
 .reason { font-weight: 600; }
-.placeholder { opacity: 0.7; }
+
+/* ---- banners --------------------------------------------------------------------------- */
+
+.banner, .notice, .error {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  margin: 1rem 0;
+  border: 1px solid transparent;
+}
+.banner { background: var(--warn-soft); color: var(--warn-text); }
+.notice { background: var(--accent-soft); color: var(--accent-strong); }
+.error { background: var(--danger-soft); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+.error p { margin: 0 0 0.5rem; }
+.error p:last-child { margin: 0; }
+
+/* ---- controls -------------------------------------------------------------------------- */
+
+form.inline { display: inline; }
+label { display: block; margin: 0.5rem 0; font-weight: 500; font-size: 0.92rem; }
+label.check { display: flex; gap: 0.5rem; align-items: flex-start; font-weight: 400; }
+
+input, select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.6rem;
+  min-height: 2.4rem;
+}
+input[type="checkbox"] { min-height: 0; width: 1rem; height: 1rem; margin-top: 0.2rem; accent-color: var(--accent); }
+label > input:not([type="checkbox"]), label > select { display: block; margin-top: 0.25rem; width: 100%; max-width: 22rem; }
+input:focus-visible, select:focus-visible, button:focus-visible, a:focus-visible, summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+  border-color: var(--accent);
+}
+
+/* Dropdowns: a custom chevron instead of the platform arrow (an SVG data: URL, allowed by
+   `img-src 'self' data:`). */
+select {
+  appearance: none;
+  padding-right: 2.2rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%237a877e' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  cursor: pointer;
+}
+
+a.button, button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.5rem 1rem;
+  min-height: 2.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+a.button:hover, button:hover { background: var(--surface-2); }
+button[type="submit"].primary, a.button.primary, .ranked > .actions button[type="submit"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+button[type="submit"].primary:hover, a.button.primary:hover, .ranked > .actions button[type="submit"]:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+button.danger { color: var(--danger); }
+button.danger:hover { background: var(--danger-soft); }
+button.small { padding: 0.25rem 0.65rem; min-height: 2rem; font-size: 0.88rem; }
+button.link { border: 0; background: none; color: var(--accent-strong); padding: 0.25rem 0; min-height: 0; }
+button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.form-row { display: flex; flex-wrap: wrap; gap: 0 1rem; align-items: flex-end; }
+.form-row > label { flex: 1 1 12rem; }
+.form-row > button { margin: 0.5rem 0; }
+
+/* ---- tables ---------------------------------------------------------------------------- */
+
+.table-wrap { overflow-x: auto; margin: 0 -1.25rem; padding: 0 1.25rem; }
+table { width: 100%; border-collapse: collapse; font-size: 0.94rem; }
+th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+td { padding: 0.7rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--surface-2); }
+td.date { white-space: nowrap; font-weight: 600; }
+td.date .dow { color: var(--muted); font-weight: 500; margin-right: 0.35rem; }
+td.tee { white-space: nowrap; font-weight: 600; font-variant-numeric: tabular-nums; }
+td.num, .tabular { font-variant-numeric: tabular-nums; }
+td.actions { white-space: nowrap; }
+td.actions form, td.actions .inline { margin-right: 0.35rem; }
+td.actions label.check { white-space: normal; max-width: 16rem; font-size: 0.85rem; }
+.conf { display: block; color: var(--muted); font-size: 0.8rem; font-weight: 400; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* ---- status pills ---------------------------------------------------------------------- */
+
+.status, .badge {
+  display: inline-block;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.status-booked, .status-active { background: var(--accent-soft); color: var(--accent-strong); }
+.status-pending { background: var(--info-soft); color: var(--info-text); }
+.status-skipped, .status-withdrawn, .status-superseded, .status-disabled { background: var(--surface-2); color: var(--muted); }
+.status-cancelled, .status-lost, .status-auth_failed { background: var(--danger-soft); color: var(--danger); }
+.badge { background: var(--warn-soft); color: var(--warn-text); font-weight: 500; margin-left: 0.25rem; }
+
+/* ---- ranked booking form --------------------------------------------------------------- */
+
+form.ranked { display: grid; gap: 1rem; }
+form.ranked .form-row > label { margin: 0; }
+.options { display: grid; gap: 0.6rem; }
+.option {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(10rem, 2fr) minmax(7rem, 1fr) minmax(7rem, 1fr) auto;
+  gap: 0.6rem;
+  align-items: end;
+  padding: 0.75rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.option > label { margin: 0; }
+.option > label > input, .option > label > select { max-width: none; }
+.option .remove { margin-bottom: 0.1rem; }
+.option-head { display: none; }
+details.more-options > summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 600;
+  padding: 0.35rem 0;
+  list-style: none;
+}
+details.more-options > summary::-webkit-details-marker { display: none; }
+details.more-options > summary::before { content: "+ "; }
+details.more-options[open] > summary::before { content: "\2212 "; }
+details.more-options > .option { margin-top: 0.6rem; }
+/* With the script on, the disclosure is replaced by per-row reveal. */
+.js details.more-options > summary { display: none; }
+.add-option { justify-self: start; }
+fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  margin: 0;
+}
+legend { font-weight: 600; padding: 0 0.35rem; font-size: 0.92rem; }
+.prices { display: flex; flex-wrap: wrap; gap: 0 1.25rem; }
+.prices label { display: flex; align-items: center; gap: 0.4rem; }
+.prices input { width: 7rem; }
+.ranked > .actions { display: flex; gap: 0.75rem; align-items: center; }
+
+[hidden] { display: none !important; }
+
+/* ---- accounts, rules ------------------------------------------------------------------- */
+
+.meta { display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; margin: 0 0 1rem; color: var(--muted); font-size: 0.92rem; }
+.meta strong { color: var(--text); }
+.card-actions { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; align-items: flex-end; border-top: 1px solid var(--border); padding-top: 1rem; }
+.card-actions form { margin: 0; }
+.card-actions label { margin: 0; }
+.section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+.section-head h2 { margin: 0; }
+
+/* ---- sign in / error pages ------------------------------------------------------------- */
+
+.center-card { max-width: 28rem; margin: 3rem auto; text-align: center; }
+.center-card .mark-lg {
+  display: inline-grid;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 1.6rem;
+  margin-bottom: 0.5rem;
+}
+ul.providers { list-style: none; padding: 0; margin: 1.5rem 0 0; display: grid; gap: 0.6rem; }
+ul.providers a.button { justify-content: center; width: 100%; }
+
+/* ---- small screens --------------------------------------------------------------------- */
+
+@media (max-width: 40rem) {
+  header.site .who { display: none; }
+  section, .card { padding: 1rem; }
+  .table-wrap { margin: 0 -1rem; padding: 0 1rem; }
+  .option { grid-template-columns: 1fr 1fr; }
+  .option > label.course { grid-column: 1 / -1; order: -1; }
+  td.actions { white-space: normal; }
+}

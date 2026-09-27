@@ -1,70 +1,75 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, status, one_off_form, error_block, windows, ranked_form %}
+{% from "_macros.html" import hhmm, status, one_off_form, error_block, windows, ranked_form, nice_date %}
 {% block title %}Dates · TeeTimeBooker{% endblock %}
 {% block content %}
 <h1>Dates</h1>
 {{ error_block(error, one_off, csrf_token) }}
 
-{% if rows %}
-<table>
-  <thead>
-    <tr><th>Date</th><th>Course</th><th>Window</th><th>Party</th><th>From</th><th>Status</th><th>Actions</th></tr>
-  </thead>
-  <tbody>
-    {% for r in rows %}
-    <tr>
-      <td>{{ weekdays[r.row.target_date.weekday()][:3] }} {{ r.row.target_date.isoformat() }}</td>
-      <td>{{ r.row.course_id }}</td>
-      <td>{{ windows(r.row.options) }}</td>
-      <td>{{ r.row.party_size }}</td>
-      <td>{{ "rule" if r.row.source.value == "rule" else "one-off" }}</td>
-      <td>
-        <span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>
-        {% if r.booked_tee_time_local %} {{ r.booked_tee_time_local }}{% endif %}
-        {% if r.booked_rank %} <span class="hint">(got option {{ r.booked_rank }})</span>{% endif %}
-      </td>
-      <td class="actions">
-        {% if r.frozen %}
-          <span class="hint">locked (past the booking cutoff)</span>
-        {% elif r.row.status.value == "pending" and r.row.source.value == "rule" %}
-          <form method="post" action="/rows/{{ r.row.id }}/skip" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">Skip</button>
-          </form>
-        {% elif r.row.status.value == "pending" %}
-          <form method="post" action="/rows/{{ r.row.id }}/withdraw" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">Withdraw</button>
-          </form>
-        {% elif r.row.status.value == "skipped" %}
-          <form method="post" action="/rows/{{ r.row.id }}/unskip" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit">Unskip</button>
-          </form>
-        {% elif r.row.status.value == "booked" %}
-          {% if dry_run %}
-          <button type="button" disabled title="Cancelling is switched off in this dry-run environment">Cancel (off in dry-run)</button>
-          {% else %}
-          <form method="post" action="/rows/{{ r.row.id }}/cancel" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            {% if not r.owned %}
-            <label><input type="checkbox" name="confirm_unowned" value="on" required> This booking wasn't made by TeeTimeBooker; cancel it anyway</label>
+<section>
+  <h2>Upcoming</h2>
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Course</th><th>Window</th><th>Players</th><th>From</th><th>Status</th><th>Actions</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="date">{{ nice_date(r.row.target_date) }}</td>
+          <td>{{ r.row.course_id | course_name }}</td>
+          <td class="tabular">{{ windows(r.row.options) }}</td>
+          <td class="num">{{ r.row.party_size }}</td>
+          <td class="muted">{{ "weekly" if r.row.source.value == "rule" else "one-off" }}</td>
+          <td>
+            <span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>
+            {% if r.booked_tee_time_local %} <strong class="tabular">{{ r.booked_tee_time_local }}</strong>{% endif %}
+            {% if r.booked_rank %} <span class="hint">(got option {{ r.booked_rank }})</span>{% endif %}
+          </td>
+          <td class="actions">
+            {% if r.frozen %}
+              <span class="hint">locked (past the booking cutoff)</span>
+            {% elif r.row.status.value == "pending" and r.row.source.value == "rule" %}
+              <form method="post" action="/rows/{{ r.row.id }}/skip" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="small">Skip</button>
+              </form>
+            {% elif r.row.status.value == "pending" %}
+              <form method="post" action="/rows/{{ r.row.id }}/withdraw" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="small">Withdraw</button>
+              </form>
+            {% elif r.row.status.value == "skipped" %}
+              <form method="post" action="/rows/{{ r.row.id }}/unskip" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="small">Unskip</button>
+              </form>
+            {% elif r.row.status.value == "booked" %}
+              {% if dry_run %}
+              <button type="button" class="small" disabled title="Cancelling is switched off in this dry-run environment">Cancel (off in dry-run)</button>
+              {% else %}
+              <form method="post" action="/rows/{{ r.row.id }}/cancel" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                {% if not r.owned %}
+                <label class="check"><input type="checkbox" name="confirm_unowned" value="on" required> This booking wasn't made by TeeTimeBooker; cancel it anyway</label>
+                {% endif %}
+                <button type="submit" class="small danger">Cancel tee time</button>
+              </form>
+              {% endif %}
             {% endif %}
-            <button type="submit">Cancel tee time</button>
-          </form>
-          {% endif %}
-        {% endif %}
-        {% if r.can_rerequest %}
-          {{ one_off_form(csrf_token, r.row.course_account_id, r.row.target_date, r.row.options[0].earliest, r.row.options[0].latest, r.row.party_size, "Re-request this date") }}
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p class="placeholder">No upcoming dates.</p>
-{% endif %}
+            {% if r.can_rerequest %}
+              {{ one_off_form(csrf_token, r.row.course_account_id, r.row.target_date, r.row.options[0].earliest, r.row.options[0].latest, r.row.party_size, "Re-request this date") }}
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="placeholder">No upcoming dates.</p>
+  {% endif %}
+</section>
 
 <section>
   <h2>Book a date</h2>
@@ -72,7 +77,7 @@
   <p class="hint">A date booked here replaces a weekly booking for that date.</p>
   {{ ranked_form(csrf_token, accounts, "/bookings/date", option_slots, weekdays, false) }}
   {% else %}
-  <p class="placeholder">Connect a course account first.</p>
+  <p class="placeholder">Connect a course account first. <a href="/accounts">Go to Accounts</a>.</p>
   {% endif %}
 </section>
 {% endblock %}

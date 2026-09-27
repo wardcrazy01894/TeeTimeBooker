@@ -1,28 +1,34 @@
 {% extends "base.html" %}
 {% from "_macros.html" import hhmm, error_block, ranked_form, windows %}
-{% block title %}Rules · TeeTimeBooker{% endblock %}
+{% block title %}Weekly bookings · TeeTimeBooker{% endblock %}
 
 {% macro rule_fields(weekday, earliest, latest, party) %}
-<label>Day
-  <select name="weekday">
-    {% for name in weekdays %}<option value="{{ loop.index0 }}"{% if loop.index0 == weekday %} selected{% endif %}>{{ name }}</option>{% endfor %}
-  </select>
-</label>
-<label>Earliest <input type="time" name="window_earliest" value="{{ earliest }}" required></label>
-<label>Latest <input type="time" name="window_latest" value="{{ latest }}" required></label>
-<label>Party size <input type="number" name="party_size" min="1" max="4" value="{{ party }}" required></label>
+<div class="form-row">
+  <label>Day
+    <select name="weekday">
+      {% for name in weekdays %}<option value="{{ loop.index0 }}"{% if loop.index0 == weekday %} selected{% endif %}>{{ name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>From <input type="time" name="window_earliest" value="{{ earliest }}" required></label>
+  <label>To <input type="time" name="window_latest" value="{{ latest }}" required></label>
+  <label>Players <input type="number" name="party_size" min="1" max="4" value="{{ party }}" required></label>
+  <button type="submit">Save</button>
+</div>
 {% endmacro %}
 
 {% block content %}
-<h1>Standing rules</h1>
+<h1>Weekly bookings</h1>
 <p class="hint">{{ rule_edit_hint }}</p>
 {{ error_block(error, one_off, csrf_token) }}
 
 {% for v in rules %}
 <section class="rule{% if not v.rule.active %} inactive{% endif %}">
-  <h2>{{ v.weekday_name }}s at {{ v.account.course_id }}{% if not v.rule.active %} (inactive){% endif %}</h2>
+  <div class="section-head">
+    <h2>{{ v.weekday_name }}s at {{ v.account.course_id | course_name }}</h2>
+    <span class="status status-{{ 'active' if v.rule.active else 'disabled' }}">{{ "active" if v.rule.active else "inactive" }}</span>
+  </div>
   {% if v.rule.group_id or v.rule.options|length > 1 %}
-  <p>Options {{ windows(v.rule.options) }} (ranks {% for o in v.rule.options %}{{ o.rank }}{% if not loop.last %}, {% endif %}{% endfor %}) · party of {{ v.rule.party_size }}{% if v.rule.max_price is not none %} · up to ${{ v.rule.max_price }} per player{% endif %}</p>
+  <p class="meta"><span>Options <strong class="tabular">{{ windows(v.rule.options) }}</strong></span><span>ranks {% for o in v.rule.options %}{{ o.rank }}{% if not loop.last %}, {% endif %}{% endfor %}</span><span>{{ v.rule.party_size }} players</span>{% if v.rule.max_price is not none %}<span>up to ${{ v.rule.max_price }} per player</span>{% endif %}</p>
   <p class="hint">Part of a ranked weekly booking: deactivating it deactivates every course of that booking. To change the options, deactivate it and save a new weekly booking.</p>
   {% else %}
   <form method="post" action="/rules/{{ v.rule.id }}">
@@ -30,21 +36,22 @@
     <input type="hidden" name="version" value="{{ v.rule.version }}">
     <input type="hidden" name="action" value="save">
     {{ rule_fields(v.rule.weekday, hhmm(v.rule.options[0].earliest), hhmm(v.rule.options[0].latest), v.rule.party_size) }}
-    <button type="submit">Save</button>
   </form>
   {% endif %}
-  <form method="post" action="/rules/{{ v.rule.id }}" class="inline">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="version" value="{{ v.rule.version }}">
-    {% if v.rule.active %}
-    <button type="submit" name="action" value="deactivate">Deactivate</button>
-    {% else %}
-    <button type="submit" name="action" value="activate">Reactivate</button>
-    {% endif %}
-  </form>
+  <div class="card-actions">
+    <form method="post" action="/rules/{{ v.rule.id }}" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="version" value="{{ v.rule.version }}">
+      {% if v.rule.active %}
+      <button type="submit" name="action" value="deactivate" class="small danger">Deactivate</button>
+      {% else %}
+      <button type="submit" name="action" value="activate" class="small">Reactivate</button>
+      {% endif %}
+    </form>
+  </div>
 </section>
 {% else %}
-<p class="placeholder">No standing rules yet.</p>
+<p class="placeholder">No weekly bookings yet.</p>
 {% endfor %}
 
 <section>
@@ -53,7 +60,7 @@
   <p class="hint">One weekly booking per day per course. The bot books each matching date when it opens.</p>
   {{ ranked_form(csrf_token, accounts, "/bookings/weekly", option_slots, weekdays, true) }}
   {% else %}
-  <p class="placeholder">Connect a course account first.</p>
+  <p class="placeholder">Connect a course account first. <a href="/accounts">Go to Accounts</a>.</p>
   {% endif %}
 </section>
 {% endblock %}

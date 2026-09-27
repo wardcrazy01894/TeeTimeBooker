@@ -189,6 +189,19 @@ async def test_store_user_notifier_mails_only_the_rows_user() -> None:
     assert "Golfer," in message.body
 
 
+async def test_store_user_notifier_names_the_course_not_its_id() -> None:
+    store = _store()
+    user, _ = await _seed(store, n=1)
+    sender = FakeEmailSender()
+
+    await StoreUserNotifier(store, sender).send(_event(user.id))
+
+    (message,) = sender.sent
+    assert "Mangrove Bay" in message.body
+    assert str(MB) not in message.body
+    assert str(MB) not in message.subject
+
+
 def _event(user_id: UserId) -> UserEvent:
     return UserEvent(
         kind=UserEventKind.MISSED_DROP,

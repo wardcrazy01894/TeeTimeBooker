@@ -8,27 +8,35 @@
 
 {% for v in views %}
 <section class="account">
-  <h2>{{ v.account.course_id }}</h2>
-  <p>Login <strong>{{ v.account.username }}</strong> · status <span class="status status-{{ v.account.status.value }}">{{ v.account.status.value.replace("_", " ") }}</span>{% if v.account.verified_at %} · verified {{ v.account.verified_at.strftime('%Y-%m-%d') }}{% endif %}</p>
-  <p>Reservations {{ v.snapshot_label }}</p>
-  {% if v.account.status.value == "active" %}
-  <form method="post" action="/accounts/{{ v.account.id }}/refresh" class="inline">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button type="submit">Refresh from course</button>
-  </form>
-  {% endif %}
-  <form method="post" action="/accounts/{{ v.account.id }}/price" class="inline">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>Default max price per player $<input type="number" name="default_max_price" min="0" max="1000" step="0.01" value="{{ v.account.default_max_price }}" required></label>
-    <button type="submit">Save price</button>
-  </form>
-  <form method="post" action="/accounts/{{ v.account.id }}/reverify">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>{% if v.account.status.value == "auth_failed" %}The course rejected the saved login. Re-enter the password to re-verify{% else %}Changed your course password? Re-verify{% endif %}
-      <input type="password" name="password" autocomplete="current-password" required>
-    </label>
-    <button type="submit">Re-verify</button>
-  </form>
+  <div class="section-head">
+    <h2>{{ v.account.course_id | course_name }}</h2>
+    <span class="status status-{{ v.account.status.value }}">{{ v.account.status.value.replace("_", " ") }}</span>
+  </div>
+  <p class="meta">
+    <span>Login <strong>{{ v.account.username }}</strong></span>
+    {% if v.account.verified_at %}<span>Verified {{ v.account.verified_at.strftime('%Y-%m-%d') }}</span>{% endif %}
+    <span>Reservations {{ v.snapshot_label }}</span>
+  </p>
+  <div class="card-actions">
+    {% if v.account.status.value == "active" %}
+    <form method="post" action="/accounts/{{ v.account.id }}/refresh" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="small">Refresh from course</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/accounts/{{ v.account.id }}/price" class="form-row">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Default max price per player ($)<input type="number" name="default_max_price" min="0" max="1000" step="0.01" value="{{ v.account.default_max_price }}" required></label>
+      <button type="submit" class="small">Save price</button>
+    </form>
+    <form method="post" action="/accounts/{{ v.account.id }}/reverify" class="form-row">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>{% if v.account.status.value == "auth_failed" %}The course rejected the saved login. Re-enter the password to re-verify{% else %}Changed your course password? Re-verify{% endif %}
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" class="small">Re-verify</button>
+    </form>
+  </div>
 </section>
 {% endfor %}
 
@@ -39,12 +47,12 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Course
       <select name="course_id">
-        {% for c in courses %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+        {% for c in courses %}<option value="{{ c }}">{{ c | course_name }}</option>{% endfor %}
       </select>
     </label>
     <label>Course username <input type="text" name="username" autocomplete="username" required></label>
     <label>Course password <input type="password" name="password" autocomplete="current-password" required></label>
-    <button type="submit">Connect</button>
+    <button type="submit" class="primary">Connect</button>
   </form>
   {% else %}
   <p class="placeholder">No course is available to connect yet.</p>

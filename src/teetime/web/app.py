@@ -39,6 +39,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ..core.clock import Clock
 from ..core.config import BookingCutoffConfig
 from ..core.release_policy import ReleasePolicy
+from ..courses.names import COURSE_DISPLAY_NAMES, course_display_name
 from ..tenant.crypto import Keyring
 from ..tenant.models import User, UserId, UserRole, UserStatus
 from ..tenant.notify import UserNotifier
@@ -244,6 +245,11 @@ class _Ctx:
     notifier: UserNotifier | None = None
     refresh_cache: RefreshCache = field(default_factory=lambda: RefreshCache(ttl_s=120))
     probe_limits: ProbeLimits = field(default_factory=ProbeLimits)
+    # ``str(course_id)`` -> the name a person reads (default ``courses.names``); never a raw id.
+    course_names: Mapping[str, str] = field(default_factory=dict)
+
+    def course_name(self, course_id: object) -> str:
+        return course_display_name(str(course_id), self.course_names)
 
     def page(
         self, request: Request, name: str, context: dict[str, Any], *, status_code: int = 200
@@ -478,6 +484,7 @@ def create_app(
     policies: Mapping[str, ReleasePolicy] | None = None,
     cutoff: BookingCutoffConfig | None = None,
     adapter_factory: AdapterFactory | None = None,
+    course_names: Mapping[str, str] | None = None,
 ) -> FastAPI:
     """Build the ASGI app. MU-14 (connect, refresh, cancel) needs ``keyring`` (decrypt /
     encrypt the course passwords) and ``adapter_factory`` (one throwaway ForeUP adapter per
@@ -485,13 +492,16 @@ def create_app(
     the user after a cancel (best-effort). ``policies`` (``str(course_id)`` ->
     ``ReleasePolicy``) and ``cutoff`` feed the synchronous rule materialize (MU-13, §7.7): a
     course with no policy cannot take a standing rule (one-off dates still work), and the
-    policies' courses are the ones an account can be connected to (MU-14)."""
+    policies' courses are the ones an account can be connected to (MU-14). ``course_names``
+    (``str(course_id)`` -> display name, default ``courses.names.COURSE_DISPLAY_NAMES``) is what
+    every page shows instead of a course id; an unknown id falls back to itself."""
+    templates = Jinja2Templates(directory=str(_HERE / "templates"))
     ctx = _Ctx(
         settings=settings,
         store=store,
         clock=clock,
         oauth=OAuthProviders({p: s for p in PROVIDERS if (s := settings.provider(p)) is not None}),
-        templates=Jinja2Templates(directory=str(_HERE / "templates")),
+        templates=templates,
         policies=dict(policies or {}),
         cutoff=cutoff if cutoff is not None else BookingCutoffConfig(),
         keyring=keyring,
@@ -504,7 +514,13 @@ def create_app(
             site_per_hour=settings.max_probes_site_per_hour,
             refreshes_per_account_per_hour=settings.max_refreshes_per_account_per_hour,
         ),
+        course_names=(
+            {str(cid): name for cid, name in COURSE_DISPLAY_NAMES.items()}
+            if course_names is None
+            else dict(course_names)
+        ),
     )
+    templates.env.filters["course_name"] = ctx.course_name
     cookie = CookiePolicy()
     app = FastAPI(
         title="TeeTimeBooker",

@@ -35,6 +35,7 @@ from ..core.release_policy import ReleasePolicy
 from ..courses.foreup.captcha import make_2captcha_provider, resolve_invisible_site_key
 from ..courses.foreup.mangrove_bay import MANGROVE_BAY_COURSE_ID, MangroveBayAdapter
 from ..courses.foreup.token_pool import LeaseKey, SharedCaptchaPool
+from ..courses.names import COURSE_DISPLAY_NAMES
 from .acs_email import AcsConfigError, AcsEmailClient, load_acs_settings
 from .crypto import KEYRING_ENV_VAR, Keyring, KeyringError, load_keyring_from_env
 from .models import CourseAccount, User, UserId, UserStatus
@@ -208,7 +209,8 @@ class StoreUserNotifier:
     ) -> None:
         self._directory = directory
         self._sender = sender
-        self._labels = dict(course_labels or {})
+        # Emails name the course (``courses.names``), never its id; an override wins.
+        self._labels = dict(COURSE_DISPLAY_NAMES if course_labels is None else course_labels)
 
     async def send(self, event: UserEvent) -> None:
         user = await self._directory.get_user_unscoped(event.user_id) if event.user_id else None

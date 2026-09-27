@@ -168,10 +168,13 @@ environment, so only Google sign-in is reachable once `deployWebApp=true`.
 uv run teetime web --host 127.0.0.1 --port 8000
 ```
 
-Pages (MU-13, plain HTML forms, no JavaScript): **`/`** is the dashboard (your dates for the
+Pages (MU-13, plain HTML forms; one same-origin `/static/app.js` is progressive enhancement
+only, and every page works without it). Courses are shown by name (`courses/names.py`, e.g.
+"Mangrove Bay"), never by course id; one stylesheet with light/dark themes. **`/`** is the dashboard (your dates for the
 next 21 days with status, the booked tee time and when the course account was last checked:
 "as of 07:53"). **Booking form (MU-R3):** `/dates` ("Book a date") and `/rules`
-("New weekly booking") share ONE ranked form — party size, up to 6 (course, time window) options
+("New weekly booking") share ONE ranked form — party size, up to 6 (course, time window) options (one shown up front,
+more via "Add another time slot")
 each with a rank (courses may repeat and interleave; ranks are renumbered 1..N), and a max price per
 player per course (blank = that course's default, $100 unless changed on `/accounts`). It saves one
 row (or rule) per course sharing a group; the bot books the best-ranked option available, holds one

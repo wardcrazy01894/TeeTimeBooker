@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Not found · TeeTimeBooker{% endblock %}
 {% block content %}
-<h1>Not found</h1>
-<p>That item does not exist.</p>
-<p><a href="/">Back to the dashboard</a></p>
+<section class="center-card">
+  <span class="mark-lg" aria-hidden="true">?</span>
+  <h1>Not found</h1>
+  <p class="muted">That item does not exist.</p>
+  <p><a class="button" href="/">Back to the dashboard</a></p>
+</section>
 {% endblock %}
