@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.0.0: 2026-09-27](#infrav300-2026-09-27)
 - [infra/v2.17.0: 2026-09-27 (`main`@`6b8122b`)](#infrav2170-2026-09-27-main6b8122b)
 - [infra/v2.16.0: 2026-08-24 (`main`@`4462f56`)](#infrav2160-2026-08-24-main4462f56)
 - [infra/v2.15.0: 2026-08-16 (`main`@`8342b67`)](#infrav2150-2026-08-16-main8342b67)
@@ -36,6 +37,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.0.0` | 2026-09-27 | | **changed** | MU-18 stage B: prod booking + watch jobs run the multi-user tenant path (#257) |
 | `infra/v2.17.0` | 2026-09-27 | `6b8122b` | unchanged (jobs stay TOML) | MU-18 stage A: prod web app, ACS email, tenant store; all multi-user code in the image (#256) |
 | `infra/v2.16.0` | 2026-08-24 | `4462f56` | unchanged | Dependency refresh + dep-comment drift guard (#203–#206) |
 | `infra/v2.15.0` | 2026-08-16 | `8342b67` | unchanged | Blind-POST rejection reason tagging (#201) |
@@ -52,6 +54,18 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.0.0: 2026-09-27
+
+**MU-18 stage B** (#257, MULTIUSER_PLAN §11 step 7, AZURE_PLAN §10.8). **Booking-behaviour change:**
+prod's two booking jobs run `tenant-run --event mb0600et --wait --dry-run false` and the watch job
+runs `tenant-watch --dry-run false` every 10 minutes, over the shared Cosmos `prod` database, with the
+Manual `teetime-migrate-prod` job created and run by CI after deploy pass 2. Crons and timeouts are
+unchanged (`50 9 * * *` / `50 10 * * *`, 1200 s; `*/10 * * * *`, 300 s). The operator connected the
+Mangrove Bay account, saved the Sat + Sun weekly booking and adopted the TOML bot's live
+reservations as owned (MU-16b) before the tag, and again right after the deploy. The one-account
+tenant run fires the same slots at the same offsets with the same token budget as the TOML `run`
+(`test_single_account_run_matches_todays_burst`). Rollback: set both modes back to `toml` and tag.
 
 ## infra/v2.17.0: 2026-09-27 (`main`@`6b8122b`)
 

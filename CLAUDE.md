@@ -13,7 +13,7 @@ adding a course) and [`infra/CLAUDE.md`](./infra/CLAUDE.md) (Azure infra and dep
 
 - [What this is](#what-this-is)
 - [Current status](#current-status)
-  - [Production (TOML path)](#production-toml-path)
+  - [Production (tenant path since MU-18)](#production-tenant-path-since-mu-18)
   - [Dev (tenant path, MU-17)](#dev-tenant-path-mu-17)
   - [Multi-user milestones](#multi-user-milestones)
   - [Cut from scope](#cut-from-scope)
@@ -59,11 +59,11 @@ Two paths exist side by side:
 
 ## Current status
 
-### Production (TOML path)
+### Production (tenant path since MU-18)
 
 | | |
 |---|---|
-| Latest infra tag | latest infra tag `infra/v2.17.0` (2026-09-27, `main`@`6b8122b`, MU-18 stage A); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Latest infra tag | latest infra tag `infra/v3.0.0` (2026-09-27, MU-18 stage B: jobs on the tenant path; stage A was `infra/v2.17.0`); history in [docs/RELEASES.md](./docs/RELEASES.md) |
 | Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
 | Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout; `tenant-run --event mb0600et --wait` since MU-18 stage B (was `run --wait`) |
 | Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout; `tenant-watch` since MU-18 stage B |
