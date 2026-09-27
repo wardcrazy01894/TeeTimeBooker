@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.0.2: 2026-09-27](#infrav302-2026-09-27)
 - [infra/v3.0.1: 2026-09-27](#infrav301-2026-09-27)
 - [infra/v3.0.0: 2026-09-27](#infrav300-2026-09-27)
 - [infra/v2.17.0: 2026-09-27 (`main`@`6b8122b`)](#infrav2170-2026-09-27-main6b8122b)
@@ -38,6 +39,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.0.2` | 2026-09-27 | `18ba1ca` | **changed** (retries) | Retry audit: bounded transient-only retries on the tenant path (#260) |
 | `infra/v3.0.1` | 2026-09-27 | `3bba87c` | **changed** (watcher) | Tenant watcher search fix: ForeUP `search()` needs no login (#258) |
 | `infra/v3.0.0` | 2026-09-27 | | **changed** | MU-18 stage B: prod booking + watch jobs run the multi-user tenant path (#257) |
 | `infra/v2.17.0` | 2026-09-27 | `6b8122b` | unchanged (jobs stay TOML) | MU-18 stage A: prod web app, ACS email, tenant store; all multi-user code in the image (#256) |
@@ -56,6 +58,20 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.0.2: 2026-09-27
+
+**Retry audit** (#260, operator request). Two real bugs fixed: (1) the booker's WRITE #2 retry never
+fired against Cosmos, because `CosmosTenantStore.record_outcomes` wraps even a transient 503 in an
+`ExceptionGroup` and the runner (and the watcher's `_write`) treated any group as a refusal, so one
+blip lost a booked row's ownership record; both now retry when every error in the group is
+transient; (2) the web connect / re-verify login probe was being replayed by the adapter's
+transport retry despite §8.4, and is now single-attempt (`set_transport_retries(0)` on the probe
+adapter only). Added bounded, transient-only retries (`tenant/retry.py`): the booker's READ #1 and
+claim (only while the retry finishes before the race window; never inside it), the watcher's reads,
+materializer tick and outcome writes, one retry for a group's shared search (a 429 still aborts),
+2captcha submit (poll budget unchanged, key never in messages) and `tenant-migrate`'s
+`initialize()`. Never retried: ForeUP `book()`, the login probe, leases, snapshot writes.
 
 ## infra/v3.0.1: 2026-09-27
 
