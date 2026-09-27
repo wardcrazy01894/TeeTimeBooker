@@ -1,42 +1,53 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, status, windows %}
+{% from "_macros.html" import hhmm, status, windows, nice_date %}
 {% block title %}Dashboard · TeeTimeBooker{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
-<p>Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider }} (subject {{ user.oauth_subject }}).</p>
+<div class="page-head">
+  <h1>Your tee times</h1>
+  <p class="muted">Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider | capitalize }} · ID {{ user.oauth_subject }}</p>
+</div>
 
 {% if not accounts %}
 <p class="placeholder">No course account is connected yet, so there is nothing to book. <a href="/accounts">Connect one</a>.</p>
 {% endif %}
 
-<h2>Upcoming dates</h2>
-{% if rows %}
-<p class="hint">Status comes from the bot's records; "as of" is when it last checked your course account. This page never logs in to the course.</p>
-<table>
-  <thead>
-    <tr><th>Date</th><th>Course</th><th>Window</th><th>Party</th><th>Status</th><th>Tee time</th><th>Checked</th></tr>
-  </thead>
-  <tbody>
-    {% for r in rows %}
-    <tr>
-      <td>{{ weekdays[r.row.target_date.weekday()][:3] }} {{ r.row.target_date.isoformat() }}</td>
-      <td>{{ r.row.course_id }}</td>
-      <td>{{ windows(r.row.options) }}</td>
-      <td>{{ r.row.party_size }}</td>
-      <td>
-        <span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>
-        {% if r.mismatch == "not_seen_at_course" %}<span class="badge">not seen at course</span>{% endif %}
-        {% if r.mismatch == "manual_reservation" %}<span class="badge">manual reservation</span>{% endif %}
-        {% if r.search_only_last_drop %}<span class="badge">search-only this drop</span>{% endif %}
-      </td>
-      <td>{% if r.booked_tee_time_local %}{{ r.booked_tee_time_local }}{% if r.row.booked_confirmation %} <span class="conf">{{ r.row.booked_confirmation }}</span>{% endif %}{% endif %}</td>
-      <td>{{ r.snapshot_label }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p class="placeholder">No upcoming dates. Add a <a href="/rules">standing rule</a> or a <a href="/dates">one-off date</a>.</p>
-{% endif %}
-<p><a href="/dates">Manage dates</a> · <a href="/rules">Manage rules</a></p>
+<section>
+  <div class="section-head">
+    <h2>Upcoming dates</h2>
+    <div>
+      <a class="button small" href="/dates">Book a date</a>
+      <a class="button small" href="/rules">Weekly bookings</a>
+    </div>
+  </div>
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Course</th><th>Window</th><th>Players</th><th>Status</th><th>Tee time</th><th>Checked</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="date">{{ nice_date(r.row.target_date) }}</td>
+          <td>{{ r.row.course_id | course_name }}</td>
+          <td class="tabular">{{ windows(r.row.options) }}</td>
+          <td class="num">{{ r.row.party_size }}</td>
+          <td>
+            <span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>
+            {% if r.mismatch == "not_seen_at_course" %}<span class="badge">not seen at course</span>{% endif %}
+            {% if r.mismatch == "manual_reservation" %}<span class="badge">manual reservation</span>{% endif %}
+            {% if r.search_only_last_drop %}<span class="badge">search-only this drop</span>{% endif %}
+          </td>
+          <td class="tee">{% if r.booked_tee_time_local %}{{ r.booked_tee_time_local }}{% if r.row.booked_confirmation %}<span class="conf">{{ r.row.booked_confirmation }}</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td class="muted">{{ r.snapshot_label }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">Status comes from the bot's records; "Checked" is when it last looked at your course account. This page never logs in to the course.</p>
+  {% else %}
+  <p class="placeholder">No upcoming dates. Add a <a href="/rules">weekly booking</a> or <a href="/dates">book a date</a>.</p>
+  {% endif %}
+</section>
 {% endblock %}

@@ -5,28 +5,32 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}TeeTimeBooker{% endblock %}</title>
   <link rel="stylesheet" href="/static/base.css">
+  <script src="/static/app.js" defer></script>
 </head>
 <body>
+  {% set here = request.url.path if request is defined else "" %}
   <header class="site">
-    <a class="brand" href="/">TeeTimeBooker</a>
-    {% if user is defined and user %}
-    <nav>
-      <a href="/">Dashboard</a>
-      <a href="/dates">Dates</a>
-      <a href="/rules">Rules</a>
-      <a href="/accounts">Accounts</a>
-      {% if is_operator is defined and is_operator %}<a href="/admin/users">Users</a>{% endif %}
-      <span class="who">{{ user.display_name or user.email }}</span>
-      <form method="post" action="/logout" class="inline">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit">Sign out</button>
-      </form>
-    </nav>
-    {% endif %}
+    <div class="bar">
+      <a class="brand" href="/"><span class="mark" aria-hidden="true">&#9971;</span> TeeTimeBooker</a>
+      {% if user is defined and user %}
+      <nav aria-label="Main">
+        <a href="/"{% if here == "/" %} aria-current="page"{% endif %}>Dashboard</a>
+        <a href="/dates"{% if here == "/dates" %} aria-current="page"{% endif %}>Dates</a>
+        <a href="/rules"{% if here == "/rules" %} aria-current="page"{% endif %}>Weekly</a>
+        <a href="/accounts"{% if here == "/accounts" %} aria-current="page"{% endif %}>Accounts</a>
+        {% if is_operator is defined and is_operator %}<a href="/admin/users"{% if here == "/admin/users" %} aria-current="page"{% endif %}>Users</a>{% endif %}
+        <span class="who">{{ user.display_name or user.email }}</span>
+        <form method="post" action="/logout" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="small">Sign out</button>
+        </form>
+      </nav>
+      {% endif %}
+    </div>
   </header>
   <main>
-    {% if dry_run is defined and dry_run %}<p class="banner">Dry-run environment: nothing here books or cancels a real tee time.</p>{% endif %}
-    {% if notice is defined and notice %}<p class="notice">{{ notice }}</p>{% endif %}
+    {% if dry_run is defined and dry_run %}<p class="banner" role="status">Dry-run environment: nothing here books or cancels a real tee time.</p>{% endif %}
+    {% if notice is defined and notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>

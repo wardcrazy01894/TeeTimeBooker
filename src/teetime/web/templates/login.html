@@ -1,11 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Sign in · TeeTimeBooker{% endblock %}
 {% block content %}
-<h1>Sign in</h1>
-<p>TeeTimeBooker is invite-only. Sign in with the account whose verified email was invited.</p>
-<ul class="providers">
-  {% for provider in providers %}
-  <li><a class="button" href="/login/{{ provider }}">Continue with {{ provider | capitalize }}</a></li>
-  {% endfor %}
-</ul>
+<section class="center-card">
+  <span class="mark-lg" aria-hidden="true">&#9971;</span>
+  <h1>Sign in</h1>
+  <p class="muted">TeeTimeBooker is invite-only. Sign in with the account whose verified email was invited.</p>
+  <ul class="providers">
+    {% for provider in providers %}
+    <li><a class="button primary" href="/login/{{ provider }}">Continue with {{ "GitHub" if provider == "github" else provider | capitalize }}</a></li>
+    {% endfor %}
+  </ul>
+</section>
 {% endblock %}

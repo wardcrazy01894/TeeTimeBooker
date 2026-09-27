@@ -421,10 +421,14 @@ def _partial(
     failures: tuple[group_services.GroupFailure, ...],
     saved: int,
     course_of: dict[CourseAccountId, CourseId],
+    course_name: Callable[[object], str],
 ) -> ActionRefusedError:
     """A group saved for SOME courses (§16.2: not one transaction) re-renders the page with what
-    was not saved; the saved rows show in the list."""
-    detail = "; ".join(f"{course_of.get(f.account_id, '?')}: {f.message}" for f in failures)
+    was not saved (by course NAME); the saved rows show in the list."""
+    detail = "; ".join(
+        f"{course_name(c) if (c := course_of.get(f.account_id)) else '?'}: {f.message}"
+        for f in failures
+    )
     return ActionRefusedError(
         f"Saved for {saved} of {saved + len(failures)} courses. Not saved: {detail}"
     )
@@ -453,7 +457,7 @@ def _register_booking_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
                 clock=ctx.clock,
             )
             if report.failures:
-                raise _partial(report.failures, len(report.rows), courses)
+                raise _partial(report.failures, len(report.rows), courses, ctx.course_name)
             return "/dates?notice=group_saved"
 
         return await pages.act(request, user, action, on_error=pages.dates)
@@ -473,7 +477,7 @@ def _register_booking_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
                 clock=ctx.clock,
             )
             if report.failures:
-                raise _partial(report.failures, len(report.rules), courses)
+                raise _partial(report.failures, len(report.rules), courses, ctx.course_name)
             return "/rules?notice=group_rule_saved"
 
         return await pages.act(request, user, action, on_error=pages.rules)

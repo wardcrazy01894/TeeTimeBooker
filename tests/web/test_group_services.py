@@ -15,6 +15,7 @@ import pytest
 
 from teetime.core.clock import FakeClock
 from teetime.core.release_policy import ReleasePolicy
+from teetime.courses import names as course_names
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.models import (
     AccountProvenance,
@@ -360,20 +361,26 @@ def _refusing_store() -> _RefusingStore:
 
 
 async def test_a_refused_sibling_row_is_reported_and_the_others_still_change(
-    clock: FakeClock,
+    clock: FakeClock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setitem(course_names.COURSE_DISPLAY_NAMES, MB, "Mangrove Bay")
     store = _refusing_store()
     user_id, a, b, report = await _group_on_oct3(store, clock)
     store.refuse_row = report.rows[1].id  # B's row
     with pytest.raises(ActionRefusedError, match="not at every course") as refused:
         await base.withdraw_row(store, user_id=user_id, row_id=report.rows[0].id, clock=clock)
-    assert str(OTHER_COURSE) in refused.value.message
+    assert str(OTHER_COURSE) in refused.value.message  # no display name: the raw id is the fallback
+    assert "Done at Mangrove Bay" in refused.value.message
+    assert str(MB) not in refused.value.message
     (row_a,) = await store.rows_for_account_date(a.id, OCT3)
     (row_b,) = await store.rows_for_account_date(b.id, OCT3)
     assert (row_a.status, row_b.status) == (RowStatus.WITHDRAWN, RowStatus.PENDING)
 
 
-async def test_a_refused_sibling_rule_is_reported_after_the_rest_ran(clock: FakeClock) -> None:
+async def test_a_refused_sibling_rule_is_reported_after_the_rest_ran(
+    clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(course_names.COURSE_DISPLAY_NAMES, MB, "Mangrove Bay")
     """Deactivating a weekly group whose second course refuses: the first course IS deactivated,
     the user is told which course was not, and nothing is silently skipped."""
     store = _refusing_store()
@@ -401,6 +408,7 @@ async def test_a_refused_sibling_rule_is_reported_after_the_rest_ran(clock: Fake
             clock=clock,
         )
     assert str(OTHER_COURSE) in refused.value.message
+    assert "Done at Mangrove Bay" in refused.value.message
     rules = {r.id: r for r in await store.list_rules_for_user(user_id)}
     assert (rules[first.id].active, rules[second.id].active) == (False, True)
 
