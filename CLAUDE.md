@@ -51,11 +51,11 @@ Apps (ACA) Jobs; GitHub Actions is CI and deploy only.
 
 Two paths exist side by side:
 
-- **TOML path** (`teetime run` / `teetime watch`): single-user, configured by a TOML file. This is
-  what **prod** runs.
 - **Tenant path** (`teetime tenant-run` / `tenant-watch` / `web`): the invite-only multi-user site
   from [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md). It runs the UNMODIFIED `Orchestrator` once per
-  account. This is what **dev** runs since MU-17.
+  account. This is what **prod** runs since MU-18 stage B (`infra/v3.0.0`) and **dev** since MU-17.
+- **TOML path** (`teetime run` / `teetime watch`): single-user, configured by a TOML file. Kept for
+  local course testing and as prod's rollback (flip `bookingMode`/`watchMode` back to `toml`).
 
 ## Current status
 
