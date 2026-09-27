@@ -2,7 +2,7 @@
 
 > **Scope of v0:** a Python bot that books one or more tee times at **Mangrove Bay Golf Course** (St. Petersburg, FL) at the moment its 7-day booking window opens (6:00 AM America/New_York). No frontend. No third-party booking sites that don't actually take the booking.
 >
-> **Status:** the engine is fully implemented and **LIVE in prod** (`dryRun=false`, latest infra tag `infra/v3.0.0`; history in [docs/RELEASES.md](./docs/RELEASES.md)). The original "no real bookings from these stubs until M2/M5" caveat is superseded. The multi-user site that builds on this engine is [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) (live in dev). Current behaviour and invariants: [CLAUDE.md](./CLAUDE.md).
+> **Status:** the engine is fully implemented and **LIVE in prod** (`dryRun=false`, latest infra tag `infra/v3.0.0`; history in [docs/RELEASES.md](./docs/RELEASES.md)). The original "no real bookings from these stubs until M2/M5" caveat is superseded. The multi-user site that builds on this engine is [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) (live in prod since MU-18, `infra/v3.0.0`, and in dev). Current behaviour and invariants: [CLAUDE.md](./CLAUDE.md).
 
 This plan is structured for parallel execution. Milestones are sequential; tasks within a milestone are tagged with explicit dependencies, so an "army of agents" can pick up anything green.
 

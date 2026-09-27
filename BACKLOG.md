@@ -84,9 +84,9 @@ delete it here when it ships.
 ## Multi-user website
 
 - **Multi-user hosted site** (BYO ForeUP accounts, rules/dates/skips, per-user email):
-  RATIFIED 2026-09-25 in [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) and built through MU-17 (live in
-  dev, dry-run). Open: the prod cutover MU-18 and retiring the
-  TOML path (MU-19/MU-20). Store: Cosmos DB free tier (MULTIUSER_PLAN §10.2).
+  RATIFIED 2026-09-25 in [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) and built through MU-18 (live in
+  prod since `infra/v3.0.0`, and in dev, dry-run). Open: retiring the TOML job wiring (MU-19; MU-20
+  is dropped, the TOML CLI stays). Store: Cosmos DB free tier (MULTIUSER_PLAN §10.2).
 
 ---
 

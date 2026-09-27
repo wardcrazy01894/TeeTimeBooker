@@ -8,7 +8,7 @@ Status: **RATIFIED 2026-09-25** after three adversarial review rounds (round 1 B
 > (MU-17, dry-run). Row-by-row state is in §12; how each milestone was actually built,
 > deviations included, is in [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md).
 
-Nothing in this document changes prod behaviour until the cutover PRs (§11, §12) land. Subordinate to [PLAN.md](./PLAN.md) (engine), [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md)
+Subordinate to [PLAN.md](./PLAN.md) (engine), [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md)
 (hosting), and the ratified race-path plans
 ([BLIND_POST_PLAN.md](./docs/plans/BLIND_POST_PLAN.md), [RACE_PREWARM_PLAN.md](./docs/plans/RACE_PREWARM_PLAN.md),
 [RESEARCH_FALLBACK_PLAN.md](./docs/plans/RESEARCH_FALLBACK_PLAN.md), [STAGGER_PLAN.md](./docs/plans/STAGGER_PLAN.md)).
