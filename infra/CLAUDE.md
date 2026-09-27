@@ -29,10 +29,10 @@ multi-user site). The killswitch design record is
 | Param | Dev | Prod |
 |-------|-----|------|
 | `dryRun` | `true` | `false` |
-| `bookingMode` / `watchMode` | `tenant` (MU-17) | `toml` |
+| `bookingMode` / `watchMode` | `tenant` (MU-17) | `toml` (until MU-18 stage B) |
 | `watchCron` | `0 * * * *` | `*/10 * * * *` |
-| `tenantCosmosEndpoint` | shared Cosmos account | empty |
-| `deployWebApp` / `deployAcsEmail` | `true` | `false` |
+| `tenantCosmosEndpoint` | shared Cosmos account | shared Cosmos account (MU-18 stage A) |
+| `deployWebApp` / `deployAcsEmail` | `true` | `true` (MU-18 stage A) |
 
 ```
 infra/
@@ -71,7 +71,7 @@ infra/
                              #   azure-iac.yml starts + awaits it right after deploy pass 2.
       webapp.bicep           # NEW (MU-15a): Container App teetime-web-<env> (`teetime web`),
                              #   scale-to-zero, same ACA environment as the jobs. Gated on
-                             #   deployWebApp (dev true since MU-17, prod false). Ingress + max-replicas
+                             #   deployWebApp (dev true since MU-17, prod true since MU-18 stage A). Ingress + max-replicas
                              #   latched to effectiveEnableSchedules (killswitch lever (c) target).
                              #   MU-16a: tenant backend env (Cosmos, AZURE_CLIENT_ID, keyring,
                              #   ACS) wired ONLY when tenantCosmosEndpoint is non-empty.

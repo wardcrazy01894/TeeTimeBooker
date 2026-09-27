@@ -36,10 +36,10 @@ def test_deploy_acs_email_param_defaults_false(main_bicep: str) -> None:
     assert "param deployAcsEmail bool = false" in main_bicep
 
 
-def test_deploy_acs_email_is_on_in_dev_only() -> None:
-    """MU-17 turns ACS on in dev; prod stays off until MU-18."""
+def test_deploy_acs_email_is_on_in_both_envs() -> None:
+    """MU-17 turned ACS on in dev; MU-18 stage A turns it on in prod."""
     assert "param deployAcsEmail = true" in DEV_PARAMS.read_text()
-    assert "param deployAcsEmail = false" in PROD_PARAMS.read_text()
+    assert "param deployAcsEmail = true" in PROD_PARAMS.read_text()
 
 
 def test_email_creates_communication_service_and_managed_domain(email_bicep: str) -> None:
