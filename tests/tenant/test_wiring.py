@@ -181,3 +181,20 @@ def test_user_notifier_falls_back_to_logging_when_email_is_unconfigured(
         notifier = user_notifier_from_env(store, {}, command="tenant-watch")
     assert isinstance(notifier, LoggingUserNotifier)
     assert "ACS_EMAIL_CONNECTION" in caplog.text
+
+
+async def test_open_tenant_store_quiets_the_azure_sdk_request_logging(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The Azure SDK logs every HTTP request's headers at INFO (seen flooding the dev web logs,
+    2026-09-26). Opening the Cosmos store raises the ``azure`` logger to WARNING, even when the
+    root logger runs at INFO as the jobs do."""
+    azure = logging.getLogger("azure")
+    monkeypatch.setattr(azure, "level", logging.NOTSET)
+    monkeypatch.setattr(wiring, "cosmos_tenant_store", _FakeOpener())
+    env = {"TENANT_COSMOS_ENDPOINT": ENDPOINT, "TENANT_COSMOS_DATABASE": "dev"}
+    with caplog.at_level(logging.INFO):
+        assert azure.getEffectiveLevel() == logging.INFO  # non-vacuity
+        async with open_tenant_store(env, command="test"):
+            pass
+        assert logging.getLogger("azure").getEffectiveLevel() >= logging.WARNING

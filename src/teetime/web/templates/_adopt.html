@@ -1,0 +1,25 @@
+{# MU-16b: operator-only "Adopt existing bookings" (tenant.seed). Rendered per account `v`. #}
+{% set lines = adoptions.get(v.account.id|string) %}
+<details class="adopt">
+  <summary>Adopt existing bookings (operator)</summary>
+  {% if lines is none %}
+  <p class="hint">Click "Refresh from course" first: adoption uses a reservation list from the last 15 minutes.</p>
+  {% elif not lines %}
+  <p class="hint">Nothing to adopt: no reservation at the course matches a date, party size and time window of your requests.</p>
+  {% else %}
+  <p class="hint">These reservations match your requests. Adopting records them as bookings the bot made, so it may later upgrade or cancel them. Only adopt reservations the bot (or you, for the bot) made.</p>
+  <table>
+    <thead><tr><th>Date</th><th>Tee time</th><th>Reservation</th><th>Action</th></tr></thead>
+    <tbody>
+      {% for l in lines %}
+      <tr><td>{{ l.target_date.isoformat() }}</td><td>{{ l.tee_time }}</td><td>{{ l.raw_id }}</td><td>{{ l.kind }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/accounts/{{ v.account.id }}/adopt">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><input type="checkbox" name="confirm" value="on" required> These reservations were made by the bot</label>
+    <button type="submit">Adopt</button>
+  </form>
+  {% endif %}
+</details>
