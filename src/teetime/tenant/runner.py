@@ -91,6 +91,7 @@ from .recording import (
     RecordingLog,
     make_recording_adapter,
 )
+from .retry import DEFAULT_STORE_RETRY, NO_RETRY, is_transient_store_error, retry_transient
 from .store import RowOutcome, TenantStore
 
 _MU9 = "MULTIUSER_PLAN.md MU-9a"
@@ -873,8 +874,11 @@ async def _read_and_claim(
     the claimed rows)."""
     targets = {cid: target_date_for(policies[cid], started) for cid in event.course_ids}
     try:
-        loaded = await _store_call(
-            store.load_event_rows(targets=targets, now=started), clock=clock, not_after=not_after
+        loaded = await _pre_t0_store_call(
+            lambda: store.load_event_rows(targets=targets, now=started),
+            label=f"tenant-run {event.key}: load_event_rows",
+            clock=clock,
+            not_after=not_after,
         )
     except Exception as exc:
         return _systemic(event, "load_event_rows", exc)
@@ -951,8 +955,13 @@ async def _claim(
     bounded by ``_store_call``."""
 
     async def claim(ids: Sequence[RowId]) -> frozenset[RowId]:
-        call = store.claim_rows(ids, owner=owner, until=until, now=clock.now_utc())
-        return await _store_call(call, clock=clock, not_after=not_after)
+        # A replay after a lost response re-claims as the SAME owner, which claim_rows accepts.
+        return await _pre_t0_store_call(
+            lambda: store.claim_rows(ids, owner=owner, until=until, now=clock.now_utc()),
+            label="tenant-run: claim_rows",
+            clock=clock,
+            not_after=not_after,
+        )
 
     claimed = set(await claim(row_ids))
     while pending := [r for r in row_ids if r not in claimed]:
@@ -967,6 +976,27 @@ async def _claim(
         await clock.sleep(_CLAIM_RETRY_S)
         claimed |= await claim(pending)
     return frozenset(claimed)
+
+
+async def _pre_t0_store_call[T](
+    make_call: Callable[[], Awaitable[T]],
+    *,
+    label: str,
+    clock: Clock,
+    not_after: datetime | None,
+) -> T:
+    """READ #1 / WRITE #1: one bounded ``_store_call`` per attempt, replayed on a TRANSIENT store
+    error (``tenant/retry.py``) only while the replay's sleep ends before ``not_after``, the start
+    of the race window. A run that started inside the window (``not_after`` None) never retries:
+    no extra store call may land between T0 - lead and T0 + quiet. Our own budget
+    ``TimeoutError`` is not transient, so a hung store is still abandoned after one budget."""
+    return await retry_transient(
+        lambda: _store_call(make_call(), clock=clock, not_after=not_after),
+        label=label,
+        clock=clock,
+        policy=DEFAULT_STORE_RETRY if not_after is not None else NO_RETRY,
+        not_after=not_after,
+    )
 
 
 async def _store_call[T](
@@ -1352,17 +1382,20 @@ async def _write_outcome(store: _RunnerStore, outcome: RowOutcome, *, clock: Clo
     while True:
         try:
             await store.record_outcomes([outcome])
-        except ExceptionGroup as group:
-            # Refused (the row moved / lease lost): ledger entries were still written and the
-            # date's active row flagged needs_reconcile (M4). Not retryable.
-            log.critical(
-                "tenant-run: row %s: outcome write REFUSED (%s)",
-                outcome.row_id,
-                [type(e).__name__ for e in group.exceptions],
-            )
-            _dump_outcome(outcome)
-            return False
         except Exception as exc:
+            if isinstance(exc, ExceptionGroup) and not is_transient_store_error(exc):
+                # Refused (the row moved / lease lost): ledger entries were still written and
+                # the date's active row flagged needs_reconcile (M4). Not retryable. A group of
+                # ONLY transient leaves (how Cosmos reports a blip) falls through to the retry:
+                # the outcome batch is IfMatch'd on the row's etag, so a replay after an
+                # ambiguous success is refused, never double-applied.
+                log.critical(
+                    "tenant-run: row %s: outcome write REFUSED (%s)",
+                    outcome.row_id,
+                    [type(e).__name__ for e in exc.exceptions],
+                )
+                _dump_outcome(outcome)
+                return False
             if clock.now_utc() + timedelta(seconds=_WRITE_RETRY_STEP_S) > give_up:
                 log.critical(
                     "tenant-run: row %s: outcome write FAILED after retries (%s)",
