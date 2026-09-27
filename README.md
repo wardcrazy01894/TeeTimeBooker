@@ -283,7 +283,7 @@ identity. About $5/month (ACR Basic; compute sits in the free grant).
 | Deploy | Auto on merge to `main` | Manual approval, tagged `infra/vX.Y.Z` |
 | Mode | `dryRun = true` | `dryRun = false` |
 | Booking/watch | Tenant mode (`tenant-run` / `tenant-watch`), watcher hourly | TOML mode (`run` / `watch`), watcher every 10 min |
-| Web app, ACS email, Cosmos | Deployed (`deployWebApp`/`deployAcsEmail = true`) | Not yet (MU-18) |
+| Web app, ACS email, Cosmos | Deployed (`deployWebApp`/`deployAcsEmail = true`) | Deployed since MU-18 stage A, for connecting, rules and adopting; bookings stay TOML until stage B |
 
 - **IaC:** Bicep modules `identity`, `registry` (one shared ACR in `rg-teetime-shared`),
   `keyvault`, `logs`, `compute`, `budget`, `killswitch` + `killswitch-rbac-prod`, `webapp`,
