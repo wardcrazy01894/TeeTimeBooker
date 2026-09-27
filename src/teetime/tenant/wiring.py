@@ -142,6 +142,9 @@ async def open_tenant_store(
         )
         yield InMemoryTenantStore(course_timezones=zones, cutoff=effective_cutoff)
         return
+    # The Azure SDK logs every HTTP request's headers at INFO: noise that buries the job's own
+    # lines in Log Analytics. Warnings and errors still come through.
+    logging.getLogger("azure").setLevel(logging.WARNING)
     log.info(
         "teetime %s: tenant store is Cosmos %s database=%s containers=%s",
         command,
