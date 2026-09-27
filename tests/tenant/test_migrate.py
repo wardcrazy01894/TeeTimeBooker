@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
-import pytest
+from datetime import UTC, datetime
 
+import pytest
+from azure.core.exceptions import ServiceRequestError
+
+from teetime.core.clock import FakeClock
 from teetime.core.config import BookingCutoffConfig
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.migrate import MIGRATIONS, Migration, MigrationError, run_migrations
@@ -75,3 +79,34 @@ async def test_duplicate_migration_names_are_refused() -> None:
 
     with pytest.raises(MigrationError, match="duplicate"):
         await run_migrations(_store(), (Migration("001", noop), Migration("001", noop)))
+
+
+class _FlakyInit(InMemoryTenantStore):
+    """``initialize`` (a point read per container) fails transiently ``fails`` times."""
+
+    def __init__(self, fails: int) -> None:
+        super().__init__(course_timezones={}, cutoff=BookingCutoffConfig())
+        self.fails = fails
+        self.initialized = 0
+
+    async def initialize(self) -> None:
+        self.initialized += 1
+        if self.fails:
+            self.fails -= 1
+            raise ServiceRequestError("connection refused")
+
+
+async def test_initialize_survives_a_transient_connection_error() -> None:
+    """Retry audit 2026-09-27: the migrate job's reachability check is a pure read, so one
+    blip is replayed instead of failing the deploy step."""
+    store = _FlakyInit(fails=1)
+    report = await run_migrations(store, clock=FakeClock(start=datetime(2026, 9, 27, tzinfo=UTC)))
+    assert store.initialized == 2
+    assert report.applied == ()
+
+
+async def test_initialize_gives_up_after_bounded_retries() -> None:
+    store = _FlakyInit(fails=99)
+    with pytest.raises(ServiceRequestError):
+        await run_migrations(store, clock=FakeClock(start=datetime(2026, 9, 27, tzinfo=UTC)))
+    assert store.initialized == 3

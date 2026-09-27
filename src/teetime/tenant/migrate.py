@@ -18,6 +18,8 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
+from ..core.clock import Clock, RealClock
+from .retry import retry_transient
 from .store import TenantStore
 
 log = logging.getLogger(__name__)
@@ -44,14 +46,21 @@ MIGRATIONS: tuple[Migration, ...] = ()
 
 
 async def run_migrations(
-    store: TenantStore, migrations: Sequence[Migration] = MIGRATIONS
+    store: TenantStore,
+    migrations: Sequence[Migration] = MIGRATIONS,
+    *,
+    clock: Clock | None = None,
 ) -> MigrationReport:
     """Connect, then run every migration in order. The first failure stops the list and raises
-    ``MigrationError`` (the job exits non-zero; the next deploy re-runs from the start)."""
+    ``MigrationError`` (the job exits non-zero; the next deploy re-runs from the start).
+    ``initialize`` is a pure read, so a transient failure is replayed (``tenant/retry.py``);
+    a migration step is NOT (the whole job is the retry unit: every step is idempotent)."""
     names = [m.name for m in migrations]
     if len(set(names)) != len(names):
         raise MigrationError(f"duplicate migration names in {names}")
-    await store.initialize()
+    await retry_transient(
+        store.initialize, label="tenant-migrate: initialize", clock=clock or RealClock()
+    )
     applied: list[tuple[str, int]] = []
     for migration in migrations:
         try:

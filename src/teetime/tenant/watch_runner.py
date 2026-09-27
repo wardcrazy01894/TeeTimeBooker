@@ -73,8 +73,11 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
+from functools import partial
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
+
+import httpx
 
 from ..core.adapter import (
     AuthError,
@@ -130,6 +133,7 @@ from .models import (
 )
 from .notify import UserEvent, UserEventKind, UserNotifier
 from .recording import RecordedBook, RecordingLog, make_recording_adapter
+from .retry import retry_transient
 from .runner import AdapterFactory, ExitStatus, WatchReport, resolve_credentials
 from .store import RowOutcome, TenantStore
 from .watcher import (
@@ -164,6 +168,10 @@ __all__ = [
 WATCH_LEASE_S = 300.0
 # PLAN §12 courtesy spacing between the run's searches and between account logins.
 _SPACING_S = 0.25
+# The pause before the one replay of a group search that failed transiently.
+_SEARCH_RETRY_S = 1.0
+_HTTP_REQUEST_TIMEOUT = 408
+_HTTP_SERVER_ERROR = 500
 # The store flips the account to AUTH_FAILED at this many consecutive soft failures (§7.5).
 _SOFT_AUTH_FAILURE_LIMIT = 3
 # RequestRow has no holes field; every hosted course books 18 (as the booking runner does).
@@ -406,9 +414,10 @@ class _Run:
     # --- step 1: the reads (tick -> finalizer -> the one watch query) ---------------------------
 
     async def read(self, policies: Mapping[CourseId, ReleasePolicy]) -> list[EventRow]:
-        await self._store(
+        # Idempotent by construction (history-based, deterministic ids): safe to replay.
+        await self._read(
             "materialize_tick",
-            materialize_tick(
+            lambda: materialize_tick(
                 store=self.store,
                 policies={str(cid): p for cid, p in policies.items()},
                 cutoff=self.cutoff,
@@ -417,14 +426,15 @@ class _Run:
         )
         lost = await self._store("finalize_lost", self.store.finalize_lost(now=self.now))
         horizons = {cid: _horizon(p, self.now) for cid, p in policies.items()}
-        rows = await self._store(
-            "load_watch_rows", self.store.load_watch_rows(horizons=horizons, now=self.now)
+        rows = await self._read(
+            "load_watch_rows", lambda: self.store.load_watch_rows(horizons=horizons, now=self.now)
         )
         self.tally.rows_loaded = len(rows)
         for row in lost:
             self.tally.lost.append(row.id)
-            account = await self._store(
-                "get_account_unscoped", self.store.get_account_unscoped(row.course_account_id)
+            account = await self._read(
+                "get_account_unscoped",
+                partial(self.store.get_account_unscoped, row.course_account_id),
             )
             await self._notify(UserEventKind.LOST, row, account=account, detail="frozen unbooked")
         return await self._group_floor(rows)
@@ -553,8 +563,23 @@ class _Run:
     async def _search_one(
         self, client: CourseAdapter, key: SearchGroupKey, members: Sequence[EventRow]
     ) -> list[TeeTimeSlot]:
+        request = _group_request(key, members, dry_run=self.dry_run)
         try:
-            slots = await client.search(_group_request(key, members, dry_run=self.dry_run))
+            try:
+                slots = await client.search(request)
+            except Exception as exc:
+                if not _is_transient_search_error(exc):
+                    raise
+                # ONE replay of the idempotent GET (the adapter already retried a transport
+                # error twice): a lone 5xx must not blank every row of this group for the run.
+                log.info(
+                    "tenant-watch: search for %s %s transient (%s); retrying once",
+                    key.course_id,
+                    key.target_date,
+                    type(exc).__name__,
+                )
+                await self.clock.sleep(_SEARCH_RETRY_S)
+                slots = await client.search(request)
         except RateLimitError as exc:
             log.warning(
                 "tenant-watch: rate-limited searching %s %s (retry_after=%ss); aborting the run",
@@ -591,14 +616,16 @@ class _Run:
                 row, account = event_row.row, event_row.account
                 work = accounts.get(account.id)
                 if work is None:
-                    previous = await self._store(
-                        "get_snapshot", self.store.get_snapshot(account.id)
+                    previous = await self._read(
+                        "get_snapshot", partial(self.store.get_snapshot, account.id)
                     )
                     work = _AccountWork(account, previous)
                     accounts[account.id] = work
-                owned = await self._store(
+                owned = await self._read(
                     "list_owned_bookings",
-                    self.store.list_owned_bookings(account.id, target_date=row.target_date),
+                    partial(
+                        self.store.list_owned_bookings, account.id, target_date=row.target_date
+                    ),
                 )
                 self._report_orphans(row, owned)
                 if lease_held(row, now=self.now) and row.lease_owner != self.owner:
@@ -995,7 +1022,14 @@ class _Run:
 
     async def _write(self, outcome: RowOutcome) -> bool:
         try:
-            await self.store.record_outcomes([outcome])
+            # A transient failure (Cosmos wraps a blip in an ExceptionGroup of transient leaves)
+            # is replayed: the outcome batch is IfMatch'd on the row's etag, so a replay after an
+            # ambiguous success is refused (and reported below), never double-applied.
+            await retry_transient(
+                lambda: self.store.record_outcomes([outcome]),
+                label=f"tenant-watch: row {outcome.row_id}: record_outcomes",
+                clock=self.clock,
+            )
         except ExceptionGroup as group:
             # Refused (the row moved / the lease was lost): the store still wrote the ledger and
             # flagged the date's active row needs_reconcile (M4). Non-zero exit.
@@ -1013,6 +1047,17 @@ class _Run:
     async def _store[T](self, stage: str, call: Awaitable[T]) -> T:
         try:
             return await call
+        except Exception as exc:
+            raise _SystemicError(f"{stage}: {type(exc).__name__}") from exc
+
+    async def _read[T](self, stage: str, make_call: Callable[[], Awaitable[T]]) -> T:
+        """An IDEMPOTENT store call (a read, or the history-based materializer tick), replayed on
+        a transient error (``tenant/retry.py``) before it becomes a systemic failure. Non-
+        idempotent writes (the soft-auth counter, leases, ``finalize_lost``) stay on ``_store``."""
+        try:
+            return await retry_transient(
+                make_call, label=f"tenant-watch: {stage}", clock=self.clock
+            )
         except Exception as exc:
             raise _SystemicError(f"{stage}: {type(exc).__name__}") from exc
 
@@ -1366,3 +1411,15 @@ def _follow_survivor(
         cancelled_extras=extras + cancelled_own,
         needs_reconcile=False,
     )
+
+
+def _is_transient_search_error(exc: BaseException) -> bool:
+    """What the ForeUP adapter lets out of an idempotent search that a replay can fix: a
+    transport error (after its own retries) or a 408/5xx. A 429 is ``RateLimitError`` and
+    aborts the run instead (§7.9); anything else (a schema break) is not a blip."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == _HTTP_REQUEST_TIMEOUT or code >= _HTTP_SERVER_ERROR
+    return False

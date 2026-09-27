@@ -40,6 +40,7 @@ CLAUDE.md invariant bullets on `prepare_book` and on the two stores; MU-7 is `te
 - [MU-R3: Ranked booking form](#mu-r3-ranked-booking-form)
 - [MU-15b: Cosmos DB account](#mu-15b-cosmos-db-account)
 - [Website UI polish](#website-ui-polish)
+- [Retry audit (2026-09-27)](#retry-audit-2026-09-27)
 
 <!-- /toc -->
 
@@ -567,3 +568,29 @@ ranked booking form shows ONE option row up front; rows 2-6 sit in an "Add anoth
 `<details>` that works with JavaScript off, and the same-origin `web/static/app.js` (the ONLY script;
 CSP `script-src 'self'`) reveals rows one at a time with a Remove link that blanks the row so the
 server skips it. The nav's "Rules" is labelled "Weekly". Pinned by `tests/web/test_web_ui_polish.py`.
+
+## Retry audit (2026-09-27)
+
+Operator request after the prod cutover: "retries in places where there should be retries". Every
+external call on the live tenant path was inventoried against the SDK/library retry it already
+gets; the full table is in the retry-audit PR body. Changes, all transient-only, bounded, on the
+injected clock and TDD'd (`tests/tenant/test_store_retry.py`, `test_runner_retry.py`,
+`test_watch_runner_retry.py`, `tests/test_captcha.py`, `tests/web/test_web_probe_no_retry.py`,
+`tests/tenant/test_migrate.py`):
+
+- `tenant/retry.py`: `retry_transient` + `is_transient_store_error` (408/429/449/5xx, lost or
+  refused connections, the SDK timeout; an `ExceptionGroup` only when every leaf is transient).
+- Booker: READ #1 and WRITE #1 replay only while the sleep ends before the race window; WRITE #2's
+  existing 60 s retry now fires for Cosmos (it treated every `ExceptionGroup` as a refusal, and
+  `CosmosTenantStore.record_outcomes` raises one for every failure, blips included).
+- Watcher: reads + materializer tick + outcome write replay transient errors (the outcome write
+  used to REFUSE a booking the watcher had just made on a blip, leaving it unledgered); a group
+  search replays once on a transport error / 408 / 5xx.
+- 2captcha: submit retries; a failed poll consumes one poll instead of discarding the paid task.
+- Web: the connect / re-verify probe turns OFF the ForeUP adapter's transport retry, which had
+  been replaying the probe's login POST despite §8.4.
+- `tenant-migrate`: `initialize()` (a read) replays a transient failure.
+
+Deliberately unretried: ForeUP `book()`, the login probe, the soft-auth counter, leases,
+`finalize_lost`, migration steps, the web's own store calls (SDK baseline only), the site-key
+pre-flight (already falls back to the hardcoded key).

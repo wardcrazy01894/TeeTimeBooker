@@ -28,6 +28,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
+from typing import Protocol, runtime_checkable
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -922,6 +923,15 @@ async def _close(adapter: CourseAdapter) -> None:
         log.warning("web: adapter close failed (%s)", type(exc).__name__)
 
 
+@runtime_checkable
+class _TransportRetryTunable(Protocol):
+    """An adapter whose internal transport-error retry can be switched off (ForeUP)."""
+
+    def set_transport_retries(
+        self, max_retries: int, *, backoff_s: float | None = None
+    ) -> None: ...
+
+
 async def _probe_login(
     *,
     account: CourseAccount,
@@ -934,6 +944,10 @@ async def _probe_login(
     adapter = adapter_factory(
         course_id=account.course_id, account=account, pool=None, lease_key=None, dry_run=True
     )
+    if isinstance(adapter, _TransportRetryTunable):
+        # ForeUP's own transport-error retry would otherwise replay the login POST (retry audit
+        # 2026-09-27): the probe is ONE attempt, and the rate limits count exactly one.
+        adapter.set_transport_retries(0)
     try:
         await adapter.authenticate(CourseCredentials(username=account.username, password=password))
         return _login_established(adapter)

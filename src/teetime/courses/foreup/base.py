@@ -257,6 +257,16 @@ class ForeUpAdapter(CourseAdapter):
         self._max_retries = max_retries
         self._retry_backoff_s = retry_backoff_s
 
+    def set_transport_retries(self, max_retries: int, *, backoff_s: float | None = None) -> None:
+        """Re-tune ``_send_with_retry`` after construction (the adapter factory's signature has
+        no retry knob). The web's connect / re-verify login probe sets 0: that probe is NEVER
+        retried (MULTIUSER_PLAN §8.4), not even on a transport error."""
+        if max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
+        self._max_retries = max_retries
+        if backoff_s is not None:
+            self._retry_backoff_s = backoff_s
+
     def _make_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=FOREUP_BASE_URL,
