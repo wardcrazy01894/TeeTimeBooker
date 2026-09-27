@@ -368,7 +368,7 @@ cron loop outside. See [PLAN.md](./PLAN.md) and [MULTIUSER_PLAN.md](./MULTIUSER_
 | M-feature-1/2/3 | Cancellation watcher, auto-upgrade, midpoint-distance ranking | Done |
 | Blind-POST | Concurrent T0 book POSTs for the MB morning grid + watcher crash-net, later staggered | Done, live since `infra/v2.5.0` |
 | M-azure | Bicep IaC, container runtime | Done |
-| Multi-user site | MULTIUSER_PLAN MU-1 … MU-17, MU-R1 … MU-R3 | Done; live in prod since MU-18 (`infra/v3.0.0`) |
+| Multi-user site | MULTIUSER_PLAN MU-1 … MU-18, MU-R1 … MU-R3 | Done; live in prod since MU-18 (`infra/v3.0.0`) |
 
 Engine milestones in detail: [PLAN.md §16](./PLAN.md) and §20. Multi-user milestones:
 [MULTIUSER_PLAN.md §12](./MULTIUSER_PLAN.md).

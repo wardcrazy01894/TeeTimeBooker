@@ -62,7 +62,7 @@ infra/
                              #   + 1× watch ACA Job (watchCron param: prod */10 * * * *, dev hourly)
                              #   all jobs: --dry-run passed via dryRun param
                              #   bookingMode/watchMode params (MU-15a; dev 'tenant' since MU-17,
-                             #   prod 'toml'): select `run --config .../container.toml` vs `tenant-run --event
+                             #   prod 'tenant' since MU-18 stage B): select `run --config .../container.toml` vs `tenant-run --event
                              #   <key>`/`tenant-watch`; tenant-only secretRefs/env vars are added
                              #   ONLY inside a mode=='tenant' branch, so the default toml mode
                              #   never references a KV secret the operator has not created.

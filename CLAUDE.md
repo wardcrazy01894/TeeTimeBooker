@@ -115,7 +115,8 @@ actually built, deviations included: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUS
 | MU-16b | Adopt the TOML bot's live reservations as owned: operator-only **Adopt existing bookings** on `/accounts` (`tenant/seed.py`, `web/adopt.py`), used at the prod cutover (AZURE_PLAN §10.8) | Done |
 | MU-17 | Dev cutover | Done, dev dry-run |
 | MU-18 | Prod cutover: stage A `infra/v2.17.0` (web app, ACS, tenant store), stage B `infra/v3.0.0` (jobs on the tenant path), 2026-09-27 | Done |
-| MU-19 / MU-20 | Retire TOML job wiring / TOML CLI | Open |
+| MU-19 | Retire the TOML job wiring (after 4 clean weekends) | Open |
+| MU-20 | Remove the TOML CLI | Dropped: the operator keeps it (MULTIUSER_PLAN §13 Q6) |
 | MU-R1 / R2 / R3 | Ranked options + price / group floor + collapse / ranked form | Done |
 
 ### Cut from scope
