@@ -403,7 +403,40 @@ a test that proves the new behaviour, and update this section in the same PR.
   cancel DELETE. It does not retry HTTP status errors, and **`book()`'s POST is never wrapped**: a
   timed-out book is the UNCERTAIN case the watcher reconciles, not a safe re-fire. Tuned by
   `max_retries` (default 2) and `retry_backoff_s` (0.5 s, linear; tests pass 0). The watch job's
-  `replicaTimeout` is 300 s to leave room for retries (AZURE_PLAN §5.4).
+  `replicaTimeout` is 300 s to leave room for retries (AZURE_PLAN §5.4). **The web's connect /
+  re-verify login probe switches it OFF** (`set_transport_retries(0)` in `_probe_login`): that
+  probe is ONE attempt (§8.4), and the rate limits count exactly one.
+- **Retries everywhere else follow one rule: transient errors only, idempotent calls only,
+  bounded, on the injected clock** (retry audit 2026-09-27).
+  - **What is already retried below us, so we do not repeat it inside one call:** the
+    azure-cosmos SDK retries 429 (9x / 30 s, honouring `x-ms-retry-after-ms`), 503 and
+    never-established connections for every op, and 408 / 5xx / lost responses for READS only
+    (`retry_write` stays 0: a write whose response was lost may have landed). azure-core retries
+    the managed-identity token fetch. `AcsEmailClient` retries 429 / 5xx / transport errors with
+    one `repeatability-request-id` per send.
+  - **`tenant/retry.py`** (`retry_transient`, `is_transient_store_error`) is the call-site layer
+    for what the SDK gave up on: HTTP 408/429/449/5xx, `ServiceRequestError` /
+    `ServiceResponseError`, the SDK client timeout, and an `ExceptionGroup` only if EVERY leaf is
+    transient (`record_outcomes` wraps each failure in a group, so a blip used to read as a
+    refusal and the booker's WRITE #2 retry never fired against Cosmos). The runner's
+    `_store_call` budget `TimeoutError` is deliberately NOT transient: the bound stays the bound.
+  - **Booker:** READ #1 and the claim (idempotent per owner) replay a transient error only while
+    the replay's sleep ends before the race window (`_pre_t0_store_call`; none at all when the run
+    started inside it). WRITE #2 replays an all-transient group within its 60 s window; that write
+    and the watcher's are IfMatch'd on the row's etag, so a replay after an ambiguous success is
+    REFUSED (reported, needs_reconcile), never double-applied.
+  - **Watcher:** the idempotent reads + the history-based materializer tick (`_read`) and the
+    outcome write replay transient errors; a group's shared search replays ONCE on a transport
+    error / 408 / 5xx (a 429 still aborts the run). The soft-auth counter, leases and
+    `finalize_lost` are NOT retried (not idempotent).
+  - **2captcha:** the submit replays a transport error / 429 / 5xx / `ERROR_NO_SLOT_AVAILABLE`
+    twice (a duplicate queued task only costs a solve); a failed result poll CONSUMES that poll
+    and only 3 consecutive failures give up, so the solve budget (`max_polls x interval`) the
+    120 s prefetch lead is sized for never grows. Errors stay sanitized (the poll URL has the key).
+  - **Never retried:** ForeUP `book()` (UNCERTAIN, §9), the login probe, any non-idempotent write
+    without an IfMatch/etag or idempotency key, and `tenant-migrate`'s migration steps (the job is
+    the retry unit; only its `initialize()` read is replayed). The web's own store calls rely on
+    the SDK (the user can resubmit; its writes are IfMatch'd).
 
 ### The 06:00 booking race (race path only)
 
@@ -808,6 +841,7 @@ of them in the same PR.
 | New Bicep module or param (`infra/bicep/**`: `cosmos`, `webapp`, `email`, …) | `infra/CLAUDE.md` module tree, AZURE_PLAN (module + runbook), both `.bicepparam` files, `azure-iac.yml` inline params (pinned by `test_every_param_file_value_reaches_every_ci_deploy`), killswitch levers if it runs compute |
 | CI workflow change (`.github/workflows/**`) | CLAUDE.md Required CI checks + branch protection for a new validation job, `.githooks/pre-push` (pinned by `tests/test_prepush_hook.py`) |
 | Milestone or feature done or cut | PLAN.md §16 row or MULTIUSER_PLAN §12 row, README status/roadmap, CLAUDE.md Current status, BACKLOG.md if it retires an item |
+| Retry behaviour (a new retry, or a call that must never retry) | CLAUDE.md "Retries everywhere else" bullet (the per-call list), `tenant/retry.py` module docstring if the SDK baseline changes, `docs/MULTIUSER_AS_BUILT.md` "Retry audit" section, and a test that pins both the retry AND its bound |
 | Doc moved, renamed or retired | Every link to it (grep the whole repo incl. src docstrings, tests, bicep, workflows), the Where-the-docs-live table here, README Documentation list. Enforced: `tests/test_docs_consistency.py` fails on a broken relative markdown link |
 
 When a sweep fixes a stale claim, ask whether a cheap test can pin it; add sibling checks to
