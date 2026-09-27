@@ -13,7 +13,7 @@ adding a course) and [`infra/CLAUDE.md`](./infra/CLAUDE.md) (Azure infra and dep
 
 - [What this is](#what-this-is)
 - [Current status](#current-status)
-  - [Production (TOML path)](#production-toml-path)
+  - [Production (tenant path since MU-18)](#production-tenant-path-since-mu-18)
   - [Dev (tenant path, MU-17)](#dev-tenant-path-mu-17)
   - [Multi-user milestones](#multi-user-milestones)
   - [Cut from scope](#cut-from-scope)
@@ -51,22 +51,22 @@ Apps (ACA) Jobs; GitHub Actions is CI and deploy only.
 
 Two paths exist side by side:
 
-- **TOML path** (`teetime run` / `teetime watch`): single-user, configured by a TOML file. This is
-  what **prod** runs.
 - **Tenant path** (`teetime tenant-run` / `tenant-watch` / `web`): the invite-only multi-user site
   from [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md). It runs the UNMODIFIED `Orchestrator` once per
-  account. This is what **dev** runs since MU-17.
+  account. This is what **prod** runs since MU-18 stage B (`infra/v3.0.0`) and **dev** since MU-17.
+- **TOML path** (`teetime run` / `teetime watch`): single-user, configured by a TOML file. Kept for
+  local course testing and as prod's rollback (flip `bookingMode`/`watchMode` back to `toml`).
 
 ## Current status
 
-### Production (TOML path)
+### Production (tenant path since MU-18)
 
 | | |
 |---|---|
-| Latest infra tag | latest infra tag `infra/v2.16.0` (2026-08-24, `main`@`4462f56`); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Latest infra tag | latest infra tag `infra/v3.0.0` (2026-09-27, MU-18 stage B: jobs on the tenant path; stage A was `infra/v2.17.0`); history in [docs/RELEASES.md](./docs/RELEASES.md) |
 | Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
-| Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout, `run --wait` |
-| Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout |
+| Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout; `tenant-run --event mb0600et --wait` since MU-18 stage B (was `run --wait`) |
+| Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout; `tenant-watch` since MU-18 stage B |
 | Books | Sat + Sun, one reservation per day, 7 days ahead, nearest the window midpoint |
 
 What is live: multi-day Sat+Sun booking with per-day windows, the 16:00-day-before booking cutoff,
@@ -85,7 +85,7 @@ cutover runbook: AZURE_PLAN §10.4/§10.5. The `enableSchedules` Bicep param sil
 Dev auto-deploys from `main` in permanent `dryRun = true`. Since MU-17 its booker and watcher run
 `tenant-run --event mb0600et` / `tenant-watch` (watcher hourly, `0 * * * *`) over the shared Cosmos
 `dev` database, and the `teetime-web-dev` Container App (Google sign-in) and ACS email are
-deployed. Prod is unchanged until MU-18. Runbook: AZURE_PLAN §10.7.
+deployed. Runbook: AZURE_PLAN §10.7 (prod followed at MU-18, §10.8).
 
 The cost killswitch ($50 actual spend → Logic App disables and stops every ACA Job and stops the
 web apps) is armed in dev and manages both envs; the $20 email budget is the early-warning tier.
@@ -114,8 +114,9 @@ actually built, deviations included: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUS
 | MU-16a | Tenant commands on real collaborators + migrate job | Done |
 | MU-16b | Adopt the TOML bot's live reservations as owned: operator-only **Adopt existing bookings** on `/accounts` (`tenant/seed.py`, `web/adopt.py`), used at the prod cutover (AZURE_PLAN §10.8) | Done |
 | MU-17 | Dev cutover | Done, dev dry-run |
-| MU-18 | Prod cutover | Open |
-| MU-19 / MU-20 | Retire TOML job wiring / TOML CLI | Open |
+| MU-18 | Prod cutover: stage A `infra/v2.17.0` (web app, ACS, tenant store), stage B `infra/v3.0.0` (jobs on the tenant path), 2026-09-27 | Done |
+| MU-19 | Retire the TOML job wiring (after 4 clean weekends) | Open |
+| MU-20 | Remove the TOML CLI | Dropped: the operator keeps it (MULTIUSER_PLAN §13 Q6) |
 | MU-R1 / R2 / R3 | Ranked options + price / group floor + collapse / ranked form | Done |
 
 ### Cut from scope
@@ -792,6 +793,7 @@ of them in the same PR.
 | Change | Doc sites to update (all of them) |
 |--------|-----------------------------------|
 | Prod infra tag bump / deploy | README.md Status + Azure hosting, CLAUDE.md Current status table, PLAN.md (scope note + §16 M6.T3 row), a new section in `docs/RELEASES.md`. Enforced: `tests/test_docs_consistency.py` fails if README/CLAUDE/PLAN name different "latest infra tag" versions |
+| Prod mode change (`bookingMode`/`watchMode` in `main.bicepparam.prod`) | Every current-state line that says what prod runs: README Status + Azure hosting table, CLAUDE.md "Two paths" intro + Current status + milestone table, MULTIUSER_PLAN status note + §12, `docs/MULTIUSER_AS_BUILT.md`, AZURE_PLAN status banner, PLAN.md status, BACKLOG. Mechanically enforced: `tests/test_docs_consistency.py::test_no_doc_says_prod_runs_toml_once_prod_runs_the_tenant_path` (added after four review rounds each found another stale wording) |
 | Dependency floor bump / dep-comment edit | `pyproject.toml`: bump the floor AND check the comment above it. A dep comment must name NO tracking version. Enforced for `idna` (only the CVE boundary may be named; the floor may not drop below it). Drifted twice (#106, #204) |
 | New/changed config key or default | `core/config.py` field comment, `config/example.toml` + `container.toml` + `local.toml`, README Configuration, `tests/test_container_config_parity.py` pin, CLAUDE.md invariant if load-bearing |
 | Engine orchestrator/watcher behaviour (`core/*orchestrator*.py`, gates) | CLAUDE.md invariants, PLAN.md §9/§9.1/§12, the owning plan's status banner (and a supersession banner on any plan it retires) |

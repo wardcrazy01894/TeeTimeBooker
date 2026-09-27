@@ -35,11 +35,12 @@ Apps Jobs, and the golf course sends booking confirmations directly.
 
 ## Status
 
-> **Prod is live** (`dryRun=false`) on the single-user TOML path at the
-> latest infra tag `infra/v2.16.0` (2026-08-24). Release history: [docs/RELEASES.md](./docs/RELEASES.md).
+> **Prod is live** (`dryRun=false`) on the multi-user tenant path at the
+> latest infra tag `infra/v3.0.0` (2026-09-27, MU-18 stage B): tenant booker and watcher over Cosmos, the invite-only
+> web app, and ACS email. Release history: [docs/RELEASES.md](./docs/RELEASES.md).
 >
-> **Dev** runs the multi-user tenant path (MU-17, dry-run): tenant booker and watcher over Cosmos,
-> the invite-only web app, and ACS email. Prod moves to it at MU-18.
+> **Dev** runs the same tenant path in dry-run (since MU-17). The single-user TOML path (`teetime
+> run` / `watch`) is kept for local course testing and as prod's rollback.
 
 - ForeUP adapter: live bookings at Mangrove Bay since M6. TeeItUp adapter: live booking + cancel
   confirmed against Sydney Marovitz (2026-05-29).
@@ -163,8 +164,8 @@ enabled per date. When the watcher is disabled the command logs a warning and ex
 
 ## Multi-user web app
 
-The invite-only site from [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md). It is **deployed to dev**
-(`teetime-web-dev`, dry-run, MU-17) and not yet to prod (MU-18). Users bring their own ForeUP
+The invite-only site from [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md). It is **deployed to prod**
+(`teetime-web-prod`, MU-18) and to dev (`teetime-web-dev`, dry-run, MU-17). Users bring their own ForeUP
 login (stored AES-GCM-encrypted), pick ranked (course, time window) options, and the tenant jobs
 book for every account at the drop.
 
@@ -282,8 +283,8 @@ identity. About $5/month (ACR Basic; compute sits in the free grant).
 |---|---|---|
 | Deploy | Auto on merge to `main` | Manual approval, tagged `infra/vX.Y.Z` |
 | Mode | `dryRun = true` | `dryRun = false` |
-| Booking/watch | Tenant mode (`tenant-run` / `tenant-watch`), watcher hourly | TOML mode (`run` / `watch`), watcher every 10 min |
-| Web app, ACS email, Cosmos | Deployed (`deployWebApp`/`deployAcsEmail = true`) | Deployed since MU-18 stage A, for connecting, rules and adopting; bookings stay TOML until stage B |
+| Booking/watch | Tenant mode (`tenant-run` / `tenant-watch`), watcher hourly | Tenant mode since MU-18 stage B (`infra/v3.0.0`; was TOML `run` / `watch`), watcher every 10 min |
+| Web app, ACS email, Cosmos | Deployed (`deployWebApp`/`deployAcsEmail = true`) | Deployed since MU-18 stage A (`infra/v2.17.0`) |
 
 - **IaC:** Bicep modules `identity`, `registry` (one shared ACR in `rg-teetime-shared`),
   `keyvault`, `logs`, `compute`, `budget`, `killswitch` + `killswitch-rbac-prod`, `webapp`,
@@ -367,7 +368,7 @@ cron loop outside. See [PLAN.md](./PLAN.md) and [MULTIUSER_PLAN.md](./MULTIUSER_
 | M-feature-1/2/3 | Cancellation watcher, auto-upgrade, midpoint-distance ranking | Done |
 | Blind-POST | Concurrent T0 book POSTs for the MB morning grid + watcher crash-net, later staggered | Done, live since `infra/v2.5.0` |
 | M-azure | Bicep IaC, container runtime | Done |
-| Multi-user site | MULTIUSER_PLAN MU-1 … MU-17, MU-R1 … MU-R3 | Done in dev; the prod cutover (MU-18) open |
+| Multi-user site | MULTIUSER_PLAN MU-1 … MU-18, MU-R1 … MU-R3 | Done; live in prod since MU-18 (`infra/v3.0.0`) |
 
 Engine milestones in detail: [PLAN.md §16](./PLAN.md) and §20. Multi-user milestones:
 [MULTIUSER_PLAN.md §12](./MULTIUSER_PLAN.md).

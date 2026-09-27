@@ -6,8 +6,8 @@
 
 Moved out of the root CLAUDE.md Status section on 2026-09-26 so every agent session stops loading
 it. Phrases such as "unwired" or "nothing calls it yet" record the state when that milestone
-merged; since MU-17 the tenant path runs in **dev** (dry-run) and prod still runs the TOML path
-until MU-18. MU-2 (the shared CAPTCHA pool) and MU-5 (the tenant store) are described in the
+merged; the tenant path runs in **dev** since MU-17 (dry-run) and in **prod** since MU-18 stage B
+(`infra/v3.0.0`, 2026-09-27). MU-2 (the shared CAPTCHA pool) and MU-5 (the tenant store) are described in the
 CLAUDE.md invariant bullets on `prepare_book` and on the two stores; MU-7 is `tenant/crypto.py`
 (AES-GCM with account-bound AAD).
 
@@ -34,6 +34,7 @@ CLAUDE.md invariant bullets on `prepare_book` and on the two stores; MU-7 is `te
 - [MU-16a: Tenant commands on real collaborators + migrate job](#mu-16a-tenant-commands-on-real-collaborators--migrate-job)
 - [MU-16b: Adopt the TOML bot's reservations (prod-cutover seed)](#mu-16b-adopt-the-toml-bots-reservations-prod-cutover-seed)
 - [MU-17: Dev cutover](#mu-17-dev-cutover)
+- [MU-18: Prod cutover](#mu-18-prod-cutover)
 - [MU-R1: Ranked options + per-course price (model, store, Cosmos)](#mu-r1-ranked-options--per-course-price-model-store-cosmos)
 - [MU-R2: Price cap, group floor, group collapse, cross-course upgrade](#mu-r2-price-cap-group-floor-group-collapse-cross-course-upgrade)
 - [MU-R3: Ranked booking form](#mu-r3-ranked-booking-form)
@@ -468,11 +469,25 @@ Prod runbook: AZURE_PLAN §10.8.
 
 Lives in `main.bicepparam.dev`: dev runs `tenant-run`/`tenant-watch` (still hourly) over the shared
 Cosmos `dev` database, with the web app (Google sign-in) and ACS email deployed; dev stays `dryRun =
-true` and PROD IS UNCHANGED until MU-18. With `acsEmailSender = ''` main.bicep derives
+true`; prod was unchanged until MU-18 (below). With `acsEmailSender = ''` main.bicep derives
 `DoNotReply@<managed domain>` from the email module output (`effectiveAcsEmailSender`), and with
 `operatorEmail = ''` the web reads `OPERATOR-NOTIFY-EMAIL` from Key Vault, because the repo is
 PUBLIC and no email address may sit in a param file (pinned by `tests/test_webapp_bicep.py`).
 Runbook: AZURE_PLAN §10.7.
+
+## MU-18: Prod cutover
+
+Two stages on 2026-09-27 (AZURE_PLAN §10.8), after the operator created the prod Key Vault secrets
+(a NEW keyring; the Google client, session secret and operator address), granted the CI SP Key Vault
+Secrets Officer on the prod vault, and the prod redirect URI was added to the Google client.
+**Stage A** (#256, `infra/v2.17.0`): `deployWebApp`/`deployAcsEmail = true`, the shared Cosmos
+endpoint and `webPublicBaseUrl` in `main.bicepparam.prod`, jobs still on the TOML path; the prod
+web app came up and the jobs were verified unchanged. The operator then connected the Mangrove Bay
+account, saved the Sat + Sun weekly booking and adopted the TOML bot's live reservations (MU-16b).
+**Stage B** (#257, `infra/v3.0.0`): `bookingMode`/`watchMode = 'tenant'`, so the booking jobs run
+`tenant-run --event mb0600et --wait` and the watcher `tenant-watch`, with the migrate job run by CI
+after pass 2; the operator adopted once more right after the deploy. The operator chose to cut over
+after one day of dev soak rather than the plan's two weekends. Rollback: both modes back to `toml`.
 
 ## MU-R1: Ranked options + per-course price (model, store, Cosmos)
 

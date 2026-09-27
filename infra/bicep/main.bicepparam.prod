@@ -68,13 +68,13 @@ param enableKillswitch = true
 // See: docs/plans/COST_KILLSWITCH_PLAN.md §3/PR-KS1 (operator pre-step)
 param killswitchRbacRoleId = '3e2d5a14-96bd-4469-9f96-b9c3270aa9e6'
 
-// --- MU-18 (MULTIUSER_PLAN §11 steps 5-7, AZURE_PLAN §10.8): the PROD cutover, stage A ----------
-// Stage A: the web app, ACS email and the shared Cosmos endpoint go live, but the booking and
-// watch jobs STAY on the TOML path, so the operator can connect the Mangrove Bay account, create
-// the weekly booking and adopt the live reservations (MU-16b) before anything books through the
-// tenant path. Stage B (its own PR + tag) flips these two to 'tenant'.
-param bookingMode = 'toml'
-param watchMode = 'toml'
+// --- MU-18 (MULTIUSER_PLAN §11 steps 5-7, AZURE_PLAN §10.8): the PROD cutover ------------------
+// Stage A (infra/v2.17.0) turned on the web app, ACS email and the shared Cosmos endpoint while the
+// jobs stayed TOML; the operator connected the account, created the weekly booking and adopted the
+// live reservations (MU-16b). Stage B (this) runs `tenant-run --event mb0600et` and `tenant-watch`.
+// Rollback: set both back to 'toml' and tag (AZURE_PLAN §10.8); TOML still has the MB credentials.
+param bookingMode = 'tenant'
+param watchMode = 'tenant'
 
 // Prod watch cadence is UNCHANGED (every 10 min, year-round — AZURE_PLAN §5.4). Only dev goes
 // hourly.

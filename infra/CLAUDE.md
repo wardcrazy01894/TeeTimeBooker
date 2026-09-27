@@ -29,7 +29,7 @@ multi-user site). The killswitch design record is
 | Param | Dev | Prod |
 |-------|-----|------|
 | `dryRun` | `true` | `false` |
-| `bookingMode` / `watchMode` | `tenant` (MU-17) | `toml` (until MU-18 stage B) |
+| `bookingMode` / `watchMode` | `tenant` (MU-17) | `tenant` (MU-18 stage B) |
 | `watchCron` | `0 * * * *` | `*/10 * * * *` |
 | `tenantCosmosEndpoint` | shared Cosmos account | shared Cosmos account (MU-18 stage A) |
 | `deployWebApp` / `deployAcsEmail` | `true` | `true` (MU-18 stage A) |
@@ -62,7 +62,7 @@ infra/
                              #   + 1× watch ACA Job (watchCron param: prod */10 * * * *, dev hourly)
                              #   all jobs: --dry-run passed via dryRun param
                              #   bookingMode/watchMode params (MU-15a; dev 'tenant' since MU-17,
-                             #   prod 'toml'): select `run --config .../container.toml` vs `tenant-run --event
+                             #   prod 'tenant' since MU-18 stage B): select `run --config .../container.toml` vs `tenant-run --event
                              #   <key>`/`tenant-watch`; tenant-only secretRefs/env vars are added
                              #   ONLY inside a mode=='tenant' branch, so the default toml mode
                              #   never references a KV secret the operator has not created.

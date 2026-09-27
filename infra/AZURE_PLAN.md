@@ -8,9 +8,9 @@
 > cron schedule. All decisions listed in the task brief are treated as settled;
 > this document addresses the "anticipate-the-reviewer" items explicitly.
 >
-> **Status:** living doc, implemented. Prod runs the single-user TOML jobs
-> (`dryRun=false`); dev runs the multi-user tenant jobs, web app, ACS email and the shared Cosmos
-> account (MU-17, dry-run). Current prod tag and history: [../docs/RELEASES.md](../docs/RELEASES.md).
+> **Status:** living doc, implemented. Prod and dev both run the multi-user tenant jobs, web app,
+> ACS email and the shared Cosmos account: prod since MU-18 stage B (`infra/v3.0.0`, `dryRun=false`),
+> dev since MU-17 (dry-run). The single-user TOML jobs remain prod's rollback. Current prod tag and history: [../docs/RELEASES.md](../docs/RELEASES.md).
 > The killswitch design record is [../docs/plans/COST_KILLSWITCH_PLAN.md](../docs/plans/COST_KILLSWITCH_PLAN.md).
 
 ---
@@ -1245,7 +1245,7 @@ The prod re-point has a short cutover window (run off-peak, away from 05:50 ET).
 A params-only change to `main.bicepparam.dev` (plus two small main/webapp wiring changes): dev's
 booking jobs run `tenant-run --event mb0600et`, the watcher runs `tenant-watch` (still hourly), the
 web app and ACS email are deployed, and the tenant store is the shared Cosmos account's `dev`
-database. **Dev stays `dryRun = true`; prod is untouched until MU-18.**
+database. **Dev stays `dryRun = true`.** (Prod followed at MU-18, §10.8.)
 
 - **Prerequisites (operator, all done 2026-09-26):** `cosmos.bicep` deployed to `rg-teetime-shared`
   + the §7.2a data-plane role assignments; dev KV secrets `TENANT-CREDS-KEYRING`,
