@@ -36,7 +36,7 @@ Apps Jobs, and the golf course sends booking confirmations directly.
 ## Status
 
 > **Prod is live** (`dryRun=false`) on the single-user TOML path at the
-> latest infra tag `infra/v2.16.0` (2026-08-24). Release history: [docs/RELEASES.md](./docs/RELEASES.md).
+> latest infra tag `infra/v2.17.0` (2026-09-27). Release history: [docs/RELEASES.md](./docs/RELEASES.md).
 >
 > **Dev** runs the multi-user tenant path (MU-17, dry-run): tenant booker and watcher over Cosmos,
 > the invite-only web app, and ACS email. Prod moves to it at MU-18.
@@ -282,8 +282,8 @@ identity. About $5/month (ACR Basic; compute sits in the free grant).
 |---|---|---|
 | Deploy | Auto on merge to `main` | Manual approval, tagged `infra/vX.Y.Z` |
 | Mode | `dryRun = true` | `dryRun = false` |
-| Booking/watch | Tenant mode (`tenant-run` / `tenant-watch`), watcher hourly | TOML mode (`run` / `watch`), watcher every 10 min |
-| Web app, ACS email, Cosmos | Deployed (`deployWebApp`/`deployAcsEmail = true`) | Deployed since MU-18 stage A, for connecting, rules and adopting; bookings stay TOML until stage B |
+| Booking/watch | Tenant mode (`tenant-run` / `tenant-watch`), watcher hourly | Tenant mode since MU-18 stage B (was TOML `run` / `watch`), watcher every 10 min |
+| Web app, ACS email, Cosmos | Deployed (`deployWebApp`/`deployAcsEmail = true`) | Deployed since MU-18 stage A (`infra/v2.17.0`) |
 
 - **IaC:** Bicep modules `identity`, `registry` (one shared ACR in `rg-teetime-shared`),
   `keyvault`, `logs`, `compute`, `budget`, `killswitch` + `killswitch-rbac-prod`, `webapp`,

@@ -63,10 +63,10 @@ Two paths exist side by side:
 
 | | |
 |---|---|
-| Latest infra tag | latest infra tag `infra/v2.16.0` (2026-08-24, `main`@`4462f56`); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Latest infra tag | latest infra tag `infra/v2.17.0` (2026-09-27, `main`@`6b8122b`, MU-18 stage A); history in [docs/RELEASES.md](./docs/RELEASES.md) |
 | Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
-| Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout, `run --wait` |
-| Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout |
+| Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout; `tenant-run --event mb0600et --wait` since MU-18 stage B (was `run --wait`) |
+| Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout; `tenant-watch` since MU-18 stage B |
 | Books | Sat + Sun, one reservation per day, 7 days ahead, nearest the window midpoint |
 
 What is live: multi-day Sat+Sun booking with per-day windows, the 16:00-day-before booking cutoff,

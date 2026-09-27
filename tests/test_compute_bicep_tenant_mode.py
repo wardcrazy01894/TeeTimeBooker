@@ -46,18 +46,14 @@ def test_booking_loop_reads_release_events_json(bicep: str) -> None:
 
 
 def test_compute_default_mode_is_toml() -> None:
-    """MULTIUSER_PLAN §12 MU-15a's named test: compute.bicep defaults bookingMode + watchMode to
-    'toml' and PROD sets them to 'toml'. Dev was flipped to 'tenant' by the MU-17 cutover
-    (pinned in tests/test_dev_cutover_params.py); prod flips only at MU-18."""
-    dev_params = (
-        Path(__file__).resolve().parent.parent / "infra" / "bicep" / "main.bicepparam.dev"
-    ).read_text()
-    prod_params = (
-        Path(__file__).resolve().parent.parent / "infra" / "bicep" / "main.bicepparam.prod"
-    ).read_text()
-    assert "param bookingMode = 'toml'" in prod_params
-    assert "param watchMode = 'toml'" in prod_params
-    assert "param bookingMode = 'tenant'" in dev_params
+    """MULTIUSER_PLAN §12 MU-15a's named test: the Bicep DEFAULT for bookingMode + watchMode is
+    'toml', so an env that sets neither keeps the TOML jobs. Both envs now set 'tenant' explicitly
+    (dev at MU-17, prod at MU-18 stage B; pinned in tests/test_{dev,prod}_cutover_params.py)."""
+    bicep = Path(__file__).resolve().parent.parent / "infra" / "bicep"
+    for path in (bicep / "modules" / "compute.bicep", bicep / "main.bicep"):
+        text = path.read_text()
+        assert "param bookingMode string = 'toml'" in text, path.name
+        assert "param watchMode string = 'toml'" in text, path.name
 
 
 def test_toml_mode_booking_args_are_unchanged(parts: tuple[str, str]) -> None:

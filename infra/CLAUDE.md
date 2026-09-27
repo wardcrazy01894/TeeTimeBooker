@@ -29,7 +29,7 @@ multi-user site). The killswitch design record is
 | Param | Dev | Prod |
 |-------|-----|------|
 | `dryRun` | `true` | `false` |
-| `bookingMode` / `watchMode` | `tenant` (MU-17) | `toml` (until MU-18 stage B) |
+| `bookingMode` / `watchMode` | `tenant` (MU-17) | `tenant` (MU-18 stage B) |
 | `watchCron` | `0 * * * *` | `*/10 * * * *` |
 | `tenantCosmosEndpoint` | shared Cosmos account | shared Cosmos account (MU-18 stage A) |
 | `deployWebApp` / `deployAcsEmail` | `true` | `true` (MU-18 stage A) |
