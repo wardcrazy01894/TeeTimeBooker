@@ -19,10 +19,10 @@ from azure.cosmos.exceptions import (
     CosmosResourceExistsError,
     CosmosResourceNotFoundError,
 )
-from teetime.tenant.retry import RetryPolicy, is_transient_store_error, retry_transient
 
 from teetime.core.clock import FakeClock
 from teetime.tenant.models import TransitionRefusedError
+from teetime.tenant.retry import RetryPolicy, is_transient_store_error, retry_transient
 
 START = datetime(2026, 10, 3, 9, 51, tzinfo=UTC)
 FAST = RetryPolicy(attempts=3, backoff_s=1.0)
