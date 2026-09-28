@@ -68,6 +68,9 @@ param enableIngress bool = true
 @description('Replicas kept running when idle. 0 = scale to zero (a ~30 s cold start on the first request after the cooldown); 1 = always warm (idle-billed, ~$6/month at 0.25 vCPU / 0.5 GiB, East US 2 retail 2026-09). Forced to 0 when enableIngress=false (the killswitch latch).')
 param minReplicas int = 0
 
+@description('Custom apex domain (e.g. spicyteetimebooker.com); empty = none. When set, the apex AND www.<domain> bind with SNI to managed certificates named mc-<host with dots as dashes> in the ACA environment. Those certificates are created ONCE by the operator runbook (AZURE_PLAN §10.9) before the first deploy that sets this; a deploy fails loudly if they are missing. Also turns on the canonical-host redirect to webPublicBaseUrl.')
+param customDomain string = ''
+
 @description('Public base URL the web app is reachable at, e.g. https://teetime-web-dev.<hash>.eastus2.azurecontainerapps.io. Empty by default — only known after the Container App\'s first deploy (a chicken-and-egg Bicep cannot resolve in one pass); the operator sets it in a follow-up param change. See the module header.')
 param webPublicBaseUrl string = ''
 
@@ -120,6 +123,14 @@ var operatorEmailEnv = operatorEmailFromVault ? { name: 'TEETIME_OPERATOR_EMAIL'
 // WEB_ENV_VARS (web/app.py) minus the GitHub pair (unset — Google only). TEETIME_PUBLIC_BASE_URL
 // and TEETIME_OPERATOR_EMAIL are plain values (not secrets); an empty publicBaseUrl fails the
 // container closed at startup (WebConfigError) rather than serving with a broken OAuth redirect.
+// Custom domain (2026-09-28): apex + www, each with a managed cert named after the host.
+var customHostnames = empty(customDomain) ? [] : [customDomain, 'www.${customDomain}']
+var customDomainBindings = [for host in customHostnames: {
+  name: host
+  bindingType: 'SniEnabled'
+  certificateId: '${acaEnvironmentId}/managedCertificates/mc-${replace(host, '.', '-')}'
+}]
+
 var webEnv = [
   { name: 'TEETIME_PUBLIC_BASE_URL',       value: webPublicBaseUrl }
   { name: 'WEB_SESSION_SECRET',            secretRef: 'web-session-secret' }
@@ -128,6 +139,7 @@ var webEnv = [
   operatorEmailEnv
   { name: 'TEETIME_WEB_DRY_RUN',           value: dryRun ? 'true' : 'false' }
   { name: 'TEETIME_ENV',                   value: envName }
+  { name: 'TEETIME_CANONICAL_HOST_REDIRECT', value: empty(customDomain) ? 'false' : 'true' }
 ]
 
 // MU-16a: the tenant backend (`teetime web` over tenant/wiring.py): the durable store, the
@@ -185,6 +197,7 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: 8000
         transport: 'auto'
         allowInsecure: false
+        customDomains: customDomainBindings
       } : null
       registries: registries
       secrets: concat(webSecrets, operatorEmailSecrets, tenantBackend ? webTenantSecrets : [])

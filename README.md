@@ -210,6 +210,7 @@ The site fails closed if a required setting is missing.
 | `OAUTH_GITHUB_CLIENT_ID` / `OAUTH_GITHUB_CLIENT_SECRET` | GitHub sign-in (optional; unset in every deployed env) |
 | `TEETIME_OPERATOR_EMAIL` | The only account allowed on `/admin/users` (deployed: from the `OPERATOR-NOTIFY-EMAIL` Key Vault secret) |
 | `TEETIME_WEB_DRY_RUN` | `true` (default) or `false`; a dry-run site never cancels a real reservation |
+| `TEETIME_CANONICAL_HOST_REDIRECT` | `false` (default) or `true`; redirect any other host (`www.`, the old `*.azurecontainerapps.io` name) to `TEETIME_PUBLIC_BASE_URL`. Set by Bicep iff a custom domain is configured (prod: `https://spicyteetimebooker.com`) |
 | `WEB_FORWARDED_ALLOW_IPS` | Proxy IPs uvicorn trusts for forwarded headers (default `127.0.0.1`, ACA's ingress sidecar) |
 
 ### Tenant store
