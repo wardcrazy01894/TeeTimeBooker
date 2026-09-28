@@ -2,7 +2,7 @@
 
 > **Scope of v0:** a Python bot that books one or more tee times at **Mangrove Bay Golf Course** (St. Petersburg, FL) at the moment its 7-day booking window opens (6:00 AM America/New_York). No frontend. No third-party booking sites that don't actually take the booking.
 >
-> **Status:** the engine is fully implemented and **LIVE in prod** (`dryRun=false`, latest infra tag `infra/v3.0.2`; history in [docs/RELEASES.md](./docs/RELEASES.md)). The original "no real bookings from these stubs until M2/M5" caveat is superseded. The multi-user site that builds on this engine is [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) (live in prod since MU-18, `infra/v3.0.0`, and in dev). Current behaviour and invariants: [CLAUDE.md](./CLAUDE.md).
+> **Status:** the engine is fully implemented and **LIVE in prod** (`dryRun=false`, latest infra tag `infra/v3.1.0`; history in [docs/RELEASES.md](./docs/RELEASES.md)). The original "no real bookings from these stubs until M2/M5" caveat is superseded. The multi-user site that builds on this engine is [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) (live in prod since MU-18, `infra/v3.0.0`, and in dev). Current behaviour and invariants: [CLAUDE.md](./CLAUDE.md).
 
 This plan is structured for parallel execution. Milestones are sequential; tasks within a milestone are tagged with explicit dependencies, so an "army of agents" can pick up anything green.
 
@@ -833,7 +833,7 @@ Tasks are sized for a single focused agent session. Dependencies are explicit. W
 |-------|---------------------------------------------------|------------------|------------------------------------------------------|--------------------------------------|-------------|
 | M6.T1 | Real-timing booker wiring + DST gate + watcher enable (PRs 1–6). **DONE** (the Sunday-only schedule + `target_weekday` anchor were later SUPERSEDED by the multi-day re-arch — daily crons + booking-day gate + per-day windows). | all stubs done | `run --wait` busy-waits to 06:00:00 ET (`core/dst_gate.py`, `bookingReplicaTimeout=1200`); watcher enabled. Full suite green. | `__main__.py`, `core/dst_gate.py`, `core/booking_day_gate.py`, `compute.bicep`, configs | M5.* |
 | M6.T2 | First production dry-run against Mangrove Bay     | M6.T1            | dry-run log proof (AZURE_PLAN §10.4): `race: busy-wait complete` + watcher `Watch check`/`DRY_RUN`; one clean dev dry-run Sunday | runbook §10.4 | M6.T1 |
-| M6.T3 | First live booking (prod cutover §10.5)           | M6.T2 green      | **Prod DEPLOYED** (jobs live, `dryRun=false`, secrets set, watcher + auto-upgrade on; latest infra tag `infra/v3.0.2`, 2026-09-27; every tag since the first cutover `infra/v2.1.0` (2026-06-10) is in [docs/RELEASES.md](./docs/RELEASES.md)). A real booking race ran **2026-06-07** (fired at T0 but lost on CAPTCHA latency → fixed in #67/#68). | runbook §10.5 | M6.T2 |
+| M6.T3 | First live booking (prod cutover §10.5)           | M6.T2 green      | **Prod DEPLOYED** (jobs live, `dryRun=false`, secrets set, watcher + auto-upgrade on; latest infra tag `infra/v3.1.0`, 2026-09-28; every tag since the first cutover `infra/v2.1.0` (2026-06-10) is in [docs/RELEASES.md](./docs/RELEASES.md)). A real booking race ran **2026-06-07** (fired at T0 but lost on CAPTCHA latency → fixed in #67/#68). | runbook §10.5 | M6.T2 |
 
 **Parallel-execution map (post M1):**
 ```

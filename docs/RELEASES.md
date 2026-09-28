@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.1.0: 2026-09-28 (`main`@`4421fb0`)](#infrav310-2026-09-28-main4421fb0)
 - [infra/v3.0.2: 2026-09-27](#infrav302-2026-09-27)
 - [infra/v3.0.1: 2026-09-27](#infrav301-2026-09-27)
 - [infra/v3.0.0: 2026-09-27](#infrav300-2026-09-27)
@@ -39,6 +40,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.1.0` | 2026-09-28 | `4421fb0` | unchanged (reporting only) | Operator summary v2, prod web always warm, prod on spicyteetimebooker.com (#262, #263, #265) |
 | `infra/v3.0.2` | 2026-09-27 | `18ba1ca` | **changed** (retries) | Retry audit: bounded transient-only retries on the tenant path (#260) |
 | `infra/v3.0.1` | 2026-09-27 | `3bba87c` | **changed** (watcher) | Tenant watcher search fix: ForeUP `search()` needs no login (#258) |
 | `infra/v3.0.0` | 2026-09-27 | | **changed** | MU-18 stage B: prod booking + watch jobs run the multi-user tenant path (#257) |
@@ -58,6 +60,26 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.1.0: 2026-09-28 (`main`@`4421fb0`)
+
+- **Operator summary v2** (#262). The booking run's operator email names each person, shows every
+  POST of the burst (tee time, send offset from T0; kept / cancelled extra / rejected with reason /
+  UNCERTAIN / unconfirmed), lists PROBLEMS first and counts them in the subject, and tags the
+  subject with the environment (`[TeeTimeBooker · PROD]`). Booking behaviour is unchanged: the
+  recorder now also keeps `SlotGoneError` rejections, for the report only.
+- **Prod web always warm** (#263). `webMinReplicas = 1` in prod (dev 0): no more ~30 s
+  scale-from-zero cold start; ~$5.83/month idle (AZURE_PLAN §9). The killswitch still forces 0.
+- **Prod on https://spicyteetimebooker.com** (#265; #264 auto-closed when its stacked base was
+  deleted). Apex + `www` bound SNI to ACA managed certificates (created by the AZURE_PLAN §10.9
+  runbook the same day); `www` and the old `teetime-web-prod.wittydesert-02f9f0cd…` host 301 to the
+  apex (canonical-host redirect, so OAuth state lives on one host). Google OAuth client lists the
+  new callback; the old one is kept.
+
+Verified after the deploy: web `minReplicas 1` with one replica running; `/healthz` 200 on the
+apex; `www` and the old host 301 to the apex; certificate `CN=spicyteetimebooker.com` (DigiCert
+GeoTrust, valid to 2027-03-28); `/login/google` sends `redirect_uri=https://spicyteetimebooker.com/auth/google/callback`;
+both booking jobs and the watcher on image `teetime:4421fb0`.
 
 ## infra/v3.0.2: 2026-09-27
 
