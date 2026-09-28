@@ -682,8 +682,10 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   - **What it records** (in memory, zero I/O, instants from the SAME `Clock` the orchestrator
     uses): every BOOKED `book()` (raw id, slot, send instant); every `book()` raising anything but
     `SlotGoneError` (UNCERTAIN) by exception CLASS NAME only, flagging the `CaptchaError` family
-    (the only place a challenge swallowed by the burst survives); every `cancel_reservation`
-    outcome; call counts. Exceptions are re-raised as the same object.
+    (the only place a challenge swallowed by the burst survives); every `SlotGoneError` as a
+    `RecordedRejection` (slot, `reason`, send instant; never UNCERTAIN, never owned, read only by
+    the operator summary's attempt list); every `cancel_reservation` outcome; call counts.
+    Exceptions are re-raised as the same object.
   - `RecordingLog` derives ownership (§4.6): `owned_raw_ids()` = booked and not later cancelled
     OK (the kept best AND `held_extras()`, surplus whose cancel failed); `cancelled_extras()`;
     `needs_reconcile()` = any UNCERTAIN book or a BOOKED with no confirmation code. A guard's

@@ -71,14 +71,19 @@ from .models import (
     RequestRow,
     RowId,
     RowStatus,
+    UserId,
     options_time_windows,
     row_is_frozen,
     row_max_price,
 )
 from .notify import (
     USER_FACING_KINDS,
+    AttemptResult,
     BufferingNotifier,
     EmailSender,
+    RunSummary,
+    SummaryAttempt,
+    SummaryRow,
     UserEvent,
     UserEventKind,
     UserNotifier,
@@ -215,6 +220,22 @@ class OperatorSink:
 
 
 @dataclass(frozen=True, slots=True)
+class RunDetail:
+    """What only the operator summary needs from a booking run: each claimed row with every
+    POST the recorder saw, the release instant (course timezone) and the CAPTCHA fill."""
+
+    rows: tuple[SummaryRow, ...] = ()
+    release_at: datetime | None = None
+    captcha_demanded: int | None = None
+    captcha_solved: int | None = None
+
+
+# The display-name lookups for the operator summary run after the race and are a nicety: each
+# is bounded, and any failure falls back to a short user id.
+SUMMARY_NAME_LOOKUP_TIMEOUT_S = 10.0
+
+
+@dataclass(frozen=True, slots=True)
 class WatchReport:
     """One tenant-watcher run (§7.1, MU-10b ``tenant.watch_runner.run_tenant_watch``). The exit
     status is ``watch_runner.watch_exit_status`` (§7.9)."""
@@ -297,6 +318,7 @@ async def run_release_event(
     replica_timeout_s: float = BOOKING_REPLICA_TIMEOUT_S,
     attempt_id: str | None = None,
     operator: OperatorSink | None = None,
+    environment: str | None = None,
 ) -> RunReport:
     """The tenant booking job (§4): ``_book_event`` (the race + WRITE #2), then the emails.
 
@@ -307,7 +329,7 @@ async def run_release_event(
     ones go through ``notifier``. The summary goes first so a slow mail backend can never let
     the replica timeout eat it; user sends are concurrent and a failure is logged and dropped
     (it never masks an outcome). ``operator=None`` (tests) sends no summary."""
-    report, events = await _book_event(
+    report, events, detail = await _book_event(
         event=event,
         policies=policies,
         store=store,
@@ -322,7 +344,16 @@ async def run_release_event(
         replica_timeout_s=replica_timeout_s,
         attempt_id=attempt_id,
     )
-    return await finish_run(report, events, notifier=notifier, operator=operator, clock=clock)
+    return await finish_run(
+        report,
+        events,
+        notifier=notifier,
+        operator=operator,
+        clock=clock,
+        detail=detail,
+        environment=environment,
+        dry_run=dry_run,
+    )
 
 
 async def finish_run(
@@ -332,18 +363,29 @@ async def finish_run(
     notifier: UserNotifier,
     operator: OperatorSink | None,
     clock: Clock,
+    detail: RunDetail | None = None,
+    environment: str | None = None,
+    dry_run: bool = False,
 ) -> RunReport:
     """Operator summary (authoritative exit code, SF6), then the user-facing events. Also used
     by the CLI for a run that failed before ``run_release_event`` (e.g. the keyring)."""
     at = clock.now_utc()
     if operator is not None:
         before = exit_code_for(report)
+        detail = detail or RunDetail()
+        summary = RunSummary(
+            rows=detail.rows,
+            events=(*events, *_report_lines(report, at=at)),
+            environment=environment,
+            dry_run=dry_run,
+            release_at=detail.release_at,
+            rows_loaded=report.rows_loaded,
+            rows_claimed=report.rows_claimed,
+            captcha_demanded=detail.captcha_demanded,
+            captcha_solved=detail.captcha_solved,
+        )
         final = await deliver_operator_summary(
-            operator.sender,
-            to=operator.to,
-            events=[*events, *_report_lines(report, at=at)],
-            exit_code=int(before),
-            at=at,
+            operator.sender, to=operator.to, summary=summary, exit_code=int(before), at=at
         )
         if final != before:
             report = replace(report, summary_email_failed=True)
@@ -367,7 +409,7 @@ async def _book_event(
     pool_factory: PoolFactory | None,
     replica_timeout_s: float,
     attempt_id: str | None,
-) -> tuple[RunReport, list[UserEvent]]:
+) -> tuple[RunReport, list[UserEvent], RunDetail]:
     """The booking half of the tenant job (§4). ``scheduler`` supplies the race knobs
     (``early_arrival_ms``, ``blind_post_stagger_ms``, ``blind_post_max_count``, lead, ...). The
     runner derives per-account copies (reserve -> 0 because the pool holds it; overflow accounts
@@ -382,7 +424,8 @@ async def _book_event(
     15 s until the give-up point. ``wait=False`` (manual) skips both; the orchestrators still
     busy-wait to today's release instant (firing at once if it has passed).
 
-    Returns the report and each row's ``UserEvent``s (empty on every early return). The emails
+    Returns the report, each row's ``UserEvent``s and the operator summary's ``RunDetail``
+    (both empty on every early return). The emails
     are ``run_release_event``'s; the CLI measures the NTP offset, runs the site-key pre-flight
     and builds the pools. ``LeasedBookingStore`` is MU-9c; the booker never needs it (its lease
     is held from the claim)."""
@@ -394,7 +437,7 @@ async def _book_event(
             "tenant-run %s: wrong-season cron (DST gate) — exiting before any store call",
             event.key,
         )
-        return _report(event), []
+        return _report(event), [], RunDetail()
     t0 = _event_t0(event, started)
     owner = attempt_id or f"booker:{event.key}:{uuid4().hex[:12]}"
     phase = await _read_and_claim(
@@ -410,7 +453,7 @@ async def _book_event(
         not_after=_race_window_start(t0, scheduler, started=started),
     )
     if isinstance(phase, RunReport):
-        return phase, []
+        return phase, [], RunDetail()
     loaded, claimed, claimed_rows = phase
     stamps.append(clock.now_utc())
     creds, decrypt_failed = resolve_credentials(claimed_rows, keyring=keyring)
@@ -436,7 +479,7 @@ async def _book_event(
         await _release_leases(stamped, claimed, owner=owner)
         await _close_pools(pools)
         report = _systemic(event, "prepare", exc, rows_loaded=loaded, rows_claimed=len(claimed))
-        return report, []
+        return report, [], RunDetail()
     finished, write_failures, deadline_hit = await _race(
         accounts,
         [r for r in claimed_rows if r.row.id in decrypt_failed],
@@ -460,6 +503,7 @@ async def _book_event(
             accounts, store=store, clock=clock, owner=owner, event=event
         )
     await _close_adapters(accounts)
+    fills = [f for p in pools.values() if p is not None and (f := p.report()) is not None]
     await _close_pools(pools)
     by_row = {r.row.id: r for r in claimed_rows}
     buffered = {a.row.id: a.buffer.flush() for a in accounts}
@@ -482,7 +526,81 @@ async def _book_event(
         self_deadline_hit=deadline_hit,
         outcome_write_failures=tuple(write_failures),
     )
-    return replace(report, auth_failed_accounts=auth_failed), events
+    try:
+        names = await _user_names(store, {r.account.user_id for r in claimed_rows})
+        recorders = {a.row.id: a.recorder.log() for a in accounts}
+        detail = RunDetail(
+            rows=tuple(
+                _summary_row(r, name=names.get(r.account.user_id), log=recorders.get(r.row.id))
+                for r in claimed_rows
+            ),
+            release_at=t0.astimezone(ZoneInfo(event.timezone)),
+            captcha_demanded=sum(f.demanded for f in fills) if fills else None,
+            captcha_solved=sum(f.solved for f in fills) if fills else None,
+        )
+    except Exception as exc:  # reporting only: a bug here must never cost the emails
+        log.exception("tenant-run: operator summary detail failed (%s)", type(exc).__name__)
+        detail = RunDetail()
+    return replace(report, auth_failed_accounts=auth_failed), events, detail
+
+
+async def _user_names(store: TenantStore, user_ids: Collection[UserId]) -> dict[UserId, str]:
+    """Display names for the operator summary: one bounded post-race read per user. A failure
+    or an unknown user is simply absent (the summary falls back to a short id)."""
+
+    async def one(user_id: UserId) -> tuple[UserId, str | None]:
+        try:
+            user = await asyncio.wait_for(
+                store.get_user_unscoped(user_id), timeout=SUMMARY_NAME_LOOKUP_TIMEOUT_S
+            )
+        except Exception as exc:  # a nicety: never costs the summary or the exit code
+            log.warning("tenant-run: summary name lookup failed (%s)", type(exc).__name__)
+            return user_id, None
+        return user_id, (user.display_name if user is not None else None)
+
+    found = await asyncio.gather(*(one(u) for u in sorted(user_ids, key=str)))
+    return {uid: name for uid, name in found if name}
+
+
+def _summary_row(event_row: EventRow, *, name: str | None, log: RecordingLog | None) -> SummaryRow:
+    row = event_row.row
+    return SummaryRow(
+        row_id=row.id,
+        user_id=event_row.account.user_id,
+        user_name=name,
+        course_id=row.course_id,
+        target_date=row.target_date,
+        party_size=row.party_size,
+        windows=tuple((o.earliest, o.latest) for o in row.options),
+        attempts=_summary_attempts(log) if log is not None else (),
+    )
+
+
+def _summary_attempts(recorded: RecordingLog) -> tuple[SummaryAttempt, ...]:
+    """Every POST the recorder saw: a booked one is kept, a cancelled extra, or a held extra
+    whose cancel failed; a rejection with its reason; an UNCERTAIN failure by class name."""
+    cancelled = set(recorded.cancelled_extras())
+    held_extra = set(recorded.held_extras())
+
+    def booked(b: RecordedBook) -> AttemptResult:
+        if b.raw_id is None:
+            return AttemptResult.UNCONFIRMED
+        if b.raw_id in cancelled:
+            return AttemptResult.CANCELLED_EXTRA
+        if b.raw_id in held_extra:
+            return AttemptResult.HELD_EXTRA
+        return AttemptResult.KEPT
+
+    attempts = [SummaryAttempt(b.slot.tee_time, b.at, booked(b)) for b in recorded.books]
+    attempts += [
+        SummaryAttempt(r.slot.tee_time, r.at, AttemptResult.REJECTED, r.reason)
+        for r in recorded.rejections
+    ]
+    attempts += [
+        SummaryAttempt(f.slot.tee_time, f.at, AttemptResult.UNCERTAIN, f.error)
+        for f in recorded.book_failures
+    ]
+    return tuple(sorted(attempts, key=lambda a: a.sent_at))
 
 
 def _options_text(options: tuple[RankedWindow, ...]) -> str:
@@ -1715,7 +1833,7 @@ def _row_events(
     elif outcome is BookingOutcome.ALREADY_BOOKED:
         events.append(event(UserEventKind.BOOKED, "already on your course account", with_slot=True))
     elif outcome is BookingOutcome.DRY_RUN:
-        events.append(event(UserEventKind.OPERATOR_SUMMARY, "dry run: nothing booked"))
+        events.append(event(UserEventKind.DRY_RUN, "dry run: nothing booked"))
     elif out.auth_error:
         events.append(event(UserEventKind.AUTH_FAILED, "course login rejected"))
     elif out.captcha_error:

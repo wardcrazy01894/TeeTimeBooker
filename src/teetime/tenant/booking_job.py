@@ -57,6 +57,7 @@ log = logging.getLogger(__name__)
 
 TWOCAPTCHA_API_KEY_ENV = "TWOCAPTCHA_API_KEY"
 OPERATOR_NOTIFY_EMAIL_ENV = "OPERATOR_NOTIFY_EMAIL"
+TEETIME_ENV_VAR = "TEETIME_ENV"  # dev / prod, set by compute.bicep; tags the operator summary
 # The operator summary must land before the replica timeout (the runner leaves ~60 s).
 _ACS_POLL_TIMEOUT_S = 30.0
 
@@ -252,6 +253,8 @@ async def run_booking_job(
             offset.total_seconds() * 1000.0,
         )
     sink = operator or operator_sink_from_env(source)
+    # The deploy sets TEETIME_ENV (dev/prod) so the operator can tell the two summaries apart.
+    environment = source.get(TEETIME_ENV_VAR, "").strip() or None
     notifier = StoreUserNotifier(store, sink.sender)
     failure, keyring, api_key = _load_config(source, dry_run=dry_run)
     if failure is not None or keyring is None:
@@ -263,7 +266,15 @@ async def run_booking_job(
             systemic_error=failure,
         )
         log.critical("tenant-run %s: systemic failure at startup (%s)", event.key, failure)
-        report = await finish_run(report, (), notifier=notifier, operator=sink, clock=run_clock)
+        report = await finish_run(
+            report,
+            (),
+            notifier=notifier,
+            operator=sink,
+            clock=run_clock,
+            environment=environment,
+            dry_run=dry_run,
+        )
         return int(exit_code_for(report))
     report = await run_release_event(
         event=event,
@@ -282,6 +293,7 @@ async def run_booking_job(
             else HostedPoolFactory(clock=run_clock, api_key=api_key, resolve=resolve_site_key)
         ),
         operator=sink,
+        environment=environment,
     )
     return int(exit_code_for(report))
 
