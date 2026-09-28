@@ -229,6 +229,10 @@ class _SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+# ASCII control characters (C0 + DEL): never echoed into a Location header.
+_CONTROL_CHARS = frozenset(map(chr, [*range(0x20), 0x7F]))
+
+
 class _CanonicalHostMiddleware:
     """Redirects every http request whose ``Host`` is not ``origin``'s host to the same path and
     query on ``origin``: 301 for GET/HEAD, 308 otherwise (keeps the method and body). The target
@@ -248,6 +252,9 @@ class _CanonicalHostMiddleware:
         target = self._origin + raw_path.decode("latin-1")
         if scope.get("query_string"):
             target += "?" + scope["query_string"].decode("latin-1")
+        if any(c in _CONTROL_CHARS for c in target):
+            # Defence in depth (upstream parsers reject these): never echo a control byte.
+            target = self._origin + "/"
         status = 301 if scope["method"] in ("GET", "HEAD") else 308
         await RedirectResponse(target, status_code=status)(scope, receive, send)
 
