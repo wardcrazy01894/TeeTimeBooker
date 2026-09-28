@@ -41,6 +41,7 @@ CLAUDE.md invariant bullets on `prepare_book` and on the two stores; MU-7 is `te
 - [MU-15b: Cosmos DB account](#mu-15b-cosmos-db-account)
 - [Website UI polish](#website-ui-polish)
 - [Retry audit (2026-09-27)](#retry-audit-2026-09-27)
+- [Prod custom domain (2026-09-28)](#prod-custom-domain-2026-09-28)
 
 <!-- /toc -->
 
@@ -594,3 +595,14 @@ injected clock and TDD'd (`tests/tenant/test_store_retry.py`, `test_runner_retry
 Deliberately unretried: ForeUP `book()`, the login probe, the soft-auth counter, leases,
 `finalize_lost`, migration steps, the web's own store calls (SDK baseline only), the site-key
 pre-flight (already falls back to the hardcoded key).
+
+## Prod custom domain (2026-09-28)
+
+Prod moved to `https://spicyteetimebooker.com` (apex + `www.`, ACA managed certificates; runbook
+AZURE_PLAN §10.9). `webapp.bicep` takes `customDomain` (main `webCustomDomain`, prod only) and
+binds both hosts SNI to certificates named `mc-<host-dashed>` that the runbook creates once; the
+same flag sets `TEETIME_CANONICAL_HOST_REDIRECT=true`. `web/app.py::_CanonicalHostMiddleware`
+(off by default) redirects any other host to the same path on `public_base_url`, because the OAuth
+`state` cookie belongs to the host sign-in started on and the callback always returns to the
+canonical one. `/healthz` is exempt; the target is always the configured origin. Tests:
+`tests/web/test_web_canonical_host.py`, `tests/test_webapp_bicep.py`.

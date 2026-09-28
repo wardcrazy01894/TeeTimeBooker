@@ -1067,7 +1067,9 @@ account.
 
 - **FastAPI + Starlette sessions + Jinja2 (autoescape) + HTMX** (vendored static, no build step),
   served by **uvicorn**, entry `teetime web`. The same image as the jobs, with a different command.
-- **Container App:** external HTTPS ingress on the free `*.azurecontainerapps.io` host,
+- **Container App:** external HTTPS ingress on the free `*.azurecontainerapps.io` host (prod: the
+  custom domain `spicyteetimebooker.com` + `www.` since 2026-09-28, managed certificates, with a
+  canonical-host redirect so OAuth state always lives on one host),
   `minReplicas` from `webMinReplicas` (prod 1 = always warm since 2026-09-28, ~$6/month; dev 0),
   `maxReplicas=1`, 0.25 vCPU / 0.5 GiB. With one replica, the in-process TTL cache
   is coherent; rate limits are DB-backed anyway (§8.4).

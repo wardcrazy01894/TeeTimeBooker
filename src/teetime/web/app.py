@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -105,6 +106,10 @@ class WebSettings:
     max_accounts_per_course: int = 8
     # True in any env deployed with dryRun=true: the web refuses cancel (§7.8, round-1 SF2).
     dry_run: bool = True
+    # Redirect any request to another host (www., the old *.azurecontainerapps.io name) to the
+    # same path on ``public_base_url``. The OAuth state lives in the session cookie of the host
+    # sign-in started on, so a second host breaks sign-in. On only where a custom domain is set.
+    canonical_host_redirect: bool = False
 
     def __post_init__(self) -> None:
         if self.github is None and self.google is None:
@@ -149,6 +154,7 @@ WEB_ENV_VARS: tuple[str, ...] = (
     "OAUTH_GOOGLE_CLIENT_SECRET",
     "TEETIME_OPERATOR_EMAIL",
     "TEETIME_WEB_DRY_RUN",  # "true" (default) | "false"
+    "TEETIME_CANONICAL_HOST_REDIRECT",  # "false" (default) | "true"
 )
 
 
@@ -184,6 +190,9 @@ def load_web_settings(env: Mapping[str, str] | None = None) -> WebSettings:
     dry_run_raw = value("TEETIME_WEB_DRY_RUN").lower() or "true"
     if dry_run_raw not in ("true", "false"):
         raise WebConfigError("TEETIME_WEB_DRY_RUN must be 'true' or 'false'")
+    canonical_raw = value("TEETIME_CANONICAL_HOST_REDIRECT").lower() or "false"
+    if canonical_raw not in ("true", "false"):
+        raise WebConfigError("TEETIME_CANONICAL_HOST_REDIRECT must be 'true' or 'false'")
     return WebSettings(
         public_base_url=required("TEETIME_PUBLIC_BASE_URL"),
         session_secret=required("WEB_SESSION_SECRET"),
@@ -191,6 +200,7 @@ def load_web_settings(env: Mapping[str, str] | None = None) -> WebSettings:
         google=providers["google"],
         operator_email=value("TEETIME_OPERATOR_EMAIL") or None,
         dry_run=dry_run_raw == "true",
+        canonical_host_redirect=canonical_raw == "true",
     )
 
 
@@ -217,6 +227,36 @@ class _SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
+
+
+class _CanonicalHostMiddleware:
+    """Redirects every http request whose ``Host`` is not ``origin``'s host to the same path and
+    query on ``origin``: 301 for GET/HEAD, 308 otherwise (keeps the method and body). The target
+    is always the configured origin, so a spoofed ``Host`` cannot steer it. ``/healthz`` is
+    exempt so a platform probe addressed to any host keeps working."""
+
+    def __init__(self, app: ASGIApp, *, origin: str) -> None:
+        self.app = app
+        self._origin = origin
+        self._host = (urlsplit(origin).hostname or "").lower()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["path"] == "/healthz" or self._on_host(scope):
+            await self.app(scope, receive, send)
+            return
+        raw_path = scope.get("raw_path") or scope["path"].encode()
+        target = self._origin + raw_path.decode("latin-1")
+        if scope.get("query_string"):
+            target += "?" + scope["query_string"].decode("latin-1")
+        status = 301 if scope["method"] in ("GET", "HEAD") else 308
+        await RedirectResponse(target, status_code=status)(scope, receive, send)
+
+    def _on_host(self, scope: Scope) -> bool:
+        for name, value in scope["headers"]:
+            if name == b"host":
+                host: str = value.decode("latin-1").lower().split(":", 1)[0]
+                return host == self._host
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,6 +562,9 @@ def create_app(
         openapi_url=None,
         dependencies=[Depends(_csrf_guard(ctx))],
     )
+    if settings.canonical_host_redirect:
+        # Added before the security headers so the redirect carries them too.
+        app.add_middleware(_CanonicalHostMiddleware, origin=settings.public_base_url)
     app.add_middleware(_SecurityHeadersMiddleware)
     app.add_middleware(
         SessionMiddleware,
