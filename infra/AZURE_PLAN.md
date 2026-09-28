@@ -891,6 +891,13 @@ sidesteps a known `az deployment sub create` budget-PUT bug.
 | 1 | `budget-teetime` | $20 | 100% forecast ($20) | Email only | Projected overage warning |
 | 2 | `budget-teetime-killswitch` | $50 | 100% actual ($50) | Action Group → Logic App | Silences all 6 ACA Job crons + stops in-flight |
 
+**Headroom with prod's always-warm web replica (2026-09-28):** steady spend is ~$5–5.50/mo
+(ACR Basic; the jobs sit in the free grant) + ~$5.83/mo for the warm replica ≈ **~$11.30/mo**,
+under Tier 1's $16 (80%) early warning with ~$4.70 to spare and far below Tier 2's $50. A
+genuine anomaly still trips Tier 1 first. The killswitch's `stop` of the prod web app holds it at
+zero replicas despite `minReplicas = 1` (see the comment on `Stop_webapp_prod` in
+`killswitch.bicep`).
+
 Tier 1 (`budget-teetime`, $20, email-only) is UNCHANGED. Tier 2 (`budget-teetime-killswitch`,
 $50, killswitch-trigger) is a SEPARATE second budget resource in `budget.bicep` (conditional on
 `killswitchActionGroupId`). Both budgets evaluate the same project spend independently. See
