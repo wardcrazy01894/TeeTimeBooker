@@ -1348,6 +1348,10 @@ the app, so those certificates are created ONCE, by hand, BEFORE the first deplo
 
 **2. Certificates (once; add the hosts, issue the certs, wait for `Succeeded`):**
 
+The order matters: `hostname add` registers each host on the app (binding `Disabled`) so the
+HTTP / CNAME validation of `certificate create` can reach it. Done 2026-09-28; both certificates
+are reused by every later deploy.
+
 ```bash
 RG=rg-teetime-prod; APP=teetime-web-prod; ENV=cae-teetime-prod
 az containerapp hostname add -g $RG -n $APP --hostname spicyteetimebooker.com

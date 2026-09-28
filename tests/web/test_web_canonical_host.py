@@ -18,7 +18,13 @@ import pytest
 
 from teetime.core.clock import FakeClock
 from teetime.tenant.in_memory_store import InMemoryTenantStore
-from teetime.web.app import WebConfigError, WebSettings, create_app, load_web_settings
+from teetime.web.app import (
+    WebConfigError,
+    WebSettings,
+    _CanonicalHostMiddleware,
+    create_app,
+    load_web_settings,
+)
 
 CANONICAL = "https://spicyteetimebooker.com"
 
@@ -111,3 +117,40 @@ def test_load_web_settings_reads_the_redirect_flag() -> None:
     assert on.canonical_host_redirect is True
     with pytest.raises(WebConfigError, match="TEETIME_CANONICAL_HOST_REDIRECT"):
         load_web_settings(_env(TEETIME_CANONICAL_HOST_REDIRECT="yes"))
+
+
+async def test_a_redirect_carries_the_security_headers(canonical_client: httpx.AsyncClient) -> None:
+    """Pins the middleware order: the security headers wrap the canonical-host redirect."""
+    resp = await canonical_client.get("/login", headers={"host": "www.spicyteetimebooker.com"})
+    assert resp.status_code == 301
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert "default-src 'self'" in resp.headers["content-security-policy"]
+
+
+async def test_control_bytes_never_reach_the_location_header() -> None:
+    """Defence in depth: a raw path or query carrying CR/LF (normally rejected upstream) falls
+    back to the origin's root instead of being echoed into ``Location``."""
+    sent: list[dict[str, object]] = []
+
+    async def app(scope: object, receive: object, send: object) -> None:  # never reached
+        raise AssertionError("the redirect must short-circuit")
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b""}
+
+    middleware = _CanonicalHostMiddleware(app, origin=CANONICAL)  # type: ignore[arg-type]
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/x",
+        "raw_path": b"/x\r\nSet-Cookie: pwned=1",
+        "query_string": b"a=1\r\nb",
+        "headers": [(b"host", b"www.spicyteetimebooker.com")],
+    }
+    await middleware(scope, receive, send)  # type: ignore[arg-type]
+    start = sent[0]
+    headers = dict(start["headers"])  # type: ignore[arg-type]
+    assert headers[b"location"] == f"{CANONICAL}/".encode()
