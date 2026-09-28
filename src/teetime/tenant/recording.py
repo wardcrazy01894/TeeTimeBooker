@@ -38,6 +38,8 @@ orchestrator runs on, so a ``book()``'s ``at`` IS its send instant):
 - every ``book()`` that returned BOOKED: raw id (``TTB:`` stripped), slot, send instant;
 - every ``book()`` that raised anything other than ``SlotGoneError`` — UNCERTAIN, the POST may
   have landed — including a Captcha/OTP error the blind burst swallows (flagged ``captcha``);
+- every ``book()`` that raised ``SlotGoneError`` (nothing created) with its ``reason``, for the
+  operator summary's attempt list only;
 - every ``cancel_reservation()`` with its outcome (ok / exception class name);
 - every other member's raise (op + class name) and the ``authenticate`` / ``refresh_reservations``
   call counts, for diagnostics.
@@ -102,6 +104,17 @@ class RecordedBookFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordedRejection:
+    """A ``book()`` that raised ``SlotGoneError``: the platform created NOTHING, so it is never
+    UNCERTAIN nor owned. Kept only so the operator summary can list every POST of a burst.
+    ``reason`` is ``SlotGoneError.reason`` (diagnostic only)."""
+
+    slot: TeeTimeSlot
+    reason: str
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class RecordedCancel:
     raw_id: str
     ok: bool
@@ -127,6 +140,7 @@ class RecordingLog:
     errors: tuple[RecordedError, ...] = ()
     authenticates: int = 0
     refreshes: int = 0
+    rejections: tuple[RecordedRejection, ...] = ()
 
     # --- §4.6 ownership helpers ("ownership derived at write time") ----------
 
@@ -211,6 +225,7 @@ class RecordingAdapter:
         self._book_failures: list[RecordedBookFailure] = []
         self._cancels: list[RecordedCancel] = []
         self._errors: list[RecordedError] = []
+        self._rejections: list[RecordedRejection] = []
         self._authenticates = 0
         self._refreshes = 0
 
@@ -227,6 +242,7 @@ class RecordingAdapter:
             errors=tuple(self._errors),
             authenticates=self._authenticates,
             refreshes=self._refreshes,
+            rejections=tuple(self._rejections),
         )
 
     def _record_error(self, op: str, exc: BaseException, at: datetime) -> None:
@@ -266,14 +282,16 @@ class RecordingAdapter:
         ``RecordedBookFailure``; then re-raise unchanged (engine control flow is untouched).
 
         ``at`` is read BEFORE delegating, so it is the SEND instant (§4.6). A ``SlotGoneError``
-        means the platform definitively created nothing, so it is neither UNCERTAIN nor
-        recorded. Any other ``BaseException`` (a ``CancelledError`` mid-POST included) leaves the
-        POST's fate unknown and is recorded as UNCERTAIN.
+        means the platform definitively created nothing, so it is neither UNCERTAIN nor owned;
+        it is kept as a ``RecordedRejection`` for the operator summary only. Any other
+        ``BaseException`` (a ``CancelledError`` mid-POST included) leaves the POST's fate
+        unknown and is recorded as UNCERTAIN.
         """
         at = self._clock.now_utc()
         try:
             result = await self._inner.book(slot, request)
-        except SlotGoneError:
+        except SlotGoneError as exc:
+            self._rejections.append(RecordedRejection(slot=slot, reason=exc.reason, at=at))
             raise
         except BaseException as exc:
             self._book_failures.append(

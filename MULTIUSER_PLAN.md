@@ -1171,7 +1171,14 @@ load; it reads the snapshot (FRONTEND_PLAN §4.3 etiquette).
   the sender to contacts). **Resend** is the alternative if the operator owns a domain (simpler API,
   better deliverability, but it needs domain DNS verification for non-self recipients) (§13 Q3).
 - **Operator summary**: after every booking-runner execution with rows, and on any non-zero exit,
-  one email goes to `OPERATOR-NOTIFY-EMAIL`.
+  one email goes to `OPERATOR-NOTIFY-EMAIL` (`notify.render_operator_summary` over a `RunSummary`).
+  The subject carries the environment (`TEETIME_ENV`), a dry-run tag, the failure first
+  (`❌ RUN FAILED (exit N)`, `⚠ N problems`), then `Booked X of Y`, the course names and dates.
+  The body lists PROBLEMS first (a miss, auth failure, UNCERTAIN, held extra, any run-level line),
+  then each booked row by the user's display name, window, confirmation and every POST of the
+  burst (tee time, send offset from T0, kept / cancelled extra / rejected with reason), then the
+  run statistics (rows, CAPTCHA fill, user emails). Names come from a bounded post-race
+  `get_user_unscoped` read that falls back to a short user id.
 - **Content:** course, date, tee time, `TTB:` confirmation, and the reason. No credentials. Rendered
   from a template with autoescape.
 

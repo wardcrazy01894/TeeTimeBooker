@@ -60,6 +60,7 @@ from teetime.notifications.notifier import NoopNotifier
 from teetime.persistence.in_memory_store import InMemoryStore
 from teetime.tenant.recording import (
     BlindCapableRecordingAdapter,
+    RecordedRejection,
     RecordingAdapter,
     make_recording_adapter,
 )
@@ -307,10 +308,12 @@ async def test_recorder_records_booked_raw_id_stripped_and_returns_result_unchan
     assert log.needs_reconcile() is False
 
 
-async def test_recorder_slot_gone_is_not_recorded_and_reraised() -> None:
+async def test_recorder_slot_gone_is_a_rejection_not_uncertain_and_reraised() -> None:
+    """A ``SlotGoneError`` created nothing: never UNCERTAIN, never owned. It IS kept as a
+    rejection (slot, reason, send instant) for the operator summary's attempt list."""
     fa = FakeAdapter(course_id=CID)
     rec = make_recording_adapter(fa, clock=FakeClock(start=T0))
-    gone = SlotGoneError("claimed", reason="unavailable")
+    gone = SlotGoneError("claimed", reason="daily_limit")
     fa.set_book_to_raise(gone)
 
     with pytest.raises(SlotGoneError) as info:
@@ -320,6 +323,8 @@ async def test_recorder_slot_gone_is_not_recorded_and_reraised() -> None:
     log = rec.log()
     assert log.books == () and log.book_failures == ()
     assert log.needs_reconcile() is False
+    assert log.owned_raw_ids() == frozenset()
+    assert log.rejections == (RecordedRejection(slot=_slot(8, 15), reason="daily_limit", at=T0),)
 
 
 async def test_recorder_records_uncertain_and_reraises() -> None:
