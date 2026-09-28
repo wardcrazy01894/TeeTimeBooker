@@ -65,7 +65,7 @@ for all of them. The site shows each user's rows, their status, and the booked t
 - **`ReleasePolicy` per adapter [D5]**, and Bicep job derivation from one release-event table (§6).
 - **Tenant watcher [D6]**: one DB query per run, one shared search per (course, date, party_size),
   per-account login only when warranted, persisted snapshots, per-account reconcile + upgrade (§7).
-- **Web app [D7]**: one scale-to-zero Container App (FastAPI + Jinja + HTMX). OAuth login, signed
+- **Web app [D7]**: one Container App (prod always warm, dev scale-to-zero) (FastAPI + Jinja + HTMX). OAuth login, signed
   sessions, CSRF protection, dashboard, account connect, rules/dates/skips, refresh, and cancel (§8).
 - **Per-user email** for booked / lost / cancelled / auth-failed (§8.7).
 - **Killswitch** coverage for the new jobs plus a Container App stop step [D8] (§10.3).
@@ -1068,7 +1068,8 @@ account.
 - **FastAPI + Starlette sessions + Jinja2 (autoescape) + HTMX** (vendored static, no build step),
   served by **uvicorn**, entry `teetime web`. The same image as the jobs, with a different command.
 - **Container App:** external HTTPS ingress on the free `*.azurecontainerapps.io` host,
-  `minReplicas=0`, `maxReplicas=1`, 0.25 vCPU / 0.5 GiB. With one replica, the in-process TTL cache
+  `minReplicas` from `webMinReplicas` (prod 1 = always warm since 2026-09-28, ~$6/month; dev 0),
+  `maxReplicas=1`, 0.25 vCPU / 0.5 GiB. With one replica, the in-process TTL cache
   is coherent; rate limits are DB-backed anyway (§8.4).
 - **Logic lives in `web/services.py`** (framework-free, unit-testable with the in-memory store and
   FakeAdapter). Routes are thin.

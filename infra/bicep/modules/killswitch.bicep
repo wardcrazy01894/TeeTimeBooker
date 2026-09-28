@@ -436,6 +436,13 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = {
           }
           runAfter: {}
         }
+        // Prod's web app keeps one replica warm (webMinReplicas = 1, 2026-09-28). `stop` puts
+        // the Container App in the Stopped state, which runs NO replicas whatever minReplicas
+        // says, so this lever still takes it to zero at runtime. The IaC latch (main.bicep
+        // effectiveEnableSchedules -> webapp.bicep `minReplicas: enableIngress ? minReplicas : 0`)
+        // only applies on the NEXT deploy after killswitchFired=true is merged; until then a CI
+        // redeploy could restart the app (the pre-existing deploy-clobber gap, now ~$0.19/day for
+        // the warm replica instead of $0). Not yet exercised against a live minReplicas=1 app.
         Stop_webapp_prod: {
           type: 'Http'
           inputs: {

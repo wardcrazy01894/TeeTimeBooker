@@ -857,6 +857,17 @@ is the same Consumption-plan free-tier math as the ACA Jobs above (near-zero for
 volume of an invite-only site), and ACS Email's free tier covers 100 emails/month before
 per-message billing.
 
+**Prod web always warm (2026-09-28): up to ~$5.83/month.** Scale-from-zero took ~30 s (replica
+assignment + image pull + Python start on 0.25 vCPU), so prod's param file sets
+`webMinReplicas = 1`; dev stays 0. Idle billing applies only with `minReplicas > 0` (a
+scale-to-zero replica bills at the ACTIVE rate for its whole lifetime, cooldown included, so a
+longer cooldown or a keep-warm ping costs more for less). East US 2 retail prices (Azure Retail
+Prices API, 2026-09-28): idle vCPU $0.000003/s, memory $0.000003/GiB-s. One idle replica for a
+30-day month: 0.25 × 2,592,000 × $0.000003 = $1.94 + 0.5 × 2,592,000 × $0.000003 = $3.89 =
+**$5.83**, before whatever free grant the jobs leave (the idle replica alone, 648k vCPU-s, is
+past the whole 180k grant, so treat it as real spend). Request-time active seconds are cents.
+The killswitch latch still forces `minReplicas` to 0.
+
 ### 9.2 Budget alert
 
 Azure Cost Management budgets are **subscription-scoped**, not resource-group-
@@ -879,6 +890,13 @@ sidesteps a known `az deployment sub create` budget-PUT bug.
 | 1 | `budget-teetime` | $20 | 80% actual ($16) | Email only | Early warning |
 | 1 | `budget-teetime` | $20 | 100% forecast ($20) | Email only | Projected overage warning |
 | 2 | `budget-teetime-killswitch` | $50 | 100% actual ($50) | Action Group → Logic App | Silences all 6 ACA Job crons + stops in-flight |
+
+**Headroom with prod's always-warm web replica (2026-09-28):** steady spend is ~$5–5.50/mo
+(ACR Basic; the jobs sit in the free grant) + ~$5.83/mo for the warm replica ≈ **~$11.30/mo**,
+under Tier 1's $16 (80%) early warning with ~$4.70 to spare and far below Tier 2's $50. A
+genuine anomaly still trips Tier 1 first. The killswitch's `stop` of the prod web app holds it at
+zero replicas despite `minReplicas = 1` (see the comment on `Stop_webapp_prod` in
+`killswitch.bicep`).
 
 Tier 1 (`budget-teetime`, $20, email-only) is UNCHANGED. Tier 2 (`budget-teetime-killswitch`,
 $50, killswitch-trigger) is a SEPARATE second budget resource in `budget.bicep` (conditional on

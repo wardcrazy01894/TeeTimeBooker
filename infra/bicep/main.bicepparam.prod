@@ -93,5 +93,8 @@ param acsEmailSender = ''
 param deployWebApp = true
 param deployAcsEmail = true
 param webPublicBaseUrl = 'https://teetime-web-prod.wittydesert-02f9f0cd.eastus2.azurecontainerapps.io'
+// Always warm (operator decision 2026-09-28): one idle-billed replica, ~$6/month, so a visitor
+// never waits out the ~30 s scale-from-zero cold start. The killswitch still forces 0.
+param webMinReplicas = 1
 // Empty = the web reads OPERATOR-NOTIFY-EMAIL from Key Vault (the repo is public).
 param operatorEmail = ''
