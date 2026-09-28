@@ -116,6 +116,9 @@ param operatorEmail string = ''
 @maxValue(1)
 param webMinReplicas int = 0
 
+@description('Custom apex domain for the web app (www.<domain> is bound too); empty = the default *.azurecontainerapps.io host only. Its managed certificates must exist first (AZURE_PLAN §10.9). Only meaningful when deployWebApp=true.')
+param webCustomDomain string = ''
+
 // When the killswitch has fired, force schedules off regardless of enableSchedules.
 // This ensures that any CI deploy — even one that does not touch the killswitchFired
 // param — cannot silently re-arm the jobs. The enableSchedules param retains its value
@@ -266,6 +269,7 @@ module webapp 'modules/webapp.bicep' = if (deployWebApp) {
     usePublicBootstrapImage: usePublicBootstrapImage
     enableIngress: effectiveEnableSchedules
     minReplicas: webMinReplicas
+    customDomain: webCustomDomain
     webPublicBaseUrl: webPublicBaseUrl
     operatorEmail: operatorEmail
     dryRun: dryRun

@@ -92,7 +92,12 @@ param acsEmailSender = ''
 // environment's default domain> and must match the Google client's redirect URI.
 param deployWebApp = true
 param deployAcsEmail = true
-param webPublicBaseUrl = 'https://teetime-web-prod.wittydesert-02f9f0cd.eastus2.azurecontainerapps.io'
+param webPublicBaseUrl = 'https://spicyteetimebooker.com'
+// Custom domain (2026-09-28): apex + www bound with managed certs (created once by the AZURE_PLAN
+// §10.9 runbook); www and the old teetime-web-prod.wittydesert-02f9f0cd.eastus2
+// .azurecontainerapps.io host redirect here. The Google OAuth client must list
+// https://spicyteetimebooker.com/auth/google/callback.
+param webCustomDomain = 'spicyteetimebooker.com'
 // Always warm (operator decision 2026-09-28): one idle-billed replica, ~$6/month, so a visitor
 // never waits out the ~30 s scale-from-zero cold start. The killswitch still forces 0.
 param webMinReplicas = 1

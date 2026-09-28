@@ -76,6 +76,9 @@ infra/
                              #   latched to effectiveEnableSchedules (killswitch lever (c) target).
                              #   MU-16a: tenant backend env (Cosmos, AZURE_CLIENT_ID, keyring,
                              #   ACS) wired ONLY when tenantCosmosEndpoint is non-empty.
+                             #   customDomain (prod spicyteetimebooker.com): apex + www bound
+                             #   SNI to managed certs mc-<host-dashed>, created once by the
+                             #   AZURE_PLAN §10.9 runbook BEFORE the first deploy that sets it.
       email.bicep            # NEW (MU-15a): ACS Communication Service + Email Service +
                              #   Azure-managed domain; writes KV secret ACS-EMAIL-CONNECTION via
                              #   listKeys() at deploy time. Gated on deployAcsEmail (dev true,

@@ -733,6 +733,14 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
 - **Public repo: no email address in any param file.** The operator email is read from the
   `OPERATOR-NOTIFY-EMAIL` Key Vault secret and the ACS sender is derived from the email module
   output (pinned by `tests/test_webapp_bicep.py`).
+- **The prod site has ONE canonical host** (`https://spicyteetimebooker.com`, 2026-09-28). The OAuth
+  `state` lives in the session cookie of the host sign-in started on, so with
+  `TEETIME_CANONICAL_HOST_REDIRECT=true` (Bicep sets it iff `webCustomDomain` is set)
+  `web/app.py::_CanonicalHostMiddleware` redirects every other host (`www.`, the old
+  `*.azurecontainerapps.io` name) to the same path on `TEETIME_PUBLIC_BASE_URL` (301 GET/HEAD, 308
+  otherwise; `/healthz` exempt; the target is always the configured origin). The managed
+  certificates `mc-<host-dashed>` are created once by AZURE_PLAN §10.9 before any deploy that sets
+  the domain, or that deploy fails.
 - **The website works with JavaScript off, and never shows a raw course id.** CSP is
   `script-src 'self'; style-src 'self'`: no inline script or style. The only script is the
   same-origin `web/static/app.js`, progressive enhancement over plain forms (the ranked form's

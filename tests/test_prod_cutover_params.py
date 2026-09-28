@@ -15,7 +15,8 @@ PROD = (
 ).read_text()
 
 COSMOS = "https://cosmos-teetime-shared.documents.azure.com:443/"
-PROD_WEB = "https://teetime-web-prod.wittydesert-02f9f0cd.eastus2.azurecontainerapps.io"
+# The prod site moved to its custom domain on 2026-09-28 (the old host redirects there).
+PROD_WEB = "https://spicyteetimebooker.com"
 
 
 def test_prod_gets_the_web_app_acs_and_the_tenant_store() -> None:

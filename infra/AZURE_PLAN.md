@@ -1328,6 +1328,54 @@ log-line checklist.
 rollback cannot double-book. Diff the web's rules and one-off dates against `container.toml` first
 (TOML can express only the Sat/Sun windows).
 
+### 10.9 Prod custom domain (spicyteetimebooker.com, 2026-09-28)
+
+The prod web app answers on `https://spicyteetimebooker.com` and `https://www.spicyteetimebooker.com`
+(registered at Cloudflare Registrar, DNS at Cloudflare). ACA managed certificates are free. Bicep
+(`webCustomDomain` → `webapp.bicep customDomain`) binds both hosts SNI to certificates named
+`mc-<host with dots as dashes>`; a managed certificate cannot be issued until its hostname is on
+the app, so those certificates are created ONCE, by hand, BEFORE the first deploy that sets
+`webCustomDomain` (that deploy fails loudly if they are missing).
+
+**1. DNS (operator, Cloudflare, every record "DNS only" / grey cloud; proxying breaks issuance):**
+
+| Type | Name | Value |
+|---|---|---|
+| `A` | `@` | the prod environment's static IP (`az containerapp env show -g rg-teetime-prod -n cae-teetime-prod --query properties.staticIp`) |
+| `TXT` | `asuid` | the app's `customDomainVerificationId` (`az containerapp show -g rg-teetime-prod -n teetime-web-prod --query properties.customDomainVerificationId`) |
+| `CNAME` | `www` | `teetime-web-prod.<env default domain>` |
+| `TXT` | `asuid.www` | the same verification id |
+
+**2. Certificates (once; add the hosts, issue the certs, wait for `Succeeded`):**
+
+The order matters: `hostname add` registers each host on the app (binding `Disabled`) so the
+HTTP / CNAME validation of `certificate create` can reach it. Done 2026-09-28; both certificates
+are reused by every later deploy.
+
+```bash
+RG=rg-teetime-prod; APP=teetime-web-prod; ENV=cae-teetime-prod
+az containerapp hostname add -g $RG -n $APP --hostname spicyteetimebooker.com
+az containerapp hostname add -g $RG -n $APP --hostname www.spicyteetimebooker.com
+az containerapp env certificate create -g $RG -n $ENV --hostname spicyteetimebooker.com \
+  --certificate-name mc-spicyteetimebooker-com --validation-method HTTP
+az containerapp env certificate create -g $RG -n $ENV --hostname www.spicyteetimebooker.com \
+  --certificate-name mc-www-spicyteetimebooker-com --validation-method CNAME
+az containerapp env certificate list -g $RG -n $ENV --managed-certificates-only -o table
+```
+
+**3. Google OAuth (operator):** add `https://spicyteetimebooker.com/auth/google/callback` to the
+Google client's authorized redirect URIs (keep the old one until the deploy is verified).
+
+**4. Deploy:** the `infra/v*` tag carrying `webCustomDomain = 'spicyteetimebooker.com'` and
+`webPublicBaseUrl = 'https://spicyteetimebooker.com'`. It binds both hosts and turns on the
+canonical-host redirect (www and the old `teetime-web-prod.wittydesert-02f9f0cd.eastus2.azurecontainerapps.io`
+host → the apex). Gate: `curl -sI https://spicyteetimebooker.com/healthz` is 200,
+`curl -sI https://www.spicyteetimebooker.com/` is a 301 to the apex, and Google sign-in works.
+
+**Renewal:** ACA renews managed certificates automatically while the DNS records stay in place.
+**Rollback:** set `webCustomDomain = ''` and `webPublicBaseUrl` back to the azurecontainerapps.io
+URL, then tag; the certificates can stay.
+
 ## 11. Security checklist
 
 | Item | Status | Detail |

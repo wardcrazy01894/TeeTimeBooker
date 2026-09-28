@@ -167,3 +167,50 @@ def test_no_param_file_carries_an_email_address() -> None:
         text = params.read_text()
         assert "param operatorEmail = ''" in text, params.name
         assert "@gmail.com" not in text, params.name
+
+
+# --- custom domain (prod: spicyteetimebooker.com, 2026-09-28) -----------------------------------
+
+
+def test_webapp_custom_domain_param_defaults_to_none(webapp_bicep: str) -> None:
+    assert "param customDomain string = ''" in webapp_bicep
+
+
+def test_webapp_binds_apex_and_www_with_managed_certificates(webapp_bicep: str) -> None:
+    """Both hostnames bind SNI with a managed certificate whose NAME is derived from the host,
+    so the one-time bootstrap (AZURE_PLAN runbook) and every later deploy agree on it."""
+    assert (
+        "var customHostnames = empty(customDomain) ? [] : [customDomain, 'www.${customDomain}']"
+        in (webapp_bicep)
+    )
+    assert "var customDomainBindings = [for host in customHostnames: {" in webapp_bicep
+    assert "customDomains: customDomainBindings" in webapp_bicep
+    assert "bindingType: 'SniEnabled'" in webapp_bicep
+    assert (
+        "certificateId: '${acaEnvironmentId}/managedCertificates/mc-${replace(host, '.', '-')}'"
+        in webapp_bicep
+    )
+
+
+def test_webapp_redirects_to_the_canonical_host_only_with_a_custom_domain(
+    webapp_bicep: str,
+) -> None:
+    assert (
+        "{ name: 'TEETIME_CANONICAL_HOST_REDIRECT', value: empty(customDomain) ? 'false' : 'true' }"
+        in webapp_bicep
+    )
+
+
+def test_main_passes_the_custom_domain(main_bicep: str) -> None:
+    assert "param webCustomDomain string = ''" in main_bicep
+    start = main_bicep.index("module webapp 'modules/webapp.bicep'")
+    block = main_bicep[start : main_bicep.index("\n}\n", start)]
+    assert "customDomain: webCustomDomain" in block
+
+
+def test_prod_uses_its_custom_domain_and_dev_does_not() -> None:
+    prod, dev = PROD_PARAMS.read_text(), DEV_PARAMS.read_text()
+    assert "param webCustomDomain = 'spicyteetimebooker.com'" in prod
+    assert "param webPublicBaseUrl = 'https://spicyteetimebooker.com'" in prod
+    assert "param webCustomDomain = ''" in dev
+    assert "param webPublicBaseUrl = 'https://teetime-web-dev." in dev
