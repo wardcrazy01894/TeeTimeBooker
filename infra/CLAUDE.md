@@ -70,7 +70,8 @@ infra/
                              #   job (`tenant-migrate`, no KV secret, NOT a killswitch target);
                              #   azure-iac.yml starts + awaits it right after deploy pass 2.
       webapp.bicep           # NEW (MU-15a): Container App teetime-web-<env> (`teetime web`),
-                             #   scale-to-zero, same ACA environment as the jobs. Gated on
+                             #   minReplicas = webMinReplicas (prod 1 always warm, dev 0
+                             #   scale-to-zero; latch forces 0), same ACA environment as the jobs. Gated on
                              #   deployWebApp (dev true since MU-17, prod true since MU-18 stage A). Ingress + max-replicas
                              #   latched to effectiveEnableSchedules (killswitch lever (c) target).
                              #   MU-16a: tenant backend env (Cosmos, AZURE_CLIENT_ID, keyring,

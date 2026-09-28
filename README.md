@@ -275,9 +275,10 @@ that `compute.bicep` does not wire. The TOML path is stateless between runs and 
 ## Azure hosting
 
 The booking and watch schedules run as **Azure Container Apps Jobs** on UTC crons, secrets live in
-**Azure Key Vault**, and the multi-user site is a scale-to-zero **Container App**. The TOML path
-makes no authenticated Azure SDK calls at runtime; the tenant path reads Cosmos with its managed
-identity. About $5/month (ACR Basic; compute sits in the free grant).
+**Azure Key Vault**, and the multi-user site is a **Container App** (prod keeps one replica warm,
+dev scales to zero). The TOML path makes no authenticated Azure SDK calls at runtime; the tenant
+path reads Cosmos with its managed identity. About $5/month for ACR Basic (the jobs sit in the
+free grant), plus up to ~$6/month for prod's always-warm web replica.
 
 | | Dev | Prod |
 |---|---|---|

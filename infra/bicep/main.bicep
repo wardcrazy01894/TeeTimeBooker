@@ -111,6 +111,11 @@ param webPublicBaseUrl string = ''
 @description('The operator\'s sign-in email for the web app (implicitly invited). Only meaningful when deployWebApp=true.')
 param operatorEmail string = ''
 
+@description('Web app replicas kept running when idle: 0 = scale to zero (~30 s cold start), 1 = always warm (~$6/month idle at 0.25 vCPU / 0.5 GiB). The killswitch latch forces 0. Only meaningful when deployWebApp=true.')
+@minValue(0)
+@maxValue(1)
+param webMinReplicas int = 0
+
 // When the killswitch has fired, force schedules off regardless of enableSchedules.
 // This ensures that any CI deploy — even one that does not touch the killswitchFired
 // param — cannot silently re-arm the jobs. The enableSchedules param retains its value
@@ -260,6 +265,7 @@ module webapp 'modules/webapp.bicep' = if (deployWebApp) {
     acaEnvironmentId: compute.outputs.acaEnvironmentId
     usePublicBootstrapImage: usePublicBootstrapImage
     enableIngress: effectiveEnableSchedules
+    minReplicas: webMinReplicas
     webPublicBaseUrl: webPublicBaseUrl
     operatorEmail: operatorEmail
     dryRun: dryRun

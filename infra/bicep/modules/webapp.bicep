@@ -1,7 +1,7 @@
 // webapp.bicep — Container App `teetime-web-<env>` serving `teetime web` (MULTIUSER_PLAN §8,
 // MU-12/13/14; the app itself is code-complete but UNWIRED to infra until this module deploys).
 //
-// Scale-to-zero Container App (minReplicas 0, maxReplicas 1) in the SAME Container Apps
+// Container App (minReplicas from the `minReplicas` param: prod 1, dev 0; maxReplicas 1) in the SAME Container Apps
 // Environment the ACA Jobs use (compute.bicep's acaEnvironmentId output) — one environment per
 // RG keeps this to a single Consumption plan, no extra environment cost.
 //
@@ -64,6 +64,9 @@ param usePublicBootstrapImage bool = false
 
 @description('When true (the default toml-mode value from main.bicep, effectiveEnableSchedules), the Container App serves traffic (external ingress, minReplicas up to 1). When false — either enableSchedules=false or the cost killswitch has fired (killswitchFired=true) — ingress is disabled and minReplicas is forced to 0, so no traffic reaches the app and no replica can run. This is the SAME latch that silences the ACA Jobs\' cron schedules (MULTIUSER_PLAN §10.1 SF8).')
 param enableIngress bool = true
+
+@description('Replicas kept running when idle. 0 = scale to zero (a ~30 s cold start on the first request after the cooldown); 1 = always warm (idle-billed, ~$6/month at 0.25 vCPU / 0.5 GiB, East US 2 retail 2026-09). Forced to 0 when enableIngress=false (the killswitch latch).')
+param minReplicas int = 0
 
 @description('Public base URL the web app is reachable at, e.g. https://teetime-web-dev.<hash>.eastus2.azurecontainerapps.io. Empty by default — only known after the Container App\'s first deploy (a chicken-and-egg Bicep cannot resolve in one pass); the operator sets it in a follow-up param change. See the module header.')
 param webPublicBaseUrl string = ''
@@ -201,10 +204,11 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       scale: {
-        // Scale-to-zero always (minReplicas 0 — no idle cost). maxReplicas is the killswitch
-        // latch: 0 when enableIngress=false makes it IMPOSSIBLE for any replica to start, not
-        // merely undesirable — a stronger guarantee than ingress-disabled alone.
-        minReplicas: 0
+        // minReplicas comes from the env's param file (prod 1 = always warm, dev 0 = scale to
+        // zero) and is forced to 0 by the latch. maxReplicas is the killswitch latch too: 0 when
+        // enableIngress=false makes it IMPOSSIBLE for any replica to start, not merely
+        // undesirable — a stronger guarantee than ingress-disabled alone.
+        minReplicas: enableIngress ? minReplicas : 0
         maxReplicas: enableIngress ? 1 : 0
       }
     }

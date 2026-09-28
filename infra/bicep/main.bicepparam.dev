@@ -99,5 +99,7 @@ param acsEmailSender = ''
 param deployWebApp = true
 param deployAcsEmail = true
 param webPublicBaseUrl = 'https://teetime-web-dev.kindwave-5d7c992b.eastus2.azurecontainerapps.io'
+// Dev scales to zero (no idle cost); prod keeps one replica warm.
+param webMinReplicas = 0
 // Empty = the web reads OPERATOR-NOTIFY-EMAIL from Key Vault (the repo is public).
 param operatorEmail = ''

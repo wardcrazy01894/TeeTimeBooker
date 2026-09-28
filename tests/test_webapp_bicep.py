@@ -50,8 +50,27 @@ def test_webapp_is_container_app_not_a_job(webapp_bicep: str) -> None:
     assert "Microsoft.App/jobs@" not in webapp_bicep
 
 
-def test_webapp_scales_to_zero(webapp_bicep: str) -> None:
-    assert "minReplicas: 0" in webapp_bicep
+def test_webapp_min_replicas_is_a_param_that_defaults_to_scale_to_zero(webapp_bicep: str) -> None:
+    assert "param minReplicas int = 0" in webapp_bicep
+
+
+def test_webapp_min_replicas_is_forced_to_zero_by_the_killswitch(webapp_bicep: str) -> None:
+    """SF8: an always-warm replica must still be impossible once the killswitch fires."""
+    assert "minReplicas: enableIngress ? minReplicas : 0" in webapp_bicep
+
+
+def test_main_passes_web_min_replicas_bounded_to_one(main_bicep: str) -> None:
+    assert "@minValue(0)\n@maxValue(1)\nparam webMinReplicas int = 0" in main_bicep
+    webapp_block_start = main_bicep.index("module webapp 'modules/webapp.bicep'")
+    webapp_block = main_bicep[webapp_block_start : main_bicep.index("\n}\n", webapp_block_start)]
+    assert "minReplicas: webMinReplicas" in webapp_block
+
+
+def test_prod_web_is_always_warm_and_dev_scales_to_zero() -> None:
+    """Operator decision 2026-09-28: prod keeps one replica (~$6/mo idle) so users never wait
+    out a ~30 s cold start; dev stays scale-to-zero."""
+    assert "param webMinReplicas = 1" in PROD_PARAMS.read_text()
+    assert "param webMinReplicas = 0" in DEV_PARAMS.read_text()
 
 
 def test_webapp_ingress_disabled_when_killswitch_fired(webapp_bicep: str) -> None:

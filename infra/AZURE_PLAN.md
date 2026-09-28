@@ -857,6 +857,17 @@ is the same Consumption-plan free-tier math as the ACA Jobs above (near-zero for
 volume of an invite-only site), and ACS Email's free tier covers 100 emails/month before
 per-message billing.
 
+**Prod web always warm (2026-09-28): up to ~$5.83/month.** Scale-from-zero took ~30 s (replica
+assignment + image pull + Python start on 0.25 vCPU), so prod's param file sets
+`webMinReplicas = 1`; dev stays 0. Idle billing applies only with `minReplicas > 0` (a
+scale-to-zero replica bills at the ACTIVE rate for its whole lifetime, cooldown included, so a
+longer cooldown or a keep-warm ping costs more for less). East US 2 retail prices (Azure Retail
+Prices API, 2026-09-28): idle vCPU $0.000003/s, memory $0.000003/GiB-s. One idle replica for a
+30-day month: 0.25 × 2,592,000 × $0.000003 = $1.94 + 0.5 × 2,592,000 × $0.000003 = $3.89 =
+**$5.83**, before whatever free grant the jobs leave (the idle replica alone, 648k vCPU-s, is
+past the whole 180k grant, so treat it as real spend). Request-time active seconds are cents.
+The killswitch latch still forces `minReplicas` to 0.
+
 ### 9.2 Budget alert
 
 Azure Cost Management budgets are **subscription-scoped**, not resource-group-
