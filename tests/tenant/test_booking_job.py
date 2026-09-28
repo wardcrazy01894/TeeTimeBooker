@@ -253,6 +253,22 @@ async def test_run_booking_job_keyring_missing_is_systemic_and_tells_the_operato
     assert "keyring: KeyringError" in summary.body
 
 
+async def test_run_booking_job_tags_the_summary_with_teetime_env() -> None:
+    """dev and prod summaries land in one inbox: TEETIME_ENV (set by compute.bicep) tags them."""
+    sender = FakeEmailSender()
+    await run_booking_job(
+        event_key="mb0600et",
+        dry_run=True,
+        wait=False,
+        store=_store(),
+        env={"TEETIME_ENV": "dev"},
+        operator=OperatorSink(sender=sender, to="ops@example.test"),
+    )
+    (summary,) = sender.sent
+    assert summary.subject.startswith("[TeeTimeBooker · DEV · dry run] ❌ RUN FAILED (exit 1)")
+    assert "(dev, dry run)" in summary.body.splitlines()[0]
+
+
 async def test_run_booking_job_live_requires_the_2captcha_key() -> None:
     sender = FakeEmailSender()
     code = await run_booking_job(

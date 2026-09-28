@@ -18,11 +18,20 @@ from teetime.core import orchestrator as orchestrator_module
 from teetime.core.adapter import AdapterError, AuthError, CaptchaError
 from teetime.core.models import BookingOutcome
 from teetime.dev.virtual_clock import VirtualClock
-from teetime.tenant.notify import BufferingNotifier, FakeEmailSender, UserEvent, UserEventKind
+from teetime.tenant import runner as runner_module
+from teetime.tenant.notify import (
+    AttemptResult,
+    BufferingNotifier,
+    FakeEmailSender,
+    UserEvent,
+    UserEventKind,
+)
+from teetime.tenant.recording import RecordedBook, RecordingLog
 from teetime.tenant.runner import (
     ExitStatus,
     OperatorSink,
     RunReport,
+    _summary_attempts,
     exit_code_for,
     run_release_event,
 )
@@ -36,6 +45,7 @@ from .runner_builders import (
     T0,
     TARGET,
     FakeAdapterNonBlind,
+    NullUserNotifier,
     ScriptedFactory,
     Seeded,
     SpyStore,
@@ -73,6 +83,7 @@ async def _run(
     *,
     notifier: Any,
     sender: FakeEmailSender | None = None,
+    environment: str | None = None,
 ) -> RunReport:
     return await run_release_event(
         event=EVENT,
@@ -86,6 +97,7 @@ async def _run(
         dry_run=False,
         wait=True,
         operator=OperatorSink(sender=sender, to=_OPERATOR) if sender is not None else None,
+        environment=environment,
     )
 
 
@@ -163,8 +175,10 @@ async def test_runner_missed_drop_emails_user_and_exits_zero() -> None:
     assert "no_inventory" in event.detail
     (summary,) = sender.sent
     assert summary.to == _OPERATOR
-    assert "exit 0" in summary.subject
-    assert "missed_drop" in summary.body
+    assert "⚠ 1 problem" in summary.subject  # a miss is a problem, even on exit 0
+    assert "exit 0" in summary.body.splitlines()[0]
+    assert "User 1: " in summary.body
+    assert "missed the drop (no_inventory)" in summary.body
 
 
 async def test_runner_auth_error_notifies_user_and_operator_and_flags_account() -> None:
@@ -191,7 +205,7 @@ async def test_runner_auth_error_notifies_user_and_operator_and_flags_account() 
     # No TenantStore write flips an account to auth_failed yet (MU-8b): the report carries it.
     assert report.auth_failed_accounts == (bad.account.id,)
     (summary,) = sender.sent
-    assert "auth_failed" in summary.body
+    assert "course login failed" in summary.body
     assert "bad password" not in summary.body  # class names only, never the message
 
 
@@ -216,7 +230,7 @@ async def test_runner_captcha_error_notifies_user_and_operator_and_exits_nonzero
     assert exit_code_for(report) is ExitStatus.SYSTEMIC_FAILURE
     assert _one(notifier).kind is UserEventKind.MISSED_DROP
     (summary,) = sender.sent
-    assert "exit 1" in summary.subject
+    assert "RUN FAILED (exit 1)" in summary.subject
     assert "CaptchaError" in summary.body
 
 
@@ -240,7 +254,7 @@ async def test_runner_uncertain_is_operator_only() -> None:
     assert exit_code_for(report) is ExitStatus.SYSTEMIC_FAILURE
     assert notifier.sent == []  # §4.5: UNCERTAIN notifies the operator only
     (summary,) = sender.sent
-    assert "needs_reconcile" in summary.body
+    assert "outcome UNCERTAIN" in summary.body
 
 
 async def test_summary_email_failure_forces_nonzero() -> None:
@@ -293,7 +307,8 @@ async def test_summary_delivered_keeps_a_clean_exit() -> None:
     )
 
     (summary,) = sender.sent
-    assert "run OK (exit 0)" in summary.subject
+    assert summary.subject.startswith(f"[TeeTimeBooker] Booked 1 of 1 · {MB} · ")
+    assert "· OK · exit 0" in summary.body.splitlines()[0]
     assert report.summary_email_failed is False
     assert exit_code_for(report) is ExitStatus.OK
 
@@ -347,3 +362,85 @@ async def test_a_failing_user_notifier_never_masks_the_outcome() -> None:
     assert [o.outcome for o in report.outcomes] == [BookingOutcome.BOOKED]
     assert exit_code_for(report) is ExitStatus.OK
     assert a.row.id == report.outcomes[0].row_id
+
+
+async def test_summary_names_the_user_and_lists_every_post_of_the_burst() -> None:
+    """The operator summary names the person (display name, a post-race read) and shows each
+    blind POST: its tee time, its send offset from T0, and what became of it."""
+    store = new_store()
+    await seed_account(store, n=1)
+    clock = race_clock()
+    sender = FakeEmailSender()
+
+    await _run(
+        store,
+        clock,
+        ScriptedFactory(),
+        notifier=TimedNotifier(clock),
+        sender=sender,
+        environment="prod",
+    )
+
+    (summary,) = sender.sent
+    assert summary.subject.startswith(f"[TeeTimeBooker · PROD] Booked 1 of 1 · {MB} · ")
+    body = summary.body
+    assert "(prod, live)" in body.splitlines()[0]
+    assert f"User 1: {MB}, " in body  # the fixture course has no display name
+    assert "at 8:15 AM, 2 players" in body
+    assert "confirmation FAKE-s-0815" in body
+    assert "Attempts (" in body
+    kept = [ln for ln in body.splitlines() if "booked → kept" in ln]
+    assert len(kept) == 1 and "8:15 AM" in kept[0]
+    assert "1 request loaded / 1 claimed" in body
+
+
+async def test_summary_survives_a_failed_name_lookup() -> None:
+    """The name is a nicety: a store error on the lookup falls back to a short user id and
+    never costs the email or the exit code."""
+    inner = new_store()
+    a = await seed_account(inner, n=1)
+    clock = race_clock()
+
+    class NoNames(SpyStore):
+        async def get_user_unscoped(self, user_id: Any) -> Any:
+            raise RuntimeError("cosmos down")
+
+    sender = FakeEmailSender()
+    report = await _run(
+        NoNames(inner, clock), clock, ScriptedFactory(), notifier=NullUserNotifier(), sender=sender
+    )
+
+    (summary,) = sender.sent
+    assert f"user {str(a.user.id)[:8]}: {MB}" in summary.body
+    assert exit_code_for(report) is ExitStatus.OK
+
+
+async def test_a_bug_in_the_summary_detail_never_costs_the_emails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-row detail is reporting only: if building it raises, the run still sends the
+    operator summary (without the detail) and the user emails, and keeps its exit code."""
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("summary bug")
+
+    monkeypatch.setattr(runner_module, "_summary_row", boom)
+    store = new_store()
+    await seed_account(store, n=1)
+    clock = race_clock()
+    notifier = TimedNotifier(clock)
+    sender = FakeEmailSender()
+
+    report = await _run(store, clock, ScriptedFactory(), notifier=notifier, sender=sender)
+
+    assert exit_code_for(report) is ExitStatus.OK
+    assert notifier.kinds() == [UserEventKind.BOOKED]
+    (summary,) = sender.sent
+    assert "Booking run:" in summary.body
+
+
+def test_a_booked_post_without_an_id_is_unconfirmed_not_kept() -> None:
+    """A BOOKED with no confirmation code is not owned and needs_reconcile: never "kept"."""
+    booked = RecordedBook(raw_id=None, slot=GRID[3], at=T0)
+    (attempt,) = _summary_attempts(RecordingLog(books=(booked,), book_failures=(), cancels=()))
+    assert attempt.result is AttemptResult.UNCONFIRMED

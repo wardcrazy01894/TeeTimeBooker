@@ -315,6 +315,26 @@ send; it RETURNS an `EmailSendResult` and never raises. `load_acs_settings` read
 `UserEventKind` gained the operator-only `NEEDS_RECONCILE`. `FakeEmailSender` is the test double.
 Tests: `tests/tenant/test_{notify,acs_email}.py`.
 
+### Operator summary v2 (2026-09-28)
+
+The first live summaries were one terse line per event (`booked | user=d16e0d4b |
+course=foreup:mangrove_bay | …`), and dev and prod summaries looked identical. The summary is now
+rendered from a `notify.RunSummary`: `runner._book_event` returns a `RunDetail` (one `SummaryRow`
+per claimed row with every POST the recorder saw, T0 in the course timezone, the CAPTCHA fill
+report) and `finish_run` joins it with the events and `_report_lines`. Deviations and additions:
+
+- The recorder now keeps each `SlotGoneError` as a `RecordedRejection` (reason + send instant),
+  so a `daily_limit` / `unavailable` POST shows in the attempt list. It is diagnostic only: it
+  does not change ownership, `needs_reconcile` or the exit code.
+- A dry run emits the new operator-only `UserEventKind.DRY_RUN` (was `OPERATOR_SUMMARY`), so a
+  dry run is never counted as a problem.
+- Display names come from one `get_user_unscoped` per user after the race, each bounded by
+  `SUMMARY_NAME_LOOKUP_TIMEOUT_S`; any failure falls back to `user <8-char id>` and never
+  affects the email or the exit code.
+- `run_booking_job` reads `TEETIME_ENV` (already set on every job by `compute.bicep`) and the
+  subject is tagged `[TeeTimeBooker · PROD]` / `· DEV · dry run`.
+- Only the booking job sends an operator summary; the watcher has none.
+
 ## MU-12: Web skeleton (FastAPI, invite-only OAuth, sessions, CSRF)
 
 (`src/teetime/web/`: FastAPI app factory, OAuth sign-in for Google and/or GitHub, INVITE-ONLY — the
