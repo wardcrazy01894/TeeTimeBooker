@@ -526,17 +526,21 @@ async def _book_event(
         self_deadline_hit=deadline_hit,
         outcome_write_failures=tuple(write_failures),
     )
-    names = await _user_names(store, {r.account.user_id for r in claimed_rows})
-    recorders = {a.row.id: a.recorder.log() for a in accounts}
-    detail = RunDetail(
-        rows=tuple(
-            _summary_row(r, name=names.get(r.account.user_id), log=recorders.get(r.row.id))
-            for r in claimed_rows
-        ),
-        release_at=t0.astimezone(ZoneInfo(event.timezone)),
-        captcha_demanded=sum(f.demanded for f in fills) if fills else None,
-        captcha_solved=sum(f.solved for f in fills) if fills else None,
-    )
+    try:
+        names = await _user_names(store, {r.account.user_id for r in claimed_rows})
+        recorders = {a.row.id: a.recorder.log() for a in accounts}
+        detail = RunDetail(
+            rows=tuple(
+                _summary_row(r, name=names.get(r.account.user_id), log=recorders.get(r.row.id))
+                for r in claimed_rows
+            ),
+            release_at=t0.astimezone(ZoneInfo(event.timezone)),
+            captcha_demanded=sum(f.demanded for f in fills) if fills else None,
+            captcha_solved=sum(f.solved for f in fills) if fills else None,
+        )
+    except Exception as exc:  # reporting only: a bug here must never cost the emails
+        log.exception("tenant-run: operator summary detail failed (%s)", type(exc).__name__)
+        detail = RunDetail()
     return replace(report, auth_failed_accounts=auth_failed), events, detail
 
 
@@ -579,6 +583,8 @@ def _summary_attempts(recorded: RecordingLog) -> tuple[SummaryAttempt, ...]:
     held_extra = set(recorded.held_extras())
 
     def booked(b: RecordedBook) -> AttemptResult:
+        if b.raw_id is None:
+            return AttemptResult.UNCONFIRMED
         if b.raw_id in cancelled:
             return AttemptResult.CANCELLED_EXTRA
         if b.raw_id in held_extra:

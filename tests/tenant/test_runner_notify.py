@@ -18,11 +18,20 @@ from teetime.core import orchestrator as orchestrator_module
 from teetime.core.adapter import AdapterError, AuthError, CaptchaError
 from teetime.core.models import BookingOutcome
 from teetime.dev.virtual_clock import VirtualClock
-from teetime.tenant.notify import BufferingNotifier, FakeEmailSender, UserEvent, UserEventKind
+from teetime.tenant import runner as runner_module
+from teetime.tenant.notify import (
+    AttemptResult,
+    BufferingNotifier,
+    FakeEmailSender,
+    UserEvent,
+    UserEventKind,
+)
+from teetime.tenant.recording import RecordedBook, RecordingLog
 from teetime.tenant.runner import (
     ExitStatus,
     OperatorSink,
     RunReport,
+    _summary_attempts,
     exit_code_for,
     run_release_event,
 )
@@ -404,3 +413,34 @@ async def test_summary_survives_a_failed_name_lookup() -> None:
     (summary,) = sender.sent
     assert f"user {str(a.user.id)[:8]}: {MB}" in summary.body
     assert exit_code_for(report) is ExitStatus.OK
+
+
+async def test_a_bug_in_the_summary_detail_never_costs_the_emails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-row detail is reporting only: if building it raises, the run still sends the
+    operator summary (without the detail) and the user emails, and keeps its exit code."""
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("summary bug")
+
+    monkeypatch.setattr(runner_module, "_summary_row", boom)
+    store = new_store()
+    await seed_account(store, n=1)
+    clock = race_clock()
+    notifier = TimedNotifier(clock)
+    sender = FakeEmailSender()
+
+    report = await _run(store, clock, ScriptedFactory(), notifier=notifier, sender=sender)
+
+    assert exit_code_for(report) is ExitStatus.OK
+    assert notifier.kinds() == [UserEventKind.BOOKED]
+    (summary,) = sender.sent
+    assert "Booking run:" in summary.body
+
+
+def test_a_booked_post_without_an_id_is_unconfirmed_not_kept() -> None:
+    """A BOOKED with no confirmation code is not owned and needs_reconcile: never "kept"."""
+    booked = RecordedBook(raw_id=None, slot=GRID[3], at=T0)
+    (attempt,) = _summary_attempts(RecordingLog(books=(booked,), book_failures=(), cancels=()))
+    assert attempt.result is AttemptResult.UNCONFIRMED

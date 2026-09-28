@@ -256,6 +256,7 @@ class AttemptResult(StrEnum):
     KEPT = "kept"
     CANCELLED_EXTRA = "cancelled_extra"  # booked, then cancelled in-run as a surplus
     HELD_EXTRA = "held_extra"  # booked surplus whose cancel FAILED (the watcher collapses it)
+    UNCONFIRMED = "unconfirmed"  # BOOKED with no confirmation id: not owned, needs_reconcile
     REJECTED = "rejected"  # SlotGoneError: nothing created
     UNCERTAIN = "uncertain"  # the POST may have landed
 
@@ -335,6 +336,7 @@ _ATTEMPT_TEXT: Mapping[AttemptResult, str] = {
     AttemptResult.KEPT: "booked → kept",
     AttemptResult.CANCELLED_EXTRA: "booked → cancelled (extra)",
     AttemptResult.HELD_EXTRA: "booked → extra STILL HELD (cancel failed)",
+    AttemptResult.UNCONFIRMED: "booked → unconfirmed (no id; the watcher adopts it)",
 }
 
 

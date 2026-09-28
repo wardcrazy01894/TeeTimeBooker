@@ -470,3 +470,18 @@ def test_buffering_notifier_satisfies_engine_notifier_protocol() -> None:
     """The per-account engine notifier during the race: it must structurally satisfy the
     engine's runtime_checkable ``Notifier`` Protocol so MU-9a can inject it unchanged."""
     assert isinstance(BufferingNotifier(), Notifier)
+
+
+def test_operator_summary_labels_an_unconfirmed_booking() -> None:
+    row = SummaryRow(
+        row_id=ALEX_ROW,
+        user_id=ALEX_ID,
+        user_name="Alex Lancaster",
+        course_id=REAL_MB,
+        target_date=MON,
+        party_size=4,
+        windows=((time(8, 0), time(9, 0)),),
+        attempts=(SummaryAttempt(_tee(8, 30), T0_ET, AttemptResult.UNCONFIRMED),),
+    )
+    email = render_operator_summary(_summary((row,), (_booked_alex(),)), exit_code=0, at=AT)
+    assert "booked → unconfirmed (no id; the watcher adopts it)" in email.body
