@@ -177,7 +177,7 @@ uv run teetime web --host 127.0.0.1 --port 8000
 
 | Page | What it does |
 |------|--------------|
-| `/` | Dashboard: a "Connect a course" call to action until the first course is connected; your dates for the next 21 days, status, booked tee time, and when the course account was last checked ("as of 07:53"). A booked tee time has a **Cancel…** disclosure (same rules as on `/dates`; the confirm step keeps a stray tap from cancelling) |
+| `/` | Dashboard: a "Connect a course" call to action until the first course is connected; your dates for the next 21 days with their status and booked tee time. A booked tee time has a **Cancel tee time** button that asks "Yes, cancel this tee time" first (same rules as on `/dates`) |
 | `/dates` | "Book a date" (the ranked form below); skip or unskip a rule date, withdraw a one-off, re-request after a cancel, and **cancel a booked tee time** (60 s lease, one login, needs a trustworthy reservation list; a booking the bot did not make needs an extra confirm; a dry-run site never cancels) |
 | `/rules` | "New weekly booking" and the list of standing rules. A single-window rule edits in place (from the next drop); a ranked one is replaced by deactivating it and saving a new one |
 | `/accounts` | **Connected courses** (the page was called "Accounts" until 2026-09-29; the URL is unchanged): connect a course login (checked with ONE live login, never retried; at most 5 attempts per user and 3 per login per hour, 30 site-wide, a 15-minute pause after 2 attempts on one login), set the default max price per player, re-verify a rejected login, and **Refresh from course** (cached 2 minutes, at most 6 per account per hour) |

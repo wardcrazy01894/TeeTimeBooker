@@ -745,3 +745,12 @@ Booker") and changes the module's `senderAddress` output, which main.bicep hands
 webapp (keeping them ordered after the `ACS-EMAIL-CONNECTION` write). Runbook: AZURE_PLAN §10.10.
 Tests: `tests/test_email_bicep.py`.
 
+## Dashboard: no "Checked" column (2026-09-29)
+
+Operator decision. The column showed when the watcher last logged in AS the user (the snapshot
+age, about hourly per account by design, §7.1), which read as "we only look hourly" although the
+tee sheet is searched every 10 minutes for unbooked dates. The dashboard hint now says that
+instead. `DashboardRow.snapshot_label` is gone; the Connected courses page keeps "Reservations as
+of …" per account, where Refresh lives. The mismatch badges (which use the snapshot) are
+unchanged.
+

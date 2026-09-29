@@ -193,7 +193,6 @@ class DashboardRow:
     # Always False until the booking runner (MU-9a) persists which rows ran search-only (§5.3):
     # there is no stored signal to read yet.
     search_only_last_drop: bool
-    snapshot_label: str  # "as of 07:53 (7 min ago)" | "not checked yet"
     booked_tee_time_local: str | None  # "09:30", course-local
     can_rerequest: bool  # a cancelled date with no active row: offer "Re-request this date"
     frozen: bool
@@ -444,7 +443,6 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
                 snapshot_trusted=snap.trusted if snap is not None else False,
                 mismatch=await reader.mismatch(row, snap),
                 search_only_last_drop=False,
-                snapshot_label=_snapshot_label(snap, now=now, tz=tz),
                 booked_tee_time_local=booked_local,
                 booked_rank=booked_rank(row),
                 can_rerequest=(
