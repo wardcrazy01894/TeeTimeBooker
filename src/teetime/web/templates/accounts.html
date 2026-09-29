@@ -42,7 +42,7 @@
 {% endfor %}
 
 <section>
-  <h2>Connect a course account</h2>
+  <h2>Connect a course</h2>
   {% if courses %}
   <form method="post" action="/accounts/connect">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

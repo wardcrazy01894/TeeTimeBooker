@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from teetime.core.clock import FakeClock
 from teetime.tenant.in_memory_store import InMemoryTenantStore
+from teetime.web import pages
 from teetime.web.app import WebSettings, create_app
 
 from ..tenant.conformance import MB
@@ -73,11 +74,20 @@ async def test_the_course_logins_page_is_called_connected_courses(
     assert "<title>Connected courses · TeeTimeBooker</title>" in page
 
 
+STALE = ("Accounts page", "Go to Accounts", "Accounts ·", "Course accounts", "course account")
+
+
 def test_no_template_calls_it_the_accounts_page_any_more() -> None:
     for tpl in TEMPLATES.rglob("*.html"):
         text = re.sub(r"<[^>]+>", " ", tpl.read_text())  # visible text only, not URLs
-        for stale in ("Accounts page", "Go to Accounts", "Accounts ·", "Course accounts"):
-            assert stale not in text, (tpl.name, stale)
+        for stale in STALE:
+            assert stale.casefold() not in text.casefold(), (tpl.name, stale)
+
+
+def test_no_page_notice_says_course_account_either() -> None:
+    for message in pages._NOTICES.values():
+        for stale in STALE:
+            assert stale.casefold() not in message.casefold(), (message, stale)
 
 
 async def test_the_operator_still_sees_each_users_subject_for_debugging(
