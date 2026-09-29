@@ -433,6 +433,10 @@ rank, 1-based, and the collapse and group floor are specified in §16.3/§16.4.
 
 ### 3.7 Store Protocols
 
+(2026-09-29 additions, operator-only: `list_users`, `list_rejected_signins` /
+`record_rejected_signin`, `recent_audit`, and `delete_invited_user` for Uninvite, which deletes
+only a still-INVITED, never-bound user, IfMatch'd in Cosmos. All pinned by the conformance suite.)
+
 `BookingStore` is **unchanged**. It stays the engine's in-run memory (`InMemoryStore` per process).
 A **sibling** `tenant.store.TenantStore` Protocol carries the durable ownership/intent data (the
 M3 cut is reversed for multi-user, which resolves the PLAN §12 residual). Implementations:

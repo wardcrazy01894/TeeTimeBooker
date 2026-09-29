@@ -368,7 +368,8 @@ a test that proves the new behaviour, and update this section in the same PR.
   unchanged; subclass it with a `harness` fixture as `tests/tenant/test_in_memory_store.py` does.
 - **Operator-only reads and the uninvited-sign-in record (2026-09-29).** `list_users` and
   `list_rejected_signins` are the only unscoped listings the web makes, both behind the operator
-  gate on `/admin/users`. A `rejected_signin` (a `global` doc, one per `(provider, subject)`,
+  gate on `/admin/users`; `delete_invited_user` (Uninvite) removes only a still-INVITED,
+  never-bound user (Cosmos: IfMatch, so a racing first sign-in wins). A `rejected_signin` (a `global` doc, one per `(provider, subject)`,
   partition `rejected_signin:all`) KEEPS the provider-verified emails, unlike the audit log, which
   redacts them; so it has a per-item TTL of 90 days re-set on every attempt (it relies on the
   `global` container's `defaultTtl: -1`, pinned by `tests/test_cosmos_bicep.py`), and both stores
