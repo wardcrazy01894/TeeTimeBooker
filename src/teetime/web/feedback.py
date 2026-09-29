@@ -140,18 +140,25 @@ def register_feedback_routes(
             )
         page = local_path(str(form.get("from", "")))
         mail = render_feedback(kind, user=user, page=page, message=message)
-        issue_url = await _file_issue(ctx, kind=kind, user=user, page=page, message=message)
+        # The public issue is filed concurrently with the private diagnostics (both bounded), so
+        # a report never waits on them one after the other.
+        issue_task = asyncio.create_task(
+            _file_issue(ctx, kind=kind, user=user, page=page, message=message)
+        )
+        private_diag = (
+            await bug_diagnostics(ctx, user=user, user_agent=request.headers.get("user-agent", ""))
+            if kind == "bug"
+            else None
+        )
+        issue_url = await issue_task
         if ctx.github_issues is not None:
             link = issue_url or "(not filed)"
             mail = EmailMessage(
                 to=mail.to, subject=mail.subject, body=f"{mail.body}\n\nGitHub issue: {link}"
             )
-        if kind == "bug":
-            diagnostics = await bug_diagnostics(
-                ctx, user=user, user_agent=request.headers.get("user-agent", "")
-            )
+        if private_diag is not None:
             mail = EmailMessage(
-                to=mail.to, subject=mail.subject, body=f"{mail.body}\n\n{diagnostics}"
+                to=mail.to, subject=mail.subject, body=f"{mail.body}\n\n{private_diag}"
             )
         sent = await _send(ctx, mail)
         await ctx.store.append_audit(
@@ -171,6 +178,14 @@ def register_feedback_routes(
 
 
 TITLE_MAX_LEN = 80
+# The only pages a PUBLIC issue may name: `from` is user-controlled (it could carry a backtick +
+# @mention, HTML or an id), so anything else is "(other page)" and the query string is dropped.
+PUBLIC_PAGES = frozenset({"/", "/dates", "/rules", "/accounts", "/feedback", "/admin/users"})
+
+
+def public_page(page: str | None) -> str:
+    path = (page or "").split("?", 1)[0]
+    return f"`{path}`" if path in PUBLIC_PAGES else "(other page)"
 
 
 def anonymous_reporter(user: User) -> str:
@@ -203,13 +218,13 @@ async def _file_issue(
     lines = [
         f"{prefix} from the site, reporter `{anonymous_reporter(user)}` (anonymous).",
         "",
-        f"Page: `{page or '(unknown)'}`",
+        f"Page: {public_page(page)}",
         "",
         _fenced(message),
     ]
-    if kind == "bug":
-        lines += ["", await public_diagnostics(ctx, user=user)]
     try:
+        if kind == "bug":
+            lines += ["", await public_diagnostics(ctx, user=user)]
         return await asyncio.wait_for(
             ctx.github_issues.create(title=issue_title(kind, message), body="\n".join(lines)),
             timeout=ISSUE_TIMEOUT_S,
@@ -230,7 +245,8 @@ async def public_diagnostics(ctx: "_Ctx", *, user: User) -> str:
         "<details><summary>Diagnostics (anonymized)</summary>",
         "",
         f"- Environment: {s.environment or '(unset)'} · build {s.build or '(unset)'}",
-        f"- Reported: {ctx.clock.now_utc():%Y-%m-%d %H:%M} UTC",
+        # The date only: a minute-level time could be matched to a person.
+        f"- Reported: {ctx.clock.now_utc():%Y-%m-%d}",
     ]
     try:
         out += await asyncio.wait_for(

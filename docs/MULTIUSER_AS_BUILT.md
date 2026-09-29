@@ -777,8 +777,10 @@ set (prod, `githubIssuesRepo`; the token is the operator's `GITHUB-ISSUES-TOKEN`
 literal), each report is also filed as an anonymized issue in the public repo
 (`web/github_issues.py`, bounded, never raises): title `[Bug report|Course request] <first line>`
 (no `@`), the message in a `~~~~` fence longer than any tilde run in it (so it cannot mention anyone
-or inject markup), the page, `r-<sha256(user id)[:8]>`, and for bugs only the anonymized
-diagnostics (build, course statuses, date counts by status); the operator's email gets the issue
+or inject markup), the page only if it is one of the site's own routes (`PUBLIC_PAGES`, query
+dropped; anything else is "(other page)", since `from` is user-controlled), `r-<sha256(user id)[:8]>`,
+and for bugs only the anonymized diagnostics (build, the DATE, course statuses, date counts by
+status); filed concurrently with the private diagnostics; the operator's email gets the issue
 link, and the form warns that the message is public. An audit entry
 records kind, length and `emailed`, never the text. At most 5 reports per user per hour (in-process, per web
 replica; a 6th is a 429) and the subject's name is capped at 100 characters. "Report a bug" is a small red-outlined button in

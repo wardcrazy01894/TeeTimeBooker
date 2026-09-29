@@ -10,18 +10,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 import httpx
 import pytest
 import respx
 from fastapi import FastAPI
-from teetime.web.github_issues import GitHubIssues
 
 from teetime.core.clock import FakeClock
 from teetime.core.redaction import redact_text
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.notify import FakeEmailSender
 from teetime.web.app import WebSettings, create_app
+from teetime.web.github_issues import GitHubIssues
 
 from ..tenant.conformance import MB
 from .account_builders import stored_account
@@ -98,7 +99,7 @@ async def test_a_bug_report_files_an_anonymized_issue_and_links_it_in_the_email(
     assert anon in body
     assert "Mangrove Bay: active" in body
     # Nothing that identifies the reporter.
-    for secret in (MEMBER, "turk", member):
+    for secret in (MEMBER, "turk", member):  # "turk" is also the display name
         assert secret not in body and secret not in title
     mail = sender.sent[0]
     assert "GitHub issue: https://github.com/owner/repo/issues/7" in mail.body
@@ -138,3 +139,44 @@ async def test_the_form_warns_that_the_message_is_public(client: httpx.AsyncClie
 async def test_the_token_is_masked_in_logs() -> None:
     GitHubIssues(REPO, TOKEN)
     assert TOKEN not in redact_text(f"auth {TOKEN}")
+
+
+@pytest.mark.parametrize(
+    ("sent_from", "shown"),
+    [
+        ("/dates", "`/dates`"),
+        ("/x`@someone`<img src=x>", "(other page)"),  # would close the code span + mention
+        ("/rows/2f1c7a9e-0000-4000-8000-000000000001/cancel", "(other page)"),  # an id in a path
+        ("/dates?row=2f1c7a9e", "`/dates`"),  # the query string is never published
+    ],
+)
+async def test_the_public_page_is_a_known_route_or_nothing(
+    client: httpx.AsyncClient,
+    provider_mock: respx.MockRouter,
+    member: str,
+    sent_from: str,
+    shown: str,
+) -> None:
+    route = provider_mock.post(ISSUES_URL).mock(
+        return_value=httpx.Response(201, json={"html_url": "https://github.com/o/r/issues/9"})
+    )
+    page = await client.get("/feedback?kind=bug")
+    await client.post(
+        "/feedback",
+        data={"csrf_token": _csrf(page), "kind": "bug", "from": sent_from, "message": "hi"},
+    )
+    body = json.loads(route.calls.last.request.content)["body"]
+    assert f"Page: {shown}" in body
+    assert "@someone" not in body and "<img" not in body and "2f1c7a9e" not in body
+
+
+async def test_the_public_diagnostics_carry_no_minute_level_timestamp(
+    client: httpx.AsyncClient, provider_mock: respx.MockRouter, member: str
+) -> None:
+    route = provider_mock.post(ISSUES_URL).mock(
+        return_value=httpx.Response(201, json={"html_url": "https://github.com/o/r/issues/10"})
+    )
+    await _report(client, "bug", "hi")
+    body = json.loads(route.calls.last.request.content)["body"]
+    assert "UTC" not in body
+    assert re.search(r"\d{2}:\d{2}", body) is None
