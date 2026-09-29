@@ -9,9 +9,11 @@ Every write goes through the page's own form POST with the session's CSRF token.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -512,6 +514,9 @@ async def test_cancel_via_dashboard_returns_to_the_dashboard(
     page = await client.get("/")
     assert f'action="/rows/{row.id}/cancel"' in page.text
     assert 'name="from" value="dashboard"' in page.text
+    # Looks like the Dates page's button, but still asks before it cancels (operator request).
+    assert '<summary class="button small danger">Cancel tee time</summary>' in page.text
+    assert "Yes, cancel this tee time" in page.text
     r = await _post(client, f"/rows/{row.id}/cancel", {"from": "dashboard"})
     assert r.status_code == 303
     assert r.headers["location"] == "/?notice=cancelled"
@@ -542,3 +547,13 @@ async def test_dashboard_never_shows_the_internal_booking_id(
     page = await client.get("/")
     assert "TTB:" not in page.text
     assert f">{RAW}<" not in page.text
+
+
+def test_a_summary_styled_as_a_button_looks_like_one() -> None:
+    """The dashboard's Cancel disclosure trigger is a <summary class="button small danger">; the
+    stylesheet must give it the button look (and hide the disclosure triangle)."""
+    css = (Path(__file__).resolve().parents[2] / "src/teetime/web/static/base.css").read_text()
+    assert re.search(r"a\.button, button, summary\.button \{", css)
+    assert re.search(r"summary\.button\.danger[^{]*\{[^}]*var\(--danger\)", css)
+    assert re.search(r"summary\.button\.small[^{]*\{", css)
+    assert re.search(r"summary\.button::-webkit-details-marker\s*\{\s*display:\s*none", css)
