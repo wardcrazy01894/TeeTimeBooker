@@ -285,9 +285,12 @@
      same spinner and navigates as normal. The submit event fires only after the browser's own
      validation passed, so a form with an empty required field is never marked. Disabling waits a
      tick: a disabled submitter is left out of the form data, and several forms tell actions apart
-     by the clicked button's name/value (action=resend, disable, ...). A page restored from the
-     back/forward cache gets its buttons back. Without script, buttons still show :active. */
+     by the clicked button's name/value (action=resend, disable, ...). Returning to the page
+     (pageshow) or 30 s passing gives the buttons back; a form that submits into another tab is
+     left alone. Without script, buttons still show :active. */
   var SUBMITS = 'button[type="submit"], button:not([type]), input[type="submit"]';
+  // A POST that never navigates (a download, a 204) must not leave the form dead for good.
+  var BUSY_SAFETY_MS = 30000;
 
   function markBusy(element) {
     element.classList.add("is-busy");
@@ -299,6 +302,9 @@
     if (event.defaultPrevented || !(form instanceof HTMLFormElement)) {
       return;
     }
+    if (form.target && form.target !== "_self") {
+      return; // submits into another tab/window: this page stays, so it must not look busy
+    }
     var clicked = event.submitter || form.querySelector(SUBMITS);
     window.setTimeout(function () {
       var buttons = form.querySelectorAll(SUBMITS);
@@ -309,6 +315,7 @@
       if (clicked) {
         markBusy(clicked);
       }
+      window.setTimeout(clearBusy, BUSY_SAFETY_MS);
     }, 0);
   }
 
@@ -323,10 +330,9 @@
     }
   }
 
-  function clearBusy(event) {
-    if (!event.persisted) {
-      return;
-    }
+  // On EVERY pageshow, not only a back/forward-cache restore: Firefox also keeps `disabled`
+  // across a soft reload and a non-cached Back. Nothing is busy on a fresh load, so it is a no-op.
+  function clearBusy() {
     var busy = document.querySelectorAll(".is-busy");
     for (var i = 0; i < busy.length; i += 1) {
       busy[i].classList.remove("is-busy");

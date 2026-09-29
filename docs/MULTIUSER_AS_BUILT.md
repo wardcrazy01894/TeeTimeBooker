@@ -729,7 +729,10 @@ drained for up to 20 s at shutdown), because awaiting it (ACS polls the send sta
 hung the page 5-20 s. The send stays bounded (`INVITE_EMAIL_TIMEOUT_S`, 20 s), so the notice
 only says "the invitation email is on its way"; the job then writes the audit entry with the
 outcome as `sent` (renamed from `emailed`, which `redact_payload` masked to `***` because the key
-contains "mail", so it never recorded anything). Resend invite works the same way. A person
+contains "mail", so it never recorded anything). Resend invite works the same way. The notices say what to do if the email does not arrive (Resend; sign in
+with Google using that address). Accepted edge: a job still running when the 20 s shutdown drain
+cancels it (or on SIGKILL) writes no audit entry, although ACS may already have accepted the
+message; prod keeps one warm replica, so this needs a deploy mid-send. A person
 still INVITED gets a **Resend invite** button (`action=resend`, `user_id`; a signed-in user is a
 400, an unknown id a 404). The invitation is the one email NOT passed through `redact_text`: its
 purpose is to show the invitee their own address, and every part of it is fixed text, that

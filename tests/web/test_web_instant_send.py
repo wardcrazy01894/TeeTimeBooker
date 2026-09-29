@@ -6,6 +6,7 @@ is written by that job once the send has finished, so it stays truthful."""
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from pathlib import Path
 
@@ -163,11 +164,16 @@ async def test_the_invite_notices_say_the_email_is_on_its_way(
         await _sign_in_operator(client, provider_mock)
         invited = (await client.get("/admin/users?notice=invited")).text
         resent = (await client.get("/admin/users?notice=resent")).text
+    # The page cannot know whether the email arrived (it is sent after the response), so the
+    # notice says what to do if it doesn't (review of #288).
     assert (
-        "Invite created; the invitation email is on its way. It binds on their first sign-in "
-        "with Google."
-    ) in invited
-    assert "Invitation email is on its way." in resent
+        "Invite created; the invitation email is on its way. It binds on their first sign-in with Google. If it doesn't arrive within a few minutes, use Resend invite."
+        in html.unescape(invited)
+    )
+    assert (
+        "Invitation email is on its way. If it still doesn't arrive, tell them to sign in with Google using that address."
+        in html.unescape(resent)
+    )
 
 
 # --- feedback ----------------------------------------------------------------------------------
@@ -261,10 +267,15 @@ def test_app_js_marks_button_links_busy_but_not_new_tab_clicks() -> None:
     assert "preventDefault" not in js.split("function onButtonLinkClick", 1)[1].split("\n  }", 1)[0]
 
 
-def test_app_js_clears_busy_state_on_back_forward_cache_restore() -> None:
+def test_app_js_never_leaves_a_button_stuck_busy() -> None:
+    """Review of #288: clear on EVERY pageshow (Firefox keeps `disabled` across a soft reload or a
+    non-bfcache Back), re-enable after a 30 s safety timeout (a POST that never navigates), and
+    never mark a form that submits into another tab/window (this page stays)."""
     js = APP_JS.read_text()
     assert 'window.addEventListener("pageshow", clearBusy)' in js
-    assert "event.persisted" in js
+    assert "event.persisted" not in js
+    assert "BUSY_SAFETY_MS = 30000" in js
+    assert 'form.target && form.target !== "_self"' in js
 
 
 def test_base_css_has_the_busy_spinner_and_a_pressed_state() -> None:

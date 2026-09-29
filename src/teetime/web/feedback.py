@@ -176,6 +176,14 @@ async def _deliver(
     if private_diag is not None:
         mail = EmailMessage(to=mail.to, subject=mail.subject, body=f"{mail.body}\n\n{private_diag}")
     sent = await _send(ctx, mail)
+    if not sent and issue_url is None:
+        # The user was already thanked (delivery runs after the response): at least be loud.
+        log.error(
+            "feedback NOT delivered (neither emailed nor filed): kind=%s length=%d user=%s",
+            kind,
+            len(message),
+            user.id,
+        )
     await ctx.store.append_audit(
         user_id=user.id,
         action="feedback",

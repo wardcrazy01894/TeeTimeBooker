@@ -567,9 +567,12 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
 _ADMIN_NOTICES = {
     "invited": (
         "Invite created; the invitation email is on its way. It binds on their first sign-in "
-        "with Google."
+        "with Google. If it doesn't arrive within a few minutes, use Resend invite."
     ),
-    "resent": "Invitation email is on its way.",
+    "resent": (
+        "Invitation email is on its way. If it still doesn't arrive, tell them to sign in with "
+        "Google using that address."
+    ),
     "disabled": "User disabled. Their session is rejected on their next request.",
     "enabled": "User enabled.",
 }

@@ -68,7 +68,10 @@ _NOTICES = {
     "group_saved": "Saved. The bot books the highest-ranked option that is available.",
     "group_rule_saved": "Weekly booking saved and its dates added.",
     "price_saved": "Default price saved.",
-    "feedback_sent": "Thanks! Spicy Al will take a look.",
+    "feedback_sent": (
+        "Thanks! Spicy Al will take a look. If you don't hear back, you can also email "
+        "hello@spicyteetimebooker.com."
+    ),
 }
 _STATUS_LABELS = {
     ("cancelled", "external"): "cancelled at the course",

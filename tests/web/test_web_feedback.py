@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import re
 from dataclasses import replace
 from datetime import timedelta
@@ -124,7 +125,10 @@ async def test_the_form_emails_the_operator_and_thanks_the_user(
     assert "Page: /dates" in mail.body
     assert "The Sunday times look off.\nAlso Bardmoor please!" in mail.body
     thanks = html.unescape((await client.get(r.headers["location"])).text)
-    assert "Thanks! Spicy Al will take a look." in thanks
+    assert (
+        "Thanks! Spicy Al will take a look. If you don't hear back, you can also email hello@spicyteetimebooker.com."
+        in thanks
+    )
 
 
 @pytest.mark.usefixtures("member")
@@ -308,3 +312,23 @@ async def test_slow_diagnostics_never_hold_up_the_report(
     r = await asyncio.wait_for(_post_bug(client), timeout=5)
     assert r.status_code == 303
     assert "(diagnostics unavailable: TimeoutError)" in sender.sent[0].body
+
+
+@pytest.mark.usefixtures("member")
+async def test_a_report_that_reached_no_one_is_logged_as_an_error(
+    client: httpx.AsyncClient,
+    sender: FakeEmailSender,
+    app: FastAPI,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Delivery happens after the response, so the user is thanked either way; a report that was
+    neither emailed nor filed must at least be loud in the logs (review of #288)."""
+    sender.fail = True
+    page = await client.get("/feedback?kind=bug")
+    with caplog.at_level(logging.ERROR, logger="teetime.web.feedback"):
+        await client.post(
+            "/feedback", data={"csrf_token": _csrf(page), "kind": "bug", "message": "lost"}
+        )
+        await app.state.background_jobs.drain(5)
+    assert "feedback NOT delivered" in caplog.text
+    assert "kind=bug" in caplog.text
