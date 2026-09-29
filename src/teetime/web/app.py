@@ -67,14 +67,25 @@ STATIC_DIR = _HERE / "static"
 
 
 def static_asset_versions(directory: Path) -> dict[str, str]:
-    """File name -> a 12-hex SHA-256 prefix of its bytes. Templates link assets as
-    ``static_url(name)`` = ``/static/<name>?v=<hash>``, so a deploy that changes a file changes
-    its URL and no browser can keep using a stale copy (dev showed pre-#268 CSS for hours)."""
+    """Path relative to ``directory`` (``img/logo.png`` for a nested file) -> a 12-hex SHA-256
+    prefix of its bytes. Templates link assets as ``static_url(name)`` =
+    ``/static/<name>?v=<hash>``, so a deploy that changes a file changes its URL and no browser
+    can keep using a stale copy (dev showed pre-#268 CSS for hours)."""
     return {
-        p.name: hashlib.sha256(p.read_bytes()).hexdigest()[:12]
-        for p in sorted(directory.iterdir())
+        p.relative_to(directory).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()[:12]
+        for p in sorted(directory.rglob("*"))
         if p.is_file()
     }
+
+
+def _static_url_for(versions: Mapping[str, str]) -> Callable[[str], str]:
+    def static_url(name: str) -> str:
+        # Raises at render: a typo'd asset link fails loudly, never a silent 404.
+        if name not in versions:
+            raise KeyError(f"unknown static asset {name!r} (not in web/static)")
+        return f"/static/{name}?v={versions[name]}"
+
+    return static_url
 
 
 class _RevalidatingStaticFiles(StaticFiles):
@@ -587,9 +598,7 @@ def create_app(
         ),
     )
     templates.env.filters["course_name"] = ctx.course_name
-    versions = static_asset_versions(STATIC_DIR)
-    # An unknown name raises at render: a typo'd asset link fails loudly, never a silent 404.
-    templates.env.globals["static_url"] = lambda name: f"/static/{name}?v={versions[name]}"
+    templates.env.globals["static_url"] = _static_url_for(static_asset_versions(STATIC_DIR))
     cookie = CookiePolicy()
     app = FastAPI(
         title="TeeTimeBooker",

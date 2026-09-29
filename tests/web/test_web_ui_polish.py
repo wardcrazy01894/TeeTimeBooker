@@ -198,7 +198,10 @@ async def test_static_files_are_always_revalidated(client: httpx.AsyncClient) ->
         resp = await client.get(f"/static/{name}")
         assert resp.status_code == 200
         assert resp.headers["cache-control"] == "no-cache"
-        assert resp.headers.get("etag")  # so revalidation is a cheap 304
+        etag = resp.headers["etag"]
+        again = await client.get(f"/static/{name}", headers={"If-None-Match": etag})
+        assert again.status_code == 304  # revalidation is cheap
+        assert again.headers["cache-control"] == "no-cache"
 
 
 def test_asset_version_changes_with_the_content(tmp_path: Path) -> None:
@@ -210,8 +213,14 @@ def test_asset_version_changes_with_the_content(tmp_path: Path) -> None:
     assert re.fullmatch(r"[0-9a-f]{12}", before) and before != after
 
 
+def test_nested_assets_are_versioned_by_their_relative_path(tmp_path: Path) -> None:
+    (tmp_path / "img").mkdir()
+    (tmp_path / "img" / "logo.png").write_bytes(b"png")
+    assert set(static_asset_versions(tmp_path)) == {"img/logo.png"}
+
+
 def test_no_template_links_a_static_file_without_its_version() -> None:
     templates = STATIC_DIR.parent / "templates"
-    for tpl in templates.glob("*.html"):
-        for attr in re.findall(r'(?:src|href)="(/static/[^"]*)"', tpl.read_text()):
+    for tpl in templates.rglob("*.html"):
+        for attr in re.findall(r"""(?:src|href)\s*=\s*["'](/static/[^"']*)""", tpl.read_text()):
             pytest.fail(f"{tpl.name} links {attr} directly; use static_url()")
