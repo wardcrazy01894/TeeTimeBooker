@@ -29,7 +29,7 @@ from ..core.models import CourseId
 from ..tenant.crypto import Keyring
 from ..tenant.models import CourseAccountId, RowId, RuleId, User
 from ..tenant.runner import AdapterFactory
-from . import adopt, auth, group_services, services
+from . import adopt, auth, feedback, group_services, services
 from .booking_form import MAX_OPTIONS, parse_ranked_form
 from .services import (
     RULE_EDIT_HINT,
@@ -68,6 +68,11 @@ _NOTICES = {
     "group_saved": "Saved. The bot books the highest-ranked option that is available.",
     "group_rule_saved": "Weekly booking saved and its dates added.",
     "price_saved": "Default price saved.",
+    "feedback_sent": "Thanks! Spicy Al will take a look.",
+    "feedback_not_sent": (
+        "Thanks! It couldn't be emailed right now, though. Please try again later, or email "
+        "hello@spicyteetimebooker.com."
+    ),
 }
 _STATUS_LABELS = {
     ("cancelled", "external"): "cancelled at the course",
@@ -215,6 +220,7 @@ def register_page_routes(app: FastAPI, ctx: "_Ctx", *, current_user: _Dependency
     _register_account_routes(app, pages, current_user=current_user)
     _register_booking_routes(app, pages, current_user=current_user)
     adopt.register_adopt_routes(app, pages, current_user=current_user)
+    feedback.register_feedback_routes(app, pages, current_user=current_user)
 
 
 def _register_read_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependency) -> None:

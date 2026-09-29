@@ -359,7 +359,7 @@ async def test_dashboard_has_no_last_checked_column(
 ) -> None:
     """Operator decision 2026-09-29: the "Checked" column (when the watcher last logged in as the
     user) read as "we only look hourly" while the tee sheet is searched every 10 minutes, so the
-    dashboard no longer shows it. The Connected courses page keeps "Reservations as of …"."""
+    dashboard no longer shows it. The Connected Courses page keeps "Reservations as of …"."""
     await _seed_rule(store, member)
     row = await _row_on(store, member, OCT3, source=RowSource.RULE)
     await _book(store, row, raw_id="9001")

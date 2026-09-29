@@ -17,7 +17,7 @@
         <a href="/"{% if here == "/" %} aria-current="page"{% endif %}>Dashboard</a>
         <a href="/dates"{% if here == "/dates" %} aria-current="page"{% endif %}>Dates</a>
         <a href="/rules"{% if here == "/rules" %} aria-current="page"{% endif %}>Weekly</a>
-        <a href="/accounts"{% if here == "/accounts" %} aria-current="page"{% endif %}>Connected courses</a>
+        <a href="/accounts"{% if here == "/accounts" %} aria-current="page"{% endif %}>Connected Courses</a>
         {% if is_operator is defined and is_operator %}<a href="/admin/users"{% if here == "/admin/users" %} aria-current="page"{% endif %}>Users</a>{% endif %}
         <span class="who">{{ user.display_name or user.email }}</span>
         <form method="post" action="/logout" class="inline">
@@ -33,5 +33,10 @@
     {% if notice is defined and notice %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
     {% block content %}{% endblock %}
   </main>
+  {% if user is defined and user %}
+  <footer class="site">
+    <a class="button small" href="/feedback?kind=bug&amp;from={{ here | urlencode }}">Report a bug</a>
+  </footer>
+  {% endif %}
 </body>
 </html>
