@@ -366,6 +366,15 @@ a test that proves the new behaviour, and update this section in the same PR.
   contract is `tests/tenant/conformance.py`, not a docstring:** every `TenantStore` (including
   `CosmosTenantStore`, run in CI over a fake container) must pass `TenantStoreConformance`
   unchanged; subclass it with a `harness` fixture as `tests/tenant/test_in_memory_store.py` does.
+- **Operator-only reads and the uninvited-sign-in record (2026-09-29).** `list_users` and
+  `list_rejected_signins` are the only unscoped listings the web makes, both behind the operator
+  gate on `/admin/users`. A `rejected_signin` (a `global` doc, one per `(provider, subject)`,
+  partition `rejected_signin:all`) KEEPS the provider-verified emails, unlike the audit log, which
+  redacts them; so it has a per-item TTL of 90 days re-set on every attempt (it relies on the
+  `global` container's `defaultTtl: -1`, pinned by `tests/test_cosmos_bicep.py`), and both stores
+  also apply the cut-off when listing. It is written on the UNAUTHENTICATED 403 path, so the write
+  is best-effort, bounded (`REJECTED_SIGNIN_WRITE_TIMEOUT_S`), and capped (5 emails, 200-char
+  name); a failure never changes the 403.
 
 ### Search and book error handling
 

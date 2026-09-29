@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ..core.clock import Clock
 from ..core.models import CourseId
 from ..tenant.materialize import MIN_HORIZON_DAYS
-from ..tenant.models import RowStatus, User
+from ..tenant.models import RejectedSignin, RowStatus, User
 from ..tenant.store import TenantStore
 
 # The statuses counted in the "next 21 days" column, in display order.
@@ -57,4 +58,38 @@ async def user_overviews(store: TenantStore, *, clock: Clock) -> list[UserOvervi
                 upcoming=tuple((s.value, counts[s]) for s in _COUNTED if counts[s]),
             )
         )
+    return out
+
+
+# The operator reads attempt times in Eastern time (every hosted course so far is ET).
+_ET = ZoneInfo("America/New_York")
+
+
+@dataclass(frozen=True, slots=True)
+class UninvitedAttempt:
+    record: RejectedSignin
+    emails: tuple[str, ...]  # verified, and not already a user's (invited or bound)
+
+    @property
+    def first_local(self) -> datetime:
+        return self.record.first_at.astimezone(_ET)
+
+    @property
+    def last_local(self) -> datetime:
+        return self.record.last_at.astimezone(_ET)
+
+
+async def uninvited_attempts(
+    store: TenantStore, *, users: list[User], clock: Clock
+) -> list[UninvitedAttempt]:
+    """Uninvited sign-ins within the retention, newest first. An email that is now a user's
+    (e.g. just invited from this list) is dropped, and so is an attempt with none left; an
+    attempt that had no verified email at all is kept (it still shows someone tried)."""
+    known = {u.email.casefold() for u in users}
+    out: list[UninvitedAttempt] = []
+    for record in await store.list_rejected_signins(now=clock.now_utc()):
+        emails = tuple(e for e in record.emails if e.casefold() not in known)
+        if record.emails and not emails:
+            continue
+        out.append(UninvitedAttempt(record=record, emails=emails))
     return out

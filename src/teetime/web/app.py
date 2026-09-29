@@ -18,6 +18,7 @@ Logging is configured by the ``teetime web`` entrypoint (``basicConfig`` THEN
 # annotations keep the closure-bound dependencies working; PEP 604 unions need no future
 # import on 3.12+.
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -448,11 +449,40 @@ async def _complete_signin(ctx: _Ctx, request: Request, identity: ProviderIdenti
             detail=detail,
             at=now,
         )
+        if user is None:
+            await _remember_rejected_signin(ctx, identity, now=now)
         request.session.clear()
         raise ForbiddenError("not invited" if user is None else "this account is disabled")
     auth.establish_session(request.session, user=user, identity=identity, now=now)
     log.info("signin ok provider=%s user_id=%s", identity.provider, user.id)
     return RedirectResponse("/", status_code=303)
+
+
+# The uninvited-sign-in record is written on an UNAUTHENTICATED path, so what a provider profile
+# can put into it is capped, and the write is bounded in time.
+REJECTED_NAME_MAX_LEN = 200
+REJECTED_EMAILS_MAX = 5
+REJECTED_SIGNIN_WRITE_TIMEOUT_S = 5.0
+
+
+async def _remember_rejected_signin(
+    ctx: _Ctx, identity: ProviderIdentity, *, now: datetime
+) -> None:
+    """Best-effort: an uninvited identity (verified emails only, capped) for the operator's
+    ``/admin/users`` list. A failure or a hung store is logged and never changes the 403."""
+    try:
+        await asyncio.wait_for(
+            ctx.store.record_rejected_signin(
+                provider=identity.provider,
+                subject=identity.subject,
+                emails=tuple(identity.verified_emails[:REJECTED_EMAILS_MAX]),
+                display_name=identity.display_name[:REJECTED_NAME_MAX_LEN],
+                at=now,
+            ),
+            timeout=REJECTED_SIGNIN_WRITE_TIMEOUT_S,
+        )
+    except Exception:  # TimeoutError included
+        log.warning("could not record an uninvited sign-in", exc_info=True)
 
 
 def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency) -> None:
@@ -469,10 +499,19 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
     async def admin_users(request: Request, operator: Operator) -> Response:
         notice = _ADMIN_NOTICES.get(request.query_params.get("notice", ""))
         users = await admin_users_view.user_overviews(ctx.store, clock=ctx.clock)
+        attempts = await admin_users_view.uninvited_attempts(
+            ctx.store, users=[o.user for o in users], clock=ctx.clock
+        )
         return ctx.page(
             request,
             "admin_users.html",
-            {"user": operator, "is_operator": True, "notice": notice, "users": users},
+            {
+                "user": operator,
+                "is_operator": True,
+                "notice": notice,
+                "users": users,
+                "attempts": attempts,
+            },
         )
 
     @app.post("/admin/users")

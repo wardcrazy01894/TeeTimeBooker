@@ -48,6 +48,7 @@ from teetime.tenant.cosmos.documents import (
     from_claim_doc,
     from_doc,
     from_probe_doc,
+    from_rejected_signin_doc,
     from_row_doc,
     from_rule_doc,
     from_ruleday_doc,
@@ -71,6 +72,7 @@ from teetime.tenant.cosmos.documents import (
     to_claim_doc,
     to_doc,
     to_probe_doc,
+    to_rejected_signin_doc,
     to_row_doc,
     to_rule_doc,
     to_ruleday_doc,
@@ -82,6 +84,7 @@ from teetime.tenant.cosmos.documents import (
 )
 from teetime.tenant.models import (
     CANCEL_REASONS,
+    REJECTED_SIGNIN_RETENTION,
     SYSTEM_WITHDRAW_REASONS,
     USER_WITHDRAW_REASON,
     AccountProvenance,
@@ -94,6 +97,7 @@ from teetime.tenant.models import (
     OwnedBooking,
     OwnedBookingId,
     RankedWindow,
+    RejectedSignin,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -496,6 +500,22 @@ class TestRoundtripGlobal:
         assert replace(stored, at=NOW) == replace(probe, at=NOW)
         assert stored.at == datetime(2026, 11, 1, 6, 59, 59, tzinfo=UTC)  # fold=1 → EST
 
+    def test_roundtrip_rejected_signin(self) -> None:
+        rejected = RejectedSignin(
+            provider="google",
+            subject="g/1?#weird",  # hashed into the id, so any subject is a legal id
+            emails=("a@x.test", "b@y.test"),
+            display_name="Amy",
+            first_at=NOW,
+            last_at=NOW,
+            attempts=3,
+        )
+        doc = to_rejected_signin_doc(rejected)
+        assert doc["ttl"] == int(REJECTED_SIGNIN_RETENTION.total_seconds())
+        assert from_rejected_signin_doc(doc).item == rejected
+        none = replace(rejected, emails=(), display_name="")
+        assert from_rejected_signin_doc(to_rejected_signin_doc(none)).item == none
+
     def test_roundtrip_audit_record(self) -> None:
         audit = _audit()
         assert from_audit_doc(to_audit_doc(audit)).item == audit
@@ -506,7 +526,7 @@ class TestRoundtripGlobal:
 class TestGlobalKeys:
     def test_global_pk_prefixes_never_collide(self) -> None:
         prefixes = GLOBAL_PK_PREFIXES
-        assert set(prefixes) == {"user", "claim", "probe", "audit"}
+        assert set(prefixes) == {"user", "claim", "probe", "audit", "rejected_signin"}
         values = list(prefixes.values())
         assert len(set(values)) == len(values)
         for a in values:
@@ -517,6 +537,17 @@ class TestGlobalKeys:
             "claim": to_claim_doc(_claim()),
             "probe": to_probe_doc(_probe()),
             "audit": to_audit_doc(_audit()),
+            "rejected_signin": to_rejected_signin_doc(
+                RejectedSignin(
+                    provider="github",
+                    subject="1",
+                    emails=(),
+                    display_name="",
+                    first_at=NOW,
+                    last_at=NOW,
+                    attempts=1,
+                )
+            ),
         }
         for doc_type, doc in docs.items():
             assert doc["type"] == doc_type

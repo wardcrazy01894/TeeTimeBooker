@@ -68,6 +68,7 @@ from .models import (
     EventRow,
     OwnedBooking,
     RankedWindow,
+    RejectedSignin,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -385,6 +386,25 @@ class TenantStore(Protocol):
         self, user_id: UserId, *, from_date: date, to_date: date
     ) -> list[RequestRow]:
         """Every query in the web is scoped by ``user_id`` (IDOR defence, §9.1)."""
+        ...
+
+    async def record_rejected_signin(
+        self,
+        *,
+        provider: str,
+        subject: str,
+        emails: tuple[str, ...],
+        display_name: str,
+        at: datetime,
+    ) -> RejectedSignin:
+        """Remember an uninvited sign-in: create the ``(provider, subject)`` record (attempts 1)
+        or bump it (attempts + 1, ``last_at``, latest emails/name; ``first_at`` kept). Not
+        IfMatch'd: two concurrent attempts by one stranger may count once (display only)."""
+        ...
+
+    async def list_rejected_signins(self, *, now: datetime) -> list[RejectedSignin]:
+        """OPERATOR read: every record whose ``last_at`` is within ``REJECTED_SIGNIN_RETENTION``
+        of ``now``, newest attempt first."""
         ...
 
     async def list_users(self) -> list[User]:

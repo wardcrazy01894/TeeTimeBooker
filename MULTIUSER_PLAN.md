@@ -170,7 +170,7 @@ shared-throughput minimum (to be confirmed by S-M9):
 | Container | Partition key | Document types (`type` field) | Why this partition |
 |-----------|---------------|-------------------------------|--------------------|
 | `tenant` | `/accountId` (= `course_account_id`) | `account`, `rule`, `row`, `slot` (§3.2), `booking` (ownership ledger), `snapshot` | a row, its date-slot pointer, its ledger entries and its account's snapshot all live in **one logical partition**, so every state change is **one transactional batch** (atomic, ETag-conditional) |
-| `global` | `/pk`, a prefixed key: `user:<userId>`, `claim:<sha256>`, `probe:<bucket>`, `audit:<userId>` | `user`; `claim` (`identity` = provider\|subject, `invite` = verified-email hash, `username` = course\|username hash, `course-count`); `probe` (per-item **TTL 2 h**); `audit` (per-item **TTL 400 days**) | cross-partition uniqueness via deterministic ids (§3.2); the container default TTL is `-1` (on, no default), so only probe and audit docs expire |
+| `global` | `/pk`, a prefixed key: `user:<userId>`, `claim:<sha256>`, `probe:<bucket>`, `audit:<userId>`, `rejected_signin:all` | `user`; `claim` (`identity` = provider\|subject, `invite` = verified-email hash, `username` = course\|username hash, `course-count`); `probe` (per-item **TTL 2 h**); `audit` (per-item **TTL 400 days**); `rejected_signin` (per-item **TTL 90 days**, re-set on each attempt) | cross-partition uniqueness via deterministic ids (§3.2); the container default TTL is `-1` (on, no default), so only probe and audit docs expire |
 
 Fields are those of `tenant/models.py`. Abridged: `row` = `course_id`, `target_date`, `timezone`
 (**course tz**), window, `party_size`, `status`, `status_reason`, `source`, `rule_id`, `cutoff_at`
@@ -198,7 +198,10 @@ rule's id is `rule|<rule_id>`; `weekday` is `date.weekday()` (Mon=0..Sun=6). In 
 userId) is `ownerId`. A `probe`'s `<bucket>` is the UTC hour `YYYY-MM-DDTHH` (the 2 h TTL window spans
 at most three partitions, and `count_login_probes` filters by user OR username hash, so no id-keyed
 partition serves both), id `probe|<at UTC>|<uuid>`. An `audit` entry with no user goes to
-`audit:system`, id `audit|<at UTC>|<uuid>`. Document keys are camelCase (the §3.2 index paths),
+`audit:system`, id `audit|<at UTC>|<uuid>`. A `rejected_signin` (2026-09-29) is one uninvited
+sign-in identity for the operator's `/admin/users` list, all in partition `rejected_signin:all`,
+id `rejected_signin|<sha256(provider NUL subject)>`; unlike `audit` it KEEPS the verified emails
+(that is its purpose), which is why it expires 90 days after the last attempt. Document keys are camelCase (the §3.2 index paths),
 instants UTC ISO-8601, and the Cosmos `_etag` is read into `Stored.etag`, never written.
 
 `players` are **not stored**. ForeUP's book POST sends only the player count (root CLAUDE.md, and
@@ -1092,7 +1095,7 @@ account.
 | POST | `/rows/{id}/skip`, `/rows/{id}/unskip` | user | yes | state-machine transitions |
 | POST | `/rows/{id}/withdraw` | user | yes | delete an explicit pending row |
 | POST | `/rows/{id}/cancel` | user | yes | managed cancel (§8.5) |
-| GET/POST | `/admin/users` | operator | yes | invite/disable users (allowlist); lists every user (`TenantStore.list_users`, 2026-09-29) |
+| GET/POST | `/admin/users` | operator | yes | invite/disable users (allowlist); lists every user (`TenantStore.list_users`) and the uninvited sign-in attempts with an Invite button (`list_rejected_signins`), 2026-09-29 |
 
 Every data query is scoped by the session's `user_id`. There is an IDOR test per route
 (`test_route_rejects_other_users_row`).
@@ -1104,7 +1107,8 @@ Row transitions map store errors to responses: `RowLeaseError` → 409 "booking 
   `(provider, subject)`, **never** email alone. First sign-in binds the subject to an **invited**
   `users` row. The invite is matched **only against a verified email**: GitHub via `GET /user/emails`
   entries with `verified: true` (never the profile's public `email` field); Google via the
-  `email_verified` claim. Non-invited subjects get a 403 page and an `audit` doc (SF10).
+  `email_verified` claim. Non-invited subjects get a 403 page and an `audit` doc (SF10), plus a best-effort
+  `rejected_signin` record (verified emails, attempt count; 90 days) the operator can invite from.
 - **Session**: signed cookie (Starlette `SessionMiddleware`, itsdangerous) with `Secure`,
   `HttpOnly`, `SameSite=Lax`, `Path=/`, a 12 h absolute lifetime (issued-at inside the payload,
   checked server-side), and rotation on login. The key is the `WEB-SESSION-SECRET` KV secret.

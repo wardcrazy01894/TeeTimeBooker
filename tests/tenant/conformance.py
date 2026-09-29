@@ -33,6 +33,7 @@ from teetime.tenant.materialize import RuleConflictError
 from teetime.tenant.models import (
     ACTIVE_ROW_STATUSES,
     GROUP_DOWNGRADE_REASON,
+    REJECTED_SIGNIN_RETENTION,
     USER_WITHDRAW_REASON,
     AccountProvenance,
     AccountStatus,
@@ -1796,6 +1797,46 @@ class TenantStoreConformance:
             await s.upsert_rule(_rule(t), user_id=mallory.user.id)
 
     # --- users / accounts / web reads ------------------------------------------------------
+
+    async def test_rejected_signins_one_record_per_identity(self, harness: StoreHarness) -> None:
+        """An uninvited sign-in (operator request 2026-09-29): one record per (provider,
+        subject); a repeat bumps ``attempts`` + ``last_at`` (``first_at`` kept) and takes the
+        latest emails/name. Listed newest attempt first."""
+        s = harness.store
+        t1 = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+        t2 = t1 + timedelta(days=2)
+        t3 = t1 + timedelta(days=5)
+        await s.record_rejected_signin(
+            provider="google", subject="g-1", emails=("a@x.test",), display_name="Amy", at=t1
+        )
+        await s.record_rejected_signin(
+            provider="github", subject="h-9", emails=(), display_name="", at=t2
+        )
+        again = await s.record_rejected_signin(
+            provider="google",
+            subject="g-1",
+            emails=("a@x.test", "amy@y.test"),
+            display_name="Amy B",
+            at=t3,
+        )
+        assert (again.attempts, again.first_at, again.last_at) == (2, t1, t3)
+        listed = await s.list_rejected_signins(now=t3)
+        assert [(r.provider, r.subject) for r in listed] == [("google", "g-1"), ("github", "h-9")]
+        assert listed[0] == again
+        assert listed[0].emails == ("a@x.test", "amy@y.test")
+        assert listed[0].display_name == "Amy B"
+        assert listed[1].attempts == 1 and listed[1].emails == ()
+
+    async def test_rejected_signins_expire_after_the_retention(self, harness: StoreHarness) -> None:
+        """Kept ``REJECTED_SIGNIN_RETENTION`` (90 days) after the LAST attempt, never longer."""
+        s = harness.store
+        t0 = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
+        await s.record_rejected_signin(
+            provider="google", subject="old", emails=("o@x.test",), display_name="", at=t0
+        )
+        just_inside = t0 + REJECTED_SIGNIN_RETENTION - timedelta(seconds=1)
+        assert [r.subject for r in await s.list_rejected_signins(now=just_inside)] == ["old"]
+        assert await s.list_rejected_signins(now=t0 + REJECTED_SIGNIN_RETENTION) == []
 
     async def test_list_users_returns_every_user_by_email(self, harness: StoreHarness) -> None:
         """The operator's admin view: every user in any status, invited ones included, sorted

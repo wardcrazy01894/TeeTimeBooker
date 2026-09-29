@@ -38,6 +38,7 @@ from ..core.redaction import redact_payload
 from .materialize import RuleConflictError
 from .models import (
     ACTIVE_ROW_STATUSES,
+    REJECTED_SIGNIN_RETENTION,
     AccountStatus,
     Actor,
     BookingState,
@@ -46,6 +47,7 @@ from .models import (
     EventRow,
     OwnedBooking,
     RankedWindow,
+    RejectedSignin,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -129,6 +131,7 @@ class InMemoryTenantStore:
         self._cutoff = cutoff
         self._max_accounts_per_course = max_accounts_per_course
         self._users: dict[UserId, User] = {}
+        self._rejected: dict[tuple[str, str], RejectedSignin] = {}
         self._accounts: dict[CourseAccountId, CourseAccount] = {}
         self._rules: dict[RuleId, StandingRule] = {}
         self._rows: dict[RowId, RequestRow] = {}
@@ -686,6 +689,33 @@ class InMemoryTenantStore:
                 self._users[user.id] = bound
                 return bound
         return None
+
+    async def record_rejected_signin(
+        self,
+        *,
+        provider: str,
+        subject: str,
+        emails: tuple[str, ...],
+        display_name: str,
+        at: datetime,
+    ) -> RejectedSignin:
+        key = (provider, subject)
+        old = self._rejected.get(key)
+        record = RejectedSignin(
+            provider=provider,
+            subject=subject,
+            emails=tuple(emails),
+            display_name=display_name,
+            first_at=at if old is None else old.first_at,
+            last_at=at,
+            attempts=1 if old is None else old.attempts + 1,
+        )
+        self._rejected[key] = record
+        return record
+
+    async def list_rejected_signins(self, *, now: datetime) -> list[RejectedSignin]:
+        live = (r for r in self._rejected.values() if now - r.last_at < REJECTED_SIGNIN_RETENTION)
+        return sorted(live, key=lambda r: (r.last_at, r.provider, r.subject), reverse=True)
 
     async def list_users(self) -> list[User]:
         return sorted(self._users.values(), key=lambda u: (u.email.casefold(), str(u.id)))
