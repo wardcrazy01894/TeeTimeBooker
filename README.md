@@ -183,7 +183,8 @@ uv run teetime web --host 127.0.0.1 --port 8000
 | `/accounts` | Connect a course login (checked with ONE live login, never retried; at most 5 attempts per user and 3 per login per hour, 30 site-wide, a 15-minute pause after 2 attempts on one login), set the default max price per player, re-verify a rejected login, and **Refresh from course** (cached 2 minutes, at most 6 per account per hour) |
 | `/admin/users` | Operator only: invite users |
 
-**The ranked form** (MU-R3): party size, up to 6 (course, window) options each with a rank
+**The ranked form** (MU-R3): the date (a month calendar paged left/right; the browser's date box
+without script), players (a 1 / 2 / 3 / 4 button row), up to 6 (course, window) options each with a rank
 (courses may repeat and interleave; ranks are renumbered 1..N), and a max price per player per
 course (blank = that course's default, $100 unless changed on `/accounts`). It saves one row or
 rule per course sharing a group; the bot books the best-ranked option available, holds one tee

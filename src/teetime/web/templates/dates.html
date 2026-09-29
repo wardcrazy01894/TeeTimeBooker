@@ -75,7 +75,7 @@
   <h2>Book a date</h2>
   {% if accounts %}
   <p class="hint">A date booked here replaces a weekly booking for that date.</p>
-  {{ ranked_form(csrf_token, accounts, "/bookings/date", option_slots, weekdays, false) }}
+  {{ ranked_form(csrf_token, accounts, "/bookings/date", option_slots, weekdays, false, min_date) }}
   {% else %}
   <p class="placeholder">Connect a course account first. <a href="/accounts">Go to Accounts</a>.</p>
   {% endif %}

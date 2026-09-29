@@ -6,11 +6,13 @@ Clock: T0 = Sat 2026-09-26 12:00 UTC (08:00 EDT); Sat 10/3 is bookable.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -30,6 +32,7 @@ from teetime.tenant.models import (
     UserId,
     derive_account_id,
 )
+from teetime.web import services
 from teetime.web.app import WebSettings, create_app
 
 from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE, TZ
@@ -222,3 +225,54 @@ async def test_a_ranked_rule_shows_its_options_and_no_single_window_edit(
     assert "09:00\u201310:00, 08:00\u201309:00" in page.text
     assert 'name="window_earliest"' not in page.text
     assert 'value="deactivate"' in page.text
+
+
+# --- form controls (operator request 2026-09-29) ------------------------------------------------
+
+
+def _party_radios(page: str) -> list[tuple[str, bool]]:
+    return [
+        (m.group(1), "checked" in m.group(0))
+        for m in re.finditer(r'<input type="radio" name="party_size" value="(\d)"[^>]*>', page)
+    ]
+
+
+@pytest.mark.parametrize("path", ["/dates", "/rules"])
+async def test_players_is_a_one_to_four_button_choice_defaulting_to_two(
+    client: httpx.AsyncClient, member: Member, path: str
+) -> None:
+    """Players is a row of 1 / 2 / 3 / 4 buttons (radio inputs, so it works without script),
+    never a typed number."""
+    page = (await client.get(path)).text
+    assert _party_radios(page) == [("1", False), ("2", True), ("3", False), ("4", False)]
+    assert not re.search(r'type="number"[^>]*name="party_size"', page)
+
+
+async def test_the_date_field_is_enhanced_but_stays_a_native_date_input(
+    client: httpx.AsyncClient, member: Member
+) -> None:
+    """Without script it is the browser's date box; app.js turns ``.datepick`` into the
+    side-to-side month calendar."""
+    page = (await client.get("/dates")).text
+    assert re.search(r'<input type="date" name="target_date" class="datepick"[^>]*required', page)
+
+
+def test_earliest_bookable_date_is_today_in_the_course_zone_not_utc() -> None:
+    """02:00 UTC on Sep 27 is still Sep 26 at a New York course: the calendar must not grey out
+    the course's today because the server (or the visitor) is already on the next UTC day."""
+    now = datetime(2026, 9, 27, 2, 0, tzinfo=UTC)
+    accounts = [_account(UserId(uuid4()), MB)]
+    got = services.earliest_bookable_date(accounts, {str(MB): POLICY}, now=now)
+    assert got == date(2026, 9, 26)
+    # No policy for any account (or no accounts): fall back to the UTC date.
+    assert services.earliest_bookable_date([], {}, now=now) == date(2026, 9, 27)
+
+
+async def test_the_date_field_carries_the_server_computed_min(
+    client: httpx.AsyncClient, member: Member, clock: FakeClock
+) -> None:
+    page = (await client.get("/dates")).text
+    today = clock.now_utc().astimezone(ZoneInfo(TZ)).date()
+    assert re.search(
+        rf'<input type="date" name="target_date" class="datepick" min="{today.isoformat()}"', page
+    )

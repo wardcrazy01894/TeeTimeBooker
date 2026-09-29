@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Protocol, runtime_checkable
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -462,6 +462,20 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
             )
         )
     return out
+
+
+def earliest_bookable_date(
+    accounts: Sequence[CourseAccount], policies: Mapping[str, ReleasePolicy], *, now: datetime
+) -> date:
+    """The first date the booking calendar offers: the EARLIEST "today" across the user's
+    courses' timezones (so no course's today is greyed out), else the UTC date. The server
+    still validates every submitted date; this only shapes the picker."""
+    days = [
+        now.astimezone(ZoneInfo(policy.timezone)).date()
+        for a in accounts
+        if (policy := policies.get(str(a.course_id))) is not None
+    ]
+    return min(days) if days else now.astimezone(UTC).date()
 
 
 async def list_accounts(store: TenantStore, *, user_id: UserId) -> list[CourseAccount]:
