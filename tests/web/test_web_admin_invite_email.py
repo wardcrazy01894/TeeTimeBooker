@@ -73,7 +73,7 @@ async def test_a_failed_email_keeps_the_invite_and_says_so(
     assert r.headers["location"] == "/admin/users?notice=invited_not_emailed"
     assert any(u.email == FRIEND for u in await store.list_users())
     page = (await client.get(r.headers["location"])).text
-    assert "couldn't be sent" in html.unescape(page)
+    assert "couldn't be confirmed as sent" in html.unescape(page)
 
 
 async def test_without_email_configured_the_invite_still_works(

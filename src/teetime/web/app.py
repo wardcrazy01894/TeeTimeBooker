@@ -542,11 +542,14 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
 _ADMIN_NOTICES = {
     "invited": "Invite created and emailed to them. It binds on their first sign-in with Google.",
     "invited_not_emailed": (
-        "Invite created, but the invitation email couldn't be sent. Tell them to sign in with "
-        "Google using that address, or try Resend invite."
+        "Invite created, but the invitation email couldn't be confirmed as sent (it may still "
+        "arrive). Tell them to sign in with Google using that address, or try Resend invite."
     ),
     "resent": "Invitation email sent again.",
-    "resend_failed": "The invitation email couldn't be sent. Try again later.",
+    "resend_failed": (
+        "The invitation email couldn't be confirmed as sent (it may still arrive). Try again "
+        "later if they don't get it."
+    ),
     "disabled": "User disabled. Their session is rejected on their next request.",
     "enabled": "User enabled.",
 }
@@ -590,6 +593,8 @@ async def _admin_invite(ctx: _Ctx, operator: User, form: FormData, *, now: datet
     return RedirectResponse(f"/admin/users?notice={notice}", status_code=303)
 
 
+# Bounds the operator's request. ACS may already have ACCEPTED the message when this fires (the
+# client then polls delivery status), so a timeout reads "couldn't be confirmed", not "failed".
 INVITE_EMAIL_TIMEOUT_S = 20.0
 
 
