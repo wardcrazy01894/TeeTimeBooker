@@ -754,6 +754,13 @@ instead. `DashboardRow.snapshot_label` is gone; the Connected courses page keeps
 of …" per account, where Refresh lives. The mismatch badges (which use the snapshot) are
 unchanged.
 
+Stage 2 (same day): the four records were added in Cloudflare (DNS only, via a zone-file import)
+plus DMARC `v=DMARC1; p=none`; Azure verified Domain, SPF, DKIM and DKIM2; Cloudflare Email
+Routing forwards `hello@` to the operator's Gmail (3 MX + Cloudflare's `cf2024-1._domainkey`
+DKIM; its SPF include was merged into the ONE apex SPF record after Azure's SPF verified:
+`v=spf1 include:spf.protection.outlook.com include:_spf.mx.cloudflare.net -all`). Prod's
+`emailCustomDomainLinked` is now `true`.
+
 ## Report a bug / Request a course; "Connected Courses" (2026-09-29)
 
 Operator request. `web/feedback.py`: `GET /feedback?kind=bug|course&from=<page>` renders one
@@ -768,4 +775,5 @@ replica; a 6th is a 429) and the subject's name is capped at 100 characters. "Re
 of every signed-in page; "Request a course" sits under Connect a course and on the dashboard's
 Start-here card. The page is now titled **Connected Courses** everywhere.
 Tests: `tests/web/test_web_feedback.py`.
+||||||| eb8b89a
 
