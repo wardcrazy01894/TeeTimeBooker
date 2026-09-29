@@ -166,22 +166,29 @@ class LoggingUserNotifier:
         log.info("tenant: notify %s for row %s (email not configured)", event.kind, event.row_id)
 
 
+def email_sender_from_env(
+    env: Mapping[str, str] | None = None, *, command: str
+) -> AcsEmailClient | None:
+    """The ACS ``EmailSender`` when ACS is configured (``load_acs_settings`` registers the access
+    key as an E7 literal), else None with a WARNING naming the missing env var."""
+    source: Mapping[str, str] = os.environ if env is None else env
+    try:
+        settings = load_acs_settings(source)
+    except AcsConfigError as exc:
+        log.warning("teetime %s: email is NOT configured (%s)", command, exc)
+        return None
+    return AcsEmailClient(settings.connection, sender_address=settings.sender_address)
+
+
 def user_notifier_from_env(
     directory: TenantStore,
     env: Mapping[str, str] | None = None,
     *,
     command: str,
 ) -> UserNotifier:
-    """ACS-backed ``StoreUserNotifier`` when ACS is configured (``load_acs_settings`` registers
-    the access key as an E7 literal), else ``LoggingUserNotifier`` with a WARNING naming the
-    missing env var."""
-    source: Mapping[str, str] = os.environ if env is None else env
-    try:
-        settings = load_acs_settings(source)
-    except AcsConfigError as exc:
-        log.warning(
-            "teetime %s: user email is NOT configured (%s); events are logged", command, exc
-        )
+    """ACS-backed ``StoreUserNotifier`` when ACS is configured, else ``LoggingUserNotifier``
+    (events are logged; ``email_sender_from_env`` has already warned)."""
+    client = email_sender_from_env(env, command=command)
+    if client is None:
         return LoggingUserNotifier()
-    client = AcsEmailClient(settings.connection, sender_address=settings.sender_address)
     return StoreUserNotifier(directory, client)

@@ -22,6 +22,7 @@ from teetime.core.config import BookingCutoffConfig
 from teetime.core.redaction import redact_text
 from teetime.courses.foreup.mangrove_bay import MANGROVE_BAY_COURSE_ID, MangroveBayAdapter
 from teetime.tenant import wiring
+from teetime.tenant.acs_email import AcsEmailClient
 from teetime.tenant.booking_job import HostedAdapterFactory, StoreUserNotifier
 from teetime.tenant.crypto import KEYRING_ENV_VAR
 from teetime.tenant.in_memory_store import InMemoryTenantStore
@@ -170,6 +171,7 @@ def test_web_wires_keyring_adapters_policies_and_notifier(
         str(MANGROVE_BAY_COURSE_ID): MangroveBayAdapter.release_policy
     }
     assert isinstance(app_kwargs["notifier"], LoggingUserNotifier)
+    assert app_kwargs["email_sender"] is None  # no ACS settings: invites are not emailed
     assert isinstance(app_kwargs["store"], InMemoryTenantStore)
     # E7: the keyring's key material is masked from now on.
     assert KEY_B64 not in redact_text(f"key={KEY_B64}")
@@ -219,3 +221,4 @@ def test_web_uses_the_cosmos_store_and_acs_when_configured(
     assert app_kwargs["store"] is sentinel
     assert len(opened) == 1
     assert isinstance(app_kwargs["notifier"], StoreUserNotifier)
+    assert isinstance(app_kwargs["email_sender"], AcsEmailClient)  # invitations

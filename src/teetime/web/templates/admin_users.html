@@ -5,7 +5,7 @@
 
 <section>
   <h2>Invite</h2>
-  <p class="hint">The invite binds on the invitee's first sign-in, matched only against an email their provider has verified.</p>
+  <p class="hint">Inviting emails them an invitation to sign in with Google. The invite binds on their first sign-in, matched only against an email their provider has verified.</p>
   <form method="post" action="/admin/users" class="form-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="action" value="invite">
@@ -45,6 +45,13 @@
           <td class="num">{% if o.weekly_rules %}{{ o.weekly_rules }} weekly{% else %}<span class="muted">—</span>{% endif %}</td>
           <td>{% for status, n in o.upcoming %}{{ n }} {{ status }}{% if not loop.last %} · {% endif %}{% else %}<span class="muted">—</span>{% endfor %}</td>
           <td class="actions">
+            {% if u.status.value == "invited" %}
+            <form method="post" action="/admin/users" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="user_id" value="{{ u.id }}">
+              <button type="submit" name="action" value="resend" class="small">Resend invite</button>
+            </form>
+            {% endif %}
             {% if o.signed_in and u.id != user.id %}
             <form method="post" action="/admin/users" class="inline">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

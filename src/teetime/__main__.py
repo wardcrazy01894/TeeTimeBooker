@@ -81,6 +81,7 @@ from .tenant.runner import EventPlan, ExitStatus, WatchReport
 from .tenant.watch_runner import run_tenant_watch, watch_exit_status
 from .tenant.wiring import (
     TenantStoreConfigError,
+    email_sender_from_env,
     hosted_policies,
     open_tenant_store,
     user_notifier_from_env,
@@ -844,6 +845,7 @@ async def _web_main(
             clock=RealClock(),
             keyring=keyring,
             notifier=user_notifier_from_env(store, command="web"),
+            email_sender=email_sender_from_env(command="web"),
             policies={str(cid): policy for cid, policy in hosted_policies().items()},
             # Throwaway login probes only (connect / refresh / cancel): never a CAPTCHA solve.
             adapter_factory=HostedAdapterFactory(api_key=None),

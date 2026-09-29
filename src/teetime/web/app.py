@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -45,7 +45,7 @@ from ..core.release_policy import ReleasePolicy
 from ..courses.names import COURSE_DISPLAY_NAMES, course_display_name
 from ..tenant.crypto import Keyring
 from ..tenant.models import User, UserId, UserRole, UserStatus
-from ..tenant.notify import UserNotifier
+from ..tenant.notify import EmailMessage, EmailSender, UserNotifier, render_invitation
 from ..tenant.runner import AdapterFactory
 from ..tenant.store import TenantStore
 from . import admin_users as admin_users_view
@@ -331,6 +331,7 @@ class _Ctx:
     keyring: Keyring | None = None
     adapter_factory: AdapterFactory | None = None
     notifier: UserNotifier | None = None
+    email_sender: EmailSender | None = None  # invitations; None = not configured
     refresh_cache: RefreshCache = field(default_factory=lambda: RefreshCache(ttl_s=120))
     probe_limits: ProbeLimits = field(default_factory=ProbeLimits)
     # ``str(course_id)`` -> the name a person reads (default ``courses.names``); never a raw id.
@@ -530,6 +531,8 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
         now = ctx.clock.now_utc()
         if action == "invite":
             return await _admin_invite(ctx, operator, form, now=now)
+        if action == "resend":
+            return await _admin_resend_invite(ctx, operator, form, now=now)
         if action in ("disable", "enable"):
             return await _admin_set_status(ctx, operator, form, enable=action == "enable", now=now)
         raise HTTPException(status_code=400, detail="unknown action")
@@ -537,7 +540,16 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
 
 # Fixed strings keyed by the `notice` query param: nothing user-supplied is ever reflected.
 _ADMIN_NOTICES = {
-    "invited": "Invite created. It binds on that person's first sign-in.",
+    "invited": "Invite created and emailed to them. It binds on their first sign-in with Google.",
+    "invited_not_emailed": (
+        "Invite created, but the invitation email couldn't be confirmed as sent (it may still "
+        "arrive). Tell them to sign in with Google using that address, or try Resend invite."
+    ),
+    "resent": "Invitation email sent again.",
+    "resend_failed": (
+        "The invitation email couldn't be confirmed as sent (it may still arrive). Try again "
+        "later if they don't get it."
+    ),
     "disabled": "User disabled. Their session is rejected on their next request.",
     "enabled": "User enabled.",
 }
@@ -569,14 +581,66 @@ async def _admin_invite(ctx: _Ctx, operator: User, form: FormData, *, now: datet
         status=UserStatus.INVITED,
     )
     await ctx.store.upsert_user(invited)
+    emailed = await _send_invitation(ctx, email)
     await ctx.store.append_audit(
         user_id=operator.id,
         action="admin_invite",
         row_id=None,
-        detail={"invited_user_id": str(invited.id), "role": role.value},
+        detail={"invited_user_id": str(invited.id), "role": role.value, "emailed": emailed},
         at=now,
     )
-    return RedirectResponse("/admin/users?notice=invited", status_code=303)
+    notice = "invited" if emailed else "invited_not_emailed"
+    return RedirectResponse(f"/admin/users?notice={notice}", status_code=303)
+
+
+# Bounds the operator's request. ACS may already have ACCEPTED the message when this fires (the
+# client then polls delivery status), so a timeout reads "couldn't be confirmed", not "failed".
+INVITE_EMAIL_TIMEOUT_S = 20.0
+
+
+async def _send_invitation(ctx: _Ctx, email: str) -> bool:
+    """Best-effort: True iff the invitation was accepted for delivery. The sender returns a
+    result rather than raising; a raise or a hang is logged, never a failed invite."""
+    if ctx.email_sender is None:
+        log.warning("invitation not emailed: email is not configured")
+        return False
+    rendered = render_invitation(email, site_url=ctx.settings.public_base_url)
+    message = EmailMessage(to=email, subject=rendered.subject, body=rendered.body)
+    try:
+        result = await asyncio.wait_for(
+            ctx.email_sender.send(message), timeout=INVITE_EMAIL_TIMEOUT_S
+        )
+    except Exception:  # TimeoutError included
+        log.warning("invitation email failed", exc_info=True)
+        return False
+    if not result.ok:
+        log.warning("invitation email not delivered (status=%s)", result.status)
+    return result.ok
+
+
+async def _admin_resend_invite(
+    ctx: _Ctx, operator: User, form: FormData, *, now: datetime
+) -> Response:
+    """Email the invitation again to a user who has not signed in yet (status INVITED)."""
+    try:
+        user_id = UserId(UUID(_form_str(form, "user_id")))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid user id") from e
+    target = await ctx.store.get_user_unscoped(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="no such user")
+    if target.status is not UserStatus.INVITED:
+        raise HTTPException(status_code=400, detail="that person has already signed in")
+    emailed = await _send_invitation(ctx, target.email)
+    await ctx.store.append_audit(
+        user_id=operator.id,
+        action="admin_resend_invite",
+        row_id=None,
+        detail={"invited_user_id": str(target.id), "emailed": emailed},
+        at=now,
+    )
+    notice = "resent" if emailed else "resend_failed"
+    return RedirectResponse(f"/admin/users?notice={notice}", status_code=303)
 
 
 async def _admin_set_status(
@@ -611,6 +675,7 @@ def create_app(
     clock: Clock,
     keyring: Keyring | None = None,
     notifier: UserNotifier | None = None,
+    email_sender: EmailSender | None = None,
     policies: Mapping[str, ReleasePolicy] | None = None,
     cutoff: BookingCutoffConfig | None = None,
     adapter_factory: AdapterFactory | None = None,
@@ -619,7 +684,8 @@ def create_app(
     """Build the ASGI app. MU-14 (connect, refresh, cancel) needs ``keyring`` (decrypt /
     encrypt the course passwords) and ``adapter_factory`` (one throwaway ForeUP adapter per
     live login); without either those actions are refused with a message. ``notifier`` emails
-    the user after a cancel (best-effort). ``policies`` (``str(course_id)`` ->
+    the user after a cancel (best-effort); ``email_sender`` sends invitations (best-effort; the
+    invite is created either way). ``policies`` (``str(course_id)`` ->
     ``ReleasePolicy``) and ``cutoff`` feed the synchronous rule materialize (MU-13, §7.7): a
     course with no policy cannot take a standing rule (one-off dates still work), and the
     policies' courses are the ones an account can be connected to (MU-14). ``course_names``
@@ -637,6 +703,7 @@ def create_app(
         keyring=keyring,
         adapter_factory=adapter_factory,
         notifier=notifier,
+        email_sender=email_sender,
         refresh_cache=RefreshCache(ttl_s=settings.refresh_ttl_s),
         probe_limits=ProbeLimits(
             per_user_per_hour=settings.max_probes_per_user_per_hour,
