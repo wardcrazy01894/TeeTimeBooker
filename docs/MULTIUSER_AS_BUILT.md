@@ -754,3 +754,17 @@ instead. `DashboardRow.snapshot_label` is gone; the Connected courses page keeps
 of …" per account, where Refresh lives. The mismatch badges (which use the snapshot) are
 unchanged.
 
+## Report a bug / Request a course; "Connected Courses" (2026-09-29)
+
+Operator request. `web/feedback.py`: `GET /feedback?kind=bug|course&from=<page>` renders one
+form; `POST /feedback` (user-auth, CSRF) emails the operator (`TEETIME_OPERATOR_EMAIL`) through
+the invitation `EmailSender`: subject `[Spicy's Tee Time Booker] Bug report|Course request from
+<name>` (line breaks stripped, so a display name cannot inject a header), body with the user's
+name and address (so the operator can reply), the page (`from`, kept only if it is a plain
+same-site path) and the message (1 to 4000 characters). Best-effort and bounded (20 s); the user
+lands on the dashboard with "Thanks!" either way, told if it could not be emailed. An audit entry
+records kind, length and `emailed`, never the text. "Report a bug" is a small button in the footer
+of every signed-in page; "Request a course" sits under Connect a course and on the dashboard's
+Start-here card. The page is now titled **Connected Courses** everywhere.
+Tests: `tests/web/test_web_feedback.py`.
+
