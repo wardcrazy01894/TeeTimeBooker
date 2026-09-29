@@ -749,6 +749,11 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   `courses/names.py::course_display_name`; add a new course there. Every form is a CSRF-guarded POST
   and every id is resolved through user-scoped reads (a foreign id is the uniform 404). Pinned by
   `tests/web/test_web_ui_polish.py` and the web security tests.
+- **Static assets are linked through `static_url(name)`, never a bare `/static/...` path.** It
+  appends `?v=<content hash>` (`web/app.py::static_asset_versions`, computed at startup), and
+  every static response carries `Cache-Control: no-cache`, so a deploy can never leave browsers on
+  stale CSS/JS (dev showed the pre-#268 pickers for hours). Pinned by
+  `test_no_template_links_a_static_file_without_its_version`.
 - **Adopting reservations is operator-only and confirmed** (MU-16b, `web/adopt.py`): it re-plans
   server-side from a trusted snapshot at most 15 minutes old and writes nothing without the
   confirm box; it cannot tell the bot's bookings from a manual one for the same slot, which is why

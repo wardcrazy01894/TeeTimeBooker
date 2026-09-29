@@ -651,3 +651,12 @@ browser's required-field bubble replaced by "Pick a date." The first offered day
 `min` (`services.earliest_bookable_date`: the earliest "today" across the user's courses' timezones,
 not the visitor's clock); PageUp/PageDown clamp the day (Jan 31 -> Feb 28); one roving tab stop. The native input keeps carrying the
 value, so the server contract is unchanged. No inline script or style (CSP).
+
+## Static asset cache-busting (2026-09-29)
+
+After #268 deployed, dev kept showing the old players row and no calendar: `/static/*` had no
+`Cache-Control`, so browsers reused their copies heuristically (from `Last-Modified`). Templates
+now link assets as `static_url(name)` = `/static/<name>?v=<12-hex SHA-256 of the file>`
+(`web/app.py::static_asset_versions`, computed once at startup, so it tracks the image), and
+`_RevalidatingStaticFiles` sets `Cache-Control: no-cache` on every static response (revalidation
+is a cheap ETag 304). An unknown asset name raises at render. Tests: `tests/web/test_web_ui_polish.py`.

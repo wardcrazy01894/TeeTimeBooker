@@ -18,6 +18,7 @@ Logging is configured by the ``teetime web`` entrypoint (``basicConfig`` THEN
 # annotations keep the closure-bound dependencies working; PEP 604 unions need no future
 # import on 3.12+.
 
+import hashlib
 import logging
 import os
 import re
@@ -62,6 +63,31 @@ from .services import ProbeLimits, RefreshCache
 log = logging.getLogger(__name__)
 
 _HERE = Path(__file__).resolve().parent
+STATIC_DIR = _HERE / "static"
+
+
+def static_asset_versions(directory: Path) -> dict[str, str]:
+    """File name -> a 12-hex SHA-256 prefix of its bytes. Templates link assets as
+    ``static_url(name)`` = ``/static/<name>?v=<hash>``, so a deploy that changes a file changes
+    its URL and no browser can keep using a stale copy (dev showed pre-#268 CSS for hours)."""
+    return {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()[:12]
+        for p in sorted(directory.iterdir())
+        if p.is_file()
+    }
+
+
+class _RevalidatingStaticFiles(StaticFiles):
+    """``Cache-Control: no-cache`` on every static response: a browser may keep the file but must
+    revalidate it (a cheap 304 via the ETag). Without it, browsers cached heuristically from
+    ``Last-Modified`` and kept serving old files after a deploy."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _MIN_SESSION_SECRET_LEN = 32
 _SESSION_COOKIE = "teetime_session"
@@ -561,6 +587,9 @@ def create_app(
         ),
     )
     templates.env.filters["course_name"] = ctx.course_name
+    versions = static_asset_versions(STATIC_DIR)
+    # An unknown name raises at render: a typo'd asset link fails loudly, never a silent 404.
+    templates.env.globals["static_url"] = lambda name: f"/static/{name}?v={versions[name]}"
     cookie = CookiePolicy()
     app = FastAPI(
         title="TeeTimeBooker",
@@ -582,7 +611,7 @@ def create_app(
         same_site=cookie.same_site,
         https_only=cookie.secure,
     )
-    app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
+    app.mount("/static", _RevalidatingStaticFiles(directory=str(STATIC_DIR)), name="static")
     _install_error_pages(app, ctx)
     _register_public_routes(app, ctx)
     current_user = _current_user(ctx)

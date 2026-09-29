@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}TeeTimeBooker{% endblock %}</title>
-  <link rel="stylesheet" href="/static/base.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="{{ static_url('base.css') }}">
+  <script src="{{ static_url('app.js') }}" defer></script>
 </head>
 <body>
   {% set here = request.url.path if request is defined else "" %}
