@@ -734,3 +734,14 @@ operator-entered address or the configured `TEETIME_PUBLIC_BASE_URL`. Tests:
 `tests/web/test_web_admin_invite_email.py`, `tests/tenant/test_notify.py`,
 `tests/web/test_web_cli.py`.
 
+## Mail from hello@spicyteetimebooker.com (2026-09-29, stage 1)
+
+Operator request. `email.bicep` takes `customDomain` / `customDomainLinked` (main.bicep
+`emailCustomDomain` / `emailCustomDomainLinked`; prod `spicyteetimebooker.com` / `false`, dev
+`''` / `false`). Stage 1 only creates the `CustomerManaged` domain; its DNS records are the
+`emailCustomDomainRecords` output. After Cloudflare DNS + verification, stage 2 flips
+`emailCustomDomainLinked`, which links the domain, creates the `hello` sender ("Spicy's Tee Time
+Booker") and changes the module's `senderAddress` output, which main.bicep hands to compute and
+webapp (keeping them ordered after the `ACS-EMAIL-CONNECTION` write). Runbook: AZURE_PLAN §10.10.
+Tests: `tests/test_email_bicep.py`.
+

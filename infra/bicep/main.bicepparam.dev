@@ -103,5 +103,8 @@ param webPublicBaseUrl = 'https://teetime-web-dev.kindwave-5d7c992b.eastus2.azur
 param webMinReplicas = 0
 // Dev has no custom domain.
 param webCustomDomain = ''
+// Dev keeps the Azure-managed DoNotReply@<…>.azurecomm.net sender.
+param emailCustomDomain = ''
+param emailCustomDomainLinked = false
 // Empty = the web reads OPERATOR-NOTIFY-EMAIL from Key Vault (the repo is public).
 param operatorEmail = ''

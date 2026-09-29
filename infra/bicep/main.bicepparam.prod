@@ -98,6 +98,12 @@ param webPublicBaseUrl = 'https://spicyteetimebooker.com'
 // .azurecontainerapps.io host redirect here. The Google OAuth client must list
 // https://spicyteetimebooker.com/auth/google/callback.
 param webCustomDomain = 'spicyteetimebooker.com'
+// Mail from hello@spicyteetimebooker.com (2026-09-29). Stage 1: the domain is created; its DNS
+// records (main.bicep output emailCustomDomainRecords) go into Cloudflare and are verified
+// (AZURE_PLAN runbook). Stage 2: flip emailCustomDomainLinked to true (Azure refuses to link
+// an unverified domain); the sender then becomes hello@spicyteetimebooker.com.
+param emailCustomDomain = 'spicyteetimebooker.com'
+param emailCustomDomainLinked = false
 // Always warm (operator decision 2026-09-28): one idle-billed replica, ~$6/month, so a visitor
 // never waits out the ~30 s scale-from-zero cold start. The killswitch still forces 0.
 param webMinReplicas = 1

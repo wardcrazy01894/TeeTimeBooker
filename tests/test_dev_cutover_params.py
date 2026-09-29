@@ -45,9 +45,12 @@ def test_acs_sender_is_derived_from_the_email_module_when_not_set() -> None:
     the email module's output when the param is empty, and hands the SAME value to the jobs and
     the web (which also orders them after the module that writes ACS-EMAIL-CONNECTION)."""
     assert "var effectiveAcsEmailSender = " in MAIN
-    assert (
-        "mailFromSenderDomain" in MAIN.split("var effectiveAcsEmailSender = ", 1)[1].split("\n")[0]
-    )
+    line = MAIN.split("var effectiveAcsEmailSender = ", 1)[1].split("\n")[0]
+    assert "email.?outputs.senderAddress" in line
+    # The module's sender falls back to DoNotReply@<managed domain> until the custom domain is
+    # linked (2026-09-29, AZURE_PLAN §10.10).
+    email = (BICEP / "modules" / "email.bicep").read_text()
+    assert "'DoNotReply@${domain.properties.mailFromSenderDomain}'" in email
     assert "acsEmailSender: effectiveAcsEmailSender" in MAIN
     assert "acsEmailSender: acsEmailSender" not in MAIN
     assert "param acsEmailSender = ''" in DEV

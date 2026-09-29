@@ -167,7 +167,7 @@ jobs:
           # tests/test_azure_iac_killswitch_latch.py pins that each declared param is passed.
           python3 - "${PARAM_FILE}" >> "$GITHUB_ENV" <<'PY'
           import re, sys
-          names = {"bookingMode": "BOOKING_MODE", "watchMode": "WATCH_MODE", "watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL", "webMinReplicas": "WEB_MIN_REPLICAS", "webCustomDomain": "WEB_CUSTOM_DOMAIN"}
+          names = {"bookingMode": "BOOKING_MODE", "watchMode": "WATCH_MODE", "watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL", "webMinReplicas": "WEB_MIN_REPLICAS", "webCustomDomain": "WEB_CUSTOM_DOMAIN", "emailCustomDomain": "EMAIL_CUSTOM_DOMAIN", "emailCustomDomainLinked": "EMAIL_CUSTOM_DOMAIN_LINKED"}
           text = open(sys.argv[1]).read()
           for name, env in names.items():
               m = re.search(r"^param " + name + r"\s*=\s*(.+?)\s*$", text, re.M)
@@ -238,6 +238,8 @@ jobs:
                          operatorEmail="${OPERATOR_EMAIL}" \
                          webMinReplicas="${WEB_MIN_REPLICAS}" \
                          webCustomDomain="${WEB_CUSTOM_DOMAIN}" \
+                         emailCustomDomain="${EMAIL_CUSTOM_DOMAIN}" \
+                         emailCustomDomainLinked="${EMAIL_CUSTOM_DOMAIN_LINKED}" \
                          sharedAcrName="${ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=true \
@@ -271,6 +273,8 @@ jobs:
                          operatorEmail="${OPERATOR_EMAIL}" \
                          webMinReplicas="${WEB_MIN_REPLICAS}" \
                          webCustomDomain="${WEB_CUSTOM_DOMAIN}" \
+                         emailCustomDomain="${EMAIL_CUSTOM_DOMAIN}" \
+                         emailCustomDomainLinked="${EMAIL_CUSTOM_DOMAIN_LINKED}" \
                          sharedAcrName="${ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \
@@ -366,7 +370,7 @@ jobs:
           # tests/test_azure_iac_killswitch_latch.py pins that each declared param is passed.
           python3 - "${PARAM_FILE}" >> "$GITHUB_ENV" <<'PY'
           import re, sys
-          names = {"bookingMode": "BOOKING_MODE", "watchMode": "WATCH_MODE", "watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL", "webMinReplicas": "WEB_MIN_REPLICAS", "webCustomDomain": "WEB_CUSTOM_DOMAIN"}
+          names = {"bookingMode": "BOOKING_MODE", "watchMode": "WATCH_MODE", "watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL", "webMinReplicas": "WEB_MIN_REPLICAS", "webCustomDomain": "WEB_CUSTOM_DOMAIN", "emailCustomDomain": "EMAIL_CUSTOM_DOMAIN", "emailCustomDomainLinked": "EMAIL_CUSTOM_DOMAIN_LINKED"}
           text = open(sys.argv[1]).read()
           for name, env in names.items():
               m = re.search(r"^param " + name + r"\s*=\s*(.+?)\s*$", text, re.M)
@@ -437,6 +441,8 @@ jobs:
                          operatorEmail="${OPERATOR_EMAIL}" \
                          webMinReplicas="${WEB_MIN_REPLICAS}" \
                          webCustomDomain="${WEB_CUSTOM_DOMAIN}" \
+                         emailCustomDomain="${EMAIL_CUSTOM_DOMAIN}" \
+                         emailCustomDomainLinked="${EMAIL_CUSTOM_DOMAIN_LINKED}" \
                          sharedAcrName="${ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=true \
@@ -467,6 +473,8 @@ jobs:
                          operatorEmail="${OPERATOR_EMAIL}" \
                          webMinReplicas="${WEB_MIN_REPLICAS}" \
                          webCustomDomain="${WEB_CUSTOM_DOMAIN}" \
+                         emailCustomDomain="${EMAIL_CUSTOM_DOMAIN}" \
+                         emailCustomDomainLinked="${EMAIL_CUSTOM_DOMAIN_LINKED}" \
                          sharedAcrName="${ACR_NAME}" \
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \

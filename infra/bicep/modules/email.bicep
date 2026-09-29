@@ -29,6 +29,12 @@ targetScope = 'resourceGroup'
 @description('Environment name suffix.')
 param envName string
 
+@description('Customer-managed sender domain (prod: spicyteetimebooker.com; empty = none). Stage 1 (operator request 2026-09-29): the domain is created and its DNS records (the customDomainVerificationRecords output) go into Cloudflare and are verified. Azure refuses to link an unverified domain, so linking waits for customDomainLinked.')
+param customDomain string = ''
+
+@description('Stage 2, only AFTER every customDomain DNS record is verified: link the domain to the Communication Service and add the hello@ sender (main.bicep then sends as hello@<customDomain>).')
+param customDomainLinked bool = false
+
 @description('Key Vault name (not URI — Microsoft.KeyVault/vaults/secrets is a child resource reference, which needs the vault NAME to construct a `resource` symbolic reference in this scope).')
 param keyVaultName string
 
@@ -76,6 +82,34 @@ resource domain 'Microsoft.Communication/emailServices/domains@2023-04-01' = {
   }
 }
 
+// Customer-managed domain (operator request 2026-09-29): mail from hello@spicyteetimebooker.com
+// instead of the azurecomm.net address. Its DNS records (verification TXT, SPF, 2x DKIM CNAME)
+// are the customDomainVerificationRecords output; the operator adds them in Cloudflare (DNS only)
+// and verification is initiated per record type (AZURE_PLAN runbook). No charge beyond the
+// per-message price the managed domain already pays.
+resource customDomainResource 'Microsoft.Communication/emailServices/domains@2023-04-01' = if (!empty(customDomain)) {
+  parent: emailService
+  name: empty(customDomain) ? 'unused' : customDomain
+  location: 'global'
+  tags: tags
+  properties: {
+    domainManagement: 'CustomerManaged'
+    userEngagementTracking: 'Disabled'
+  }
+}
+
+// The sender people see ("Spicy's Tee Time Booker" <hello@...>). Replies go to hello@, which
+// Cloudflare Email Routing forwards to the operator. Created only once the domain is linked
+// (i.e. verified), like the link itself.
+resource helloSender 'Microsoft.Communication/emailServices/domains/senderUsernames@2023-04-01' = if (customDomainLinked && !empty(customDomain)) {
+  parent: customDomainResource
+  name: 'hello'
+  properties: {
+    username: 'hello'
+    displayName: 'Spicy\'s Tee Time Booker'
+  }
+}
+
 // Communication Service — the resource `AcsEmailClient` authenticates against. Linked to the
 // email domain so its connection string can send from that domain's addresses.
 resource communicationService 'Microsoft.Communication/communicationServices@2023-04-01' = {
@@ -84,9 +118,10 @@ resource communicationService 'Microsoft.Communication/communicationServices@202
   tags: tags
   properties: {
     dataLocation: 'United States'
-    linkedDomains: [
-      domain.id
-    ]
+    linkedDomains: concat(
+      [domain.id],
+      customDomainLinked && !empty(customDomain) ? [customDomainResource.id] : []
+    )
   }
 }
 
@@ -122,6 +157,14 @@ resource acsConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
 
 @description('The Azure-managed domain\'s verified sender subdomain (e.g. <hash>.azurecomm.net). The operator sets compute.bicep\'s acsEmailSender param to "DoNotReply@<this value>" once known — see the module header.')
 output mailFromSenderDomain string = domain.properties.mailFromSenderDomain
+
+@description('The customer-managed domain\'s DNS records to add in Cloudflare (Domain / SPF / DKIM / DKIM2, each {type, name, value, ttl}); empty when customDomain is empty.')
+output customDomainVerificationRecords object = !empty(customDomain) ? customDomainResource!.properties.verificationRecords : {}
+
+@description('The address the site sends from: hello@<customDomain> once it is linked (stage 2), else DoNotReply@<the Azure-managed domain>. main.bicep hands it to compute + webapp, which also orders them after the ACS-EMAIL-CONNECTION secret write.')
+// Stage 2 reads the username FROM the hello sender resource, so compute + webapp (which take
+// this output) are ordered after it exists and never send as hello@ a moment too early.
+output senderAddress string = customDomainLinked && !empty(customDomain) ? '${helloSender!.properties.username}@${customDomain}' : 'DoNotReply@${domain.properties.mailFromSenderDomain}'
 
 @description('Communication Service resource name.')
 output communicationServiceName string = communicationServiceName
