@@ -7,9 +7,11 @@ End-to-end over ASGI (real store + clock; only the OAuth HTTP is mocked).
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import AsyncIterator
 from datetime import date, time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -22,7 +24,7 @@ from teetime.courses.foreup.mangrove_bay import MANGROVE_BAY_COURSE_ID
 from teetime.courses.names import COURSE_DISPLAY_NAMES, course_display_name
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.models import RankedWindow
-from teetime.web.app import WebSettings, create_app
+from teetime.web.app import STATIC_DIR, WebSettings, create_app, static_asset_versions
 from teetime.web.booking_form import MAX_OPTIONS
 
 from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE
@@ -173,6 +175,52 @@ async def test_script_is_served_same_origin_and_referenced_without_inline_code(
     assert "javascript" in js.headers["content-type"]
     assert "more-options" in js.text
     page = (await client.get("/dates")).text
-    assert '<script src="/static/app.js" defer></script>' in page
+    assert re.search(r'<script src="/static/app\.js\?v=[0-9a-f]{12}" defer></script>', page)
     scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", page, re.DOTALL)
     assert scripts == [""]  # one script tag, external, empty body
+
+
+# --- static assets are never served stale after a deploy ---------------------------------------
+# Dev showed the pre-#268 players/calendar for hours after that deploy: the static files had no
+# Cache-Control, so browsers reused their old copies heuristically.
+
+
+async def test_asset_links_carry_a_content_hash(client: httpx.AsyncClient, member: Member) -> None:
+    page = (await client.get("/dates")).text
+    for name in ("base.css", "app.js"):
+        digest = hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+        assert f'"/static/{name}?v={digest}"' in page
+        assert (await client.get(f"/static/{name}?v={digest}")).status_code == 200
+
+
+async def test_static_files_are_always_revalidated(client: httpx.AsyncClient) -> None:
+    for name in ("base.css", "app.js"):
+        resp = await client.get(f"/static/{name}")
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == "no-cache"
+        etag = resp.headers["etag"]
+        again = await client.get(f"/static/{name}", headers={"If-None-Match": etag})
+        assert again.status_code == 304  # revalidation is cheap
+        assert again.headers["cache-control"] == "no-cache"
+
+
+def test_asset_version_changes_with_the_content(tmp_path: Path) -> None:
+    asset = tmp_path / "base.css"
+    asset.write_text("a { color: red; }")
+    before = static_asset_versions(tmp_path)["base.css"]
+    asset.write_text("a { color: blue; }")
+    after = static_asset_versions(tmp_path)["base.css"]
+    assert re.fullmatch(r"[0-9a-f]{12}", before) and before != after
+
+
+def test_nested_assets_are_versioned_by_their_relative_path(tmp_path: Path) -> None:
+    (tmp_path / "img").mkdir()
+    (tmp_path / "img" / "logo.png").write_bytes(b"png")
+    assert set(static_asset_versions(tmp_path)) == {"img/logo.png"}
+
+
+def test_no_template_links_a_static_file_without_its_version() -> None:
+    templates = STATIC_DIR.parent / "templates"
+    for tpl in templates.rglob("*.html"):
+        for attr in re.findall(r"""(?:src|href)\s*=\s*["'](/static/[^"']*)""", tpl.read_text()):
+            pytest.fail(f"{tpl.name} links {attr} directly; use static_url()")

@@ -665,3 +665,13 @@ BOOKED / UPGRADED mail lays the tee time out as an aligned course / date / tee-t
 the engine `detail`, and signs off with a random line from `tenant/golf_quips.py::GOLF_QUIPS`
 (`render_user_event(..., rng=)` for tests); CANCELLED mail closes with "Hope to see you back on
 the course soon." instead of the `detail`. The operator summary is unchanged.
+
+## Static asset cache-busting (2026-09-29)
+
+After #268 deployed, dev kept showing the old players row and no calendar: `/static/*` had no
+`Cache-Control`, so browsers reused their copies heuristically (from `Last-Modified`). Templates
+now link assets as `static_url(name)` = `/static/<name>?v=<12-hex SHA-256 of the file>`
+(`web/app.py::static_asset_versions`, computed once at startup, so it tracks the image), and
+`_RevalidatingStaticFiles` sets `Cache-Control: no-cache` on every static response (revalidation
+is a cheap ETag 304). An unknown asset name raises at render. Tests: `tests/web/test_web_ui_polish.py`.
+||||||| 74d752e
