@@ -70,7 +70,8 @@ def test_custom_domain_is_customer_managed_and_gated_on_its_param(email_bicep: s
 def test_hello_sender_and_link_only_once_the_domain_is_linked(email_bicep: str) -> None:
     assert "= if (customDomainLinked && !empty(customDomain)) {" in email_bicep
     assert "username: 'hello'" in email_bicep
-    assert "'hello@${customDomain}'" in email_bicep
+    # The sender address is read FROM the hello resource: compute + webapp wait for it.
+    assert "'${helloSender!.properties.username}@${customDomain}'" in email_bicep
     assert "displayName: 'Spicy\\'s Tee Time Booker'" in email_bicep
     assert "customDomainLinked && !empty(customDomain) ? [customDomainResource.id] : []" in (
         email_bicep

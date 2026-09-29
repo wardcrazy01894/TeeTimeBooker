@@ -1402,8 +1402,8 @@ and Email Routing are free.
    `emailCustomDomainLinked = false` (prod bicepparam). The deploy creates the
    `CustomerManaged` domain on `acs-email-teetime-prod`; the site still sends as
    `DoNotReply@<…>.azurecomm.net`.
-2. **Read the records** (read-only): the `emailCustomDomainRecords` deployment output, or
-   `az communication email domain show -g rg-teetime-prod --email-service-name
+2. **Read the records** (read-only; the `az communication` CLI extension is needed): the
+   `emailCustomDomainRecords` deployment output, or `az communication email domain show -g rg-teetime-prod --email-service-name
    acs-email-teetime-prod -n spicyteetimebooker.com --query properties.verificationRecords`.
    Domain (TXT at `@`), SPF (TXT at `@`, exactly `v=spf1 include:spf.protection.outlook.com
    -all`), DKIM and DKIM2 (CNAMEs `selector1/2-azurecomm-prod-net._domainkey`).

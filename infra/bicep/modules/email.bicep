@@ -162,7 +162,9 @@ output mailFromSenderDomain string = domain.properties.mailFromSenderDomain
 output customDomainVerificationRecords object = !empty(customDomain) ? customDomainResource!.properties.verificationRecords : {}
 
 @description('The address the site sends from: hello@<customDomain> once it is linked (stage 2), else DoNotReply@<the Azure-managed domain>. main.bicep hands it to compute + webapp, which also orders them after the ACS-EMAIL-CONNECTION secret write.')
-output senderAddress string = customDomainLinked && !empty(customDomain) ? 'hello@${customDomain}' : 'DoNotReply@${domain.properties.mailFromSenderDomain}'
+// Stage 2 reads the username FROM the hello sender resource, so compute + webapp (which take
+// this output) are ordered after it exists and never send as hello@ a moment too early.
+output senderAddress string = customDomainLinked && !empty(customDomain) ? '${helloSender!.properties.username}@${customDomain}' : 'DoNotReply@${domain.properties.mailFromSenderDomain}'
 
 @description('Communication Service resource name.')
 output communicationServiceName string = communicationServiceName
