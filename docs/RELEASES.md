@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.2.0: 2026-09-29 (`main`@`fbb6b5e`)](#infrav320-2026-09-29-mainfbb6b5e)
 - [infra/v3.1.0: 2026-09-28 (`main`@`4421fb0`)](#infrav310-2026-09-28-main4421fb0)
 - [infra/v3.0.2: 2026-09-27](#infrav302-2026-09-27)
 - [infra/v3.0.1: 2026-09-27](#infrav301-2026-09-27)
@@ -40,6 +41,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.2.0` | 2026-09-29 | `fbb6b5e` | unchanged (web, email, CI) | Dashboard cancel, friendlier emails, admin user list + uninvited sign-ins, static cache-busting, faster deploys (#267–#273) |
 | `infra/v3.1.0` | 2026-09-28 | `4421fb0` | unchanged (reporting only) | Operator summary v2, prod web always warm, prod on spicyteetimebooker.com (#262, #263, #265) |
 | `infra/v3.0.2` | 2026-09-27 | `18ba1ca` | **changed** (retries) | Retry audit: bounded transient-only retries on the tenant path (#260) |
 | `infra/v3.0.1` | 2026-09-27 | `3bba87c` | **changed** (watcher) | Tenant watcher search fix: ForeUP `search()` needs no login (#258) |
@@ -60,6 +62,35 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.2.0: 2026-09-29 (`main`@`fbb6b5e`)
+
+Booking behaviour is unchanged: everything here is the website, user email or the deploy pipeline.
+
+- **Emails show the course's wall clock** (#267). Stored tee times (Cosmos returns UTC) were
+  mailed raw, e.g. a cancel email said 12:30 PM for an 8:30 AM EDT booking.
+- **Booking form pickers** (#268). Players is a 1-4 button row; the date is a month calendar paged
+  side to side, over the native date input (works with script off).
+- **Cancel from the dashboard + friendlier emails** (#269). A booked tee time has a "Cancel…"
+  disclosure on the dashboard. The internal `TTB:` confirmation id is gone from the dashboard and
+  user email. The booked email lays out course / date / tee time and signs off with a random golf
+  one-liner; the cancel email closes with "Hope to see you back on the course soon."
+- **Static cache-busting** (#270). CSS/JS links carry a content hash and static files are served
+  `Cache-Control: no-cache`, so a deploy can no longer leave browsers on stale files.
+- **Faster deploys** (#271). Deploy pass 1 (the bootstrap image) is skipped once the environment's
+  AcrPull grant exists (fail-safe); dev deploys went ~11 → ~6 min, and the web app and jobs no
+  longer sit on the placeholder image during a deploy. This is the first prod deploy with it.
+- **Admin user list** (#272) and **uninvited sign-in attempts** (#273) on `/admin/users`:
+  everyone invited with status, provider, courses, weekly and upcoming bookings and a per-row
+  Disable/Enable; and who tried to sign in uninvited (verified emails, attempts, first/last try,
+  kept 90 days after the last try) with an Invite button. New Cosmos `global` doc type
+  `rejected_signin` (per-item TTL); no index or Bicep change.
+
+Verified after the deploy (run 36592990239, 6 min 5 s): `Detect bootstrap need` found the prod
+MI's AcrPull grant and pass 1 was skipped; both booking jobs, the watcher and the web app (min
+replicas 1) on image `teetime:fbb6b5e`; `/healthz` 200 on the apex; `/login` links
+`/static/base.css?v=…` and `/static/app.js?v=…`, and static files carry `Cache-Control:
+no-cache`; the first watch run fully after the deploy (12:00 ET) succeeded on the new image.
 
 ## infra/v3.1.0: 2026-09-28 (`main`@`4421fb0`)
 
