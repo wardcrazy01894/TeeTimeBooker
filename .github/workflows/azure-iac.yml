@@ -290,18 +290,40 @@ jobs:
         if: env.BOOKING_MODE == 'tenant' || env.WATCH_MODE == 'tenant'
         run: |
           JOB="teetime-migrate-${ENVNAME}"
-          EXEC=$(az containerapp job start -n "${JOB}" -g "${RESOURCE_GROUP}" --query name -o tsv)
-          test -n "${EXEC}" || { echo "::error::could not start ${JOB}"; exit 1; }
+          # A transient Azure API error (2026-09-29: "Connection reset by peer" on the start
+          # call) must not fail the deploy: retry the START, and let a failed status poll cost one
+          # poll, not the step. Re-starting is safe: the migrations are an ordered, idempotent list
+          # (MULTIUSER_PLAN §10.2). Pinned by tests/test_azure_iac_migrate_step.py.
+          EXEC=""
+          for attempt in 1 2 3; do
+            if EXEC=$(az containerapp job start -n "${JOB}" -g "${RESOURCE_GROUP}" --query name -o tsv) \
+               && [ -n "${EXEC}" ]; then
+              break
+            fi
+            # The error may have come AFTER the start landed: follow a Running execution rather
+            # than start a second, concurrent run.
+            EXEC=$(az containerapp job execution list -n "${JOB}" -g "${RESOURCE_GROUP}" \
+                     --query "[?properties.status=='Running'] | [0].name" -o tsv) || EXEC=""
+            [ "${EXEC}" = None ] && EXEC=""  # az prints nothing today; never adopt a "None"
+            if [ -n "${EXEC}" ]; then
+              echo "::warning::start of ${JOB} errored but execution ${EXEC} is running; following it"
+              break
+            fi
+            echo "::warning::starting ${JOB} failed (attempt ${attempt}/3)"
+            [ "${attempt}" -lt 3 ] && sleep "${MIGRATE_RETRY_SLEEP_S:-15}"
+          done
+          test -n "${EXEC}" || { echo "::error::could not start ${JOB} after 3 attempts"; exit 1; }
           echo "Started ${JOB} execution ${EXEC}"
           STATUS=""
           for _ in $(seq 1 90); do
             STATUS=$(az containerapp job execution show -n "${JOB}" -g "${RESOURCE_GROUP}" \
-                       --job-execution-name "${EXEC}" --query properties.status -o tsv)
+                       --job-execution-name "${EXEC}" --query properties.status -o tsv) \
+              || STATUS="(status query failed)"
             case "${STATUS}" in
               Succeeded) echo "${JOB} ${EXEC}: Succeeded"; exit 0 ;;
               Failed|Stopped|Degraded) echo "::error::${JOB} ${EXEC}: ${STATUS}"; exit 1 ;;
             esac
-            sleep 10
+            sleep "${MIGRATE_POLL_SLEEP_S:-10}"
           done
           echo "::error::${JOB} ${EXEC}: still '${STATUS}' after 15 min"
           exit 1
@@ -490,18 +512,40 @@ jobs:
         if: env.BOOKING_MODE == 'tenant' || env.WATCH_MODE == 'tenant'
         run: |
           JOB="teetime-migrate-${ENVNAME}"
-          EXEC=$(az containerapp job start -n "${JOB}" -g "${RESOURCE_GROUP}" --query name -o tsv)
-          test -n "${EXEC}" || { echo "::error::could not start ${JOB}"; exit 1; }
+          # A transient Azure API error (2026-09-29: "Connection reset by peer" on the start
+          # call) must not fail the deploy: retry the START, and let a failed status poll cost one
+          # poll, not the step. Re-starting is safe: the migrations are an ordered, idempotent list
+          # (MULTIUSER_PLAN §10.2). Pinned by tests/test_azure_iac_migrate_step.py.
+          EXEC=""
+          for attempt in 1 2 3; do
+            if EXEC=$(az containerapp job start -n "${JOB}" -g "${RESOURCE_GROUP}" --query name -o tsv) \
+               && [ -n "${EXEC}" ]; then
+              break
+            fi
+            # The error may have come AFTER the start landed: follow a Running execution rather
+            # than start a second, concurrent run.
+            EXEC=$(az containerapp job execution list -n "${JOB}" -g "${RESOURCE_GROUP}" \
+                     --query "[?properties.status=='Running'] | [0].name" -o tsv) || EXEC=""
+            [ "${EXEC}" = None ] && EXEC=""  # az prints nothing today; never adopt a "None"
+            if [ -n "${EXEC}" ]; then
+              echo "::warning::start of ${JOB} errored but execution ${EXEC} is running; following it"
+              break
+            fi
+            echo "::warning::starting ${JOB} failed (attempt ${attempt}/3)"
+            [ "${attempt}" -lt 3 ] && sleep "${MIGRATE_RETRY_SLEEP_S:-15}"
+          done
+          test -n "${EXEC}" || { echo "::error::could not start ${JOB} after 3 attempts"; exit 1; }
           echo "Started ${JOB} execution ${EXEC}"
           STATUS=""
           for _ in $(seq 1 90); do
             STATUS=$(az containerapp job execution show -n "${JOB}" -g "${RESOURCE_GROUP}" \
-                       --job-execution-name "${EXEC}" --query properties.status -o tsv)
+                       --job-execution-name "${EXEC}" --query properties.status -o tsv) \
+              || STATUS="(status query failed)"
             case "${STATUS}" in
               Succeeded) echo "${JOB} ${EXEC}: Succeeded"; exit 0 ;;
               Failed|Stopped|Degraded) echo "::error::${JOB} ${EXEC}: ${STATUS}"; exit 1 ;;
             esac
-            sleep 10
+            sleep "${MIGRATE_POLL_SLEEP_S:-10}"
           done
           echo "::error::${JOB} ${EXEC}: still '${STATUS}' after 15 min"
           exit 1
