@@ -698,7 +698,9 @@ one doc per `(provider, subject)` in partition `rejected_signin:all` (id = SHA-2
 provider NUL subject, so any subject is a legal id), holding the provider-VERIFIED emails only,
 display name, first/last attempt and a count; the per-item TTL (90 days) is re-set on every
 attempt. Both stores also apply the cut-off when listing (the TTL sweep is lazy). Writes are
-not IfMatch'd, so two simultaneous attempts may count once (display only).
+not IfMatch'd, so two simultaneous attempts may count once (display only). Because the write is
+on the unauthenticated 403 path, it is capped (5 emails, a 200-character name) and bounded by
+`REJECTED_SIGNIN_WRITE_TIMEOUT_S` (5 s) in `web/app.py::_remember_rejected_signin`.
 `web/admin_users.py::uninvited_attempts` drops emails that already belong to a user (so an
 Invite from this list moves the person to the People table) and shows times in ET. Each email
 gets an Invite button posting the existing invite form as a member. Queries filter on `/type`

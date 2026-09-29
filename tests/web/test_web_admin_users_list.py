@@ -3,6 +3,7 @@ they have set up, and a one-click disable / enable (operator request 2026-09-29)
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import date, time
 from uuid import uuid4
@@ -15,6 +16,7 @@ from fastapi import FastAPI
 from teetime.core.clock import FakeClock
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.models import RankedWindow, RuleId, StandingRule, User, UserStatus
+from teetime.web import app as app_module
 from teetime.web.app import WebSettings, create_app
 
 from ..tenant.conformance import MB
@@ -198,3 +200,29 @@ async def test_operator_sees_who_tried_and_can_invite_them(
     after = (await client.get("/admin/users")).text
     assert "Invited" in _row(after, "stranger@example.test")
     assert "stranger@example.test" not in after[after.index("Tried to sign in") :]
+
+
+async def test_a_pathological_profile_is_capped_before_it_is_stored(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, provider_mock: respx.MockRouter
+) -> None:
+    emails = [(f"e{i}@example.test", True) for i in range(20)]
+    mock_github(provider_mock, GitHubIdentity(subject="888", name="N" * 5000, emails=emails))
+    assert (await sign_in(client)).status_code == 403
+    (rec,) = await store.list_rejected_signins(now=T0)
+    assert len(rec.display_name) == app_module.REJECTED_NAME_MAX_LEN
+    assert rec.emails == tuple(e for e, _ in emails[: app_module.REJECTED_EMAILS_MAX])
+
+
+async def test_a_hung_store_never_holds_up_the_403(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    provider_mock: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def hang(**_: object) -> None:
+        await asyncio.Event().wait()  # never set
+
+    monkeypatch.setattr(store, "record_rejected_signin", hang)
+    monkeypatch.setattr(app_module, "REJECTED_SIGNIN_WRITE_TIMEOUT_S", 0.05)
+    resp = await asyncio.wait_for(_stranger_tries(client, provider_mock), timeout=5)
+    assert resp.status_code == 403

@@ -18,6 +18,7 @@ Logging is configured by the ``teetime web`` entrypoint (``basicConfig`` THEN
 # annotations keep the closure-bound dependencies working; PEP 604 unions need no future
 # import on 3.12+.
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -457,20 +458,30 @@ async def _complete_signin(ctx: _Ctx, request: Request, identity: ProviderIdenti
     return RedirectResponse("/", status_code=303)
 
 
+# The uninvited-sign-in record is written on an UNAUTHENTICATED path, so what a provider profile
+# can put into it is capped, and the write is bounded in time.
+REJECTED_NAME_MAX_LEN = 200
+REJECTED_EMAILS_MAX = 5
+REJECTED_SIGNIN_WRITE_TIMEOUT_S = 5.0
+
+
 async def _remember_rejected_signin(
     ctx: _Ctx, identity: ProviderIdentity, *, now: datetime
 ) -> None:
-    """Best-effort: an uninvited identity (verified emails only) for the operator's
-    ``/admin/users`` list. A failure is logged and never changes the 403."""
+    """Best-effort: an uninvited identity (verified emails only, capped) for the operator's
+    ``/admin/users`` list. A failure or a hung store is logged and never changes the 403."""
     try:
-        await ctx.store.record_rejected_signin(
-            provider=identity.provider,
-            subject=identity.subject,
-            emails=tuple(identity.verified_emails),
-            display_name=identity.display_name,
-            at=now,
+        await asyncio.wait_for(
+            ctx.store.record_rejected_signin(
+                provider=identity.provider,
+                subject=identity.subject,
+                emails=tuple(identity.verified_emails[:REJECTED_EMAILS_MAX]),
+                display_name=identity.display_name[:REJECTED_NAME_MAX_LEN],
+                at=now,
+            ),
+            timeout=REJECTED_SIGNIN_WRITE_TIMEOUT_S,
         )
-    except Exception:
+    except Exception:  # TimeoutError included
         log.warning("could not record an uninvited sign-in", exc_info=True)
 
 
