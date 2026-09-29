@@ -111,6 +111,13 @@ async def test_admin_users_operator_only(
     )
     assert r.status_code == 403
     assert not [u for u in store._users.values() if u.email == "x@y.test"]
+    pal = make_invited("pal@y.test")  # a member cannot uninvite either (2026-09-29)
+    await store.upsert_user(pal)
+    r = await client.post(
+        "/admin/users", data={"csrf_token": token, "action": "uninvite", "user_id": str(pal.id)}
+    )
+    assert r.status_code == 403
+    assert await store.get_user_unscoped(pal.id) is not None
 
     await _sign_in_operator(other_client, provider_mock)
     assert (await other_client.get("/admin/users")).status_code == 200

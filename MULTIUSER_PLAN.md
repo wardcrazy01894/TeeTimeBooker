@@ -433,6 +433,10 @@ rank, 1-based, and the collapse and group floor are specified in §16.3/§16.4.
 
 ### 3.7 Store Protocols
 
+(2026-09-29 additions, operator-only: `list_users`, `list_rejected_signins` /
+`record_rejected_signin`, `recent_audit`, and `delete_invited_user` for Uninvite, which deletes
+only a still-INVITED, never-bound user, IfMatch'd in Cosmos. All pinned by the conformance suite.)
+
 `BookingStore` is **unchanged**. It stays the engine's in-run memory (`InMemoryStore` per process).
 A **sibling** `tenant.store.TenantStore` Protocol carries the durable ownership/intent data (the
 M3 cut is reversed for multi-user, which resolves the PLAN §12 residual). Implementations:
@@ -1096,7 +1100,7 @@ account.
 | POST | `/rows/{id}/withdraw` | user | yes | delete an explicit pending row |
 | POST | `/rows/{id}/cancel` | user | yes | managed cancel (§8.5) |
 | GET/POST | `/feedback` | user | POST | Report a bug / Request a course: one form that emails the operator (2026-09-29; `web/feedback.py`) |
-| GET/POST | `/admin/users` | operator | yes | invite (emails an invitation, best-effort; Resend for still-invited users) / disable users (allowlist); lists every user (`TenantStore.list_users`) and the uninvited sign-in attempts with an Invite button (`list_rejected_signins`), 2026-09-29 |
+| GET/POST | `/admin/users` | operator | yes | invite (emails an invitation, best-effort; Resend and Uninvite for still-invited users) / disable users (allowlist); lists every user (`TenantStore.list_users`) and the uninvited sign-in attempts with an Invite button (`list_rejected_signins`), 2026-09-29 |
 
 Every data query is scoped by the session's `user_id`. There is an IDOR test per route
 (`test_route_rejects_other_users_row`).

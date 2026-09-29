@@ -136,3 +136,51 @@ async def test_resend_refuses_someone_who_already_signed_in_or_does_not_exist(
     assert (await _post(client, {"action": "resend", "user_id": missing})).status_code == 404
     assert (await _post(client, {"action": "resend", "user_id": "nope"})).status_code == 400
     assert sender.sent == []
+
+
+# --- uninvite (operator request 2026-09-29) --------------------------------------------------
+
+
+async def test_uninvite_is_offered_to_still_invited_people_only_and_asks_first(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, provider_mock: respx.MockRouter
+) -> None:
+    await _member_with_a_weekly_booking(client, store, provider_mock)  # an ACTIVE member
+    pal = make_invited(FRIEND)
+    await store.upsert_user(pal)
+    await _sign_in_operator(client, provider_mock)
+    page = (await client.get("/admin/users")).text
+    rows = re.findall(r"<tr\b.*?</tr>", page, re.DOTALL)
+    pal_row = next(tr for tr in rows if FRIEND in tr)
+    # A disclosure: one click reveals the real (confirming) button, so a stray tap can't uninvite.
+    assert '<summary class="button small danger">Uninvite</summary>' in pal_row
+    assert 'value="uninvite"' in pal_row and f'name="user_id" value="{pal.id}"' in pal_row
+    assert not any('value="uninvite"' in tr for tr in rows if "turk@" in tr)
+
+
+async def test_uninvite_removes_the_invite_and_audits_it(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, provider_mock: respx.MockRouter
+) -> None:
+    pal = make_invited(FRIEND)
+    await store.upsert_user(pal)
+    await _sign_in_operator(client, provider_mock)
+    r = await _post(client, {"action": "uninvite", "user_id": str(pal.id)})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/admin/users?notice=uninvited"
+    assert await store.get_user_unscoped(pal.id) is None
+    assert not any(u.email == FRIEND for u in await store.list_users())
+    entry = store.audit_log[-1]
+    assert (entry.action, entry.detail["uninvited_user_id"]) == ("admin_uninvite", str(pal.id))
+    assert "uninvited" in (await client.get(r.headers["location"])).text.lower()
+
+
+async def test_uninvite_refuses_someone_who_signed_in_or_does_not_exist(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, provider_mock: respx.MockRouter
+) -> None:
+    turk = await _member_with_a_weekly_booking(client, store, provider_mock)
+    await _sign_in_operator(client, provider_mock)
+    r = await _post(client, {"action": "uninvite", "user_id": str(turk.id)})
+    assert r.status_code == 400 and "Disable" in r.text
+    assert await store.get_user_unscoped(turk.id) is not None
+    missing = "00000000-0000-4000-8000-000000000000"
+    assert (await _post(client, {"action": "uninvite", "user_id": missing})).status_code == 404
+    assert (await _post(client, {"action": "uninvite", "user_id": "nope"})).status_code == 400

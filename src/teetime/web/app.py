@@ -556,6 +556,8 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
             return await _admin_invite(ctx, operator, form, now=now)
         if action == "resend":
             return await _admin_resend_invite(ctx, operator, form, now=now)
+        if action == "uninvite":
+            return await _admin_uninvite(ctx, operator, form, now=now)
         if action in ("disable", "enable"):
             return await _admin_set_status(ctx, operator, form, enable=action == "enable", now=now)
         raise HTTPException(status_code=400, detail="unknown action")
@@ -569,6 +571,7 @@ _ADMIN_NOTICES = {
         "Invite created; the invitation email is on its way. It binds on their first sign-in "
         "with Google. If it doesn't arrive within a few minutes, use Resend invite."
     ),
+    "uninvited": "Invite removed: that address can no longer sign in.",
     "resent": (
         "Invitation email is on its way. If it still doesn't arrive, tell them to sign in with "
         "Google using that address."
@@ -642,6 +645,31 @@ async def _send_invitation(ctx: _Ctx, email: str) -> bool:
     if not result.ok:
         log.warning("invitation email not delivered (status=%s)", result.status)
     return result.ok
+
+
+async def _admin_uninvite(ctx: _Ctx, operator: User, form: FormData, *, now: datetime) -> Response:
+    """Delete a still-INVITED (never signed in) user, so the address can no longer sign in. A
+    signed-in user has an account: that is Disable, not uninvite (400). A first sign-in racing
+    this wins (the store's delete is conditional)."""
+    try:
+        user_id = UserId(UUID(_form_str(form, "user_id")))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid user id") from e
+    target = await ctx.store.get_user_unscoped(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="no such user")
+    if target.status is not UserStatus.INVITED or not await ctx.store.delete_invited_user(user_id):
+        raise HTTPException(
+            status_code=400, detail="that person has already signed in; use Disable instead"
+        )
+    await ctx.store.append_audit(
+        user_id=operator.id,
+        action="admin_uninvite",
+        row_id=None,
+        detail={"uninvited_user_id": str(user_id)},
+        at=now,
+    )
+    return RedirectResponse("/admin/users?notice=uninvited", status_code=303)
 
 
 async def _admin_resend_invite(

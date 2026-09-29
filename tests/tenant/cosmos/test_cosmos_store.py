@@ -58,7 +58,10 @@ from teetime.tenant.models import (
     RowStatus,
     RuleId,
     TransitionRefusedError,
+    User,
     UserId,
+    UserRole,
+    UserStatus,
     derive_account_id,
 )
 from teetime.tenant.store import (
@@ -528,3 +531,27 @@ def test_ci_containers_refused_outside_the_dev_database() -> None:
         endpoint="https://x.documents.azure.com:443/", database="dev", container_suffix="-ci"
     )
     assert ok.container_names == ("tenant-ci", "global-ci")
+
+
+async def test_uninvite_loses_to_a_concurrent_first_sign_in() -> None:
+    """The delete is IfMatch'd on the etag it read: if the invitee signs in (binds) between the
+    read and the delete, the delete is refused and the new user stays."""
+    store, _, global_ = _fake_store()
+    invited = User(
+        id=UserId(uuid4()),
+        oauth_provider="",
+        oauth_subject=None,
+        email="pal@x.test",
+        display_name="pal",
+        role=UserRole.MEMBER,
+        status=UserStatus.INVITED,
+    )
+    await store.upsert_user(invited)
+
+    async def race() -> None:
+        assert await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+
+    global_.before_write = race
+    assert await store.delete_invited_user(invited.id) is False
+    bound = await store.get_user_unscoped(invited.id)
+    assert bound is not None and bound.status is UserStatus.ACTIVE and bound.oauth_subject == "s1"

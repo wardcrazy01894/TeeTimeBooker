@@ -413,6 +413,12 @@ class TenantStore(Protocol):
         Never another user's or a system (``user_id=None``) entry."""
         ...
 
+    async def delete_invited_user(self, user_id: UserId) -> bool:
+        """Uninvite: delete the user iff it is still INVITED and never bound (no subject). True
+        when deleted; False for a signed-in / disabled user (use Disable) or an unknown id. A
+        concurrent first sign-in wins: the delete is conditional on the record being unchanged."""
+        ...
+
     async def list_users(self) -> list[User]:
         """OPERATOR read (the ``/admin/users`` listing): every user in any status, invited ones
         included, sorted by email (case-insensitive). The only unscoped listing the web makes;
