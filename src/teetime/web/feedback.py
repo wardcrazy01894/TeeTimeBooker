@@ -9,8 +9,10 @@ message; the subject is stripped of line breaks so a display name cannot inject 
 """
 
 import asyncio
+import hashlib
 import logging
-from collections import defaultdict, deque
+import re
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any
 from zoneinfo import ZoneInfo
@@ -117,6 +119,7 @@ def register_feedback_routes(
             "prompt": prompt,
             "from_page": local_path(request.query_params.get("from")),
             "max_len": MESSAGE_MAX_LEN,
+            "files_issue": ctx.github_issues is not None,
         }
         return ctx.page(request, "feedback.html", context)
 
@@ -135,26 +138,150 @@ def register_feedback_routes(
             raise HTTPException(
                 status_code=429, detail="That's a lot of reports for one hour. Try again later."
             )
-        mail = render_feedback(
-            kind, user=user, page=local_path(str(form.get("from", ""))), message=message
-        )
-        if kind == "bug":
-            diagnostics = await bug_diagnostics(
+        page = local_path(str(form.get("from", "")))
+        mail = render_feedback(kind, user=user, page=page, message=message)
+
+        # The public issue is filed concurrently with the private diagnostics (both bounded and
+        # non-raising); gather() owns both, so a cancelled request never orphans either.
+        async def private_diagnostics() -> str | None:
+            if kind != "bug":
+                return None
+            return await bug_diagnostics(
                 ctx, user=user, user_agent=request.headers.get("user-agent", "")
             )
+
+        issue_url, private_diag = await asyncio.gather(
+            _file_issue(ctx, kind=kind, user=user, page=page, message=message),
+            private_diagnostics(),
+        )
+        if ctx.github_issues is not None:
+            link = issue_url or "(not filed)"
             mail = EmailMessage(
-                to=mail.to, subject=mail.subject, body=f"{mail.body}\n\n{diagnostics}"
+                to=mail.to, subject=mail.subject, body=f"{mail.body}\n\nGitHub issue: {link}"
+            )
+        if private_diag is not None:
+            mail = EmailMessage(
+                to=mail.to, subject=mail.subject, body=f"{mail.body}\n\n{private_diag}"
             )
         sent = await _send(ctx, mail)
         await ctx.store.append_audit(
             user_id=user.id,
             action="feedback",
             row_id=None,
-            detail={"kind": kind, "length": len(message), "emailed": sent},
+            detail={
+                "kind": kind,
+                "length": len(message),
+                "emailed": sent,
+                "issue": issue_url is not None,
+            },
             at=ctx.clock.now_utc(),
         )
         notice = "feedback_sent" if sent else "feedback_not_sent"
         return RedirectResponse(f"/?notice={notice}", status_code=303)
+
+
+TITLE_MAX_LEN = 80
+# The only pages a PUBLIC issue may name: `from` is user-controlled (it could carry a backtick +
+# @mention, HTML or an id), so anything else is "(other page)" and the query string is dropped.
+PUBLIC_PAGES = frozenset({"/", "/dates", "/rules", "/accounts", "/feedback", "/admin/users"})
+
+
+def public_page(page: str | None) -> str:
+    path = (page or "").split("?", 1)[0]
+    return f"`{path}`" if path in PUBLIC_PAGES else "(other page)"
+
+
+def anonymous_reporter(user: User) -> str:
+    """A stable tag that groups one person's reports without naming them (``r-`` + 8 hex)."""
+    return "r-" + hashlib.sha256(str(user.id).encode()).hexdigest()[:8]
+
+
+def issue_title(kind: str, message: str) -> str:
+    """``[Bug report] <first line of the message>``: one line, capped, no @-mentions."""
+    _, _, prefix = KINDS[kind]
+    first = _one_line(message).replace("@", "")[:TITLE_MAX_LEN]
+    return f"[{prefix}] {first}"
+
+
+def _fenced(text: str) -> str:
+    """A ``~~~~`` fence longer than any tilde run in ``text``: the reporter's own fences cannot
+    close it, so their text renders literally (no @-mentions, links or HTML)."""
+    longest = max((len(run) for run in re.findall(r"~+", text)), default=0)
+    fence = "~" * max(4, longest + 1)
+    return f"{fence}text\n{text}\n{fence}"
+
+
+async def _file_issue(
+    ctx: "_Ctx", *, kind: str, user: User, page: str | None, message: str
+) -> str | None:
+    """Best-effort anonymized issue in the public repo; None when not configured or on failure."""
+    if ctx.github_issues is None:
+        return None
+    _, _, prefix = KINDS[kind]
+    lines = [
+        f"{prefix} from the site, reporter `{anonymous_reporter(user)}` (anonymous).",
+        "",
+        f"Page: {public_page(page)}",
+        "",
+        _fenced(message),
+    ]
+    try:
+        if kind == "bug":
+            lines += ["", await public_diagnostics(ctx, user=user)]
+        return await asyncio.wait_for(
+            ctx.github_issues.create(title=issue_title(kind, message), body="\n".join(lines)),
+            timeout=ISSUE_TIMEOUT_S,
+        )
+    except Exception:  # TimeoutError included; create() itself never raises
+        log.warning("GitHub issue not filed", exc_info=True)
+        return None
+
+
+ISSUE_TIMEOUT_S = 15.0
+
+
+async def public_diagnostics(ctx: "_Ctx", *, user: User) -> str:
+    """The anonymized half of the diagnostics, fit for a PUBLIC issue: the build, each course's
+    name and status, and counts of the next 21 days' dates by status. No names, emails or ids."""
+    s = ctx.settings
+    out = [
+        "<details><summary>Diagnostics (anonymized)</summary>",
+        "",
+        f"- Environment: {s.environment or '(unset)'} · build {s.build or '(unset)'}",
+        # The date only: a minute-level time could be matched to a person.
+        f"- Reported: {ctx.clock.now_utc():%Y-%m-%d}",
+    ]
+    try:
+        out += await asyncio.wait_for(
+            _public_store_lines(ctx, user=user), timeout=DIAGNOSTICS_TIMEOUT_S
+        )
+    except Exception as exc:  # TimeoutError included
+        out.append(f"- (diagnostics unavailable: {type(exc).__name__})")
+    return "\n".join([*out, "", "</details>"])
+
+
+async def _public_store_lines(ctx: "_Ctx", *, user: User) -> list[str]:
+    accounts = await ctx.store.list_accounts_for_user(user.id)
+    out = [
+        f"- {ctx.course_name(a.course_id)}: {a.status.value}"
+        + (
+            f", {a.consecutive_soft_auth_failures} login failures in a row"
+            if a.consecutive_soft_auth_failures
+            else ""
+        )
+        for a in accounts
+    ] or ["- No course connected"]
+    today = ctx.clock.now_utc().date()
+    rows = await ctx.store.list_rows_for_user(
+        user.id, from_date=today, to_date=today + timedelta(days=MIN_HORIZON_DAYS)
+    )
+    counts = Counter(r.status.value for r in rows)
+    reconcile = sum(1 for r in rows if r.needs_reconcile)
+    summary = ", ".join(f"{n} {status}" for status, n in sorted(counts.items())) or "none"
+    out.append(
+        f"- Next 21 days: {summary}" + (f", {reconcile} need reconcile" if reconcile else "")
+    )
+    return out
 
 
 DIAGNOSTIC_ACTIONS = 10

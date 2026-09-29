@@ -111,6 +111,9 @@ param emailCustomDomain string = ''
 @description('Stage 2, only after the emailCustomDomain DNS records verify: link it and send as hello@<emailCustomDomain> (unless acsEmailSender is set explicitly).')
 param emailCustomDomainLinked bool = false
 
+@description('"owner/repo" that site reports are filed in as anonymized GitHub issues (webapp.bicep); prod: the public repo, dev: empty (the GITHUB-ISSUES-TOKEN secret is prod-only).')
+param githubIssuesRepo string = ''
+
 @description('Public base URL the web app is reachable at (only meaningful when deployWebApp=true) — see webapp.bicep header for why this is a param, not derived.')
 param webPublicBaseUrl string = ''
 
@@ -278,6 +281,7 @@ module webapp 'modules/webapp.bicep' = if (deployWebApp) {
     customDomain: webCustomDomain
     webPublicBaseUrl: webPublicBaseUrl
     operatorEmail: operatorEmail
+    githubIssuesRepo: githubIssuesRepo
     dryRun: dryRun
     // MU-16a: the web's tenant backend (store + keyring + ACS), wired iff the endpoint is set.
     tenantCosmosEndpoint: tenantCosmosEndpoint

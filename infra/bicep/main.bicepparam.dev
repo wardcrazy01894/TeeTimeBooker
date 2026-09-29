@@ -106,5 +106,7 @@ param webCustomDomain = ''
 // Dev keeps the Azure-managed DoNotReply@<…>.azurecomm.net sender.
 param emailCustomDomain = ''
 param emailCustomDomainLinked = false
+// No GITHUB-ISSUES-TOKEN in dev's vault: reports are emailed only.
+param githubIssuesRepo = ''
 // Empty = the web reads OPERATOR-NOTIFY-EMAIL from Key Vault (the repo is public).
 param operatorEmail = ''

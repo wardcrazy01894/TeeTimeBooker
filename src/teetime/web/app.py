@@ -51,6 +51,7 @@ from ..tenant.store import TenantStore
 from . import admin_users as admin_users_view
 from . import auth
 from .auth import ForbiddenError
+from .github_issues import GitHubIssues
 from .oauth import (
     PROVIDERS,
     OAuthFlowError,
@@ -162,6 +163,9 @@ class WebSettings:
     # image tag, i.e. the git sha CI built). None when unset (local runs).
     environment: str | None = None
     build: str | None = None
+    # Site reports -> anonymized issues in this repo (2026-09-29). Both or neither.
+    github_issues_repo: str | None = None
+    github_issues_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.github is None and self.google is None:
@@ -209,6 +213,8 @@ WEB_ENV_VARS: tuple[str, ...] = (
     "TEETIME_CANONICAL_HOST_REDIRECT",  # "false" (default) | "true"
     "TEETIME_ENV",  # optional, bug-report diagnostics ("dev" | "prod")
     "TEETIME_BUILD",  # optional, bug-report diagnostics (the image tag = git sha)
+    "GITHUB_ISSUES_REPO",  # optional, "owner/repo": site reports become issues there
+    "GITHUB_ISSUES_TOKEN",  # optional secret, fine-grained, Issues read+write on that repo
 )
 
 
@@ -247,6 +253,8 @@ def load_web_settings(env: Mapping[str, str] | None = None) -> WebSettings:
     canonical_raw = value("TEETIME_CANONICAL_HOST_REDIRECT").lower() or "false"
     if canonical_raw not in ("true", "false"):
         raise WebConfigError("TEETIME_CANONICAL_HOST_REDIRECT must be 'true' or 'false'")
+    # Both or neither: a half-configured pair leaves filing off rather than failing.
+    gh_issues = bool(value("GITHUB_ISSUES_REPO")) and bool(value("GITHUB_ISSUES_TOKEN"))
     return WebSettings(
         public_base_url=required("TEETIME_PUBLIC_BASE_URL"),
         session_secret=required("WEB_SESSION_SECRET"),
@@ -257,6 +265,8 @@ def load_web_settings(env: Mapping[str, str] | None = None) -> WebSettings:
         canonical_host_redirect=canonical_raw == "true",
         environment=value("TEETIME_ENV") or None,
         build=value("TEETIME_BUILD") or None,
+        github_issues_repo=(value("GITHUB_ISSUES_REPO") or None) if gh_issues else None,
+        github_issues_token=(value("GITHUB_ISSUES_TOKEN") or None) if gh_issues else None,
     )
 
 
@@ -340,6 +350,7 @@ class _Ctx:
     adapter_factory: AdapterFactory | None = None
     notifier: UserNotifier | None = None
     email_sender: EmailSender | None = None  # invitations; None = not configured
+    github_issues: GitHubIssues | None = None  # site reports -> public issues; None = off
     refresh_cache: RefreshCache = field(default_factory=lambda: RefreshCache(ttl_s=120))
     probe_limits: ProbeLimits = field(default_factory=ProbeLimits)
     # ``str(course_id)`` -> the name a person reads (default ``courses.names``); never a raw id.
@@ -684,6 +695,7 @@ def create_app(
     keyring: Keyring | None = None,
     notifier: UserNotifier | None = None,
     email_sender: EmailSender | None = None,
+    github_issues: GitHubIssues | None = None,
     policies: Mapping[str, ReleasePolicy] | None = None,
     cutoff: BookingCutoffConfig | None = None,
     adapter_factory: AdapterFactory | None = None,
@@ -712,6 +724,7 @@ def create_app(
         adapter_factory=adapter_factory,
         notifier=notifier,
         email_sender=email_sender,
+        github_issues=github_issues,
         refresh_cache=RefreshCache(ttl_s=settings.refresh_ttl_s),
         probe_limits=ProbeLimits(
             per_user_per_hour=settings.max_probes_per_user_per_hour,

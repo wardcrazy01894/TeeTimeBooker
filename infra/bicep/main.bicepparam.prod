@@ -104,6 +104,9 @@ param webCustomDomain = 'spicyteetimebooker.com'
 // linked, so the sender is "Spicy's Tee Time Booker" <hello@spicyteetimebooker.com>.
 param emailCustomDomain = 'spicyteetimebooker.com'
 param emailCustomDomainLinked = true
+// Site reports (Report a bug / Request a course) -> anonymized issues here (2026-09-29). Needs
+// the GITHUB-ISSUES-TOKEN Key Vault secret (created by the operator).
+param githubIssuesRepo = 'wardcrazy01894/TeeTimeBooker'
 // Always warm (operator decision 2026-09-28): one idle-billed replica, ~$6/month, so a visitor
 // never waits out the ~30 s scale-from-zero cold start. The killswitch still forces 0.
 param webMinReplicas = 1

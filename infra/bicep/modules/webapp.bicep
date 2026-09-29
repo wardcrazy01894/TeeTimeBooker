@@ -50,6 +50,9 @@ param location string
 @description('Full container image reference. Same image as the ACA Jobs — `teetime web` is a subcommand of the same entrypoint.')
 param containerImage string
 
+@description('"owner/repo" that site reports are filed in as anonymized issues (prod: the public repo; empty = off). Needs the GITHUB-ISSUES-TOKEN Key Vault secret (fine-grained token, Issues read+write on that repo only).')
+param githubIssuesRepo string = ''
+
 @description('Resource ID of the user-assigned managed identity (from identity.bicep).')
 param userAssignedIdentityResourceId string
 
@@ -120,6 +123,16 @@ var webSecrets = [
 var operatorEmailFromVault = empty(operatorEmail)
 var operatorEmailSecrets = operatorEmailFromVault ? [
   { name: 'operator-notify-email', keyVaultUrl: '${keyVaultUri}secrets/OPERATOR-NOTIFY-EMAIL', identity: userAssignedIdentityResourceId }
+] : []
+// Site reports -> anonymized issues in the public repo (2026-09-29). The token secret exists only
+// in prod's vault, so the secret reference is gated on the repo param (empty in dev).
+var githubIssues = !empty(githubIssuesRepo)
+var githubIssuesSecrets = githubIssues ? [
+  { name: 'github-issues-token', keyVaultUrl: '${keyVaultUri}secrets/GITHUB-ISSUES-TOKEN', identity: userAssignedIdentityResourceId }
+] : []
+var githubIssuesEnv = githubIssues ? [
+  { name: 'GITHUB_ISSUES_TOKEN', secretRef: 'github-issues-token' }
+  { name: 'GITHUB_ISSUES_REPO', value: githubIssuesRepo }
 ] : []
 var operatorEmailEnv = operatorEmailFromVault ? { name: 'TEETIME_OPERATOR_EMAIL', secretRef: 'operator-notify-email' } : { name: 'TEETIME_OPERATOR_EMAIL', value: operatorEmail }
 
@@ -205,7 +218,7 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
         customDomains: customDomainBindings
       } : null
       registries: registries
-      secrets: concat(webSecrets, operatorEmailSecrets, tenantBackend ? webTenantSecrets : [])
+      secrets: concat(webSecrets, operatorEmailSecrets, githubIssuesSecrets, tenantBackend ? webTenantSecrets : [])
     }
     template: {
       containers: [
@@ -218,7 +231,7 @@ resource webApp 'Microsoft.App/containerApps@2024-03-01' = {
           }
           command: ['teetime']
           args: ['web', '--port', '8000']
-          env: tenantBackend ? concat(webEnv, webTenantEnv) : webEnv
+          env: concat(tenantBackend ? concat(webEnv, webTenantEnv) : webEnv, githubIssuesEnv)
         }
       ]
       scale: {

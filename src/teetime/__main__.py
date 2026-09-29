@@ -87,6 +87,7 @@ from .tenant.wiring import (
     user_notifier_from_env,
 )
 from .web.app import WebConfigError, WebSettings, create_app, load_web_settings
+from .web.github_issues import GitHubIssues
 
 # Registry mapping TOML adapter names to adapter classes.
 # _build_adapters() resolves every [[courses]] entry through this dict.
@@ -846,6 +847,11 @@ async def _web_main(
             keyring=keyring,
             notifier=user_notifier_from_env(store, command="web"),
             email_sender=email_sender_from_env(command="web"),
+            github_issues=(
+                GitHubIssues(settings.github_issues_repo, settings.github_issues_token)
+                if settings.github_issues_repo and settings.github_issues_token
+                else None
+            ),
             policies={str(cid): policy for cid, policy in hosted_policies().items()},
             # Throwaway login probes only (connect / refresh / cancel): never a CAPTCHA solve.
             adapter_factory=HostedAdapterFactory(api_key=None),
