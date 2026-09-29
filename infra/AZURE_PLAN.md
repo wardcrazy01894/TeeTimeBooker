@@ -1392,6 +1392,36 @@ host → the apex). Gate: `curl -sI https://spicyteetimebooker.com/healthz` is 2
 **Rollback:** set `webCustomDomain = ''` and `webPublicBaseUrl` back to the azurecontainerapps.io
 URL, then tag; the certificates can stay.
 
+### 10.10 Prod mail from hello@spicyteetimebooker.com (2026-09-29)
+
+Two stages, because Azure refuses to link a customer-managed email domain before its DNS records
+verify. Cost: none beyond the per-message price the managed domain already pays; Cloudflare DNS
+and Email Routing are free.
+
+1. **Stage 1 (Bicep, prod release).** `emailCustomDomain = 'spicyteetimebooker.com'`,
+   `emailCustomDomainLinked = false` (prod bicepparam). The deploy creates the
+   `CustomerManaged` domain on `acs-email-teetime-prod`; the site still sends as
+   `DoNotReply@<…>.azurecomm.net`.
+2. **Read the records** (read-only): the `emailCustomDomainRecords` deployment output, or
+   `az communication email domain show -g rg-teetime-prod --email-service-name
+   acs-email-teetime-prod -n spicyteetimebooker.com --query properties.verificationRecords`.
+   Domain (TXT at `@`), SPF (TXT at `@`, exactly `v=spf1 include:spf.protection.outlook.com
+   -all`), DKIM and DKIM2 (CNAMEs `selector1/2-azurecomm-prod-net._domainkey`).
+3. **Cloudflare DNS** (operator-approved, all **DNS only**): add those four records, plus DMARC
+   `_dmarc` TXT `v=DMARC1; p=none; rua=mailto:hello@spicyteetimebooker.com`. SPF must be the
+   EXACT Azure value at verification time (Azure rejects extra includes).
+4. **Verify** (operator-approved Azure write): once DNS resolves, `az communication email
+   domain initiate-verification … --verification-type Domain` (then SPF, DKIM, DKIM2); poll
+   `properties.verificationStates` until each is `Verified`.
+5. **Cloudflare Email Routing** for `hello@` → the operator's Gmail (operator verifies the
+   destination by clicking Cloudflare's email). It adds MX records and wants its own SPF include:
+   merge it into the ONE apex SPF record only AFTER Azure shows SPF `Verified`:
+   `v=spf1 include:spf.protection.outlook.com include:_spf.mx.cloudflare.net -all`.
+6. **Stage 2 (Bicep, prod release).** `emailCustomDomainLinked = true`: the domain is linked to
+   `acs-teetime-prod`, the `hello` sender ("Spicy's Tee Time Booker") is created, and
+   `email.bicep`'s `senderAddress` output makes every prod email come from
+   `hello@spicyteetimebooker.com`. Send a test (an invitation to yourself) to confirm.
+
 ## 11. Security checklist
 
 | Item | Status | Detail |

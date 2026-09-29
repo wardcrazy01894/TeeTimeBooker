@@ -105,6 +105,12 @@ deploy identity "Key Vault Secrets Officer" on the vault (see email.bicep header
 `az provider show` can verify registration; the grant itself is an explicit operator action.''')
 param deployAcsEmail bool = false
 
+@description('Customer-managed ACS sender domain (email.bicep customDomain; prod: spicyteetimebooker.com, dev: none). Stage 1 creates it for DNS verification; see emailCustomDomainLinked.')
+param emailCustomDomain string = ''
+
+@description('Stage 2, only after the emailCustomDomain DNS records verify: link it and send as hello@<emailCustomDomain> (unless acsEmailSender is set explicitly).')
+param emailCustomDomainLinked bool = false
+
 @description('Public base URL the web app is reachable at (only meaningful when deployWebApp=true) — see webapp.bicep header for why this is a param, not derived.')
 param webPublicBaseUrl string = ''
 
@@ -292,15 +298,18 @@ module email 'modules/email.bicep' = if (deployAcsEmail) {
   params: {
     envName: envName
     keyVaultName: keyvault.outputs.vaultName
+    customDomain: emailCustomDomain
+    customDomainLinked: emailCustomDomainLinked
   }
 }
 
 // MU-17: the Azure-managed sender domain is generated when the email module first deploys, so
 // an explicit acsEmailSender would need a second PR. Empty param + deployAcsEmail derives
-// DoNotReply@<domain> from the module output. Handing this runtime value to compute and webapp
+// the sender from the module output (DoNotReply@<managed domain>, or hello@<emailCustomDomain>
+// once emailCustomDomainLinked, 2026-09-29). Handing this runtime value to compute and webapp
 // also orders both after the module that writes ACS-EMAIL-CONNECTION into Key Vault, which the
 // tenant containers reference (ACA validates KV refs at create time).
-var effectiveAcsEmailSender = !empty(acsEmailSender) ? acsEmailSender : (deployAcsEmail ? 'DoNotReply@${email.?outputs.mailFromSenderDomain ?? ''}' : '')
+var effectiveAcsEmailSender = !empty(acsEmailSender) ? acsEmailSender : (deployAcsEmail ? (email.?outputs.senderAddress ?? '') : '')
 
 // ---------------------------------------------------------------------------
 // Outputs
@@ -331,3 +340,6 @@ output webAppFqdn string = webapp.?outputs.fqdn ?? ''
 
 @description('ACS Email Azure-managed domain sender subdomain. Empty string when deployAcsEmail=false. The operator sets acsEmailSender to "DoNotReply@<this value>" once known (see email.bicep header).')
 output acsEmailDomain string = email.?outputs.mailFromSenderDomain ?? ''
+
+@description('The customer-managed email domain\'s DNS records for Cloudflare (empty unless emailCustomDomain is set).')
+output emailCustomDomainRecords object = email.?outputs.customDomainVerificationRecords ?? {}

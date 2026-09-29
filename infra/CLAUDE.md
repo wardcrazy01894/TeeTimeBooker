@@ -80,7 +80,10 @@ infra/
                              #   SNI to managed certs mc-<host-dashed>, created once by the
                              #   AZURE_PLAN §10.9 runbook BEFORE the first deploy that sets it.
       email.bicep            # NEW (MU-15a): ACS Communication Service + Email Service +
-                             #   Azure-managed domain; writes KV secret ACS-EMAIL-CONNECTION via
+                             #   Azure-managed domain (+ prod's customer-managed
+                             #   spicyteetimebooker.com, 2026-09-29: emailCustomDomain creates it,
+                             #   emailCustomDomainLinked links it + adds hello@ as the sender;
+                             #   AZURE_PLAN §10.10); writes KV secret ACS-EMAIL-CONNECTION via
                              #   listKeys() at deploy time. Gated on deployAcsEmail (dev true,
                              #   prod false). Requires Microsoft.Communication RP registration +
                              #   "Key Vault Secrets Officer" for the CI deploy identity (operator,
