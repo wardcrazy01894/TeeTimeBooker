@@ -68,6 +68,7 @@ from ...core.redaction import redact_payload
 from ..materialize import RuleConflictError
 from ..models import (
     ACTIVE_ROW_STATUSES,
+    REJECTED_SIGNIN_RETENTION,
     AccountStatus,
     Actor,
     BookingState,
@@ -76,6 +77,7 @@ from ..models import (
     EventRow,
     OwnedBooking,
     RankedWindow,
+    RejectedSignin,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -124,6 +126,7 @@ from ..store import (
 )
 from .documents import (
     GLOBAL_CONTAINER,
+    REJECTED_SIGNIN_PK,
     TENANT_CONTAINER,
     AuditRecord,
     ClaimKind,
@@ -140,6 +143,7 @@ from .documents import (
     from_booking_doc,
     from_claim_doc,
     from_probe_doc,
+    from_rejected_signin_doc,
     from_row_doc,
     from_rule_doc,
     from_ruleday_doc,
@@ -147,6 +151,7 @@ from .documents import (
     from_snapshot_doc,
     from_user_doc,
     identity_claim_key,
+    rejected_signin_doc_id,
     row_doc_id,
     rule_doc_id,
     to_account_doc,
@@ -154,6 +159,7 @@ from .documents import (
     to_booking_doc,
     to_claim_doc,
     to_probe_doc,
+    to_rejected_signin_doc,
     to_row_doc,
     to_rule_doc,
     to_ruleday_doc,
@@ -1447,6 +1453,46 @@ class CosmosTenantStore:
                 await self.upsert_user(bound)
                 return bound
         return None
+
+    async def record_rejected_signin(
+        self,
+        *,
+        provider: str,
+        subject: str,
+        emails: tuple[str, ...],
+        display_name: str,
+        at: datetime,
+    ) -> RejectedSignin:
+        doc = await self._read(
+            self._global, rejected_signin_doc_id(provider, subject), REJECTED_SIGNIN_PK
+        )
+        old = from_rejected_signin_doc(doc).item if doc is not None else None
+        record = RejectedSignin(
+            provider=provider,
+            subject=subject,
+            emails=tuple(emails),
+            display_name=display_name,
+            first_at=at if old is None else old.first_at,
+            last_at=at,
+            attempts=1 if old is None else old.attempts + 1,
+        )
+        await self._global.upsert_item(to_rejected_signin_doc(record))
+        return record
+
+    async def list_rejected_signins(self, *, now: datetime) -> list[RejectedSignin]:
+        docs = await self._query(
+            self._global,
+            "c.type = @type",
+            partition_key=REJECTED_SIGNIN_PK,
+            type="rejected_signin",
+        )
+        # The TTL sweep is lazy, so the cut-off is applied here too (same as in memory).
+        live = (
+            r
+            for r in (from_rejected_signin_doc(d).item for d in docs)
+            if now - r.last_at < REJECTED_SIGNIN_RETENTION
+        )
+        return sorted(live, key=lambda r: (r.last_at, r.provider, r.subject), reverse=True)
 
     async def list_users(self) -> list[User]:
         docs = await self._query(self._global, "c.type = @type", type="user")

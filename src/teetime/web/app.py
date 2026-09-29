@@ -448,11 +448,30 @@ async def _complete_signin(ctx: _Ctx, request: Request, identity: ProviderIdenti
             detail=detail,
             at=now,
         )
+        if user is None:
+            await _remember_rejected_signin(ctx, identity, now=now)
         request.session.clear()
         raise ForbiddenError("not invited" if user is None else "this account is disabled")
     auth.establish_session(request.session, user=user, identity=identity, now=now)
     log.info("signin ok provider=%s user_id=%s", identity.provider, user.id)
     return RedirectResponse("/", status_code=303)
+
+
+async def _remember_rejected_signin(
+    ctx: _Ctx, identity: ProviderIdentity, *, now: datetime
+) -> None:
+    """Best-effort: an uninvited identity (verified emails only) for the operator's
+    ``/admin/users`` list. A failure is logged and never changes the 403."""
+    try:
+        await ctx.store.record_rejected_signin(
+            provider=identity.provider,
+            subject=identity.subject,
+            emails=tuple(identity.verified_emails),
+            display_name=identity.display_name,
+            at=now,
+        )
+    except Exception:
+        log.warning("could not record an uninvited sign-in", exc_info=True)
 
 
 def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency) -> None:
@@ -469,10 +488,19 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
     async def admin_users(request: Request, operator: Operator) -> Response:
         notice = _ADMIN_NOTICES.get(request.query_params.get("notice", ""))
         users = await admin_users_view.user_overviews(ctx.store, clock=ctx.clock)
+        attempts = await admin_users_view.uninvited_attempts(
+            ctx.store, users=[o.user for o in users], clock=ctx.clock
+        )
         return ctx.page(
             request,
             "admin_users.html",
-            {"user": operator, "is_operator": True, "notice": notice, "users": users},
+            {
+                "user": operator,
+                "is_operator": True,
+                "notice": notice,
+                "users": users,
+                "attempts": attempts,
+            },
         )
 
     @app.post("/admin/users")

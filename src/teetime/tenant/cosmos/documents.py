@@ -34,6 +34,7 @@ from uuid import UUID
 
 from ...core.models import CourseId
 from ..models import (
+    REJECTED_SIGNIN_RETENTION,
     AccountProvenance,
     AccountStatus,
     BookingSource,
@@ -43,6 +44,7 @@ from ..models import (
     EventRow,
     OwnedBooking,
     RankedWindow,
+    RejectedSignin,
     RequestRow,
     ReservationSnapshot,
     RowFingerprint,
@@ -82,11 +84,13 @@ GLOBAL_PK_PREFIXES: Mapping[str, str] = {
     "claim": "claim:",
     "probe": "probe:",
     "audit": "audit:",
+    "rejected_signin": "rejected_signin:",
 }
 # Per-item TTLs (§3.1/§10.2): the ``global`` container default is -1 (on, no default), so ONLY
-# these two document types expire.
+# these three document types expire.
 PROBE_TTL_S = 2 * 3_600
 AUDIT_TTL_S = 400 * 86_400
+REJECTED_SIGNIN_TTL_S = int(REJECTED_SIGNIN_RETENTION.total_seconds())
 # The ``tenant-ci`` / ``global-ci`` containers carry a CONTAINER default TTL (Bicep-owned,
 # §10.2) that sweeps what a crashed integration run left behind. It is not a per-item field:
 # documents written there inherit it by carrying no ``ttl`` of their own.
@@ -917,6 +921,59 @@ def from_audit_doc(doc: Mapping[str, object]) -> Stored[AuditRecord]:
     audit = _decode_fields(doc, AuditRecord, _AUDIT_FIELDS)
     _check_global_identity(doc, doc_id=audit_doc_id(audit), pk=audit_pk(audit))
     return Stored(audit, _etag_of(doc))
+
+
+# --- uninvited sign-ins (TTL = REJECTED_SIGNIN_RETENTION after the last attempt) --------------
+
+
+def _encode_emails(value: object) -> object:
+    return [_expect(str, e) for e in _expect(tuple, value)]
+
+
+def _decode_emails(value: object) -> object:
+    return tuple(_expect(str, e) for e in _expect(list, value))
+
+
+_EMAILS = _Codec(encode=_encode_emails, decode=_decode_emails)
+_REJECTED_SIGNIN_FIELDS: tuple[_Field, ...] = (
+    _Field("provider", "provider", _STR),
+    _Field("subject", "subject", _STR),
+    _Field("emails", "emails", _EMAILS),
+    _Field("display_name", "displayName", _STR),
+    _Field("first_at", "firstAt", _DATETIME),
+    _Field("last_at", "lastAt", _DATETIME),
+    _Field("attempts", "attempts", _INT),
+)
+# ONE partition: the operator lists them all in a single-partition query, and one record per
+# identity with a 90-day TTL keeps it small.
+REJECTED_SIGNIN_PK = f"{GLOBAL_PK_PREFIXES['rejected_signin']}all"
+
+
+def rejected_signin_doc_id(provider: str, subject: str) -> str:
+    """``rejected_signin|<sha256(provider NUL subject)>``: any subject is a legal Cosmos id."""
+    digest = hashlib.sha256(f"{provider}\0{subject}".encode()).hexdigest()
+    return _checked_id(f"rejected_signin|{digest}")
+
+
+def to_rejected_signin_doc(rejected: RejectedSignin) -> dict[str, object]:
+    envelope = _global_envelope(
+        doc_id=rejected_signin_doc_id(rejected.provider, rejected.subject),
+        pk=REJECTED_SIGNIN_PK,
+        doc_type="rejected_signin",
+        ttl_s=REJECTED_SIGNIN_TTL_S,  # re-set on every write: 90 days after the LAST attempt
+    )
+    return envelope | _encode_fields(rejected, _REJECTED_SIGNIN_FIELDS)
+
+
+def from_rejected_signin_doc(doc: Mapping[str, object]) -> Stored[RejectedSignin]:
+    _open(doc, doc_type="rejected_signin")
+    rejected = _decode_fields(doc, RejectedSignin, _REJECTED_SIGNIN_FIELDS)
+    _check_global_identity(
+        doc,
+        doc_id=rejected_signin_doc_id(rejected.provider, rejected.subject),
+        pk=REJECTED_SIGNIN_PK,
+    )
+    return Stored(rejected, _etag_of(doc))
 
 
 # --- routing -----------------------------------------------------------------------------------

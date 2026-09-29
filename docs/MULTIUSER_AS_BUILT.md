@@ -688,3 +688,21 @@ Disable/Enable button that posts the existing provider + subject form. Operator-
 rest of the page; the only unscoped listing the web makes. Tests:
 `tests/web/test_web_admin_users_list.py`.
 
+## Uninvited sign-in attempts on /admin/users (2026-09-29)
+
+Operator request; retention chosen by the operator (90 days). `_complete_signin` records every
+uninvited identity with `TenantStore.record_rejected_signin` (best-effort: a store failure is
+logged and never changes the 403). It is a NEW `global` doc type, `rejected_signin`, not the
+audit log, because the audit deliberately redacts emails and this record exists to keep them:
+one doc per `(provider, subject)` in partition `rejected_signin:all` (id = SHA-256 of
+provider NUL subject, so any subject is a legal id), holding the provider-VERIFIED emails only,
+display name, first/last attempt and a count; the per-item TTL (90 days) is re-set on every
+attempt. Both stores also apply the cut-off when listing (the TTL sweep is lazy). Writes are
+not IfMatch'd, so two simultaneous attempts may count once (display only).
+`web/admin_users.py::uninvited_attempts` drops emails that already belong to a user (so an
+Invite from this list moves the person to the People table) and shows times in ET. Each email
+gets an Invite button posting the existing invite form as a member. Queries filter on `/type`
+only (single partition), so no index change. Tests: conformance
+`test_rejected_signins_*`, `tests/tenant/cosmos/test_documents.py`,
+`tests/web/test_web_admin_users_list.py`.
+

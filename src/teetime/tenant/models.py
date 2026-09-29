@@ -10,7 +10,7 @@ checker (``check_transition``, §3.4), and both are exercised by the store confo
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import NewType
@@ -149,6 +149,28 @@ class User:
     display_name: str
     role: UserRole
     status: UserStatus
+
+
+# How long an uninvited sign-in is remembered after its LAST attempt (operator choice
+# 2026-09-29): the Cosmos doc's TTL, and the cut-off both stores apply when listing.
+REJECTED_SIGNIN_RETENTION = timedelta(days=90)
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedSignin:
+    """An uninvited sign-in identity, shown to operators on ``/admin/users`` with an Invite
+    button. One record per ``(provider, subject)``. ``emails`` are provider-VERIFIED only (the
+    invite binds to a verified email, so an unverified one is useless and never stored). This
+    is deliberately NOT the audit log: the audit redacts emails; this record exists to keep them,
+    for ``REJECTED_SIGNIN_RETENTION`` after the last attempt."""
+
+    provider: str
+    subject: str
+    emails: tuple[str, ...]
+    display_name: str
+    first_at: datetime
+    last_at: datetime
+    attempts: int
 
 
 # §16.1: the per-player cap a new course account starts with (operator directive 2026-09-26).

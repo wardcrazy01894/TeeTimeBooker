@@ -70,6 +70,44 @@
 </section>
 
 <section>
+  <h2>Tried to sign in (not invited)</h2>
+  {% if attempts %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Verified email</th><th>Name</th><th>Sign-in</th><th>Attempts</th><th>First</th><th>Last</th></tr>
+      </thead>
+      <tbody>
+        {% for a in attempts %}
+        <tr>
+          <td>
+            {% for email in a.emails %}
+            <form method="post" action="/admin/users" class="inline invite-email">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="action" value="invite">
+              <input type="hidden" name="role" value="member">
+              <input type="hidden" name="email" value="{{ email }}">
+              {{ email }} <button type="submit" class="small">Invite</button>
+            </form>
+            {% else %}<span class="muted">no verified email</span>{% endfor %}
+          </td>
+          <td>{{ a.record.display_name or "—" }}</td>
+          <td>{{ a.record.provider | replace("github", "GitHub") | replace("google", "Google") }}</td>
+          <td class="num">{{ a.record.attempts }}</td>
+          <td class="tabular">{{ a.first_local.strftime("%b %-d, %-I:%M %p") }} ET</td>
+          <td class="tabular">{{ a.last_local.strftime("%b %-d, %-I:%M %p") }} ET</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">People who signed in without an invite. Each is kept for 90 days after their last try; only emails their provider has verified are kept. Inviting one lets them in on their next sign-in (as a member; use the Invite form above for an operator).</p>
+  {% else %}
+  <p class="placeholder">Nobody uninvited has tried to sign in in the last 90 days.</p>
+  {% endif %}
+</section>
+
+<section>
   <h2>Disable / enable by sign-in identity</h2>
   <p class="hint">Keyed by the bound sign-in identity (provider + subject), as shown on the user's dashboard and in the audit log. A disabled user is signed out on their next request.</p>
   <form method="post" action="/admin/users" class="form-row">
