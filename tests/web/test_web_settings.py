@@ -102,6 +102,8 @@ def test_every_env_var_the_loader_reads_is_in_the_contract_tuple() -> None:
         "OAUTH_GOOGLE_CLIENT_SECRET",
         "TEETIME_OPERATOR_EMAIL",
         "TEETIME_WEB_DRY_RUN",
+        "TEETIME_ENV",
+        "TEETIME_BUILD",
     ):
         assert name in WEB_ENV_VARS
 

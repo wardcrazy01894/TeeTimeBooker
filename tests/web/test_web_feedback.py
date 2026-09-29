@@ -3,6 +3,7 @@ and wherever a course is chosen, one small form, and an email to the operator.""
 
 from __future__ import annotations
 
+import asyncio
 import html
 import re
 from dataclasses import replace
@@ -17,6 +18,7 @@ from fastapi import FastAPI
 from teetime.core.clock import FakeClock
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.notify import FakeEmailSender
+from teetime.web import feedback as feedback_module
 from teetime.web.app import WebSettings, create_app
 
 from ..tenant.conformance import MB
@@ -279,3 +281,20 @@ async def test_diagnostics_that_fail_never_block_the_report(
     monkeypatch.setattr(store, "list_accounts_for_user", boom)
     assert (await _post_bug(client)).status_code == 303
     assert "(diagnostics unavailable: RuntimeError)" in sender.sent[0].body
+
+
+@pytest.mark.usefixtures("member")
+async def test_slow_diagnostics_never_hold_up_the_report(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    sender: FakeEmailSender,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def hang(*_: object, **__: object) -> None:
+        await asyncio.Event().wait()  # never set
+
+    monkeypatch.setattr(store, "list_accounts_for_user", hang)
+    monkeypatch.setattr(feedback_module, "DIAGNOSTICS_TIMEOUT_S", 0.05)
+    r = await asyncio.wait_for(_post_bug(client), timeout=5)
+    assert r.status_code == 303
+    assert "(diagnostics unavailable: TimeoutError)" in sender.sent[0].body

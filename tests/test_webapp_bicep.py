@@ -219,4 +219,6 @@ def test_prod_uses_its_custom_domain_and_dev_does_not() -> None:
 def test_web_app_knows_its_build_for_bug_reports(webapp_bicep: str) -> None:
     """The image tag (the git sha CI builds) reaches the app as TEETIME_BUILD (2026-09-29)."""
     assert "{ name: 'TEETIME_BUILD'" in webapp_bicep
-    assert "last(split(containerImage, ':'))" in webapp_bicep
+    # The tag of the LAST path segment only (a registry host:port has a ':' too), or 'untagged'.
+    assert "var imageName = last(split(containerImage, '/'))" in webapp_bicep
+    assert "contains(imageName, ':') ? last(split(imageName, ':')) : 'untagged'" in webapp_bicep

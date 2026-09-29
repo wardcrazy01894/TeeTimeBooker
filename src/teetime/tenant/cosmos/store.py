@@ -1498,7 +1498,8 @@ class CosmosTenantStore:
         return sorted(live, key=lambda r: (r.last_at, r.provider, r.subject), reverse=True)
 
     async def recent_audit(self, user_id: UserId, *, limit: int) -> list[AuditLine]:
-        # One partition (audit:<userId>); ids are time-sortable, but sort on `at` to be exact.
+        # One partition (audit:<userId>): a few hundred entries at most (400-day TTL, one person's
+        # site actions), so sorting here is cheaper than adding `/at` to the prod index policy.
         docs = await self._query(
             self._global,
             "c.type = @type",

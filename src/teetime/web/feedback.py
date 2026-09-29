@@ -158,6 +158,9 @@ def register_feedback_routes(
 
 
 DIAGNOSTIC_ACTIONS = 10
+# Diagnostics are a handful of store reads; bounded so a slow store (the Cosmos SDK retries a 429
+# for up to 30 s) can never stall the report.
+DIAGNOSTICS_TIMEOUT_S = 10.0
 _ET = ZoneInfo("America/New_York")
 
 
@@ -179,8 +182,10 @@ async def bug_diagnostics(ctx: "_Ctx", *, user: User, user_agent: str) -> str:
         f"User id: {user.id} · role {user.role.value} · status {user.status.value}",
     ]
     try:
-        body = await _store_diagnostics(ctx, user=user, now=now)
-    except Exception as exc:
+        body = await asyncio.wait_for(
+            _store_diagnostics(ctx, user=user, now=now), timeout=DIAGNOSTICS_TIMEOUT_S
+        )
+    except Exception as exc:  # TimeoutError included
         log.warning("bug-report diagnostics failed", exc_info=True)
         body = [f"(diagnostics unavailable: {type(exc).__name__})"]
     return "\n".join(head + body)

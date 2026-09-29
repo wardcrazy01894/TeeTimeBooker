@@ -207,6 +207,8 @@ WEB_ENV_VARS: tuple[str, ...] = (
     "TEETIME_OPERATOR_EMAIL",
     "TEETIME_WEB_DRY_RUN",  # "true" (default) | "false"
     "TEETIME_CANONICAL_HOST_REDIRECT",  # "false" (default) | "true"
+    "TEETIME_ENV",  # optional, bug-report diagnostics ("dev" | "prod")
+    "TEETIME_BUILD",  # optional, bug-report diagnostics (the image tag = git sha)
 )
 
 
