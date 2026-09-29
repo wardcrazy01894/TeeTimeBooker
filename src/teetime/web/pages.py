@@ -116,7 +116,11 @@ class _Pages:
         ctx = self.ctx
         context = self.base_context(request, user)
         context["rows"] = await services.dashboard(ctx.store, user_id=user.id, clock=ctx.clock)
-        context["accounts"] = await services.list_accounts(ctx.store, user_id=user.id)
+        accounts = await services.list_accounts(ctx.store, user_id=user.id)
+        context["accounts"] = accounts
+        context["min_date"] = services.earliest_bookable_date(
+            accounts, ctx.policies, now=ctx.clock.now_utc()
+        )
         context["error"], context["one_off"] = error, one_off
         return ctx.page(request, "dates.html", context, status_code=status_code)
 

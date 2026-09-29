@@ -99,9 +99,11 @@
 
   function calendar(input) {
     var label = input.closest("label");
-    var today = new Date();
-    today = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    var min = parseIso(input.min) || today;
+    // The server renders min= as "today" in the course's timezone; the visitor's clock is only
+    // the fallback (a page rendered without it).
+    var local = new Date();
+    var today = parseIso(input.min) || new Date(local.getFullYear(), local.getMonth(), local.getDate());
+    var min = today;
     var selected = parseIso(input.value);
     var view = new Date((selected || min).getFullYear(), (selected || min).getMonth(), 1);
 
@@ -173,16 +175,17 @@
           focusBtn = btn;
         }
       }
-      // One tab stop for the grid: the selected day, else the first enabled one.
-      var stop = grid.querySelector('.cal-day[aria-pressed="true"]:not(:disabled)') ||
+      // Exactly one tab stop in the grid (roving tabindex): the day being moved to, else the
+      // selected day, else the first enabled one.
+      var stop = (focusBtn && !focusBtn.disabled ? focusBtn : null) ||
+        grid.querySelector('.cal-day[aria-pressed="true"]:not(:disabled)') ||
         grid.querySelector(".cal-day:not(:disabled)");
       if (stop) {
         stop.tabIndex = 0;
       }
       picked.textContent = selected ? "Selected: " + describe(selected) : "";
-      if (focusBtn && !focusBtn.disabled) {
-        focusBtn.tabIndex = 0;
-        focusBtn.focus();
+      if (stop && stop === focusBtn) {
+        stop.focus();
       }
     }
 
@@ -223,7 +226,10 @@
       if (step) {
         to = new Date(d.getFullYear(), d.getMonth(), d.getDate() + step);
       } else if (e.key === "PageUp" || e.key === "PageDown") {
-        to = new Date(d.getFullYear(), d.getMonth() + (e.key === "PageUp" ? -1 : 1), d.getDate());
+        // Same day next/previous month, clamped (Jan 31 -> Feb 28, never Mar 3).
+        var first = new Date(d.getFullYear(), d.getMonth() + (e.key === "PageUp" ? -1 : 1), 1);
+        var last = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+        to = new Date(first.getFullYear(), first.getMonth(), Math.min(d.getDate(), last));
       } else {
         return;
       }

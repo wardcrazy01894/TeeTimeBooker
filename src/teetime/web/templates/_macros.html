@@ -68,7 +68,7 @@
 {# MU-R3 (§16.1): ONE ranked list of (course, time window) options, for a date or every week.
    Order is a rank number per option. Option 1 shows up front; the rest wait behind "Add another
    time slot" (a <details> without script; one row at a time with /static/app.js). #}
-{% macro ranked_form(csrf_token, accounts, action, option_slots, weekdays, weekly) %}
+{% macro ranked_form(csrf_token, accounts, action, option_slots, weekdays, weekly, min_date=none) %}
 <form method="post" action="{{ action }}" class="ranked">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="form-row">
@@ -81,7 +81,7 @@
     {% else %}
     {# app.js turns .datepick into a month calendar paged left/right; without script this is
        the browser's own date box. #}
-    <label>Date <input type="date" name="target_date" class="datepick" required></label>
+    <label>Date <input type="date" name="target_date" class="datepick"{% if min_date %} min="{{ min_date.isoformat() }}"{% endif %} required></label>
     {% endif %}
     {{ players_picker(2) }}
   </div>

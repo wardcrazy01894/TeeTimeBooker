@@ -9,9 +9,10 @@ from __future__ import annotations
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import date, time
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -31,6 +32,7 @@ from teetime.tenant.models import (
     UserId,
     derive_account_id,
 )
+from teetime.web import services
 from teetime.web.app import WebSettings, create_app
 
 from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE, TZ
@@ -253,3 +255,24 @@ async def test_the_date_field_is_enhanced_but_stays_a_native_date_input(
     side-to-side month calendar."""
     page = (await client.get("/dates")).text
     assert re.search(r'<input type="date" name="target_date" class="datepick"[^>]*required', page)
+
+
+def test_earliest_bookable_date_is_today_in_the_course_zone_not_utc() -> None:
+    """02:00 UTC on Sep 27 is still Sep 26 at a New York course: the calendar must not grey out
+    the course's today because the server (or the visitor) is already on the next UTC day."""
+    now = datetime(2026, 9, 27, 2, 0, tzinfo=UTC)
+    accounts = [_account(UserId(uuid4()), MB)]
+    got = services.earliest_bookable_date(accounts, {str(MB): POLICY}, now=now)
+    assert got == date(2026, 9, 26)
+    # No policy for any account (or no accounts): fall back to the UTC date.
+    assert services.earliest_bookable_date([], {}, now=now) == date(2026, 9, 27)
+
+
+async def test_the_date_field_carries_the_server_computed_min(
+    client: httpx.AsyncClient, member: Member, clock: FakeClock
+) -> None:
+    page = (await client.get("/dates")).text
+    today = clock.now_utc().astimezone(ZoneInfo(TZ)).date()
+    assert re.search(
+        rf'<input type="date" name="target_date" class="datepick" min="{today.isoformat()}"', page
+    )

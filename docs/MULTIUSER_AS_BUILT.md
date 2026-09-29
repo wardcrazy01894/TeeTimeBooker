@@ -647,5 +647,7 @@ script off; `tests/web/test_players_picker.py` fails CI if a template types a pa
 **Date** keeps `<input type="date" class="datepick">` as the no-script control; `static/app.js`
 builds a month calendar over it paged side to side (‹ › buttons, a horizontal swipe, arrow keys
 and PageUp/PageDown), past days disabled, today ringed, the pick shown under the grid, and the
-browser's required-field bubble replaced by "Pick a date." The native input keeps carrying the
+browser's required-field bubble replaced by "Pick a date." The first offered day is the server-rendered
+`min` (`services.earliest_bookable_date`: the earliest "today" across the user's courses' timezones,
+not the visitor's clock); PageUp/PageDown clamp the day (Jan 31 -> Feb 28); one roving tab stop. The native input keeps carrying the
 value, so the server contract is unchanged. No inline script or style (CSP).
