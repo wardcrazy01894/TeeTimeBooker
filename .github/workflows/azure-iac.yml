@@ -300,7 +300,14 @@ jobs:
                && [ -n "${EXEC}" ]; then
               break
             fi
-            EXEC=""
+            # The error may have come AFTER the start landed: follow a Running execution rather
+            # than start a second, concurrent run.
+            EXEC=$(az containerapp job execution list -n "${JOB}" -g "${RESOURCE_GROUP}" \
+                     --query "[?properties.status=='Running'] | [0].name" -o tsv) || EXEC=""
+            if [ -n "${EXEC}" ]; then
+              echo "::warning::start of ${JOB} errored but execution ${EXEC} is running; following it"
+              break
+            fi
             echo "::warning::starting ${JOB} failed (attempt ${attempt}/3)"
             [ "${attempt}" -lt 3 ] && sleep "${MIGRATE_RETRY_SLEEP_S:-15}"
           done
@@ -514,7 +521,14 @@ jobs:
                && [ -n "${EXEC}" ]; then
               break
             fi
-            EXEC=""
+            # The error may have come AFTER the start landed: follow a Running execution rather
+            # than start a second, concurrent run.
+            EXEC=$(az containerapp job execution list -n "${JOB}" -g "${RESOURCE_GROUP}" \
+                     --query "[?properties.status=='Running'] | [0].name" -o tsv) || EXEC=""
+            if [ -n "${EXEC}" ]; then
+              echo "::warning::start of ${JOB} errored but execution ${EXEC} is running; following it"
+              break
+            fi
             echo "::warning::starting ${JOB} failed (attempt ${attempt}/3)"
             [ "${attempt}" -lt 3 ] && sleep "${MIGRATE_RETRY_SLEEP_S:-15}"
           done

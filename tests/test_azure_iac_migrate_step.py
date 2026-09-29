@@ -35,6 +35,10 @@ case "$*" in
       echo "ConnectionResetError: Connection reset by peer" >&2; exit 1
     fi
     echo "exec-123" ;;
+  *"execution list"*)
+    # FAKE_AZ_LANDED=1: the failed start actually landed, so a Running execution exists.
+    n=$(cat "$state/starts" 2>/dev/null || echo 0)
+    if [ "${FAKE_AZ_LANDED:-0}" = 1 ] && [ "$n" -ge 1 ]; then echo "exec-landed"; fi ;;
   *"execution show"*)
     i=$(cat "$state/polls" 2>/dev/null || echo 0); i=$((i + 1)); echo "$i" > "$state/polls"
     r=$(echo "$FAKE_AZ_POLLS" | cut -d' ' -f"$i")
@@ -44,7 +48,9 @@ esac
 """
 
 
-def _run(tmp_path: Path, *, start_failures: str, polls: str) -> tuple[int, str, int]:
+def _run(
+    tmp_path: Path, *, start_failures: str, polls: str, landed: bool = False
+) -> tuple[int, str, int]:
     az = tmp_path / "az"
     az.write_text(FAKE_AZ)
     az.chmod(az.stat().st_mode | stat.S_IEXEC)
@@ -60,6 +66,7 @@ def _run(tmp_path: Path, *, start_failures: str, polls: str) -> tuple[int, str, 
             "FAKE_AZ_STATE": str(state),
             "FAKE_AZ_START": start_failures,
             "FAKE_AZ_POLLS": polls,
+            "FAKE_AZ_LANDED": "1" if landed else "0",
             "ENVNAME": "dev",
             "RESOURCE_GROUP": "rg-teetime-dev",
             "MIGRATE_RETRY_SLEEP_S": "0",
@@ -102,3 +109,12 @@ def test_a_start_that_never_works_gives_up_after_three_tries(tmp_path: Path) -> 
     assert code == 1
     assert starts == 3
     assert "after 3 attempts" in out
+
+
+def test_a_start_that_landed_despite_the_error_is_followed_not_repeated(tmp_path: Path) -> None:
+    """A reset AFTER the start POST landed leaves a Running execution: follow it rather than
+    start a second, concurrent run."""
+    code, out, starts = _run(tmp_path, start_failures="1", polls="Succeeded", landed=True)
+    assert code == 0, out
+    assert starts == 1
+    assert "exec-landed" in out
