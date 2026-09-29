@@ -354,9 +354,12 @@ def test_every_mu13_route_is_bound_and_idor_covered(app: FastAPI) -> None:
 # --- dashboard ---------------------------------------------------------------------------------
 
 
-async def test_dashboard_shows_snapshot_age(
+async def test_dashboard_has_no_last_checked_column(
     client: httpx.AsyncClient, store: InMemoryTenantStore, member: Member
 ) -> None:
+    """Operator decision 2026-09-29: the "Checked" column (when the watcher last logged in as the
+    user) read as "we only look hourly" while the tee sheet is searched every 10 minutes, so the
+    dashboard no longer shows it. The Connected courses page keeps "Reservations as of …"."""
     await _seed_rule(store, member)
     row = await _row_on(store, member, OCT3, source=RowSource.RULE)
     await _book(store, row, raw_id="9001")
@@ -371,22 +374,22 @@ async def test_dashboard_shows_snapshot_age(
     )
     page = await client.get("/")
     assert page.status_code == 200
-    assert "as of 07:53" in page.text
-    assert "7 min ago" in page.text
+    assert "as of 07:53" not in page.text
+    assert "<th>Checked</th>" not in page.text
     assert "2026-10-03" in page.text
     assert "booked" in page.text
     assert "09:30" in page.text  # the booked tee time, course-local
     assert "not seen at course" not in page.text
 
 
-async def test_dashboard_without_snapshot_says_so(
+async def test_dashboard_without_snapshot_still_lists_the_date(
     client: httpx.AsyncClient, store: InMemoryTenantStore, member: Member
 ) -> None:
     await _seed_rule(store, member)
     page = await client.get("/")
     assert page.status_code == 200
     assert "2026-10-03" in page.text
-    assert "not checked yet" in page.text
+    assert "not checked yet" not in page.text  # no Checked column (2026-09-29)
 
 
 async def test_dashboard_flags_booked_row_missing_from_trusted_snapshot(

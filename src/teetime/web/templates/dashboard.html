@@ -28,7 +28,7 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Date</th><th>Course</th><th>Window</th><th>Players</th><th>Status</th><th>Tee time</th><th>Checked</th></tr>
+        <tr><th>Date</th><th>Course</th><th>Window</th><th>Players</th><th>Status</th><th>Tee time</th></tr>
       </thead>
       <tbody>
         {% for r in rows %}
@@ -64,13 +64,12 @@
               {% endif %}
             {% endif %}
           </td>
-          <td class="muted">{{ r.snapshot_label }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-  <p class="hint">Status comes from the bot's records; "Checked" is when it last looked at your login at the course. This page never logs in to the course.</p>
+  <p class="hint">Status comes from the bot's records. The bot searches the tee sheet every 10 minutes for anything not yet booked; this page never logs in to the course.</p>
   {% else %}
   <p class="placeholder">No upcoming dates. Add a <a href="/rules">weekly booking</a> or <a href="/dates">book a date</a>.</p>
   {% endif %}
