@@ -687,6 +687,9 @@ class InMemoryTenantStore:
                 return bound
         return None
 
+    async def list_users(self) -> list[User]:
+        return sorted(self._users.values(), key=lambda u: (u.email.casefold(), str(u.id)))
+
     async def list_rows_for_user(
         self, user_id: UserId, *, from_date: date, to_date: date
     ) -> list[RequestRow]:

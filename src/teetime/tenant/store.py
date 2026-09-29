@@ -387,6 +387,12 @@ class TenantStore(Protocol):
         """Every query in the web is scoped by ``user_id`` (IDOR defence, §9.1)."""
         ...
 
+    async def list_users(self) -> list[User]:
+        """OPERATOR read (the ``/admin/users`` listing): every user in any status, invited ones
+        included, sorted by email (case-insensitive). The only unscoped listing the web makes;
+        the route is operator-gated."""
+        ...
+
     async def get_account(
         self, account_id: CourseAccountId, *, user_id: UserId
     ) -> CourseAccount | None: ...

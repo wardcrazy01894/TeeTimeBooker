@@ -1797,6 +1797,33 @@ class TenantStoreConformance:
 
     # --- users / accounts / web reads ------------------------------------------------------
 
+    async def test_list_users_returns_every_user_by_email(self, harness: StoreHarness) -> None:
+        """The operator's admin view: every user in any status, invited ones included, sorted
+        by email (case-insensitive). The store holds nothing else in the list."""
+        s = harness.store
+
+        def user(email: str, status: UserStatus, subject: str | None) -> User:
+            return User(
+                id=UserId(uuid4()),
+                oauth_provider="github" if subject else "",
+                oauth_subject=subject,
+                email=email,
+                display_name=email.split("@", maxsplit=1)[0],
+                role=UserRole.MEMBER,
+                status=status,
+            )
+
+        users = [
+            user("zed@x.test", UserStatus.ACTIVE, "1"),
+            user("Amy@x.test", UserStatus.INVITED, None),
+            user("bob@x.test", UserStatus.DISABLED, "2"),
+        ]
+        for u in users:
+            await s.upsert_user(u)
+        listed = await s.list_users()
+        assert [u.email for u in listed] == ["Amy@x.test", "bob@x.test", "zed@x.test"]
+        assert {u.id: u for u in listed} == {u.id: u for u in users}
+
     async def test_bind_invited_user(self, harness: StoreHarness) -> None:
         s = harness.store
         invited = User(

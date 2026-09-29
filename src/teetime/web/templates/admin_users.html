@@ -21,7 +21,56 @@
 </section>
 
 <section>
-  <h2>Disable / enable</h2>
+  <h2>People</h2>
+  {% if users %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Sign-in</th><th>Courses</th><th>Weekly</th><th>Next 21 days</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for o in users %}
+        {% set u = o.user %}
+        <tr>
+          <td>{{ u.email }}</td>
+          <td>{{ u.display_name if o.signed_in else "—" }}</td>
+          <td>{{ u.role.value | capitalize }}</td>
+          <td>
+            {% if u.status.value == "invited" %}<span class="status status-pending">Invited</span> <span class="hint">hasn't signed in yet</span>
+            {% elif u.status.value == "disabled" %}<span class="status status-cancelled">Disabled</span>
+            {% else %}<span class="status status-booked">Active</span>{% endif %}
+          </td>
+          <td>{{ (u.oauth_provider | replace("github", "GitHub") | replace("google", "Google")) if o.signed_in else "—" }}</td>
+          <td>{% for c in o.course_ids %}{{ c | course_name }}{% if not loop.last %}, {% endif %}{% else %}<span class="muted">none</span>{% endfor %}</td>
+          <td class="num">{% if o.weekly_rules %}{{ o.weekly_rules }} weekly{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td>{% for status, n in o.upcoming %}{{ n }} {{ status }}{% if not loop.last %} · {% endif %}{% else %}<span class="muted">—</span>{% endfor %}</td>
+          <td class="actions">
+            {% if o.signed_in and u.id != user.id %}
+            <form method="post" action="/admin/users" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="provider" value="{{ u.oauth_provider }}">
+              <input type="hidden" name="subject" value="{{ u.oauth_subject }}">
+              {% if u.status.value == "disabled" %}
+              <button type="submit" name="action" value="enable" class="small">Enable</button>
+              {% else %}
+              <button type="submit" name="action" value="disable" class="small danger">Disable</button>
+              {% endif %}
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">"Invited" means the invite hasn't been used yet. Courses and bookings come from the site's records; this page never logs in to a course.</p>
+  {% else %}
+  <p class="placeholder">No users yet.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Disable / enable by sign-in identity</h2>
   <p class="hint">Keyed by the bound sign-in identity (provider + subject), as shown on the user's dashboard and in the audit log. A disabled user is signed out on their next request.</p>
   <form method="post" action="/admin/users" class="form-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
