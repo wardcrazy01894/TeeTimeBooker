@@ -534,9 +534,8 @@ async def _admin_invite(ctx: _Ctx, operator: User, form: FormData, *, now: datet
 async def _admin_set_status(
     ctx: _Ctx, operator: User, form: FormData, *, enable: bool, now: datetime
 ) -> Response:
-    """Disable/enable by the bound (provider, subject) — the TenantStore Protocol has no user
-    listing or email lookup (MU-13's `list_users` owns that), and the identity is what the
-    audit log and the user's own dashboard show."""
+    """Disable/enable by the bound (provider, subject): the identity is what the audit log, the
+    user's own dashboard and the People table's per-row buttons post."""
     provider, subject = _form_str(form, "provider"), _form_str(form, "subject")
     if not provider or not subject:
         raise HTTPException(status_code=400, detail="provider and subject are required")
