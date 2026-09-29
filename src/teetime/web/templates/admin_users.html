@@ -51,6 +51,15 @@
               <input type="hidden" name="user_id" value="{{ u.id }}">
               <button type="submit" name="action" value="resend" class="small">Resend invite</button>
             </form>
+            {# A disclosure, like the dashboard's Cancel: a stray tap cannot uninvite. #}
+            <details class="cancel">
+              <summary class="button small danger">Uninvite</summary>
+              <form method="post" action="/admin/users">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="user_id" value="{{ u.id }}">
+                <button type="submit" name="action" value="uninvite" class="small danger">Yes, remove this invite</button>
+              </form>
+            </details>
             {% endif %}
             {% if o.signed_in and u.id != user.id %}
             <form method="post" action="/admin/users" class="inline">

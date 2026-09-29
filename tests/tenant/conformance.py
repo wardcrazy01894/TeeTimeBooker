@@ -1855,6 +1855,39 @@ class TenantStoreConformance:
         assert lines[0].at == t0 + timedelta(minutes=3)
         assert await s.recent_audit(UserId(uuid4()), limit=5) == []
 
+    async def test_delete_invited_user_only_removes_an_unused_invite(
+        self, harness: StoreHarness
+    ) -> None:
+        """Uninvite (operator request 2026-09-29): only a still-INVITED, never-bound user can be
+        deleted; a signed-in or disabled user is refused (use Disable), and a missing id is a
+        no-op. Returns whether it deleted."""
+        s = harness.store
+
+        def user(email: str, status: UserStatus, subject: str | None) -> User:
+            return User(
+                id=UserId(uuid4()),
+                oauth_provider="github" if subject else "",
+                oauth_subject=subject,
+                email=email,
+                display_name=email.split("@", maxsplit=1)[0],
+                role=UserRole.MEMBER,
+                status=status,
+            )
+
+        pal = user("pal@x.test", UserStatus.INVITED, None)
+        active = user("act@x.test", UserStatus.ACTIVE, "7")
+        disabled = user("dis@x.test", UserStatus.DISABLED, "8")
+        for u in (pal, active, disabled):
+            await s.upsert_user(u)
+        assert await s.delete_invited_user(pal.id) is True
+        assert await s.get_user_unscoped(pal.id) is None
+        assert await s.bind_invited_user(email="pal@x.test", provider="github", subject="9") is None
+        assert await s.delete_invited_user(active.id) is False
+        assert await s.delete_invited_user(disabled.id) is False
+        assert await s.get_user_unscoped(active.id) == active
+        assert await s.delete_invited_user(pal.id) is False  # already gone
+        assert await s.delete_invited_user(UserId(uuid4())) is False
+
     async def test_list_users_returns_every_user_by_email(self, harness: StoreHarness) -> None:
         """The operator's admin view: every user in any status, invited ones included, sorted
         by email (case-insensitive). The store holds nothing else in the list."""

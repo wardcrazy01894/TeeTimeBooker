@@ -732,7 +732,11 @@ outcome as `sent` (renamed from `emailed`, which `redact_payload` masked to `***
 contains "mail", so it never recorded anything). Resend invite works the same way. The notices say what to do if the email does not arrive (Resend; sign in
 with Google using that address). Accepted edge: a job still running when the 20 s shutdown drain
 cancels it (or on SIGKILL) writes no audit entry, although ACS may already have accepted the
-message; prod keeps one warm replica, so this needs a deploy mid-send. A person
+message; prod keeps one warm replica, so this needs a deploy mid-send. A person still INVITED also gets **Uninvite** (a `<details>` confirm, 2026-09-29):
+`TenantStore.delete_invited_user` deletes the user only if still INVITED and never bound (Cosmos:
+IfMatch on the etag just read, so a racing first sign-in wins; pinned by
+`test_uninvite_loses_to_a_concurrent_first_sign_in`), audited `admin_uninvite`; a signed-in user
+is a 400 ("use Disable"). A person
 still INVITED gets a **Resend invite** button (`action=resend`, `user_id`; a signed-in user is a
 400, an unknown id a 404). The invitation is the one email NOT passed through `redact_text`: its
 purpose is to show the invitee their own address, and every part of it is fixed text, that

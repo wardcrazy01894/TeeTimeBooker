@@ -1509,6 +1509,25 @@ class CosmosTenantStore:
         records = sorted((from_audit_doc(d).item for d in docs), key=lambda a: a.at, reverse=True)
         return [AuditLine(at=a.at, action=a.action, row_id=a.row_id) for a in records[:limit]]
 
+    async def delete_invited_user(self, user_id: UserId) -> bool:
+        stored = await self._user(user_id)
+        if stored is None:
+            return False
+        user = stored.item
+        if user.status is not UserStatus.INVITED or user.oauth_subject is not None:
+            return False
+        pk = f"user:{user_id}"
+        try:
+            # IfMatch on the etag just read: a first sign-in binding it meanwhile wins.
+            await self._global.delete_item(
+                pk, pk, etag=stored.etag, match_condition=MatchConditions.IfNotModified
+            )
+        except CosmosHttpResponseError as exc:
+            if _status(exc) in (_HTTP_PRECONDITION_FAILED, _HTTP_NOT_FOUND):
+                return False
+            raise
+        return True
+
     async def list_users(self) -> list[User]:
         docs = await self._query(self._global, "c.type = @type", type="user")
         users = (from_user_doc(d).item for d in docs)

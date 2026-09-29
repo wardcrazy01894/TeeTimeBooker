@@ -723,6 +723,13 @@ class InMemoryTenantStore:
         mine.sort(key=lambda e: e.at, reverse=True)
         return [AuditLine(at=e.at, action=e.action, row_id=e.row_id) for e in mine[:limit]]
 
+    async def delete_invited_user(self, user_id: UserId) -> bool:
+        user = self._users.get(user_id)
+        if user is None or user.status is not UserStatus.INVITED or user.oauth_subject is not None:
+            return False
+        del self._users[user_id]
+        return True
+
     async def list_users(self) -> list[User]:
         return sorted(self._users.values(), key=lambda u: (u.email.casefold(), str(u.id)))
 
