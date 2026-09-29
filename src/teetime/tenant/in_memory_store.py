@@ -41,6 +41,7 @@ from .models import (
     REJECTED_SIGNIN_RETENTION,
     AccountStatus,
     Actor,
+    AuditLine,
     BookingState,
     CourseAccount,
     CourseAccountId,
@@ -716,6 +717,11 @@ class InMemoryTenantStore:
     async def list_rejected_signins(self, *, now: datetime) -> list[RejectedSignin]:
         live = (r for r in self._rejected.values() if now - r.last_at < REJECTED_SIGNIN_RETENTION)
         return sorted(live, key=lambda r: (r.last_at, r.provider, r.subject), reverse=True)
+
+    async def recent_audit(self, user_id: UserId, *, limit: int) -> list[AuditLine]:
+        mine = [e for e in self.audit_log if e.user_id == user_id]
+        mine.sort(key=lambda e: e.at, reverse=True)
+        return [AuditLine(at=e.at, action=e.action, row_id=e.row_id) for e in mine[:limit]]
 
     async def list_users(self) -> list[User]:
         return sorted(self._users.values(), key=lambda u: (u.email.casefold(), str(u.id)))

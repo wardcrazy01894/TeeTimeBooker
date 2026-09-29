@@ -139,6 +139,8 @@ var webEnv = [
   operatorEmailEnv
   { name: 'TEETIME_WEB_DRY_RUN',           value: dryRun ? 'true' : 'false' }
   { name: 'TEETIME_ENV',                   value: envName }
+  // Bug-report diagnostics (2026-09-29): the image tag, i.e. the git sha CI built.
+  { name: 'TEETIME_BUILD',                 value: last(split(containerImage, ':')) }
   { name: 'TEETIME_CANONICAL_HOST_REDIRECT', value: empty(customDomain) ? 'false' : 'true' }
 ]
 

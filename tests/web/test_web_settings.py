@@ -104,3 +104,10 @@ def test_every_env_var_the_loader_reads_is_in_the_contract_tuple() -> None:
         "TEETIME_WEB_DRY_RUN",
     ):
         assert name in WEB_ENV_VARS
+
+
+def test_environment_and_build_are_read_for_bug_reports() -> None:
+    s = load_web_settings(_env(TEETIME_ENV="prod", TEETIME_BUILD="e70d100abc"))
+    assert (s.environment, s.build) == ("prod", "e70d100abc")
+    unset = load_web_settings(_env())
+    assert (unset.environment, unset.build) == (None, None)

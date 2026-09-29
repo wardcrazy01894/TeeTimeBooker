@@ -769,8 +769,12 @@ the invitation `EmailSender`: subject `[Spicy's Tee Time Booker] Bug report|Cour
 <name>` (line breaks stripped, so a display name cannot inject a header), body with the user's
 name and address (so the operator can reply), the page (`from`, kept only if it is a plain
 same-site path) and the message (1 to 4000 characters). Best-effort and bounded (20 s); the user
-lands on the dashboard with "Thanks!" either way, told if it could not be emailed. An audit entry
-records kind, length and `emailed`, never the text. At most 5 reports per user per hour (in-process, per web
+lands on the dashboard with "Thanks!" either way, told if it could not be emailed. A bug report also carries a diagnostics block (`bug_diagnostics`: environment and build from
+`TEETIME_ENV`/`TEETIME_BUILD`, the time, the browser, the user id, each connected course with its
+status, last snapshot and login-failure streak, the next 21 days' rows with status, last outcome
+and needs-reconcile, and the last 10 audit actions via `TenantStore.recent_audit`); gathering it
+is best-effort and never blocks the report. An audit entry records kind, length and `emailed`,
+never the text. At most 5 reports per user per hour (in-process, per web
 replica; a 6th is a 429) and the subject's name is capped at 100 characters. "Report a bug" is a small button in the footer
 of every signed-in page; "Request a course" sits under Connect a course and on the dashboard's
 Start-here card. The page is now titled **Connected Courses** everywhere.

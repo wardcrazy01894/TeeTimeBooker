@@ -20,7 +20,8 @@ from teetime.tenant.notify import FakeEmailSender
 from teetime.web.app import WebSettings, create_app
 
 from ..tenant.conformance import MB
-from .conftest import OPERATOR_EMAIL, GitHubIdentity, make_invited, mock_github, sign_in
+from .account_builders import stored_account
+from .conftest import OPERATOR_EMAIL, T0, GitHubIdentity, make_invited, mock_github, sign_in
 from .test_web_admin_csrf import _csrf
 
 TEMPLATES = Path(__file__).resolve().parents[2] / "src" / "teetime" / "web" / "templates"
@@ -216,3 +217,62 @@ async def test_a_huge_name_is_capped_in_the_subject(
     page = await client.get("/feedback?kind=bug")
     await client.post("/feedback", data={"csrf_token": _csrf(page), "kind": "bug", "message": "hi"})
     assert len(sender.sent[0].subject) < 150
+
+
+# --- diagnostics on bug reports (operator request 2026-09-29) ----------------------------------
+
+
+async def _post_bug(client: httpx.AsyncClient) -> httpx.Response:
+    page = await client.get("/feedback?kind=bug&from=/dates")
+    return await client.post(
+        "/feedback",
+        data={"csrf_token": _csrf(page), "kind": "bug", "from": "/dates", "message": "broken"},
+        headers={"User-Agent": "TestBrowser/1.0"},
+    )
+
+
+@pytest.mark.usefixtures("member")
+async def test_a_bug_report_carries_diagnostics(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, sender: FakeEmailSender
+) -> None:
+    user = await store.get_user_by_subject("github", "42")
+    assert user is not None
+    await store.upsert_account(stored_account(user.id))
+    await store.append_audit(
+        user_id=user.id, action="row.skip", row_id=None, detail={}, at=T0 - timedelta(minutes=5)
+    )
+    assert (await _post_bug(client)).status_code == 303
+    body = sender.sent[0].body
+    diag = body[body.index("--- Diagnostics ---") :]
+    assert f"User id: {user.id}" in diag
+    assert "Browser: TestBrowser/1.0" in diag
+    assert "Environment: (unset) · build (unset)" in diag
+    assert "Mangrove Bay: active" in diag  # the course by name, with its status
+    assert "row.skip" in diag  # recent actions
+    assert "Next 21 days:" in diag
+
+
+@pytest.mark.usefixtures("member")
+async def test_a_course_request_carries_no_diagnostics(
+    client: httpx.AsyncClient, sender: FakeEmailSender
+) -> None:
+    page = await client.get("/feedback?kind=course")
+    await client.post(
+        "/feedback", data={"csrf_token": _csrf(page), "kind": "course", "message": "Bardmoor"}
+    )
+    assert "Diagnostics" not in sender.sent[0].body
+
+
+@pytest.mark.usefixtures("member")
+async def test_diagnostics_that_fail_never_block_the_report(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    sender: FakeEmailSender,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def boom(*_: object, **__: object) -> None:
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(store, "list_accounts_for_user", boom)
+    assert (await _post_bug(client)).status_code == 303
+    assert "(diagnostics unavailable: RuntimeError)" in sender.sent[0].body

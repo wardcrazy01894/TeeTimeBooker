@@ -13,10 +13,12 @@ import logging
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from ..tenant.materialize import MIN_HORIZON_DAYS
 from ..tenant.models import User, UserId
 from ..tenant.notify import SITE_NAME, EmailMessage
 
@@ -136,6 +138,13 @@ def register_feedback_routes(
         mail = render_feedback(
             kind, user=user, page=local_path(str(form.get("from", ""))), message=message
         )
+        if kind == "bug":
+            diagnostics = await bug_diagnostics(
+                ctx, user=user, user_agent=request.headers.get("user-agent", "")
+            )
+            mail = EmailMessage(
+                to=mail.to, subject=mail.subject, body=f"{mail.body}\n\n{diagnostics}"
+            )
         sent = await _send(ctx, mail)
         await ctx.store.append_audit(
             user_id=user.id,
@@ -146,6 +155,79 @@ def register_feedback_routes(
         )
         notice = "feedback_sent" if sent else "feedback_not_sent"
         return RedirectResponse(f"/?notice={notice}", status_code=303)
+
+
+DIAGNOSTIC_ACTIONS = 10
+_ET = ZoneInfo("America/New_York")
+
+
+def _et(t: datetime) -> str:
+    return t.astimezone(_ET).strftime("%a %b %-d %-I:%M %p ET")
+
+
+async def bug_diagnostics(ctx: "_Ctx", *, user: User, user_agent: str) -> str:
+    """What the operator needs to reproduce a bug, gathered best-effort from the store (never a
+    course login, never a password): the build, the reporter's courses, next 21 days' dates and
+    last actions. A failure yields a one-line note instead: it never blocks the report."""
+    now = ctx.clock.now_utc()
+    s = ctx.settings
+    head = [
+        "--- Diagnostics ---",
+        f"Environment: {s.environment or '(unset)'} · build {s.build or '(unset)'}",
+        f"Reported: {_et(now)} ({now:%Y-%m-%d %H:%M} UTC)",
+        f"Browser: {_one_line(user_agent)[:300] or '(unknown)'}",
+        f"User id: {user.id} · role {user.role.value} · status {user.status.value}",
+    ]
+    try:
+        body = await _store_diagnostics(ctx, user=user, now=now)
+    except Exception as exc:
+        log.warning("bug-report diagnostics failed", exc_info=True)
+        body = [f"(diagnostics unavailable: {type(exc).__name__})"]
+    return "\n".join(head + body)
+
+
+async def _store_diagnostics(ctx: "_Ctx", *, user: User, now: datetime) -> list[str]:
+    out = ["", "Courses:"]
+    accounts = await ctx.store.list_accounts_for_user(user.id)
+    for a in accounts:
+        snap = await ctx.store.get_snapshot(a.id)
+        checked = (
+            f"last checked {_et(snap.observed_at)}{'' if snap.trusted else ' (untrusted)'}"
+            if snap is not None
+            else "never checked"
+        )
+        out.append(
+            f"  - {ctx.course_name(a.course_id)}: {a.status.value} · {checked} · "
+            f"login failures in a row {a.consecutive_soft_auth_failures} · account {a.id}"
+        )
+    if not accounts:
+        out.append("  (none connected)")
+    today = now.date()
+    rows = await ctx.store.list_rows_for_user(
+        user.id, from_date=today, to_date=today + timedelta(days=MIN_HORIZON_DAYS)
+    )
+    out += ["", "Next 21 days:"]
+    for r in rows:
+        tee = (
+            f" {r.booked_tee_time.astimezone(ZoneInfo(r.timezone)):%-I:%M %p}"
+            if r.booked_tee_time
+            else ""
+        )
+        flags = " · NEEDS RECONCILE" if r.needs_reconcile else ""
+        out.append(
+            f"  - {r.target_date:%a %b %-d} {ctx.course_name(r.course_id)}: "
+            f"{r.status.value}{tee} · last outcome {r.last_outcome or '-'}{flags} · row {r.id}"
+        )
+    if not rows:
+        out.append("  (no dates)")
+    out += ["", f"Last {DIAGNOSTIC_ACTIONS} actions (newest first):"]
+    actions = await ctx.store.recent_audit(user.id, limit=DIAGNOSTIC_ACTIONS)
+    out += [
+        f"  - {_et(a.at)} {a.action}" + (f" (row {a.row_id})" if a.row_id else "") for a in actions
+    ]
+    if not actions:
+        out.append("  (none)")
+    return out
 
 
 async def _send(ctx: "_Ctx", mail: EmailMessage) -> bool:

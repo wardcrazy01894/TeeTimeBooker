@@ -181,7 +181,7 @@ uv run teetime web --host 127.0.0.1 --port 8000
 | `/dates` | "Book a date" (the ranked form below); skip or unskip a rule date, withdraw a one-off, re-request after a cancel, and **cancel a booked tee time** (60 s lease, one login, needs a trustworthy reservation list; a booking the bot did not make needs an extra confirm; a dry-run site never cancels) |
 | `/rules` | "New weekly booking" and the list of standing rules. A single-window rule edits in place (from the next drop); a ranked one is replaced by deactivating it and saving a new one |
 | `/accounts` | **Connected Courses** (the page was called "Accounts" until 2026-09-29; the URL is unchanged): connect a course login (checked with ONE live login, never retried; at most 5 attempts per user and 3 per login per hour, 30 site-wide, a 15-minute pause after 2 attempts on one login), set the default max price per player, re-verify a rejected login, and **Refresh from course** (cached 2 minutes, at most 6 per account per hour) |
-| `/feedback` | **Report a bug** (a button in the footer of every signed-in page) and **Request a course** (on Connected Courses and the dashboard's Start-here card): one short form that emails the operator with your name, email and the page you came from |
+| `/feedback` | **Report a bug** (a button in the footer of every signed-in page) and **Request a course** (on Connected Courses and the dashboard's Start-here card): one short form that emails the operator with your name, email and the page you came from; a bug report also carries diagnostics (build, browser, your courses, next 21 days' dates, last 10 actions) |
 | `/admin/users` | Operator only: invite users (Invite emails them an invitation to sign in with Google; a still-invited person gets a Resend invite button; the invite is created even if the email fails), and a list of everyone (invited and not yet signed in, active, disabled) with their sign-in provider, connected courses, weekly bookings and next-21-day dates, plus a Disable/Enable button per signed-in user; and who tried to sign in without an invite (verified emails, attempts, first/last try, kept 90 days after the last try) with an Invite button per email |
 
 **The ranked form** (MU-R3): the date (a month calendar paged left/right; the browser's date box
@@ -213,6 +213,7 @@ The site fails closed if a required setting is missing.
 | `TEETIME_OPERATOR_EMAIL` | Bootstraps the first operator (no invite needed); operators, including anyone invited with the Operator role, can use `/admin/users` (deployed: from the `OPERATOR-NOTIFY-EMAIL` Key Vault secret) |
 | `TEETIME_WEB_DRY_RUN` | `true` (default) or `false`; a dry-run site never cancels a real reservation |
 | `TEETIME_CANONICAL_HOST_REDIRECT` | `false` (default) or `true`; redirect any other host (`www.`, the old `*.azurecontainerapps.io` name) to `TEETIME_PUBLIC_BASE_URL`. Set by Bicep iff a custom domain is configured (prod: `https://spicyteetimebooker.com`) |
+| `TEETIME_ENV` / `TEETIME_BUILD` | Optional; the environment name and the image tag (git sha), set by Bicep. Shown in bug-report diagnostics |
 | `WEB_FORWARDED_ALLOW_IPS` | Proxy IPs uvicorn trusts for forwarded headers (default `127.0.0.1`, ACA's ingress sidecar) |
 
 ### Tenant store

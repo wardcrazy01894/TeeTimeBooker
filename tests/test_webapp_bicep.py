@@ -214,3 +214,9 @@ def test_prod_uses_its_custom_domain_and_dev_does_not() -> None:
     assert "param webPublicBaseUrl = 'https://spicyteetimebooker.com'" in prod
     assert "param webCustomDomain = ''" in dev
     assert "param webPublicBaseUrl = 'https://teetime-web-dev." in dev
+
+
+def test_web_app_knows_its_build_for_bug_reports(webapp_bicep: str) -> None:
+    """The image tag (the git sha CI builds) reaches the app as TEETIME_BUILD (2026-09-29)."""
+    assert "{ name: 'TEETIME_BUILD'" in webapp_bicep
+    assert "last(split(containerImage, ':'))" in webapp_bicep

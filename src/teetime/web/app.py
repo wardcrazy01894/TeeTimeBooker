@@ -158,6 +158,10 @@ class WebSettings:
     # same path on ``public_base_url``. The OAuth state lives in the session cookie of the host
     # sign-in started on, so a second host breaks sign-in. On only where a custom domain is set.
     canonical_host_redirect: bool = False
+    # For bug-report diagnostics (2026-09-29): TEETIME_ENV ("dev"/"prod") and TEETIME_BUILD (the
+    # image tag, i.e. the git sha CI built). None when unset (local runs).
+    environment: str | None = None
+    build: str | None = None
 
     def __post_init__(self) -> None:
         if self.github is None and self.google is None:
@@ -249,6 +253,8 @@ def load_web_settings(env: Mapping[str, str] | None = None) -> WebSettings:
         operator_email=value("TEETIME_OPERATOR_EMAIL") or None,
         dry_run=dry_run_raw == "true",
         canonical_host_redirect=canonical_raw == "true",
+        environment=value("TEETIME_ENV") or None,
+        build=value("TEETIME_BUILD") or None,
     )
 
 
