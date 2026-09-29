@@ -352,6 +352,16 @@ class ReservationSnapshot:
     entries: tuple[SnapshotEntry, ...]
 
 
+def row_local_tee_time(row: RequestRow) -> datetime | None:
+    """The row's booked tee time in its COURSE timezone, or None. The store may return the
+    instant in UTC (Cosmos does), and every email prints the wall clock as given, so a
+    ``UserEvent`` built from a stored row must take its time from here, never raw
+    (2026-09-28: a cancel email said 12:30 PM for an 8:30 AM EDT booking)."""
+    if row.booked_tee_time is None:
+        return None
+    return row.booked_tee_time.astimezone(ZoneInfo(row.timezone))
+
+
 @dataclass(frozen=True, slots=True)
 class EventRow:
     """A row joined with its account, as returned by the single pre-T0 read (§4.2) and the

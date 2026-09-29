@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -241,6 +242,11 @@ async def test_cancel_owned_booking(store: SpyStore, clock: FakeClock) -> None:
     (event,) = notifier.events
     assert event.kind is UserEventKind.CANCELLED
     assert (event.user_id, event.row_id, event.target_date) == (account.user_id, row.id, OCT3)
+    # The store keeps the tee time as a UTC instant (Cosmos returns UTC); the email must show the
+    # COURSE wall clock: 13:30 UTC is 9:30 AM EDT (the 2026-09-28 "12:30 PM" cancel-email bug).
+    assert event.tee_time == TEE
+    assert event.tee_time is not None and event.tee_time.tzinfo == ZoneInfo("America/New_York")
+    assert event.tee_time.hour == 9
     assert factory.adapter.closed == 1
 
 

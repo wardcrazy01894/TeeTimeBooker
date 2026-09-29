@@ -86,6 +86,7 @@ from ..tenant.models import (
     UserId,
     derive_account_id,
     row_is_frozen,
+    row_local_tee_time,
 )
 from ..tenant.notify import UserEvent, UserEventKind, UserNotifier
 from ..tenant.runner import AdapterFactory
@@ -1384,7 +1385,7 @@ async def _after_commit(
                 row_id=row.id,
                 course_id=row.course_id,
                 target_date=row.target_date,
-                tee_time=row.booked_tee_time,
+                tee_time=row_local_tee_time(row),
                 confirmation=row.booked_confirmation,
                 detail=(
                     "cancelled from the site"
