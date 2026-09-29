@@ -12,7 +12,14 @@ from fastapi import FastAPI
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.models import UserRole, UserStatus
 
-from .conftest import OPERATOR_EMAIL, GitHubIdentity, make_invited, mock_github, sign_in
+from .conftest import (
+    OPERATOR_EMAIL,
+    GitHubIdentity,
+    drain_jobs,
+    make_invited,
+    mock_github,
+    sign_in,
+)
 
 MEMBER = "turk@example.test"
 
@@ -114,6 +121,7 @@ async def test_admin_invite_creates_invited_row_then_signin_binds(
     other_client: httpx.AsyncClient,
     store: InMemoryTenantStore,
     provider_mock: respx.MockRouter,
+    app: FastAPI,
 ) -> None:
     await _sign_in_operator(client, provider_mock)
     token = _csrf(await client.get("/admin/users"))
@@ -126,6 +134,7 @@ async def test_admin_invite_creates_invited_row_then_signin_binds(
     assert len(invited) == 1
     assert invited[0].status is UserStatus.INVITED and invited[0].role is UserRole.MEMBER
     assert invited[0].oauth_subject is None
+    await drain_jobs(app)  # the audit entry is written after the (background) email
     assert store.audit_log[-1].action == "admin_invite"
     assert store.audit_log[-1].user_id is not None  # the operator who acted
 

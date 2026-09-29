@@ -36,6 +36,12 @@ def sender() -> FakeEmailSender:
 
 
 @pytest.fixture
+def client(draining_client: httpx.AsyncClient) -> httpx.AsyncClient:
+    """Sends run after the response; wait for them before asserting what was sent."""
+    return draining_client
+
+
+@pytest.fixture
 def app(
     settings: WebSettings, store: InMemoryTenantStore, clock: FakeClock, sender: FakeEmailSender
 ) -> FastAPI:
@@ -122,15 +128,19 @@ async def test_the_form_emails_the_operator_and_thanks_the_user(
 
 
 @pytest.mark.usefixtures("member")
-async def test_a_mail_problem_still_thanks_them_but_says_so(
-    client: httpx.AsyncClient, sender: FakeEmailSender
+async def test_a_mail_problem_still_thanks_them_and_is_audited(
+    client: httpx.AsyncClient, sender: FakeEmailSender, store: InMemoryTenantStore
 ) -> None:
+    """The email goes out after the response, so the thanks cannot depend on it; the audit
+    entry records the outcome."""
     sender.fail = True
     page = await client.get("/feedback?kind=bug")
     r = await client.post(
         "/feedback", data={"csrf_token": _csrf(page), "kind": "bug", "message": "broken"}
     )
-    assert r.headers["location"] == "/?notice=feedback_not_sent"
+    assert r.headers["location"] == "/?notice=feedback_sent"
+    assert store.audit_log[-1].action == "feedback"
+    assert store.audit_log[-1].detail["sent"] is False
 
 
 @pytest.mark.usefixtures("member")

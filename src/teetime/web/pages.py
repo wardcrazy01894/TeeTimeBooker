@@ -69,10 +69,6 @@ _NOTICES = {
     "group_rule_saved": "Weekly booking saved and its dates added.",
     "price_saved": "Default price saved.",
     "feedback_sent": "Thanks! Spicy Al will take a look.",
-    "feedback_not_sent": (
-        "Thanks! It couldn't be emailed right now, though. Please try again later, or email "
-        "hello@spicyteetimebooker.com."
-    ),
 }
 _STATUS_LABELS = {
     ("cancelled", "external"): "cancelled at the course",

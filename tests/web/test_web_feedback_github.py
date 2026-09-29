@@ -41,6 +41,12 @@ def sender() -> FakeEmailSender:
 
 
 @pytest.fixture
+def client(draining_client: httpx.AsyncClient) -> httpx.AsyncClient:
+    """Sends run after the response; wait for them before asserting what was sent."""
+    return draining_client
+
+
+@pytest.fixture
 def app(
     settings: WebSettings, store: InMemoryTenantStore, clock: FakeClock, sender: FakeEmailSender
 ) -> FastAPI:

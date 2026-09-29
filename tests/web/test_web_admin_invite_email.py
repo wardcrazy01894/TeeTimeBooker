@@ -3,7 +3,6 @@ still-invited people get a Resend button, and a mail problem never loses the inv
 
 from __future__ import annotations
 
-import html
 import re
 
 import httpx
@@ -17,7 +16,7 @@ from teetime.tenant.models import UserStatus
 from teetime.tenant.notify import FakeEmailSender
 from teetime.web.app import WebSettings, create_app
 
-from .conftest import make_invited
+from .conftest import drain_jobs, make_invited
 from .test_web_admin_csrf import _csrf, _sign_in_operator
 from .test_web_admin_users_list import _member_with_a_weekly_booking
 
@@ -27,6 +26,12 @@ FRIEND = "pal@example.test"
 @pytest.fixture
 def sender() -> FakeEmailSender:
     return FakeEmailSender()
+
+
+@pytest.fixture
+def client(draining_client: httpx.AsyncClient) -> httpx.AsyncClient:
+    """Sends run after the response; wait for them before asserting what was sent."""
+    return draining_client
 
 
 @pytest.fixture
@@ -58,7 +63,8 @@ async def test_invite_emails_the_invitee(
     assert f"Go to {settings.public_base_url}" in mail.body
     assert f"({FRIEND})" in mail.body
     page = (await client.get(r.headers["location"])).text
-    assert "emailed" in page
+    assert "the invitation email is on its way" in page
+    assert store.audit_log[-1].detail["sent"] is True
 
 
 async def test_a_failed_email_keeps_the_invite_and_says_so(
@@ -70,10 +76,11 @@ async def test_a_failed_email_keeps_the_invite_and_says_so(
     sender.fail = True
     await _sign_in_operator(client, provider_mock)
     r = await _post(client, {"action": "invite", "email": FRIEND, "role": "member"})
-    assert r.headers["location"] == "/admin/users?notice=invited_not_emailed"
+    # Sent after the response: the notice cannot know; the audit records the failure.
+    assert r.headers["location"] == "/admin/users?notice=invited"
     assert any(u.email == FRIEND for u in await store.list_users())
-    page = (await client.get(r.headers["location"])).text
-    assert "couldn't be confirmed as sent" in html.unescape(page)
+    assert store.audit_log[-1].action == "admin_invite"
+    assert store.audit_log[-1].detail["sent"] is False
 
 
 async def test_without_email_configured_the_invite_still_works(
@@ -88,8 +95,10 @@ async def test_without_email_configured_the_invite_still_works(
     ) as client:
         await _sign_in_operator(client, provider_mock)
         r = await _post(client, {"action": "invite", "email": FRIEND, "role": "member"})
-    assert r.headers["location"] == "/admin/users?notice=invited_not_emailed"
+        await drain_jobs(app)
+    assert r.headers["location"] == "/admin/users?notice=invited"
     assert any(u.email == FRIEND for u in await store.list_users())
+    assert store.audit_log[-1].detail["sent"] is False
 
 
 async def test_resend_is_offered_to_still_invited_people_only_and_sends_again(

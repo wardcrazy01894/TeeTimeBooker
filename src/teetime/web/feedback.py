@@ -2,8 +2,10 @@
 
 A "Report a bug" button in the top bar of every signed-in page and a "Request a course" link where
 a course is chosen both open ``GET /feedback?kind=…&from=<page>``: one small form that emails the
-operator (``WebSettings.operator_email``) through the same ``EmailSender`` as invitations. Sending
-is best-effort and bounded; the user is thanked either way, and told if it could not be sent.
+operator (``WebSettings.operator_email``) through the same ``EmailSender`` as invitations. The
+handler validates, rate-limits and responds at once; the issue, the diagnostics and the email run
+AFTER the response as a background job (``web/background.py``), best-effort and bounded. The user
+is always thanked; a failure is logged and recorded in the ``feedback`` audit entry.
 The email carries the user's name and address (so the operator can reply), the page, and the
 message; the subject is stripped of line breaks so a display name cannot inject a header.
 """
@@ -139,45 +141,53 @@ def register_feedback_routes(
                 status_code=429, detail="That's a lot of reports for one hour. Try again later."
             )
         page = local_path(str(form.get("from", "")))
-        mail = render_feedback(kind, user=user, page=page, message=message)
-
-        # The public issue is filed concurrently with the private diagnostics (both bounded and
-        # non-raising); gather() owns both, so a cancelled request never orphans either.
-        async def private_diagnostics() -> str | None:
-            if kind != "bug":
-                return None
-            return await bug_diagnostics(
-                ctx, user=user, user_agent=request.headers.get("user-agent", "")
-            )
-
-        issue_url, private_diag = await asyncio.gather(
-            _file_issue(ctx, kind=kind, user=user, page=page, message=message),
-            private_diagnostics(),
+        # Read from the request NOW: the job runs after the response.
+        user_agent = request.headers.get("user-agent", "")
+        ctx.jobs.spawn(
+            _deliver(ctx, kind=kind, user=user, page=page, message=message, user_agent=user_agent),
+            name="feedback",
         )
-        if ctx.github_issues is not None:
-            link = issue_url or "(not filed)"
-            mail = EmailMessage(
-                to=mail.to, subject=mail.subject, body=f"{mail.body}\n\nGitHub issue: {link}"
-            )
-        if private_diag is not None:
-            mail = EmailMessage(
-                to=mail.to, subject=mail.subject, body=f"{mail.body}\n\n{private_diag}"
-            )
-        sent = await _send(ctx, mail)
-        await ctx.store.append_audit(
-            user_id=user.id,
-            action="feedback",
-            row_id=None,
-            detail={
-                "kind": kind,
-                "length": len(message),
-                "emailed": sent,
-                "issue": issue_url is not None,
-            },
-            at=ctx.clock.now_utc(),
+        return RedirectResponse("/?notice=feedback_sent", status_code=303)
+
+
+async def _deliver(
+    ctx: "_Ctx", *, kind: str, user: User, page: str | None, message: str, user_agent: str
+) -> None:
+    """The background half of a report: the public issue and the private diagnostics (together),
+    then the operator's email carrying the issue link, then the audit entry with both outcomes."""
+    mail = render_feedback(kind, user=user, page=page, message=message)
+
+    # The public issue is filed concurrently with the private diagnostics (both bounded and
+    # non-raising); gather() owns both, so a cancelled job never orphans either.
+    async def private_diagnostics() -> str | None:
+        if kind != "bug":
+            return None
+        return await bug_diagnostics(ctx, user=user, user_agent=user_agent)
+
+    issue_url, private_diag = await asyncio.gather(
+        _file_issue(ctx, kind=kind, user=user, page=page, message=message),
+        private_diagnostics(),
+    )
+    if ctx.github_issues is not None:
+        link = issue_url or "(not filed)"
+        mail = EmailMessage(
+            to=mail.to, subject=mail.subject, body=f"{mail.body}\n\nGitHub issue: {link}"
         )
-        notice = "feedback_sent" if sent else "feedback_not_sent"
-        return RedirectResponse(f"/?notice={notice}", status_code=303)
+    if private_diag is not None:
+        mail = EmailMessage(to=mail.to, subject=mail.subject, body=f"{mail.body}\n\n{private_diag}")
+    sent = await _send(ctx, mail)
+    await ctx.store.append_audit(
+        user_id=user.id,
+        action="feedback",
+        row_id=None,
+        detail={
+            "kind": kind,
+            "length": len(message),
+            "sent": sent,  # not "emailed": redact_payload masks any key with "mail"
+            "issue": issue_url is not None,
+        },
+        at=ctx.clock.now_utc(),
+    )
 
 
 TITLE_MAX_LEN = 80

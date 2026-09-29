@@ -78,6 +78,28 @@ async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
         yield c
 
 
+async def drain_jobs(app: FastAPI) -> None:
+    """Finish the sends a handler left running after its response (``web/background.py``)."""
+    await app.state.background_jobs.drain(timeout_s=5)
+
+
+@pytest.fixture
+async def draining_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """``client``, but every response first waits for the app's background jobs: for tests of
+    WHAT an invite / report sends, not WHEN (``test_web_instant_send.py`` pins the when)."""
+
+    async def settle(_: httpx.Response) -> None:
+        await drain_jobs(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="https://testserver",
+        follow_redirects=False,
+        event_hooks={"response": [settle]},
+    ) as c:
+        yield c
+
+
 def make_invited(email: str, *, role: UserRole = UserRole.MEMBER) -> User:
     return User(
         id=UserId(uuid4()),
