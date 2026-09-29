@@ -304,6 +304,7 @@ jobs:
             # than start a second, concurrent run.
             EXEC=$(az containerapp job execution list -n "${JOB}" -g "${RESOURCE_GROUP}" \
                      --query "[?properties.status=='Running'] | [0].name" -o tsv) || EXEC=""
+            [ "${EXEC}" = None ] && EXEC=""  # az prints nothing today; never adopt a "None"
             if [ -n "${EXEC}" ]; then
               echo "::warning::start of ${JOB} errored but execution ${EXEC} is running; following it"
               break
@@ -525,6 +526,7 @@ jobs:
             # than start a second, concurrent run.
             EXEC=$(az containerapp job execution list -n "${JOB}" -g "${RESOURCE_GROUP}" \
                      --query "[?properties.status=='Running'] | [0].name" -o tsv) || EXEC=""
+            [ "${EXEC}" = None ] && EXEC=""  # az prints nothing today; never adopt a "None"
             if [ -n "${EXEC}" ]; then
               echo "::warning::start of ${JOB} errored but execution ${EXEC} is running; following it"
               break

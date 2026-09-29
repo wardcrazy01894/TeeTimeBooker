@@ -3,8 +3,9 @@
 2026-09-29: a dev deploy failed only because the call that STARTS the migrate job got
 `ConnectionResetError: Connection reset by peer`. The step now retries the start (3 attempts) and
 tolerates a failed status poll (it consumes one poll, not the step). A re-start is safe: the
-migrations are an ordered, idempotent list (MULTIUSER_PLAN §10.2), so a start that landed despite
-the reset only runs them twice. A real Failed / Stopped / Degraded execution still fails the step.
+migrations are an ordered, idempotent list (MULTIUSER_PLAN §10.2), and before re-starting the
+step follows an already-Running execution (a start that landed despite the reset), so runs never
+overlap. A real Failed / Stopped / Degraded execution still fails the step.
 
 The step's real script is extracted from the workflow and run under Actions' `bash -eo pipefail`
 against a fake `az` (both deploy jobs carry the same step).
@@ -38,7 +39,8 @@ case "$*" in
   *"execution list"*)
     # FAKE_AZ_LANDED=1: the failed start actually landed, so a Running execution exists.
     n=$(cat "$state/starts" 2>/dev/null || echo 0)
-    if [ "${FAKE_AZ_LANDED:-0}" = 1 ] && [ "$n" -ge 1 ]; then echo "exec-landed"; fi ;;
+    if [ "${FAKE_AZ_LANDED:-0}" = 1 ] && [ "$n" -ge 1 ]; then echo "exec-landed"
+    elif [ "${FAKE_AZ_NONE:-0}" = 1 ]; then echo "None"; fi ;;
   *"execution show"*)
     i=$(cat "$state/polls" 2>/dev/null || echo 0); i=$((i + 1)); echo "$i" > "$state/polls"
     r=$(echo "$FAKE_AZ_POLLS" | cut -d' ' -f"$i")
@@ -49,7 +51,7 @@ esac
 
 
 def _run(
-    tmp_path: Path, *, start_failures: str, polls: str, landed: bool = False
+    tmp_path: Path, *, start_failures: str, polls: str, landed: bool = False, none: bool = False
 ) -> tuple[int, str, int]:
     az = tmp_path / "az"
     az.write_text(FAKE_AZ)
@@ -67,6 +69,7 @@ def _run(
             "FAKE_AZ_START": start_failures,
             "FAKE_AZ_POLLS": polls,
             "FAKE_AZ_LANDED": "1" if landed else "0",
+            "FAKE_AZ_NONE": "1" if none else "0",
             "ENVNAME": "dev",
             "RESOURCE_GROUP": "rg-teetime-dev",
             "MIGRATE_RETRY_SLEEP_S": "0",
@@ -118,3 +121,12 @@ def test_a_start_that_landed_despite_the_error_is_followed_not_repeated(tmp_path
     assert code == 0, out
     assert starts == 1
     assert "exec-landed" in out
+
+
+def test_a_literal_none_from_az_is_never_adopted(tmp_path: Path) -> None:
+    """If a future az printed `None` for "nothing Running", the step must retry the start rather
+    than poll a non-existent execution for 15 minutes."""
+    code, out, starts = _run(tmp_path, start_failures="1", polls="Succeeded", none=True)
+    assert code == 0, out
+    assert starts == 2
+    assert "execution None" not in out

@@ -452,8 +452,8 @@ a test that proves the new behaviour, and update this section in the same PR.
     STARTING the migrate job (3 attempts, 15 s apart) and treats a failed status poll as one used
     poll, after a dev deploy failed on a lone "Connection reset by peer". Before re-starting
     it follows an already-Running execution (a start that landed despite the error), so
-    runs do not overlap; and the migrations are an ordered idempotent list anyway; a real Failed/Stopped/Degraded execution still
-    fails the deploy. Pinned by `tests/test_azure_iac_migrate_step.py`.
+    runs do not overlap. The migrations are an ordered idempotent list anyway, and a real
+    Failed/Stopped/Degraded execution still fails the deploy. Pinned by `tests/test_azure_iac_migrate_step.py`.
   - **Never retried:** ForeUP `book()` (UNCERTAIN, §9), the login probe, any non-idempotent write
     without an IfMatch/etag or idempotency key, and `tenant-migrate`'s migration steps (the job is
     the retry unit; only its `initialize()` read is replayed). The web's own store calls rely on
