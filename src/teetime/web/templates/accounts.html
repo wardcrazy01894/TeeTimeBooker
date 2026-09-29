@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% from "_macros.html" import error_block %}
-{% block title %}Accounts · TeeTimeBooker{% endblock %}
+{% block title %}Connected courses · TeeTimeBooker{% endblock %}
 {% block content %}
-<h1>Course accounts</h1>
+<h1>Connected courses</h1>
 <p class="hint">The bot books with your own course login. Connecting checks it with ONE live login at the course; the password is stored encrypted and never shown again. A failed login is never retried automatically.</p>
 {{ error_block(error, none, csrf_token) }}
 
@@ -42,7 +42,7 @@
 {% endfor %}
 
 <section>
-  <h2>Connect a course account</h2>
+  <h2>Connect a course</h2>
   {% if courses %}
   <form method="post" action="/accounts/connect">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

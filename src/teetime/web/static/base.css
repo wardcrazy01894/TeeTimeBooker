@@ -438,3 +438,7 @@ input.datepick.enhanced { position: absolute; opacity: 0; width: 1px; height: 1p
   td.actions { white-space: normal; }
 }
 form.invite-email { display: flex; align-items: center; gap: 0.5rem; margin: 0.15rem 0; }
+/* The dashboard's first-run call to action: bigger than any other button on the page. */
+a.button.large { font-size: 1.1rem; padding: 0.8rem 1.6rem; }
+section.get-started { text-align: center; }
+section.get-started p { max-width: 36rem; margin-left: auto; margin-right: auto; }

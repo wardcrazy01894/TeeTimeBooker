@@ -101,7 +101,7 @@
       <label>{{ a.course_id | course_name }} $<input type="number" name="price_{{ a.id }}" min="0" max="1000" step="0.01" placeholder="{{ a.default_max_price }}"></label>
       {% endfor %}
     </div>
-    <p class="hint">Blank uses the course's default (set on the Accounts page).</p>
+    <p class="hint">Blank uses the course's default (set on the Connected courses page).</p>
   </fieldset>
   <p class="hint">The bot books the highest-ranked option that is available (inside one option, the time closest to the middle of the window). It holds at most one tee time per day, and moves to a better-ranked option if one opens later.</p>
   <div class="actions">
