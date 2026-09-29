@@ -13,6 +13,7 @@ every merge and is not tagged.
 
 - [Summary](#summary)
 - [infra/v3.4.0: 2026-09-29 (`main`@`f149142`)](#infrav340-2026-09-29-mainf149142)
+- [infra/v3.3.0: 2026-09-29 (`main`@`be66b5a`)](#infrav330-2026-09-29-mainbe66b5a)
 - [infra/v3.2.0: 2026-09-29 (`main`@`fbb6b5e`)](#infrav320-2026-09-29-mainfbb6b5e)
 - [infra/v3.1.0: 2026-09-28 (`main`@`4421fb0`)](#infrav310-2026-09-28-main4421fb0)
 - [infra/v3.0.2: 2026-09-27](#infrav302-2026-09-27)
@@ -43,6 +44,7 @@ every merge and is not tagged.
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
 | `infra/v3.4.0` | 2026-09-29 | `f149142` | unchanged (web, email, CI) | Mail from hello@spicyteetimebooker.com, Report a bug + Request a course (also filed as anonymized GitHub issues), migrate-start retry (#279–#285) |
+| `infra/v3.3.0` | 2026-09-29 | `be66b5a` | unchanged (web, email, infra) | Connect-a-course CTA, "Connected courses", invitation emails + Resend, dashboard Cancel button, prod email domain stage 1 (#275–#278) |
 | `infra/v3.2.0` | 2026-09-29 | `fbb6b5e` | unchanged (web, email, CI) | Dashboard cancel, friendlier emails, admin user list + uninvited sign-ins, static cache-busting, faster deploys (#267–#273) |
 | `infra/v3.1.0` | 2026-09-28 | `4421fb0` | unchanged (reporting only) | Operator summary v2, prod web always warm, prod on spicyteetimebooker.com (#262, #263, #265) |
 | `infra/v3.0.2` | 2026-09-27 | `18ba1ca` | **changed** (retries) | Retry audit: bounded transient-only retries on the tenant path (#260) |
@@ -88,6 +90,28 @@ watcher and the web app on image `teetime:f149142`; the web app's env has
 `GITHUB_ISSUES_REPO=wardcrazy01894/TeeTimeBooker`, with the token from the `GITHUB-ISSUES-TOKEN`
 secret; the ACS domain shows Domain, SPF and DKIM Verified and the `hello` sender "Spicy's Tee
 Time Booker" is present; `/healthz` 200.
+
+## infra/v3.3.0: 2026-09-29 (`main`@`be66b5a`)
+
+Booking behaviour is unchanged. (This section was written late, with v3.4.0's; the facts are from
+the deploy run and the verification done at the time.)
+
+- **Dashboard polish** (#275). The header no longer shows the sign-in subject ID (operators see it
+  on `/admin/users`); a user with no course gets a "Start here" card with a large **Connect a
+  course** button; the `/accounts` page is named "Connected courses" (capitalized to "Connected
+  Courses" in v3.4.0).
+- **Invitation email + Resend invite** (#276). Invite on `/admin/users` emails "You're invited to
+  Spicy's Tee Time Booker!" (operator-approved wording); still-invited people get a Resend button.
+- **Prod customer-managed email domain, stage 1** (#277). `spicyteetimebooker.com` created on the
+  prod ACS email service (not yet linked; mail still from the azurecomm.net address). Its DNS
+  records then went into Cloudflare and verified the same day (AZURE_PLAN §10.10); stage 2 shipped
+  in v3.4.0.
+- **Dashboard Cancel button** (#278) looks like the Dates page's, and still confirms.
+
+Verified after the deploy (run 36611229843, 6 min 26 s, pass 1 skipped): both booking jobs, the
+watcher and the web on `teetime:be66b5a`; `/healthz` 200; the web's sender still
+`DoNotReply@<…>.azurecomm.net` (unchanged, as intended); the `spicyteetimebooker.com` domain present
+as `CustomerManaged` with its Domain/SPF/DKIM/DKIM2 records to add.
 
 ## infra/v3.2.0: 2026-09-29 (`main`@`fbb6b5e`)
 
