@@ -23,6 +23,7 @@ change→docs mapping.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -336,3 +337,43 @@ def test_stale_prod_claim_guard_is_not_vacuous() -> None:
     ):
         assert _STALE_PROD_TOML.search(stale), stale
     assert not _STALE_PROD_TOML.search("prod was unchanged until MU-18 (below).")
+
+
+# A merge-conflict marker must never be committed (2026-09-29: three `||||||| <sha>` zdiff3 base
+# markers reached main in docs/MULTIUSER_AS_BUILT.md via hand-rolled conflict resolutions).
+CONFLICT_MARKER = re.compile(r"^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)( |$)", re.MULTILINE)
+_TEXT_SUFFIXES = {
+    ".md",
+    ".py",
+    ".yml",
+    ".yaml",
+    ".toml",
+    ".bicep",
+    ".bicepparam",
+    ".html",
+    ".css",
+    ".js",
+    ".json",
+    ".txt",
+    ".cfg",
+    ".ini",
+    ".sh",
+}
+
+
+def conflict_markers(text: str) -> list[str]:
+    return [m.group(0) for m in CONFLICT_MARKER.finditer(text)]
+
+
+def test_no_tracked_file_contains_a_merge_conflict_marker() -> None:
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+    offenders = []
+    for rel in tracked:
+        path = REPO_ROOT / rel
+        if path.suffix not in _TEXT_SUFFIXES and path.name not in {"CLAUDE.md", "pre-push"}:
+            continue
+        if path.is_file() and conflict_markers(path.read_text(errors="replace")):
+            offenders.append(rel)
+    assert offenders == []

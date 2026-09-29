@@ -1838,6 +1838,23 @@ class TenantStoreConformance:
         assert [r.subject for r in await s.list_rejected_signins(now=just_inside)] == ["old"]
         assert await s.list_rejected_signins(now=t0 + REJECTED_SIGNIN_RETENTION) == []
 
+    async def test_recent_audit_is_the_users_own_newest_first(self, harness: StoreHarness) -> None:
+        """Bug-report diagnostics (2026-09-29): a user's last N audit entries, newest first, never
+        another user's or a system entry."""
+        s = harness.store
+        me, other = UserId(uuid4()), UserId(uuid4())
+        t0 = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+        for i, action in enumerate(("row.skip", "row.unskip", "cancel", "feedback")):
+            await s.append_audit(
+                user_id=me, action=action, row_id=None, detail={}, at=t0 + timedelta(minutes=i)
+            )
+        await s.append_audit(user_id=other, action="theirs", row_id=None, detail={}, at=t0)
+        await s.append_audit(user_id=None, action="system", row_id=None, detail={}, at=t0)
+        lines = await s.recent_audit(me, limit=3)
+        assert [a.action for a in lines] == ["feedback", "cancel", "row.unskip"]
+        assert lines[0].at == t0 + timedelta(minutes=3)
+        assert await s.recent_audit(UserId(uuid4()), limit=5) == []
+
     async def test_list_users_returns_every_user_by_email(self, harness: StoreHarness) -> None:
         """The operator's admin view: every user in any status, invited ones included, sorted
         by email (case-insensitive). The store holds nothing else in the list."""

@@ -63,6 +63,7 @@ from ..persistence.in_memory_store import InMemoryStore
 from ..persistence.store import ConcurrentRunError
 from .models import (
     Actor,
+    AuditLine,
     CourseAccount,
     CourseAccountId,
     EventRow,
@@ -405,6 +406,11 @@ class TenantStore(Protocol):
     async def list_rejected_signins(self, *, now: datetime) -> list[RejectedSignin]:
         """OPERATOR read: every record whose ``last_at`` is within ``REJECTED_SIGNIN_RETENTION``
         of ``now``, newest attempt first."""
+        ...
+
+    async def recent_audit(self, user_id: UserId, *, limit: int) -> list[AuditLine]:
+        """The user's own last ``limit`` audit entries, newest first (bug-report diagnostics).
+        Never another user's or a system (``user_id=None``) entry."""
         ...
 
     async def list_users(self) -> list[User]:

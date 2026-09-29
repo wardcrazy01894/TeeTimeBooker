@@ -157,6 +157,16 @@ REJECTED_SIGNIN_RETENTION = timedelta(days=90)
 
 
 @dataclass(frozen=True, slots=True)
+class AuditLine:
+    """One of a user's audit entries as bug-report diagnostics show it (2026-09-29): when and what,
+    never the (redacted) detail."""
+
+    at: datetime
+    action: str
+    row_id: RowId | None
+
+
+@dataclass(frozen=True, slots=True)
 class RejectedSignin:
     """An uninvited sign-in identity, shown to operators on ``/admin/users`` with an Invite
     button. One record per ``(provider, subject)``. ``emails`` are provider-VERIFIED only (the

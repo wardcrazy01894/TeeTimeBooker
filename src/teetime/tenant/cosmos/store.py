@@ -71,6 +71,7 @@ from ..models import (
     REJECTED_SIGNIN_RETENTION,
     AccountStatus,
     Actor,
+    AuditLine,
     BookingState,
     CourseAccount,
     CourseAccountId,
@@ -126,6 +127,7 @@ from ..store import (
 )
 from .documents import (
     GLOBAL_CONTAINER,
+    GLOBAL_PK_PREFIXES,
     REJECTED_SIGNIN_PK,
     TENANT_CONTAINER,
     AuditRecord,
@@ -140,6 +142,7 @@ from .documents import (
     claim_key_hash,
     course_count_claim_key,
     from_account_doc,
+    from_audit_doc,
     from_booking_doc,
     from_claim_doc,
     from_probe_doc,
@@ -1493,6 +1496,18 @@ class CosmosTenantStore:
             if now - r.last_at < REJECTED_SIGNIN_RETENTION
         )
         return sorted(live, key=lambda r: (r.last_at, r.provider, r.subject), reverse=True)
+
+    async def recent_audit(self, user_id: UserId, *, limit: int) -> list[AuditLine]:
+        # One partition (audit:<userId>): a few hundred entries at most (400-day TTL, one person's
+        # site actions), so sorting here is cheaper than adding `/at` to the prod index policy.
+        docs = await self._query(
+            self._global,
+            "c.type = @type",
+            partition_key=f"{GLOBAL_PK_PREFIXES['audit']}{user_id}",
+            type="audit",
+        )
+        records = sorted((from_audit_doc(d).item for d in docs), key=lambda a: a.at, reverse=True)
+        return [AuditLine(at=a.at, action=a.action, row_id=a.row_id) for a in records[:limit]]
 
     async def list_users(self) -> list[User]:
         docs = await self._query(self._global, "c.type = @type", type="user")

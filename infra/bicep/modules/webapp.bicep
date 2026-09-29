@@ -96,6 +96,9 @@ param userAssignedIdentityClientId string = ''
 var appName = 'teetime-web-${envName}'
 
 var acrLoginServer = split(containerImage, '/')[0]
+// The tag of the image's LAST path segment ('teetime:<sha>'): a registry host:port also has a ':'.
+var imageName = last(split(containerImage, '/'))
+var imageTag = contains(imageName, ':') ? last(split(imageName, ':')) : 'untagged'
 
 var registries = usePublicBootstrapImage ? [] : [
   { server: acrLoginServer, identity: userAssignedIdentityResourceId }
@@ -139,6 +142,8 @@ var webEnv = [
   operatorEmailEnv
   { name: 'TEETIME_WEB_DRY_RUN',           value: dryRun ? 'true' : 'false' }
   { name: 'TEETIME_ENV',                   value: envName }
+  // Bug-report diagnostics (2026-09-29): the image tag, i.e. the git sha CI built.
+  { name: 'TEETIME_BUILD',                 value: imageTag }
   { name: 'TEETIME_CANONICAL_HOST_REDIRECT', value: empty(customDomain) ? 'false' : 'true' }
 ]
 
