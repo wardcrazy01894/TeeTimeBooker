@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import random
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -21,6 +22,7 @@ from teetime.core.redaction import register_secret_literals
 from teetime.courses.foreup.mangrove_bay import MANGROVE_BAY_COURSE_ID
 from teetime.notifications.notifier import Notifier
 from teetime.tenant import notify
+from teetime.tenant.golf_quips import GOLF_QUIPS
 from teetime.tenant.models import RowId, User, UserId, UserRole, UserStatus
 from teetime.tenant.notify import (
     USER_FACING_KINDS,
@@ -131,8 +133,70 @@ def test_render_booked_is_pii_minimal() -> None:
     assert "Mangrove Bay" in email.body
     assert "Sat Oct 10" in email.body
     assert "8:12 AM" in email.body
-    assert "TTB:123456" in email.body
     assert str(USER_ID) not in email.body
+
+
+def test_booked_email_hides_internal_ids_and_details() -> None:
+    """The confirmation id is ours (and ForeUP's internal teetime id), not something the golfer
+    ever sees at the course; the engine detail ("watcher", "") is jargon."""
+    for kind in (UserEventKind.BOOKED, UserEventKind.UPGRADED):
+        email = render_user_event(_event(kind, detail="watcher"), first_name="Turk")
+        assert "TTB" not in email.body
+        assert "123456" not in email.body
+        assert "Confirmation" not in email.body
+        assert "watcher" not in email.body
+        assert "Details" not in email.body
+
+
+def test_booked_email_lays_out_the_tee_time() -> None:
+    email = render_user_event(
+        _event(UserEventKind.BOOKED), first_name="Turk", course_label="Mangrove Bay"
+    )
+    assert "You're booked at Mangrove Bay on Sat Oct 10 at 8:12 AM." in email.body
+    assert "Course:    Mangrove Bay" in email.body
+    assert "Date:      Saturday, October 10" in email.body
+    assert "Tee time:  8:12 AM" in email.body
+
+
+def test_booked_email_signs_off_with_a_random_golf_quip() -> None:
+    seen = set()
+    for seed in range(40):
+        email = render_user_event(
+            _event(UserEventKind.BOOKED), first_name="Turk", rng=random.Random(seed)
+        )
+        lines = email.body.splitlines()
+        assert lines[-1] == "— TeeTimeBooker"
+        quip = lines[-3]
+        assert quip in GOLF_QUIPS
+        seen.add(quip)
+    assert len(seen) > 10  # really picked at random, not a fixed line
+
+
+def test_golf_quips_are_fifty_distinct_one_liners() -> None:
+    assert len(GOLF_QUIPS) >= 50
+    assert len(set(GOLF_QUIPS)) == len(GOLF_QUIPS)
+    assert all(q.strip() == q and "\n" not in q and q for q in GOLF_QUIPS)
+    assert any("screen door" in q for q in GOLF_QUIPS)
+
+
+def test_cancelled_email_closes_with_come_back_soon_not_a_quip() -> None:
+    email = render_user_event(
+        _event(UserEventKind.CANCELLED, detail="cancelled from the site"),
+        first_name="Turk",
+        course_label="Mangrove Bay",
+        rng=random.Random(0),
+    )
+    lines = email.body.splitlines()
+    assert lines[-3:] == ["Hope to see you back on the course soon.", "", "— TeeTimeBooker"]
+    assert not any(q in email.body for q in GOLF_QUIPS)
+    assert "Details" not in email.body  # "as you asked" already says it
+    assert "TTB" not in email.body
+
+
+def test_only_a_booking_gets_a_quip() -> None:
+    for kind in USER_FACING_KINDS - {UserEventKind.BOOKED, UserEventKind.UPGRADED}:
+        body = render_user_event(_event(kind), first_name="Turk", rng=random.Random(0)).body
+        assert not any(q in body for q in GOLF_QUIPS), kind
 
 
 def test_render_falls_back_to_course_id_without_label() -> None:

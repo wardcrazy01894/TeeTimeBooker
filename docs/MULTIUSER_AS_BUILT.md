@@ -305,7 +305,8 @@ MU-9b); the orphan report covers watched dates only. Tests:
 (`tenant/notify.py` + `tenant/acs_email.py`; nothing calls them until the MU-9a/MU-10b runners):
 `BufferingNotifier` is the engine-`Notifier`-shaped in-race collector (no I/O; `flush()` hands the
 results over after WRITE #2); `render_user_event` / `render_operator_summary` produce PII-minimal
-plain text (first name, course, date, tee time, `TTB:` confirmation, reason) and pass every subject
+plain text (first name, course, date, tee time, reason; the `TTB:` confirmation was dropped from
+user mail on 2026-09-29, see the end of this file) and pass every subject
 and body through `redact_text`, so an E7-registered secret or a stray email in a free-text `detail`
 never reaches a mailbox; `EmailUserNotifier` is bound to ONE user and refuses another user's event;
 `deliver_operator_summary` sends when there are events or the exit is non-zero and returns the FINAL
@@ -651,3 +652,16 @@ browser's required-field bubble replaced by "Pick a date." The first offered day
 `min` (`services.earliest_bookable_date`: the earliest "today" across the user's courses' timezones,
 not the visitor's clock); PageUp/PageDown clamp the day (Jan 31 -> Feb 28); one roving tab stop. The native input keeps carrying the
 value, so the server contract is unchanged. No inline script or style (CSP).
+
+## Dashboard cancel + friendlier booking email (2026-09-29)
+
+Operator request. The dashboard's booked rows get a **Cancel…** `<details>` disclosure (works
+with script off; a stray tap cannot cancel) posting to the same `/rows/{id}/cancel` with
+`from=dashboard`, which only changes where the PRG lands (`/?notice=cancelled`) and which page a
+refusal re-renders; any other value means `/dates`, so it is never an open redirect. Frozen rows
+show no cancel, as on `/dates`. The dashboard and user emails no longer show the `TTB:<raw id>`
+confirmation (ours, and ForeUP's internal teetime id; the golfer never sees it at the course).
+BOOKED / UPGRADED mail lays the tee time out as an aligned course / date / tee-time block, drops
+the engine `detail`, and signs off with a random line from `tenant/golf_quips.py::GOLF_QUIPS`
+(`render_user_event(..., rng=)` for tests); CANCELLED mail closes with "Hope to see you back on
+the course soon." instead of the `detail`. The operator summary is unchanged.

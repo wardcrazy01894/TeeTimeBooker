@@ -11,9 +11,10 @@ Backend: Azure Communication Services Email over REST (``tenant.acs_email``, HMA
 httpx, no SDK), with an Azure-managed sender domain (MU-11). This module is backend-neutral and
 does NO network I/O itself: it renders plain-text mail and hands it to an ``EmailSender``.
 
-Content is PII-minimal: the recipient's first name, the course, the date, the tee time, the
-``TTB:`` confirmation and a reason. Never credentials, never another user's data. Every rendered
-subject and body passes through ``core.redaction.redact_text`` as defence in depth, so a
+Content is PII-minimal: the recipient's first name, the course, the date, the tee time and a
+reason. A booking email carries no confirmation id (it is internal, never the golfer's) and
+signs off with a random ``golf_quips`` line. Never credentials, never another user's data. Every
+rendered subject and body passes through ``core.redaction.redact_text`` as defence in depth, so a
 registered secret literal (E7: keyring keys, decrypted passwords, the ACS key) or a stray email
 address in a free-text ``detail`` is masked before it can reach a mailbox.
 """
@@ -21,6 +22,7 @@ address in a free-text ``detail`` is masked before it can reach a mailbox.
 from __future__ import annotations
 
 import logging
+import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -30,6 +32,7 @@ from typing import Protocol, runtime_checkable
 from ..core.models import BookingResult, CourseId
 from ..core.redaction import redact_text
 from ..courses.names import course_display_name
+from .golf_quips import GOLF_QUIPS
 from .models import RowId, User, UserId
 
 log = logging.getLogger(__name__)
@@ -229,19 +232,44 @@ def _redacted(subject: str, body: str) -> RenderedEmail:
     return RenderedEmail(subject=redact_text(subject), body=redact_text(body))
 
 
+_BOOKING_KINDS = frozenset({UserEventKind.BOOKED, UserEventKind.UPGRADED})
+
+
+def _booking_card(event: UserEvent, course: str) -> list[str]:
+    """The tee time laid out as a small aligned block (plain text, so spaces align it)."""
+    day = event.tee_time.date() if event.tee_time else event.target_date
+    card = [f"  Course:    {course}"]
+    if day is not None:
+        card.append(f"  Date:      {day:%A, %B} {day.day}")
+    if event.tee_time is not None:
+        card.append(f"  Tee time:  {_time(event.tee_time)}")
+    return card
+
+
 def render_user_event(
-    event: UserEvent, *, first_name: str, course_label: str | None = None
+    event: UserEvent,
+    *,
+    first_name: str,
+    course_label: str | None = None,
+    rng: random.Random | None = None,
 ) -> RenderedEmail:
-    """Plain-text subject/body for one user-facing event. Operator-only kinds raise."""
+    """Plain-text subject/body for one user-facing event. Operator-only kinds raise. A booking
+    (BOOKED / UPGRADED) signs off with a golf one-liner picked by ``rng`` (the module RNG when
+    None)."""
     if event.kind not in USER_FACING_KINDS:
         raise ValueError(f"{event.kind} is operator-only; render it via render_operator_summary")
     subject_t, lead_t = _USER_TEMPLATES[event.kind]
     fields = {"course": _course(event, course_label), "when": _when(event)}
     fields["day"] = _day(event.target_date)
     lines = [f"Hi {first_name},", "", lead_t.format(**fields)]
-    if event.confirmation and event.kind in {UserEventKind.BOOKED, UserEventKind.UPGRADED}:
-        lines.append(f"Confirmation: {event.confirmation}")
-    if event.detail:
+    if event.kind in _BOOKING_KINDS:
+        # The golfer's view only: no confirmation id (ours, and ForeUP's internal teetime id,
+        # never shown to them by the course) and no engine detail ("watcher").
+        lines += ["", *_booking_card(event, fields["course"])]
+        lines += ["", (rng or random).choice(GOLF_QUIPS)]
+    elif event.kind is UserEventKind.CANCELLED:
+        lines += ["", "Hope to see you back on the course soon."]
+    elif event.detail:
         lines += ["", f"Details: {event.detail}"]
     lines += ["", "— TeeTimeBooker"]
     return _redacted(f"[TeeTimeBooker] {subject_t.format(**fields)}", "\n".join(lines))

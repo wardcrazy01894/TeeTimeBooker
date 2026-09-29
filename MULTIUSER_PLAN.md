@@ -1182,7 +1182,8 @@ load; it reads the snapshot (FRONTEND_PLAN §4.3 etiquette).
   burst (tee time, send offset from T0, kept / cancelled extra / rejected with reason), then the
   run statistics (rows, CAPTCHA fill, user emails). Names come from a bounded post-race
   `get_user_unscoped` read that falls back to a short user id.
-- **Content:** course, date, tee time, `TTB:` confirmation, and the reason. No credentials. Rendered
+- **Content:** course, date, tee time, and the reason (a booking email shows no confirmation id and
+  signs off with a random golf one-liner; a cancel email with "come back soon"). No credentials. Rendered
   from a template with autoescape.
 
 ---

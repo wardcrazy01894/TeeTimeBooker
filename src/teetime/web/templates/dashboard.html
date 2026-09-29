@@ -1,11 +1,12 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, status, windows, nice_date %}
+{% from "_macros.html" import hhmm, status, windows, nice_date, error_block %}
 {% block title %}Dashboard · TeeTimeBooker{% endblock %}
 {% block content %}
 <div class="page-head">
   <h1>Your tee times</h1>
   <p class="muted">Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider | capitalize }} · ID {{ user.oauth_subject }}</p>
 </div>
+{{ error_block(error, one_off, csrf_token) }}
 
 {% if not accounts %}
 <p class="placeholder">No course account is connected yet, so there is nothing to book. <a href="/accounts">Connect one</a>.</p>
@@ -38,7 +39,27 @@
             {% if r.mismatch == "manual_reservation" %}<span class="badge">manual reservation</span>{% endif %}
             {% if r.search_only_last_drop %}<span class="badge">search-only this drop</span>{% endif %}
           </td>
-          <td class="tee">{% if r.booked_tee_time_local %}{{ r.booked_tee_time_local }}{% if r.row.booked_confirmation %}<span class="conf">{{ r.row.booked_confirmation }}</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td class="tee">
+            {% if r.booked_tee_time_local %}{{ r.booked_tee_time_local }}{% else %}<span class="muted">—</span>{% endif %}
+            {% if r.row.status.value == "booked" and not r.frozen %}
+              {% if dry_run %}
+              <button type="button" class="small" disabled title="Cancelling is switched off in this dry-run environment">Cancel (off in dry-run)</button>
+              {% else %}
+              {# A disclosure, not a one-tap button: a stray tap must not cancel a real tee time. #}
+              <details class="cancel">
+                <summary>Cancel…</summary>
+                <form method="post" action="/rows/{{ r.row.id }}/cancel">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="from" value="dashboard">
+                  {% if not r.owned %}
+                  <label class="check"><input type="checkbox" name="confirm_unowned" value="on" required> This booking wasn't made by TeeTimeBooker; cancel it anyway</label>
+                  {% endif %}
+                  <button type="submit" class="small danger">Yes, cancel this tee time</button>
+                </form>
+              </details>
+              {% endif %}
+            {% endif %}
+          </td>
           <td class="muted">{{ r.snapshot_label }}</td>
         </tr>
         {% endfor %}
