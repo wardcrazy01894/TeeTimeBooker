@@ -1095,7 +1095,7 @@ account.
 | POST | `/rows/{id}/skip`, `/rows/{id}/unskip` | user | yes | state-machine transitions |
 | POST | `/rows/{id}/withdraw` | user | yes | delete an explicit pending row |
 | POST | `/rows/{id}/cancel` | user | yes | managed cancel (§8.5) |
-| GET/POST | `/admin/users` | operator | yes | invite/disable users (allowlist); lists every user (`TenantStore.list_users`) and the uninvited sign-in attempts with an Invite button (`list_rejected_signins`), 2026-09-29 |
+| GET/POST | `/admin/users` | operator | yes | invite (emails an invitation, best-effort; Resend for still-invited users) / disable users (allowlist); lists every user (`TenantStore.list_users`) and the uninvited sign-in attempts with an Invite button (`list_rejected_signins`), 2026-09-29 |
 
 Every data query is scoped by the session's `user_id`. There is an IDOR test per route
 (`test_route_rejects_other_users_row`).

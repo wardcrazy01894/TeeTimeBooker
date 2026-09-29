@@ -40,6 +40,7 @@ from teetime.tenant.notify import (
     UserNotifier,
     deliver_operator_summary,
     first_name,
+    render_invitation,
     render_operator_summary,
     render_user_event,
 )
@@ -549,3 +550,37 @@ def test_operator_summary_labels_an_unconfirmed_booking() -> None:
     )
     email = render_operator_summary(_summary((row,), (_booked_alex(),)), exit_code=0, at=AT)
     assert "booked → unconfirmed (no id; the watcher adopts it)" in email.body
+
+
+# --- invitation (operator request 2026-09-29; wording approved by the operator) -----------------
+
+
+def test_render_invitation_is_the_approved_text() -> None:
+    email = render_invitation("friend@example.com", site_url="https://spicyteetimebooker.com")
+    assert email.subject == "You're invited to Spicy's Tee Time Booker!"
+    assert email.body == (
+        "Hi,\n"
+        "\n"
+        "Spicy Al has invited you to Spicy's Tee Time Booker. It books golf tee times for you "
+        "the moment the course opens them, so you don't have to be up at 6 AM to grab a good "
+        "slot.\n"
+        "\n"
+        "To get started:\n"
+        "\n"
+        "  1. Go to https://spicyteetimebooker.com\n"
+        "  2. Sign in with Google using this email address (friend@example.com). The invite "
+        "only works with this exact address.\n"
+        "  3. Connect your course login, then pick the days and times you'd like to play.\n"
+        "\n"
+        "If you weren't expecting this, you can ignore this email.\n"
+        "\n"
+        "See you on the first tee!\n"
+        "\n"
+        "— Spicy's Tee Time Booker"
+    )
+
+
+def test_render_invitation_shows_the_address_unredacted() -> None:
+    """The one email whose job is to show an address: the redaction filter would mask it."""
+    body = render_invitation("Pal@Example.com", site_url="https://x.test").body
+    assert "(Pal@Example.com)" in body and "redacted" not in body

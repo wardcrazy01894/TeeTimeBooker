@@ -275,6 +275,38 @@ def render_user_event(
     return _redacted(f"[TeeTimeBooker] {subject_t.format(**fields)}", "\n".join(lines))
 
 
+# --- invitation (operator request 2026-09-29; wording approved by the operator) ---------------
+
+SITE_NAME = "Spicy's Tee Time Booker"
+INVITER_NAME = "Spicy Al"
+
+
+def render_invitation(email: str, *, site_url: str) -> RenderedEmail:
+    """The invite email sent from ``/admin/users``. NOT passed through ``redact_text``: its whole
+    point is to show the invitee their own address (redaction masks every email), and every part
+    of it is fixed text, that operator-entered address or the configured site URL."""
+    body = [
+        "Hi,",
+        "",
+        f"{INVITER_NAME} has invited you to {SITE_NAME}. It books golf tee times for you the "
+        "moment the course opens them, so you don't have to be up at 6 AM to grab a good slot.",
+        "",
+        "To get started:",
+        "",
+        f"  1. Go to {site_url}",
+        f"  2. Sign in with Google using this email address ({email}). The invite only works "
+        "with this exact address.",
+        "  3. Connect your course login, then pick the days and times you'd like to play.",
+        "",
+        "If you weren't expecting this, you can ignore this email.",
+        "",
+        "See you on the first tee!",
+        "",
+        f"— {SITE_NAME}",
+    ]
+    return RenderedEmail(subject=f"You're invited to {SITE_NAME}!", body="\n".join(body))
+
+
 # --- operator summary (one email per booking run) ----------------------------------------------
 
 

@@ -718,3 +718,19 @@ is called **Connected courses** in the nav, its title and every hint (the URL an
 unchanged). Provider names render through the `provider_name` filter ("GitHub", not "Github").
 Tests: `tests/web/test_web_connected_courses.py`.
 
+## Invitation email (2026-09-29)
+
+Operator request; the wording was approved by the operator ("You're invited to Spicy's Tee Time
+Booker!", from "Spicy Al", Google sign-in only). Invite on `/admin/users` now emails the invitee
+`tenant/notify.py::render_invitation` through the same ACS `EmailSender` the booking mail uses
+(`tenant/wiring.py::email_sender_from_env`, passed to `create_app(email_sender=…)` by `teetime
+web`). It is best-effort: the invite row is written first, the send is bounded
+(`INVITE_EMAIL_TIMEOUT_S`, 20 s), and a failure, a hang or unconfigured email only changes the
+notice ("couldn't be sent … try Resend invite"). The audit entry records `emailed`. A person
+still INVITED gets a **Resend invite** button (`action=resend`, `user_id`; a signed-in user is a
+400, an unknown id a 404). The invitation is the one email NOT passed through `redact_text`: its
+purpose is to show the invitee their own address, and every part of it is fixed text, that
+operator-entered address or the configured `TEETIME_PUBLIC_BASE_URL`. Tests:
+`tests/web/test_web_admin_invite_email.py`, `tests/tenant/test_notify.py`,
+`tests/web/test_web_cli.py`.
+
