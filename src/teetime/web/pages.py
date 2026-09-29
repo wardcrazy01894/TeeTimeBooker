@@ -97,12 +97,21 @@ class _Pages:
             "option_slots": range(1, MAX_OPTIONS + 1),
         }
 
-    async def dashboard(self, request: Request, user: User) -> Response:
+    async def dashboard(
+        self,
+        request: Request,
+        user: User,
+        *,
+        status_code: int = 200,
+        error: str | None = None,
+        one_off: OneOffPrefill | None = None,
+    ) -> Response:
         context = self.base_context(request, user)
         ctx = self.ctx
         context["rows"] = await services.dashboard(ctx.store, user_id=user.id, clock=ctx.clock)
         context["accounts"] = await services.list_accounts(ctx.store, user_id=user.id)
-        return ctx.page(request, "dashboard.html", context)
+        context["error"], context["one_off"] = error, one_off
+        return ctx.page(request, "dashboard.html", context, status_code=status_code)
 
     async def dates(
         self,
@@ -400,6 +409,10 @@ def _register_account_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
     @app.post("/rows/{id}/cancel")
     async def cancel_row(request: Request, user: CurrentUser, id: str) -> Response:
         rid = RowId(services.parse_id(id))
+        # Cancel lives on both /dates and the dashboard; `from` picks where to land. Only the
+        # one fixed value is honoured, so it can never become an open redirect.
+        from_dashboard = (await request.form()).get("from") == "dashboard"
+        back = "/" if from_dashboard else "/dates"
 
         async def action(form: dict[str, str]) -> str:
             keyring, factory = _mu14_wiring(ctx)
@@ -416,9 +429,10 @@ def _register_account_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
                 notifier=ctx.notifier,
                 limits=ctx.probe_limits,
             )
-            return "/dates?notice=cancelled"
+            return f"{back}?notice=cancelled"
 
-        return await pages.act(request, user, action, on_error=pages.dates)
+        on_error = pages.dashboard if from_dashboard else pages.dates
+        return await pages.act(request, user, action, on_error=on_error)
 
 
 def _partial(

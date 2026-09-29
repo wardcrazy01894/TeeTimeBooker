@@ -250,7 +250,9 @@ td.num, .tabular { font-variant-numeric: tabular-nums; }
 td.actions { white-space: nowrap; }
 td.actions form, td.actions .inline { margin-right: 0.35rem; }
 td.actions label.check { white-space: normal; max-width: 16rem; font-size: 0.85rem; }
-.conf { display: block; color: var(--muted); font-size: 0.8rem; font-weight: 400; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+details.cancel { margin-top: 0.3rem; font-weight: 400; }
+details.cancel > summary { cursor: pointer; color: var(--danger); font-size: 0.85rem; }
+details.cancel > form { display: grid; gap: 0.4rem; margin-top: 0.4rem; justify-items: start; }
 
 /* ---- status pills ---------------------------------------------------------------------- */
 
