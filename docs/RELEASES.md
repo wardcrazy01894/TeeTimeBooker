@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.5.0: 2026-09-29 (`main`@`8466ad1`)](#infrav350-2026-09-29-main8466ad1)
 - [infra/v3.4.0: 2026-09-29 (`main`@`f149142`)](#infrav340-2026-09-29-mainf149142)
 - [infra/v3.3.0: 2026-09-29 (`main`@`be66b5a`)](#infrav330-2026-09-29-mainbe66b5a)
 - [infra/v3.2.0: 2026-09-29 (`main`@`fbb6b5e`)](#infrav320-2026-09-29-mainfbb6b5e)
@@ -43,6 +44,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.5.0` | 2026-09-29 | `8466ad1` | unchanged (web) | Invite + feedback respond at once, every button shows a click, operator Uninvite (#288, #289) |
 | `infra/v3.4.0` | 2026-09-29 | `f149142` | unchanged (web, email, CI) | Mail from hello@spicyteetimebooker.com, Report a bug + Request a course (also filed as anonymized GitHub issues), migrate-start retry (#279–#285) |
 | `infra/v3.3.0` | 2026-09-29 | `be66b5a` | unchanged (web, email, infra) | Connect-a-course CTA, "Connected courses", invitation emails + Resend, dashboard Cancel button, prod email domain stage 1 (#275–#278) |
 | `infra/v3.2.0` | 2026-09-29 | `fbb6b5e` | unchanged (web, email, CI) | Dashboard cancel, friendlier emails, admin user list + uninvited sign-ins, static cache-busting, faster deploys (#267–#273) |
@@ -66,6 +68,28 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.5.0: 2026-09-29 (`main`@`8466ad1`)
+
+Booking behaviour is unchanged: website only.
+
+- **Instant responses + click feedback** (#288). Invite, Resend invite and Report a bug / Request a
+  course respond at once; the email (and the GitHub issue) are sent by a background job after the
+  response (`web/background.py`), because awaiting ACS's delivery polling hung the page 5-20 s.
+  Every button answers a click: a submitted form's buttons disable and the clicked one shows a
+  spinner, button-styled links get the spinner, everything has a pressed look without script; the
+  busy state clears on any return to the page and after a 30 s safety timeout. The notices say what
+  to do if an email does not arrive; a report that reached no one logs an ERROR. Fixed on the way:
+  the audit key `emailed` was always stored as `***` (redaction masks any key containing "mail");
+  it is now `sent`.
+- **Uninvite** (#289). A still-Invited person on `/admin/users` gets Uninvite (a confirm
+  disclosure); `TenantStore.delete_invited_user` removes only a never-bound invite (Cosmos: IfMatch,
+  so a racing first sign-in wins); a signed-in person is Disabled instead.
+
+Verified after the deploy (run 36632022361, 6 min 46 s, pass 1 skipped): both booking jobs, the
+watcher and the web on `teetime:8466ad1`; the web's sender still `hello@spicyteetimebooker.com`;
+`/healthz` 200; the live `/static/app.js` (versioned link) carries the button safety timeout; the
+first watch run fully after the deploy (17:30 ET) succeeded on the new image.
 
 ## infra/v3.4.0: 2026-09-29 (`main`@`f149142`)
 

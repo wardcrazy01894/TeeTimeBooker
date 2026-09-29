@@ -63,7 +63,7 @@ Two paths exist side by side:
 
 | | |
 |---|---|
-| Latest infra tag | latest infra tag `infra/v3.4.0` (2026-09-29: mail from hello@spicyteetimebooker.com, Report a bug + Request a course (also filed as anonymized GitHub issues), migrate-start retry; prod on https://spicyteetimebooker.com since `infra/v3.1.0`; the tenant path since `infra/v3.0.0`, MU-18 stage B); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Latest infra tag | latest infra tag `infra/v3.5.0` (2026-09-29: invite/feedback respond at once + every button shows a click, operator Uninvite; before that v3.4.0: mail from hello@spicyteetimebooker.com, Report a bug + Request a course; prod on https://spicyteetimebooker.com since `infra/v3.1.0`; the tenant path since `infra/v3.0.0`, MU-18 stage B); history in [docs/RELEASES.md](./docs/RELEASES.md) |
 | Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
 | Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout; `tenant-run --event mb0600et --wait` since MU-18 stage B (was `run --wait`) |
 | Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout; `tenant-watch` since MU-18 stage B |
