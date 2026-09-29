@@ -1448,6 +1448,11 @@ class CosmosTenantStore:
                 return bound
         return None
 
+    async def list_users(self) -> list[User]:
+        docs = await self._query(self._global, "c.type = @type", type="user")
+        users = (from_user_doc(d).item for d in docs)
+        return sorted(users, key=lambda u: (u.email.casefold(), str(u.id)))
+
     async def list_rows_for_user(
         self, user_id: UserId, *, from_date: date, to_date: date
     ) -> list[RequestRow]:

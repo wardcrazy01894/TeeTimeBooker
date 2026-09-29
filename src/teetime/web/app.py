@@ -47,6 +47,7 @@ from ..tenant.models import User, UserId, UserRole, UserStatus
 from ..tenant.notify import UserNotifier
 from ..tenant.runner import AdapterFactory
 from ..tenant.store import TenantStore
+from . import admin_users as admin_users_view
 from . import auth
 from .auth import ForbiddenError
 from .oauth import (
@@ -467,7 +468,12 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
     @app.get("/admin/users", response_class=HTMLResponse)
     async def admin_users(request: Request, operator: Operator) -> Response:
         notice = _ADMIN_NOTICES.get(request.query_params.get("notice", ""))
-        return ctx.page(request, "admin_users.html", {"user": operator, "notice": notice})
+        users = await admin_users_view.user_overviews(ctx.store, clock=ctx.clock)
+        return ctx.page(
+            request,
+            "admin_users.html",
+            {"user": operator, "is_operator": True, "notice": notice, "users": users},
+        )
 
     @app.post("/admin/users")
     async def admin_users_action(request: Request, operator: Operator) -> Response:

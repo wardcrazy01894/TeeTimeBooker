@@ -675,3 +675,16 @@ now link assets as `static_url(name)` = `/static/<name>?v=<12-hex SHA-256 of the
 `_RevalidatingStaticFiles` sets `Cache-Control: no-cache` on every static response (revalidation
 is a cheap ETag 304). An unknown asset name raises at render. Tests: `tests/web/test_web_ui_polish.py`.
 ||||||| 74d752e
+
+## Admin user list (2026-09-29)
+
+Operator request. `/admin/users` lists every user (`TenantStore.list_users`: any status, sorted
+by email; in memory a scan, in Cosmos one cross-partition `type = 'user'` query on the indexed
+`/type` path; pinned by `TenantStoreConformance.test_list_users_returns_every_user_by_email`).
+`web/admin_users.py::user_overviews` adds, per signed-in user, the connected courses (by name),
+active weekly rules and the next 21 days' rows by status; an INVITED user (never signed in) has
+no accounts, so its reads are skipped. Each signed-in user other than the viewer gets a
+Disable/Enable button that posts the existing provider + subject form. Operator-gated like the
+rest of the page; the only unscoped listing the web makes. Tests:
+`tests/web/test_web_admin_users_list.py`.
+
