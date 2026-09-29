@@ -87,9 +87,10 @@ def test_main_passes_the_params_and_derives_the_hello_sender(main_bicep: str) ->
     assert "email.?outputs.senderAddress" in main_bicep
 
 
-def test_prod_gets_the_domain_unlinked_dev_gets_none() -> None:
+def test_prod_sends_from_the_linked_domain_dev_gets_none() -> None:
     prod, dev = PROD_PARAMS.read_text(), DEV_PARAMS.read_text()
     assert "param emailCustomDomain = 'spicyteetimebooker.com'" in prod
-    assert "param emailCustomDomainLinked = false" in prod  # stage 1: flip after verification
+    # Stage 2 (2026-09-29): Domain / SPF / DKIM / DKIM2 all Verified in Azure first.
+    assert "param emailCustomDomainLinked = true" in prod
     assert "param emailCustomDomain = ''" in dev
     assert "param emailCustomDomainLinked = false" in dev
