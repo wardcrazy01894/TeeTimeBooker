@@ -1154,8 +1154,9 @@ def _slot(row: RequestRow, raw: str, tee: datetime) -> TeeTimeSlot:
 def _held_tee_time(row: RequestRow) -> datetime:
     """The held tee time. A BOOKED row always carries one; the fallback (course-local midnight)
     only keeps a malformed row from crashing the run and can never match a real slot."""
-    if row.booked_tee_time is not None:
-        return row.booked_tee_time
+    local = row_local_tee_time(row)  # course-local, like every other stored-time read
+    if local is not None:
+        return local
     return datetime.combine(row.target_date, time(0), tzinfo=ZoneInfo(row.timezone))
 
 
