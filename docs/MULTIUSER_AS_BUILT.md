@@ -777,3 +777,15 @@ Start-here card. The page is now titled **Connected Courses** everywhere.
 Tests: `tests/web/test_web_feedback.py`.
 ||||||| eb8b89a
 
+## Deploy: retry starting the migrate job (2026-09-29)
+
+A dev deploy (#280's) failed only because the CLI call that starts `teetime-migrate-dev` got
+`ConnectionResetError: Connection reset by peer`; the Bicep deployment itself had succeeded. The
+"Run tenant migrations" step (both jobs) now retries the start 3 times, 15 s apart, and a failed
+status poll consumes one poll instead of failing the step. Before re-starting it follows an
+already-Running execution (a start that landed despite the reset), so two runs never overlap; a real Failed/Stopped/Degraded execution still fails
+the deploy. Sleeps are overridable (`MIGRATE_RETRY_SLEEP_S`, `MIGRATE_POLL_SLEEP_S`) only so
+`tests/test_azure_iac_migrate_step.py` can run the real script against a fake `az` under
+`bash -eo pipefail`.
+||||||| 530229f
+
