@@ -6,6 +6,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -181,3 +182,37 @@ def test_connected_courses_is_capitalized_everywhere() -> None:
     for tpl in TEMPLATES.rglob("*.html"):
         text = re.sub(r"<[^>]+>", " ", tpl.read_text())
         assert "Connected courses" not in text, tpl.name
+
+
+@pytest.mark.usefixtures("member")
+async def test_at_most_five_reports_an_hour_per_person(
+    client: httpx.AsyncClient, sender: FakeEmailSender, clock: FakeClock
+) -> None:
+    page = await client.get("/feedback?kind=bug")
+    token = _csrf(page)
+
+    async def post() -> httpx.Response:
+        return await client.post(
+            "/feedback", data={"csrf_token": token, "kind": "bug", "message": "hi"}
+        )
+
+    for _ in range(5):
+        assert (await post()).status_code == 303
+    refused = await post()
+    assert refused.status_code == 429
+    assert len(sender.sent) == 5
+    await clock.sleep(timedelta(hours=1, seconds=1).total_seconds())
+    assert (await post()).status_code == 303
+    assert len(sender.sent) == 6
+
+
+@pytest.mark.usefixtures("member")
+async def test_a_huge_name_is_capped_in_the_subject(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, sender: FakeEmailSender
+) -> None:
+    user = await store.get_user_by_subject("github", "42")
+    assert user is not None
+    await store.upsert_user(replace(user, display_name="N" * 5000))
+    page = await client.get("/feedback?kind=bug")
+    await client.post("/feedback", data={"csrf_token": _csrf(page), "kind": "bug", "message": "hi"})
+    assert len(sender.sent[0].subject) < 150

@@ -10,12 +10,14 @@ message; the subject is stripped of line breaks so a display name cannot inject 
 
 import asyncio
 import logging
+from collections import defaultdict, deque
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ..tenant.models import User
+from ..tenant.models import User, UserId
 from ..tenant.notify import SITE_NAME, EmailMessage
 
 if TYPE_CHECKING:
@@ -41,6 +43,10 @@ KINDS: dict[str, tuple[str, str, str]] = {
 }
 MESSAGE_MAX_LEN = 4000
 FROM_PATH_MAX_LEN = 200
+NAME_MAX_LEN = 100  # in the subject
+# Abuse bound: each report is an email to the operator. Per user, per web replica (in-process;
+# prod runs one warm replica), which is plenty for a handful of invited users.
+MAX_REPORTS_PER_HOUR = 5
 FEEDBACK_EMAIL_TIMEOUT_S = 20.0
 
 
@@ -63,7 +69,7 @@ def _one_line(text: str) -> str:
 def render_feedback(kind: str, *, user: User, page: str | None, message: str) -> EmailMessage:
     """The operator's copy. ``to`` is filled in by the caller."""
     _, _, prefix = KINDS[kind]
-    name = _one_line(user.display_name) or user.email
+    name = _one_line(user.display_name)[:NAME_MAX_LEN] or user.email
     body = "\n".join(
         [
             f"{prefix} from the site.",
@@ -84,6 +90,17 @@ def register_feedback_routes(
     # `CurrentUser` alias at runtime, or `user` silently becomes a query parameter (422).
     ctx = pages.ctx
     CurrentUser = Annotated[User, Depends(current_user)]  # noqa: N806 — type alias
+    recent: dict[UserId, deque[datetime]] = defaultdict(deque)
+
+    def within_limit(user_id: UserId) -> bool:
+        now = ctx.clock.now_utc()
+        sent = recent[user_id]
+        while sent and now - sent[0] >= timedelta(hours=1):
+            sent.popleft()
+        if len(sent) >= MAX_REPORTS_PER_HOUR:
+            return False
+        sent.append(now)
+        return True
 
     @app.get("/feedback", response_class=HTMLResponse)
     async def feedback_page(request: Request, user: CurrentUser) -> Response:
@@ -111,6 +128,10 @@ def register_feedback_routes(
         if not message or len(message) > MESSAGE_MAX_LEN:
             raise HTTPException(
                 status_code=400, detail=f"write a message (at most {MESSAGE_MAX_LEN} characters)"
+            )
+        if not within_limit(user.id):
+            raise HTTPException(
+                status_code=429, detail="That's a lot of reports for one hour. Try again later."
             )
         mail = render_feedback(
             kind, user=user, page=local_path(str(form.get("from", ""))), message=message

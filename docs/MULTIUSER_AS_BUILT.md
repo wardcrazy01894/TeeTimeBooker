@@ -763,7 +763,8 @@ the invitation `EmailSender`: subject `[Spicy's Tee Time Booker] Bug report|Cour
 name and address (so the operator can reply), the page (`from`, kept only if it is a plain
 same-site path) and the message (1 to 4000 characters). Best-effort and bounded (20 s); the user
 lands on the dashboard with "Thanks!" either way, told if it could not be emailed. An audit entry
-records kind, length and `emailed`, never the text. "Report a bug" is a small button in the footer
+records kind, length and `emailed`, never the text. At most 5 reports per user per hour (in-process, per web
+replica; a 6th is a 429) and the subject's name is capped at 100 characters. "Report a bug" is a small button in the footer
 of every signed-in page; "Request a course" sits under Connect a course and on the dashboard's
 Start-here card. The page is now titled **Connected Courses** everywhere.
 Tests: `tests/web/test_web_feedback.py`.

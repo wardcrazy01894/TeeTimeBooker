@@ -35,7 +35,7 @@
   </main>
   {% if user is defined and user %}
   <footer class="site">
-    <a class="button small" href="/feedback?kind=bug&amp;from={{ here }}">Report a bug</a>
+    <a class="button small" href="/feedback?kind=bug&amp;from={{ here | urlencode }}">Report a bug</a>
   </footer>
   {% endif %}
 </body>
