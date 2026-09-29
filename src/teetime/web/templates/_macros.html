@@ -9,6 +9,17 @@
 {# A row's or rule's ranked options (§16.2), best first. #}
 {% macro windows(options) %}{% for o in options %}{{ o.earliest.strftime('%H:%M') }}–{{ o.latest.strftime('%H:%M') }}{% if not loop.last %}, {% endif %}{% endfor %}{% endmacro %}
 
+{# Players: a row of 1 / 2 / 3 / 4 buttons. Radio inputs under the hood, so it works (and is
+   keyboard-accessible) without script; base.css styles the labels as a segmented control. #}
+{% macro players_picker(party) %}
+<fieldset class="players">
+  <legend>Players</legend>
+  <div class="segmented">
+    {% for n in range(1, 5) %}<label><input type="radio" name="party_size" value="{{ n }}"{% if n == party %} checked{% endif %} required><span>{{ n }}</span></label>{% endfor %}
+  </div>
+</fieldset>
+{% endmacro %}
+
 {% macro status(r, status_labels) -%}
 {{ status_labels.get((r.row.status.value, r.row.status_reason), r.row.status.value) }}
 {%- endmacro %}
@@ -68,9 +79,11 @@
       </select>
     </label>
     {% else %}
-    <label>Date <input type="date" name="target_date" required></label>
+    {# app.js turns .datepick into a month calendar paged left/right; without script this is
+       the browser's own date box. #}
+    <label>Date <input type="date" name="target_date" class="datepick" required></label>
     {% endif %}
-    <label>Players <input type="number" name="party_size" min="1" max="4" value="2" required></label>
+    {{ players_picker(2) }}
   </div>
   <div class="options">
     <h3>Time slots, best first</h3>

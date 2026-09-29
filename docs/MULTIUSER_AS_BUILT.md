@@ -43,6 +43,7 @@ CLAUDE.md invariant bullets on `prepare_book` and on the two stores; MU-7 is `te
 - [Retry audit (2026-09-27)](#retry-audit-2026-09-27)
 - [Prod custom domain (2026-09-28)](#prod-custom-domain-2026-09-28)
 - [Email tee times in the course timezone (2026-09-29)](#email-tee-times-in-the-course-timezone-2026-09-29)
+- [Booking form: players buttons + month calendar (2026-09-29)](#booking-form-players-buttons--month-calendar-2026-09-29)
 
 <!-- /toc -->
 
@@ -636,3 +637,15 @@ web cancel, the watcher's `_notify`, the booker's group-collapse DOUBLE_HELD). T
 `tenant.models.row_local_tee_time(row)` (the row's course timezone). Emails built from a live
 slot were already local. `tests/tenant/test_email_tee_time_local.py` fails CI if any source line
 passes `tee_time=<x>.booked_tee_time` again.
+
+## Booking form: players buttons + month calendar (2026-09-29)
+
+Operator request. **Players** is the `_macros.html::players_picker` macro everywhere a party size is
+entered (the ranked date/weekly form and each single-window rule edit): four radio inputs 1-4
+styled as one segmented button row (`.segmented`), so it works and is keyboard-accessible with
+script off; `tests/web/test_players_picker.py` fails CI if a template types a party size again.
+**Date** keeps `<input type="date" class="datepick">` as the no-script control; `static/app.js`
+builds a month calendar over it paged side to side (‹ › buttons, a horizontal swipe, arrow keys
+and PageUp/PageDown), past days disabled, today ringed, the pick shown under the grid, and the
+browser's required-field bubble replaced by "Pick a date." The native input keeps carrying the
+value, so the server contract is unchanged. No inline script or style (CSP).

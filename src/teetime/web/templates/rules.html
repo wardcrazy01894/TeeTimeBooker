@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, error_block, ranked_form, windows %}
+{% from "_macros.html" import hhmm, error_block, players_picker, ranked_form, windows %}
 {% block title %}Weekly bookings · TeeTimeBooker{% endblock %}
 
 {% macro rule_fields(weekday, earliest, latest, party) %}
@@ -11,7 +11,7 @@
   </label>
   <label>From <input type="time" name="window_earliest" value="{{ earliest }}" required></label>
   <label>To <input type="time" name="window_latest" value="{{ latest }}" required></label>
-  <label>Players <input type="number" name="party_size" min="1" max="4" value="{{ party }}" required></label>
+  {{ players_picker(party) }}
   <button type="submit">Save</button>
 </div>
 {% endmacro %}

@@ -344,6 +344,87 @@ legend { font-weight: 600; padding: 0 0.35rem; font-size: 0.92rem; }
 ul.providers { list-style: none; padding: 0; margin: 1.5rem 0 0; display: grid; gap: 0.6rem; }
 ul.providers a.button { justify-content: center; width: 100%; }
 
+/* ---- players: 1 / 2 / 3 / 4 as one button row (radio inputs; works without script) ------ */
+
+fieldset.players { border: 0; padding: 0; margin: 0.5rem 0; min-width: 0; flex: 0 0 auto; }
+fieldset.players legend { padding: 0; margin-bottom: 0.25rem; font-weight: 500; font-size: 0.92rem; }
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface);
+}
+.segmented label { margin: 0; font-weight: 500; }
+.segmented label + label { border-left: 1px solid var(--border); }
+/* The radio stays in the accessibility tree and focus order; only its dot is hidden. */
+.segmented input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
+.segmented span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.4rem;
+  padding: 0 0.75rem;
+  cursor: pointer;
+  user-select: none;
+}
+.segmented label:hover span { background: var(--surface-2); }
+.segmented input:checked + span { background: var(--accent); color: var(--on-accent); }
+.segmented input:focus-visible + span { box-shadow: inset var(--focus); }
+
+/* ---- date: a month calendar paged left/right (built by app.js over input.datepick) ------ */
+
+.calendar {
+  margin-top: 0.25rem;
+  width: 100%;
+  max-width: 19rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0.5rem;
+  touch-action: pan-y;
+  font-weight: 400;
+}
+.calendar .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.calendar .cal-title { font-weight: 600; }
+.calendar button.cal-nav {
+  min-height: 2.2rem;
+  min-width: 2.2rem;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+  border-color: transparent;
+  background: none;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+.calendar button.cal-nav:hover { background: var(--surface-2); }
+.calendar .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-top: 0.35rem; }
+.calendar .cal-dow { text-align: center; font-size: 0.72rem; color: var(--muted); padding: 0.2rem 0; }
+.calendar button.cal-day {
+  min-height: 2.2rem;
+  padding: 0;
+  justify-content: center;
+  border-color: transparent;
+  border-radius: 50%;
+  background: none;
+  font-variant-numeric: tabular-nums;
+}
+.calendar button.cal-day:hover:not(:disabled) { background: var(--accent-soft); }
+.calendar button.cal-day.today { border-color: var(--accent); }
+.calendar button.cal-day[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+.calendar button.cal-day:disabled { opacity: 0.35; }
+.calendar .cal-picked { margin: 0.35rem 0 0; font-size: 0.85rem; color: var(--muted); min-height: 1.3em; }
+/* With the calendar in place the native box stays in the form (it carries the value) but is
+   hidden; without script the class is never added and the native box shows. */
+.date-field { flex: 0 1 19rem; }
+/* The booking form's first row: the date (calendar) and Players side by side, top-aligned. */
+.ranked > .form-row { align-items: flex-start; gap: 0 2rem; }
+.ranked > .form-row > label { flex: 0 1 16rem; }
+.date-field > label { margin-bottom: 0; }
+input.datepick.enhanced { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+
 /* ---- small screens --------------------------------------------------------------------- */
 
 @media (max-width: 40rem) {

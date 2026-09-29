@@ -6,6 +6,7 @@ Clock: T0 = Sat 2026-09-26 12:00 UTC (08:00 EDT); Sat 10/3 is bookable.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import date, time
@@ -222,3 +223,33 @@ async def test_a_ranked_rule_shows_its_options_and_no_single_window_edit(
     assert "09:00\u201310:00, 08:00\u201309:00" in page.text
     assert 'name="window_earliest"' not in page.text
     assert 'value="deactivate"' in page.text
+
+
+# --- form controls (operator request 2026-09-29) ------------------------------------------------
+
+
+def _party_radios(page: str) -> list[tuple[str, bool]]:
+    return [
+        (m.group(1), "checked" in m.group(0))
+        for m in re.finditer(r'<input type="radio" name="party_size" value="(\d)"[^>]*>', page)
+    ]
+
+
+@pytest.mark.parametrize("path", ["/dates", "/rules"])
+async def test_players_is_a_one_to_four_button_choice_defaulting_to_two(
+    client: httpx.AsyncClient, member: Member, path: str
+) -> None:
+    """Players is a row of 1 / 2 / 3 / 4 buttons (radio inputs, so it works without script),
+    never a typed number."""
+    page = (await client.get(path)).text
+    assert _party_radios(page) == [("1", False), ("2", True), ("3", False), ("4", False)]
+    assert not re.search(r'type="number"[^>]*name="party_size"', page)
+
+
+async def test_the_date_field_is_enhanced_but_stays_a_native_date_input(
+    client: httpx.AsyncClient, member: Member
+) -> None:
+    """Without script it is the browser's date box; app.js turns ``.datepick`` into the
+    side-to-side month calendar."""
+    page = (await client.get("/dates")).text
+    assert re.search(r'<input type="date" name="target_date" class="datepick"[^>]*required', page)
