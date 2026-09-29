@@ -78,6 +78,7 @@ case "$FAKE_AZ_MODE:$args" in
   granted:role\\ assignment\\ list*)
     [[ "$args" == *"--assignee-object-id pid-123"* && "$args" == *"--role AcrPull"* ]] \\
       && echo 1 || echo 0 ;;
+  garbage:role\\ assignment\\ list*) echo None ;;
   *:role\\ assignment\\ list*) echo 0 ;;
 esac
 """
@@ -90,6 +91,7 @@ esac
         ("not_granted", "true"),  # a new env: identity exists, grant not yet
         ("no_identity", "true"),  # a brand-new env
         ("error", "true"),  # anything unconfirmed falls back to the old behaviour
+        ("garbage", "true"),  # a non-numeric count, under Actions' `bash -e`, is not a grant
     ],
 )
 def test_detect_script_is_fail_safe(workflow: str, tmp_path: Path, mode: str, needed: str) -> None:
@@ -112,7 +114,11 @@ def test_detect_script_is_fail_safe(workflow: str, tmp_path: Path, mode: str, ne
             "SHARED_ACR_RG": "rg-teetime-shared",
         }
         result = subprocess.run(
-            ["bash", "-c", _run_script(block)], env=env, capture_output=True, text=True, check=False
+            ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", _run_script(block)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         assert result.returncode == 0, result.stderr
         assert re.findall(r"^needed=(\w+)$", out.read_text(), re.M) == [needed]

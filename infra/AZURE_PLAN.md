@@ -396,8 +396,8 @@ on any failure). It exists ONLY when `bookingMode` or `watchMode` is `tenant`, i
 values + `TEETIME_ENV`). `azure-iac.yml` starts it and polls the execution to `Succeeded` (15 min
 cap; `Failed`/`Stopped`/timeout fails the deploy job) **right after deploy pass 2**, in a tenant
 env only. Not before the jobs switch image: pass 1 (when it runs; see §8) puts every job, this
-one included, on the public bootstrap image, so the real migration code only exists once pass 2 has also moved the
-booking/watch jobs and the web. That is safe because document readers accept `schemaVersion` N
+one included, on the public bootstrap image, so the real migration code only exists once pass 2
+has also moved the booking/watch jobs and the web. That is safe because document readers accept `schemaVersion` N
 and N−1. An operator can re-run it by hand (`az containerapp job start -n teetime-migrate-<env>`);
 agents may not (deploy guard).
 
