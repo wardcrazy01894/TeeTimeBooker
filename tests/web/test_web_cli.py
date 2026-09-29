@@ -27,6 +27,7 @@ from teetime.tenant.booking_job import HostedAdapterFactory, StoreUserNotifier
 from teetime.tenant.crypto import KEYRING_ENV_VAR
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.wiring import LoggingUserNotifier
+from teetime.web.github_issues import GitHubIssues
 
 GOOD_ENV = {
     "TEETIME_PUBLIC_BASE_URL": "https://teetime-web-dev.example.azurecontainerapps.io",
@@ -172,6 +173,7 @@ def test_web_wires_keyring_adapters_policies_and_notifier(
     }
     assert isinstance(app_kwargs["notifier"], LoggingUserNotifier)
     assert app_kwargs["email_sender"] is None  # no ACS settings: invites are not emailed
+    assert app_kwargs["github_issues"] is None  # no GITHUB_ISSUES_*: reports are not filed
     assert isinstance(app_kwargs["store"], InMemoryTenantStore)
     # E7: the keyring's key material is masked from now on.
     assert KEY_B64 not in redact_text(f"key={KEY_B64}")
@@ -222,3 +224,17 @@ def test_web_uses_the_cosmos_store_and_acs_when_configured(
     assert len(opened) == 1
     assert isinstance(app_kwargs["notifier"], StoreUserNotifier)
     assert isinstance(app_kwargs["email_sender"], AcsEmailClient)  # invitations
+
+
+def test_web_files_github_issues_when_configured(
+    served: dict[str, Any], app_kwargs: dict[str, Any]
+) -> None:
+    env = {
+        **GOOD_ENV,
+        "GITHUB_ISSUES_REPO": "o/r",
+        "GITHUB_ISSUES_TOKEN": "github_pat_x_0123456789",
+    }
+    result = CliRunner().invoke(entry.cli, ["web"], env=env)
+    assert result.exit_code == 0, result.output
+    assert isinstance(app_kwargs["github_issues"], GitHubIssues)
+    assert app_kwargs["github_issues"].repo == "o/r"

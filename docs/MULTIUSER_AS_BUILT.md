@@ -772,7 +772,14 @@ lands on the dashboard with "Thanks!" either way, told if it could not be emaile
 `TEETIME_ENV`/`TEETIME_BUILD`, the time, the browser, the user id, each connected course with its
 status, last snapshot and login-failure streak, the next 21 days' rows with status, last outcome
 and needs-reconcile, and the last 10 audit actions via `TenantStore.recent_audit`); gathering it
-is best-effort and never blocks the report. An audit entry
+is best-effort and never blocks the report. Where `GITHUB_ISSUES_REPO` + `GITHUB_ISSUES_TOKEN` are
+set (prod, `githubIssuesRepo`; the token is the operator's `GITHUB-ISSUES-TOKEN` secret, an E7
+literal), each report is also filed as an anonymized issue in the public repo
+(`web/github_issues.py`, bounded, never raises): title `[Bug report|Course request] <first line>`
+(no `@`), the message in a `~~~~` fence longer than any tilde run in it (so it cannot mention anyone
+or inject markup), the page, `r-<sha256(user id)[:8]>`, and for bugs only the anonymized
+diagnostics (build, course statuses, date counts by status); the operator's email gets the issue
+link, and the form warns that the message is public. An audit entry
 records kind, length and `emailed`, never the text. At most 5 reports per user per hour (in-process, per web
 replica; a 6th is a 429) and the subject's name is capped at 100 characters. "Report a bug" is a small red-outlined button in
 the top bar of every signed-in page, next to Sign out (moved from the footer the same day); "Request a course" sits under Connect a course and on the dashboard's

@@ -113,3 +113,13 @@ def test_environment_and_build_are_read_for_bug_reports() -> None:
     assert (s.environment, s.build) == ("prod", "e70d100abc")
     unset = load_web_settings(_env())
     assert (unset.environment, unset.build) == (None, None)
+
+
+def test_github_issues_settings_are_read_and_the_token_never_printed() -> None:
+    token = "github_pat_settings_0123456789"
+    s = load_web_settings(_env(GITHUB_ISSUES_REPO="o/r", GITHUB_ISSUES_TOKEN=token))
+    assert (s.github_issues_repo, s.github_issues_token) == ("o/r", token)
+    assert token not in repr(s)
+    off = load_web_settings(_env())
+    assert (off.github_issues_repo, off.github_issues_token) == (None, None)
+    assert {"GITHUB_ISSUES_REPO", "GITHUB_ISSUES_TOKEN"} <= set(WEB_ENV_VARS)

@@ -95,8 +95,10 @@ def test_webapp_secrets_are_google_oauth_only(webapp_bicep: str) -> None:
     assert "OAUTH-GOOGLE-CLIENT-ID" in webapp_bicep
     assert "OAUTH-GOOGLE-CLIENT-SECRET" in webapp_bicep
     assert "WEB-SESSION-SECRET" in webapp_bicep
-    # GitHub OAuth is deliberately not wired (operator decision: Google only).
-    assert "GITHUB" not in webapp_bicep
+    # GitHub OAuth is deliberately not wired (operator decision: Google only). The GitHub ISSUES
+    # token (site reports, 2026-09-29) is a different thing and is allowed.
+    assert "OAUTH-GITHUB" not in webapp_bicep
+    assert "OAUTH_GITHUB" not in webapp_bicep
 
 
 # --- MU-16a: the web's tenant backend --------------------------------------------------------
@@ -134,10 +136,13 @@ def test_webapp_tenant_backend_is_gated_on_the_cosmos_endpoint(webapp_bicep: str
     # tenant KV secrets (ACA validates KV refs at create time).
     assert "var tenantBackend = !empty(tenantCosmosEndpoint)" in webapp_bicep
     assert (
-        "secrets: concat(webSecrets, operatorEmailSecrets, tenantBackend ? webTenantSecrets : [])"
+        "secrets: concat(webSecrets, operatorEmailSecrets, githubIssuesSecrets, "
+        "tenantBackend ? webTenantSecrets : [])" in webapp_bicep
+    )
+    assert (
+        "env: concat(tenantBackend ? concat(webEnv, webTenantEnv) : webEnv, githubIssuesEnv)"
         in webapp_bicep
     )
-    assert "env: tenantBackend ? concat(webEnv, webTenantEnv) : webEnv" in webapp_bicep
 
 
 def test_main_passes_the_tenant_backend_to_the_webapp(main_bicep: str) -> None:
@@ -222,3 +227,23 @@ def test_web_app_knows_its_build_for_bug_reports(webapp_bicep: str) -> None:
     # The tag of the LAST path segment only (a registry host:port has a ':' too), or 'untagged'.
     assert "var imageName = last(split(containerImage, '/'))" in webapp_bicep
     assert "contains(imageName, ':') ? last(split(imageName, ':')) : 'untagged'" in webapp_bicep
+
+
+def test_github_issues_token_is_wired_only_where_a_repo_is_set(webapp_bicep: str) -> None:
+    """Site reports -> public GitHub issues (2026-09-29): the GITHUB-ISSUES-TOKEN secret exists
+    only in prod's vault, so the secretRef must be gated on githubIssuesRepo."""
+    assert "param githubIssuesRepo string = ''" in webapp_bicep
+    assert "secrets/GITHUB-ISSUES-TOKEN'" in webapp_bicep
+    assert "var githubIssues = !empty(githubIssuesRepo)" in webapp_bicep
+    assert "{ name: 'GITHUB_ISSUES_TOKEN', secretRef: 'github-issues-token' }" in webapp_bicep
+    assert "{ name: 'GITHUB_ISSUES_REPO', value: githubIssuesRepo }" in webapp_bicep
+
+
+def test_prod_files_issues_in_the_public_repo_dev_does_not() -> None:
+    assert "githubIssuesRepo: githubIssuesRepo" in MAIN_BICEP.read_text()
+    params = MAIN_BICEP.parent
+    assert (
+        "param githubIssuesRepo = 'wardcrazy01894/TeeTimeBooker'"
+        in (params / "main.bicepparam.prod").read_text()
+    )
+    assert "param githubIssuesRepo = ''" in (params / "main.bicepparam.dev").read_text()
