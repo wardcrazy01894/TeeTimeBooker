@@ -63,8 +63,11 @@ async def test_every_signed_in_page_has_a_report_a_bug_link(
     client: httpx.AsyncClient, path: str
 ) -> None:
     page = (await client.get(path)).text
-    assert f'class="button small" href="/feedback?kind=bug&amp;from={path}"' in page
-    assert ">Report a bug<" in page
+    # In the top bar, next to Sign out (operator request: more visible than the footer).
+    header = page[page.index('<header class="site">') : page.index("</header>")]
+    assert f'class="button small report-bug" href="/feedback?kind=bug&amp;from={path}"' in header
+    assert ">Report a bug<" in header
+    assert "<footer" not in page
 
 
 def test_the_login_page_has_no_report_link() -> None:

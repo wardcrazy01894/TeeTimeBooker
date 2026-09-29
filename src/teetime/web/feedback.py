@@ -1,7 +1,7 @@
 """Report a bug / Request a course (operator request 2026-09-29).
 
-A "Report a bug" link in the footer of every signed-in page and a "Request a course" link where a
-course is chosen both open ``GET /feedback?kind=…&from=<page>``: one small form that emails the
+A "Report a bug" button in the top bar of every signed-in page and a "Request a course" link where
+a course is chosen both open ``GET /feedback?kind=…&from=<page>``: one small form that emails the
 operator (``WebSettings.operator_email``) through the same ``EmailSender`` as invitations. Sending
 is best-effort and bounded; the user is thanked either way, and told if it could not be sent.
 The email carries the user's name and address (so the operator can reply), the page, and the

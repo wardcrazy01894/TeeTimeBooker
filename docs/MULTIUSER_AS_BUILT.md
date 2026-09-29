@@ -674,7 +674,6 @@ now link assets as `static_url(name)` = `/static/<name>?v=<12-hex SHA-256 of the
 (`web/app.py::static_asset_versions`, computed once at startup, so it tracks the image), and
 `_RevalidatingStaticFiles` sets `Cache-Control: no-cache` on every static response (revalidation
 is a cheap ETag 304). An unknown asset name raises at render. Tests: `tests/web/test_web_ui_polish.py`.
-||||||| 74d752e
 
 ## Admin user list (2026-09-29)
 
@@ -773,13 +772,12 @@ lands on the dashboard with "Thanks!" either way, told if it could not be emaile
 `TEETIME_ENV`/`TEETIME_BUILD`, the time, the browser, the user id, each connected course with its
 status, last snapshot and login-failure streak, the next 21 days' rows with status, last outcome
 and needs-reconcile, and the last 10 audit actions via `TenantStore.recent_audit`); gathering it
-is best-effort and never blocks the report. An audit entry records kind, length and `emailed`,
-never the text. At most 5 reports per user per hour (in-process, per web
-replica; a 6th is a 429) and the subject's name is capped at 100 characters. "Report a bug" is a small button in the footer
-of every signed-in page; "Request a course" sits under Connect a course and on the dashboard's
+is best-effort and never blocks the report. An audit entry
+records kind, length and `emailed`, never the text. At most 5 reports per user per hour (in-process, per web
+replica; a 6th is a 429) and the subject's name is capped at 100 characters. "Report a bug" is a small red-outlined button in
+the top bar of every signed-in page, next to Sign out (moved from the footer the same day); "Request a course" sits under Connect a course and on the dashboard's
 Start-here card. The page is now titled **Connected Courses** everywhere.
 Tests: `tests/web/test_web_feedback.py`.
-||||||| eb8b89a
 
 ## Deploy: retry starting the migrate job (2026-09-29)
 
@@ -791,5 +789,4 @@ already-Running execution (a start that landed despite the reset), so two runs n
 the deploy. Sleeps are overridable (`MIGRATE_RETRY_SLEEP_S`, `MIGRATE_POLL_SLEEP_S`) only so
 `tests/test_azure_iac_migrate_step.py` can run the real script against a fake `az` under
 `bash -eo pipefail`.
-||||||| 530229f
 
