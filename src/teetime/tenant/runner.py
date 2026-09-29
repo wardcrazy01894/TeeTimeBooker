@@ -74,6 +74,7 @@ from .models import (
     UserId,
     options_time_windows,
     row_is_frozen,
+    row_local_tee_time,
     row_max_price,
 )
 from .notify import (
@@ -957,7 +958,7 @@ async def _collapse_groups(
                         row_id=row.id,
                         course_id=row.course_id,
                         target_date=row.target_date,
-                        tee_time=row.booked_tee_time,
+                        tee_time=row_local_tee_time(row),
                         confirmation=None,
                         detail="group collapse",
                         at=clock.now_utc(),

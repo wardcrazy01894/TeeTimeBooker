@@ -42,6 +42,7 @@ CLAUDE.md invariant bullets on `prepare_book` and on the two stores; MU-7 is `te
 - [Website UI polish](#website-ui-polish)
 - [Retry audit (2026-09-27)](#retry-audit-2026-09-27)
 - [Prod custom domain (2026-09-28)](#prod-custom-domain-2026-09-28)
+- [Email tee times in the course timezone (2026-09-29)](#email-tee-times-in-the-course-timezone-2026-09-29)
 
 <!-- /toc -->
 
@@ -626,3 +627,12 @@ same flag sets `TEETIME_CANONICAL_HOST_REDIRECT=true`. `web/app.py::_CanonicalHo
 `state` cookie belongs to the host sign-in started on and the callback always returns to the
 canonical one. `/healthz` is exempt; the target is always the configured origin. Tests:
 `tests/web/test_web_canonical_host.py`, `tests/test_webapp_bicep.py`.
+
+## Email tee times in the course timezone (2026-09-29)
+
+A prod cancel email said "Mon Oct 5 at 12:30 PM" for an 8:30 AM EDT booking: Cosmos returns
+`RequestRow.booked_tee_time` as a UTC instant and three `UserEvent` builders passed it raw (the
+web cancel, the watcher's `_notify`, the booker's group-collapse DOUBLE_HELD). They now use
+`tenant.models.row_local_tee_time(row)` (the row's course timezone). Emails built from a live
+slot were already local. `tests/tenant/test_email_tee_time_local.py` fails CI if any source line
+passes `tee_time=<x>.booked_tee_time` again.

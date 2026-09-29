@@ -6,8 +6,9 @@ duplicate reconcile, orphans, and dry-run safety (§7.8)."""
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -616,3 +617,24 @@ async def test_dry_run_watcher_never_cancels() -> None:
 
     assert (await stored_row(store, s)).status is RowStatus.BOOKED  # vanish logged, not written
     assert fake.book_call_count == 0
+
+
+async def test_watch_email_shows_the_course_wall_clock_for_a_utc_stored_booking() -> None:
+    """Cosmos returns ``booked_tee_time`` in UTC; a watcher email must still read in the course
+    timezone (the 2026-09-28 "12:30 PM" email for an 8:30 AM booking)."""
+    store = new_store()
+    fake = WatchFake()
+    s = await seed(store, n=1)
+    utc_slot = replace(HELD_EARLY, tee_time=HELD_EARLY.tee_time.astimezone(UTC))
+    await book_row(store, s, raw_id=HELD_RAW, tee=utc_slot)
+    factory = FakeFactory(adapters={s.account.id: fake})
+    notifier = RecordingNotifier()
+
+    await _watch(store, factory, notifier=notifier)
+    await _watch(store, factory, now=WATCH_NOW + timedelta(minutes=10), notifier=notifier)
+
+    (event,) = notifier.events
+    assert event.kind is UserEventKind.CANCELLED_EXTERNAL
+    assert event.tee_time == HELD_EARLY.tee_time
+    assert event.tee_time is not None and event.tee_time.tzinfo == ZoneInfo(s.row.timezone)
+    assert event.tee_time.hour == HELD_EARLY.tee_time.hour
