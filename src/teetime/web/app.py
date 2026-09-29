@@ -90,6 +90,15 @@ def _static_url_for(versions: Mapping[str, str]) -> Callable[[str], str]:
     return static_url
 
 
+_PROVIDER_NAMES = {"github": "GitHub", "google": "Google"}
+
+
+def provider_display_name(provider: object) -> str:
+    """A sign-in provider as people write it ("GitHub", not "Github"); unknown ones capitalized."""
+    key = str(provider)
+    return _PROVIDER_NAMES.get(key, key.capitalize())
+
+
 class _RevalidatingStaticFiles(StaticFiles):
     """``Cache-Control: no-cache`` on every static response: a browser may keep the file but must
     revalidate it (a cheap 304 via the ETag). Without it, browsers cached heuristically from
@@ -642,6 +651,7 @@ def create_app(
         ),
     )
     templates.env.filters["course_name"] = ctx.course_name
+    templates.env.filters["provider_name"] = provider_display_name
     templates.env.globals["static_url"] = _static_url_for(static_asset_versions(STATIC_DIR))
     cookie = CookiePolicy()
     app = FastAPI(

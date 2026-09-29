@@ -40,7 +40,7 @@
             {% elif u.status.value == "disabled" %}<span class="status status-cancelled">Disabled</span>
             {% else %}<span class="status status-booked">Active</span>{% endif %}
           </td>
-          <td>{{ (u.oauth_provider | replace("github", "GitHub") | replace("google", "Google")) if o.signed_in else "—" }}</td>
+          <td>{% if o.signed_in %}{{ u.oauth_provider | provider_name }}<br><span class="hint">ID {{ u.oauth_subject }}</span>{% else %}—{% endif %}</td>
           <td>{% for c in o.course_ids %}{{ c | course_name }}{% if not loop.last %}, {% endif %}{% else %}<span class="muted">none</span>{% endfor %}</td>
           <td class="num">{% if o.weekly_rules %}{{ o.weekly_rules }} weekly{% else %}<span class="muted">—</span>{% endif %}</td>
           <td>{% for status, n in o.upcoming %}{{ n }} {{ status }}{% if not loop.last %} · {% endif %}{% else %}<span class="muted">—</span>{% endfor %}</td>
@@ -92,7 +92,7 @@
             {% else %}<span class="muted">no verified email</span>{% endfor %}
           </td>
           <td>{{ a.record.display_name or "—" }}</td>
-          <td>{{ a.record.provider | replace("github", "GitHub") | replace("google", "Google") }}</td>
+          <td>{{ a.record.provider | provider_name }}</td>
           <td class="num">{{ a.record.attempts }}</td>
           <td class="tabular">{{ a.first_local.strftime("%b %-d, %-I:%M %p") }} ET</td>
           <td class="tabular">{{ a.last_local.strftime("%b %-d, %-I:%M %p") }} ET</td>
@@ -109,7 +109,7 @@
 
 <section>
   <h2>Disable / enable by sign-in identity</h2>
-  <p class="hint">Keyed by the bound sign-in identity (provider + subject), as shown on the user's dashboard and in the audit log. A disabled user is signed out on their next request.</p>
+  <p class="hint">Keyed by the bound sign-in identity (provider + subject), as shown under Sign-in in the People table and in the audit log. A disabled user is signed out on their next request.</p>
   <form method="post" action="/admin/users" class="form-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Provider

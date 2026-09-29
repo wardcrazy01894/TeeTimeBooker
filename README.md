@@ -177,10 +177,10 @@ uv run teetime web --host 127.0.0.1 --port 8000
 
 | Page | What it does |
 |------|--------------|
-| `/` | Dashboard: your dates for the next 21 days, status, booked tee time, and when the course account was last checked ("as of 07:53"). A booked tee time has a **Cancel…** disclosure (same rules as on `/dates`; the confirm step keeps a stray tap from cancelling) |
+| `/` | Dashboard: a "Connect a course" call to action until the first course is connected; your dates for the next 21 days, status, booked tee time, and when the course account was last checked ("as of 07:53"). A booked tee time has a **Cancel…** disclosure (same rules as on `/dates`; the confirm step keeps a stray tap from cancelling) |
 | `/dates` | "Book a date" (the ranked form below); skip or unskip a rule date, withdraw a one-off, re-request after a cancel, and **cancel a booked tee time** (60 s lease, one login, needs a trustworthy reservation list; a booking the bot did not make needs an extra confirm; a dry-run site never cancels) |
 | `/rules` | "New weekly booking" and the list of standing rules. A single-window rule edits in place (from the next drop); a ranked one is replaced by deactivating it and saving a new one |
-| `/accounts` | Connect a course login (checked with ONE live login, never retried; at most 5 attempts per user and 3 per login per hour, 30 site-wide, a 15-minute pause after 2 attempts on one login), set the default max price per player, re-verify a rejected login, and **Refresh from course** (cached 2 minutes, at most 6 per account per hour) |
+| `/accounts` | **Connected courses** (the page was called "Accounts" until 2026-09-29; the URL is unchanged): connect a course login (checked with ONE live login, never retried; at most 5 attempts per user and 3 per login per hour, 30 site-wide, a 15-minute pause after 2 attempts on one login), set the default max price per player, re-verify a rejected login, and **Refresh from course** (cached 2 minutes, at most 6 per account per hour) |
 | `/admin/users` | Operator only: invite users, and a list of everyone (invited and not yet signed in, active, disabled) with their sign-in provider, connected courses, weekly bookings and next-21-day dates, plus a Disable/Enable button per signed-in user; and who tried to sign in without an invite (verified emails, attempts, first/last try, kept 90 days after the last try) with an Invite button per email |
 
 **The ranked form** (MU-R3): the date (a month calendar paged left/right; the browser's date box

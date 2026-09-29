@@ -17,7 +17,7 @@
         <a href="/"{% if here == "/" %} aria-current="page"{% endif %}>Dashboard</a>
         <a href="/dates"{% if here == "/dates" %} aria-current="page"{% endif %}>Dates</a>
         <a href="/rules"{% if here == "/rules" %} aria-current="page"{% endif %}>Weekly</a>
-        <a href="/accounts"{% if here == "/accounts" %} aria-current="page"{% endif %}>Accounts</a>
+        <a href="/accounts"{% if here == "/accounts" %} aria-current="page"{% endif %}>Connected courses</a>
         {% if is_operator is defined and is_operator %}<a href="/admin/users"{% if here == "/admin/users" %} aria-current="page"{% endif %}>Users</a>{% endif %}
         <span class="who">{{ user.display_name or user.email }}</span>
         <form method="post" action="/logout" class="inline">

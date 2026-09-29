@@ -708,3 +708,13 @@ only (single partition), so no index change. Tests: conformance
 `test_rejected_signins_*`, `tests/tenant/cosmos/test_documents.py`,
 `tests/web/test_web_admin_users_list.py`.
 
+## Dashboard and naming polish (2026-09-29)
+
+Operator request. The dashboard header no longer shows the OAuth subject ("Signed in as <email>
+via GitHub"); operators see each user's subject under Sign-in in the `/admin/users` People
+table instead, which is what the disable/enable form is keyed by. A user with no course
+connected gets a "Start here" card with a large "Connect a course" button. The `/accounts` page
+is called **Connected courses** in the nav, its title and every hint (the URL and routes are
+unchanged). Provider names render through the `provider_name` filter ("GitHub", not "Github").
+Tests: `tests/web/test_web_connected_courses.py`.
+

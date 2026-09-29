@@ -4,12 +4,16 @@
 {% block content %}
 <div class="page-head">
   <h1>Your tee times</h1>
-  <p class="muted">Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider | capitalize }} · ID {{ user.oauth_subject }}</p>
+  <p class="muted">Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider | provider_name }}</p>
 </div>
 {{ error_block(error, one_off, csrf_token) }}
 
 {% if not accounts %}
-<p class="placeholder">No course account is connected yet, so there is nothing to book. <a href="/accounts">Connect one</a>.</p>
+<section class="get-started">
+  <h2>Start here: connect your course</h2>
+  <p>The bot books with your own course login, so connect a course first. Then add a weekly booking or book a date.</p>
+  <a class="button primary large" href="/accounts">Connect a course</a>
+</section>
 {% endif %}
 
 <section>
