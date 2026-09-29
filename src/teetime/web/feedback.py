@@ -140,17 +140,20 @@ def register_feedback_routes(
             )
         page = local_path(str(form.get("from", "")))
         mail = render_feedback(kind, user=user, page=page, message=message)
-        # The public issue is filed concurrently with the private diagnostics (both bounded), so
-        # a report never waits on them one after the other.
-        issue_task = asyncio.create_task(
-            _file_issue(ctx, kind=kind, user=user, page=page, message=message)
+
+        # The public issue is filed concurrently with the private diagnostics (both bounded and
+        # non-raising); gather() owns both, so a cancelled request never orphans either.
+        async def private_diagnostics() -> str | None:
+            if kind != "bug":
+                return None
+            return await bug_diagnostics(
+                ctx, user=user, user_agent=request.headers.get("user-agent", "")
+            )
+
+        issue_url, private_diag = await asyncio.gather(
+            _file_issue(ctx, kind=kind, user=user, page=page, message=message),
+            private_diagnostics(),
         )
-        private_diag = (
-            await bug_diagnostics(ctx, user=user, user_agent=request.headers.get("user-agent", ""))
-            if kind == "bug"
-            else None
-        )
-        issue_url = await issue_task
         if ctx.github_issues is not None:
             link = issue_url or "(not filed)"
             mail = EmailMessage(
