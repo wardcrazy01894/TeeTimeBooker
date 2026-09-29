@@ -1,6 +1,6 @@
 """Operator requests 2026-09-29: the dashboard does not show the sign-in subject ID, a user with
 no course connected gets an obvious "Connect a course" button, and the page for course logins is
-called "Connected courses" (the URL stays /accounts)."""
+called "Connected Courses" (the URL stays /accounts)."""
 
 from __future__ import annotations
 
@@ -69,9 +69,9 @@ async def test_the_course_logins_page_is_called_connected_courses(
 ) -> None:
     await _sign_in_member(client, store, provider_mock)
     page = (await client.get("/accounts")).text
-    assert '<a href="/accounts" aria-current="page">Connected courses</a>' in page
-    assert "<h1>Connected courses</h1>" in page
-    assert "<title>Connected courses · TeeTimeBooker</title>" in page
+    assert '<a href="/accounts" aria-current="page">Connected Courses</a>' in page
+    assert "<h1>Connected Courses</h1>" in page
+    assert "<title>Connected Courses · TeeTimeBooker</title>" in page
 
 
 STALE = ("Accounts page", "Go to Accounts", "Accounts ·", "Course accounts", "course account")
