@@ -499,3 +499,46 @@ async def test_account_actions_without_keyring_are_refused(
         )
     assert r.status_code == 409
     assert "not available" in r.text
+
+
+# --- cancel from the dashboard -------------------------------------------------------------------
+
+
+async def test_cancel_via_dashboard_returns_to_the_dashboard(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, factory: ProbeFactory, member: Member
+) -> None:
+    assert member.account is not None
+    row = await _booked_row(store, member.account)
+    page = await client.get("/")
+    assert f'action="/rows/{row.id}/cancel"' in page.text
+    assert 'name="from" value="dashboard"' in page.text
+    r = await _post(client, f"/rows/{row.id}/cancel", {"from": "dashboard"})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/?notice=cancelled"
+    got = await store.get_row(row.id, user_id=member.user.id)
+    assert got is not None and (got.status, got.status_reason) == (RowStatus.CANCELLED, "user")
+    assert factory.adapter.cancel_call_count == 1
+    assert "Tee time cancelled." in (await client.get("/?notice=cancelled")).text
+
+
+async def test_dashboard_cancel_refusal_rerenders_the_dashboard(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, factory: ProbeFactory, member: Member
+) -> None:
+    assert member.account is not None
+    row = await _booked_row(store, member.account, owned=False)
+    assert 'name="confirm_unowned"' in (await client.get("/")).text
+    refused = await _post(client, f"/rows/{row.id}/cancel", {"from": "dashboard"})
+    assert refused.status_code == 409
+    assert "Your tee times" in refused.text
+    assert "made by TeeTimeBooker" in refused.text
+    assert factory.calls == []
+
+
+async def test_dashboard_never_shows_the_internal_booking_id(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, member: Member
+) -> None:
+    assert member.account is not None
+    await _booked_row(store, member.account)
+    page = await client.get("/")
+    assert "TTB:" not in page.text
+    assert f">{RAW}<" not in page.text
