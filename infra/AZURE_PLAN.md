@@ -395,8 +395,8 @@ on any failure). It exists ONLY when `bookingMode` or `watchMode` is `tenant`, i
 `enableSchedules`), has a 600 s replica timeout and no Key Vault secret (env: the three Cosmos
 values + `TEETIME_ENV`). `azure-iac.yml` starts it and polls the execution to `Succeeded` (15 min
 cap; `Failed`/`Stopped`/timeout fails the deploy job) **right after deploy pass 2**, in a tenant
-env only. Not before the jobs switch image: pass 1 puts every job, this one included, on the
-public bootstrap image, so the real migration code only exists once pass 2 has also moved the
+env only. Not before the jobs switch image: pass 1 (when it runs; see §8) puts every job, this
+one included, on the public bootstrap image, so the real migration code only exists once pass 2 has also moved the
 booking/watch jobs and the web. That is safe because document readers accept `schemaVersion` N
 and N−1. An operator can re-run it by hand (`az containerapp job start -n teetime-migrate-<env>`);
 agents may not (deploy guard).
@@ -832,6 +832,21 @@ in the parameter file and redeploy — this is the intended release workflow.
 
 ---
 
+
+### Deploy pass 1 runs only for a new environment (2026-09-29)
+
+Each deploy job is two Bicep deployment passes: pass 1 with the public bootstrap image (so a NEW
+env's managed identity gets AcrPull on the shared ACR before anything pulls), then the image
+build, then pass 2 with the real image. Pass 1 used to run on every deploy, which doubled the
+Bicep time (dev deploys went ~4 to ~11 min after MU-17 added the web app, ACS email and the
+migrate job) and put every job AND the web app on the placeholder image for a pass (the prod web
+is always warm, so the site served the placeholder). The **Detect bootstrap need** step now reads
+the env MI's principal id, the shared ACR id and the MI's AcrPull assignment there
+(`--assignee-object-id`, no Graph lookup) and skips pass 1 when the assignment exists. It is
+fail-safe: no identity, an `az` error or no assignment runs pass 1 as before; the step logs
+`bootstrap pass 1 needed: <bool>` as a notice. Pinned by `tests/test_azure_iac_bootstrap_skip.py`,
+which runs the step's script against a fake `az`.
+
 ## 9. Cost estimate (pre-emption item 12)
 
 ### 9.1 Per-component breakdown (East US 2, April 2026)
@@ -1247,7 +1262,8 @@ The prod re-point has a short cutover window (run off-peak, away from 05:50 ET).
    → the shared ACR login server.
 3. **Tag `infra/v*` → prod deploys** (manual-approval gate). Prod re-points to the shared ACR,
    grants its cross-RG AcrPull, builds `teetime:<sha>` there. **Short window:** during the
-   two-pass deploy a watch cron firing mid-deploy loses one ~10-min cycle (benign). Verify the
+   two-pass deploy a watch cron firing mid-deploy loses one ~10-min cycle (benign; since
+   2026-09-29 later deploys skip pass 1, see §8). Verify the
    prod jobs' `registries[0].server` is the shared ACR + the image exists + the prod MI has
    AcrPull on the shared ACR.
 4. **Delete the old prod-resident ACR** (the $5/mo saving): `az acr delete -n teetimeprod<suffix>

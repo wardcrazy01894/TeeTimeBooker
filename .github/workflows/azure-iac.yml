@@ -189,7 +189,30 @@ jobs:
           test -n "${ACR_LOGIN_SERVER}" || { echo "::error::No shared ACR in ${SHARED_ACR_RG}"; exit 1; }
           echo "ACR_LOGIN_SERVER=${ACR_LOGIN_SERVER}" >> "$GITHUB_ENV"
           echo "ACR_NAME=${ACR_LOGIN_SERVER%%.*}" >> "$GITHUB_ENV"
+      # Pass 1 is only for a NEW environment: its MI needs AcrPull on the shared ACR before
+      # anything can pull the real image. Once the grant exists, pass 1 only doubled the deploy
+      # time (~4 min) and put every job AND the web app on the placeholder image for a pass.
+      # FAIL-SAFE: anything not confirmed (no identity, an az error, no assignment) runs pass 1.
+      # --assignee-object-id avoids a Graph lookup the RG-scoped CI SP may not be allowed.
+      # Pinned by tests/test_azure_iac_bootstrap_skip.py (runs this script against a fake az).
+      - name: Detect bootstrap need (skip pass 1 once the AcrPull grant exists)
+        id: bootstrap
+        run: |
+          NEEDED=true
+          PRINCIPAL=$(az identity show -g "${RESOURCE_GROUP}" -n "mi-teetime-${ENVNAME}" \
+                        --query principalId -o tsv 2>/dev/null) || PRINCIPAL=""
+          if [ -n "${PRINCIPAL}" ]; then
+            ACR_ID=$(az acr show -n "${ACR_NAME}" -g "${SHARED_ACR_RG}" --query id -o tsv 2>/dev/null) || ACR_ID=""
+            if [ -n "${ACR_ID}" ]; then
+              N=$(az role assignment list --scope "${ACR_ID}" --assignee-object-id "${PRINCIPAL}" \
+                    --role AcrPull --query "length(@)" -o tsv 2>/dev/null) || N=0
+              if [ "${N:-0}" -ge 1 ] 2>/dev/null; then NEEDED=false; fi
+            fi
+          fi
+          echo "needed=${NEEDED}" >> "$GITHUB_OUTPUT"
+          echo "::notice::bootstrap pass 1 needed: ${NEEDED}"
       - name: Deploy pass 1 (bootstrap image — dev resources + cross-RG AcrPull on shared ACR)
+        if: steps.bootstrap.outputs.needed == 'true'
         run: |
           az deployment group create \
             --name "teetime-${ENVNAME}" \
@@ -253,7 +276,7 @@ jobs:
       # MU-16a: run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2) — ONLY when this env
       # runs a tenant mode, so today's toml deploys are untouched (compute.bicep creates the
       # Manual `teetime-migrate-<env>` job only then). It runs right AFTER pass 2, not before the
-      # jobs switch image: pass 1 puts EVERY job (this one included) on the public bootstrap image,
+      # jobs switch image: pass 1 (when it runs, on a new env) puts EVERY job on the bootstrap image,
       # so the migration can only run the real code once pass 2 has also switched the booking/watch
       # jobs and the web. Safe because readers accept schemaVersion N and N-1 (§10.2), and v1 ships
       # no migration at all. A failed or timed-out execution fails the deploy job.
@@ -363,7 +386,30 @@ jobs:
           test -n "${ACR_LOGIN_SERVER}" || { echo "::error::No shared ACR in ${SHARED_ACR_RG}"; exit 1; }
           echo "ACR_LOGIN_SERVER=${ACR_LOGIN_SERVER}" >> "$GITHUB_ENV"
           echo "ACR_NAME=${ACR_LOGIN_SERVER%%.*}" >> "$GITHUB_ENV"
+      # Pass 1 is only for a NEW environment: its MI needs AcrPull on the shared ACR before
+      # anything can pull the real image. Once the grant exists, pass 1 only doubled the deploy
+      # time (~4 min) and put every job AND the web app on the placeholder image for a pass.
+      # FAIL-SAFE: anything not confirmed (no identity, an az error, no assignment) runs pass 1.
+      # --assignee-object-id avoids a Graph lookup the RG-scoped CI SP may not be allowed.
+      # Pinned by tests/test_azure_iac_bootstrap_skip.py (runs this script against a fake az).
+      - name: Detect bootstrap need (skip pass 1 once the AcrPull grant exists)
+        id: bootstrap
+        run: |
+          NEEDED=true
+          PRINCIPAL=$(az identity show -g "${RESOURCE_GROUP}" -n "mi-teetime-${ENVNAME}" \
+                        --query principalId -o tsv 2>/dev/null) || PRINCIPAL=""
+          if [ -n "${PRINCIPAL}" ]; then
+            ACR_ID=$(az acr show -n "${ACR_NAME}" -g "${SHARED_ACR_RG}" --query id -o tsv 2>/dev/null) || ACR_ID=""
+            if [ -n "${ACR_ID}" ]; then
+              N=$(az role assignment list --scope "${ACR_ID}" --assignee-object-id "${PRINCIPAL}" \
+                    --role AcrPull --query "length(@)" -o tsv 2>/dev/null) || N=0
+              if [ "${N:-0}" -ge 1 ] 2>/dev/null; then NEEDED=false; fi
+            fi
+          fi
+          echo "needed=${NEEDED}" >> "$GITHUB_OUTPUT"
+          echo "::notice::bootstrap pass 1 needed: ${NEEDED}"
       - name: Deploy pass 1 (bootstrap image — prod resources + cross-RG AcrPull on shared ACR)
+        if: steps.bootstrap.outputs.needed == 'true'
         run: |
           az deployment group create \
             --name "teetime-${ENVNAME}" \
@@ -424,7 +470,7 @@ jobs:
       # MU-16a: run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2) — ONLY when this env
       # runs a tenant mode, so today's toml deploys are untouched (compute.bicep creates the
       # Manual `teetime-migrate-<env>` job only then). It runs right AFTER pass 2, not before the
-      # jobs switch image: pass 1 puts EVERY job (this one included) on the public bootstrap image,
+      # jobs switch image: pass 1 (when it runs, on a new env) puts EVERY job on the bootstrap image,
       # so the migration can only run the real code once pass 2 has also switched the booking/watch
       # jobs and the web. Safe because readers accept schemaVersion N and N-1 (§10.2), and v1 ships
       # no migration at all. A failed or timed-out execution fails the deploy job.

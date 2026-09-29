@@ -76,8 +76,9 @@ multi-token CAPTCHA pool, search-sleep trim), the Mangrove Bay blind-POST burst 
 watcher's duplicate-reservation crash-net, blind-POST rejection reason tagging, log redaction on
 every handler, and email-OTP challenge detection.
 
-Known benign quirk: a watch-cron fire that lands mid-deploy can lose one 10-minute cycle
-(placeholder image or a transient ACR 401); it self-heals on the next fire. Verification and
+Known benign quirk: a watch-cron fire that lands mid-deploy can lose one 10-minute cycle (a
+transient ACR 401, or the placeholder image on a NEW environment's first deploy: deploy pass 1 is
+skipped once the env's AcrPull grant exists); it self-heals on the next fire. Verification and
 cutover runbook: AZURE_PLAN §10.4/§10.5. The `enableSchedules` Bicep param silences an env.
 
 ### Dev (tenant path, MU-17)
