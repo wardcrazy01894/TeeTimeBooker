@@ -51,7 +51,7 @@
               {% else %}
               {# A disclosure, not a one-tap button: a stray tap must not cancel a real tee time. #}
               <details class="cancel">
-                <summary>Cancel…</summary>
+                <summary class="button small danger">Cancel tee time</summary>
                 <form method="post" action="/rows/{{ r.row.id }}/cancel">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                   <input type="hidden" name="from" value="dashboard">

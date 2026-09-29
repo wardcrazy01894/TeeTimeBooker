@@ -190,7 +190,7 @@ select {
   cursor: pointer;
 }
 
-a.button, button {
+a.button, button, summary.button {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
@@ -205,7 +205,9 @@ a.button, button {
   font-weight: 500;
   cursor: pointer;
 }
-a.button:hover, button:hover { background: var(--surface-2); }
+a.button:hover, button:hover, summary.button:hover { background: var(--surface-2); }
+summary.button { list-style: none; width: fit-content; }
+summary.button::-webkit-details-marker { display: none; }
 button[type="submit"].primary, a.button.primary, .ranked > .actions button[type="submit"] {
   background: var(--accent);
   border-color: var(--accent);
@@ -215,9 +217,9 @@ button[type="submit"].primary:hover, a.button.primary:hover, .ranked > .actions 
   background: var(--accent-strong);
   border-color: var(--accent-strong);
 }
-button.danger { color: var(--danger); }
-button.danger:hover { background: var(--danger-soft); }
-button.small { padding: 0.25rem 0.65rem; min-height: 2rem; font-size: 0.88rem; }
+button.danger, summary.button.danger { color: var(--danger); }
+button.danger:hover, summary.button.danger:hover { background: var(--danger-soft); }
+button.small, summary.button.small { padding: 0.25rem 0.65rem; min-height: 2rem; font-size: 0.88rem; }
 button.link { border: 0; background: none; color: var(--accent-strong); padding: 0.25rem 0; min-height: 0; }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
 
@@ -251,7 +253,6 @@ td.actions { white-space: nowrap; }
 td.actions form, td.actions .inline { margin-right: 0.35rem; }
 td.actions label.check { white-space: normal; max-width: 16rem; font-size: 0.85rem; }
 details.cancel { margin-top: 0.3rem; font-weight: 400; }
-details.cancel > summary { cursor: pointer; color: var(--danger); font-size: 0.85rem; }
 details.cancel > form { display: grid; gap: 0.4rem; margin-top: 0.4rem; justify-items: start; }
 
 /* ---- status pills ---------------------------------------------------------------------- */
