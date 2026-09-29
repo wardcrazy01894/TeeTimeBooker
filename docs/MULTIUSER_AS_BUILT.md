@@ -723,15 +723,31 @@ Operator request; the wording was approved by the operator ("You're invited to S
 Booker!", from "Spicy Al", Google sign-in only). Invite on `/admin/users` now emails the invitee
 `tenant/notify.py::render_invitation` through the same ACS `EmailSender` the booking mail uses
 (`tenant/wiring.py::email_sender_from_env`, passed to `create_app(email_sender=…)` by `teetime
-web`). It is best-effort: the invite row is written first, the send is bounded
-(`INVITE_EMAIL_TIMEOUT_S`, 20 s), and a failure, a hang or unconfigured email only changes the
-notice ("couldn't be sent … try Resend invite"). The audit entry records `emailed`. A person
+web`). It is best-effort: the invite row is written BEFORE responding, and the send runs AFTER
+the 303 as a background job (`web/background.py::BackgroundJobs`, on `app.state.background_jobs`,
+drained for up to 20 s at shutdown), because awaiting it (ACS polls the send status every 2 s)
+hung the page 5-20 s. The send stays bounded (`INVITE_EMAIL_TIMEOUT_S`, 20 s), so the notice
+only says "the invitation email is on its way"; the job then writes the audit entry with the
+outcome as `sent` (renamed from `emailed`, which `redact_payload` masked to `***` because the key
+contains "mail", so it never recorded anything). Resend invite works the same way. The notices say what to do if the email does not arrive (Resend; sign in
+with Google using that address). Accepted edge: a job still running when the 20 s shutdown drain
+cancels it (or on SIGKILL) writes no audit entry, although ACS may already have accepted the
+message; prod keeps one warm replica, so this needs a deploy mid-send. A person
 still INVITED gets a **Resend invite** button (`action=resend`, `user_id`; a signed-in user is a
 400, an unknown id a 404). The invitation is the one email NOT passed through `redact_text`: its
 purpose is to show the invitee their own address, and every part of it is fixed text, that
 operator-entered address or the configured `TEETIME_PUBLIC_BASE_URL`. Tests:
-`tests/web/test_web_admin_invite_email.py`, `tests/tenant/test_notify.py`,
-`tests/web/test_web_cli.py`.
+`tests/web/test_web_admin_invite_email.py`, `tests/web/test_web_instant_send.py`,
+`tests/tenant/test_notify.py`, `tests/web/test_web_cli.py`.
+
+Every button answers a click at once (same day, operator request): with script, `static/app.js`
+disables a submitted form's submit buttons (after a tick, so the clicked button's name/value is
+still posted) and gives the clicked one a spinner (`.is-busy`, `aria-busy="true"`); an
+`a.button` link gets the same spinner unless it opens a new tab (ctrl/cmd/shift/alt or a
+non-left click); a back/forward-cache restore (`pageshow` with `persisted`) clears it all. The
+submit event fires only after the browser's own validation, so an invalid form is never marked.
+Without script, `button:active` / `a.button:active` / `summary.button:active` still show a press
+(`base.css`).
 
 ## Mail from hello@spicyteetimebooker.com (2026-09-29, stage 1)
 
@@ -767,8 +783,12 @@ form; `POST /feedback` (user-auth, CSRF) emails the operator (`TEETIME_OPERATOR_
 the invitation `EmailSender`: subject `[Spicy's Tee Time Booker] Bug report|Course request from
 <name>` (line breaks stripped, so a display name cannot inject a header), body with the user's
 name and address (so the operator can reply), the page (`from`, kept only if it is a plain
-same-site path) and the message (1 to 4000 characters). Best-effort and bounded (20 s); the user
-lands on the dashboard with "Thanks!" either way, told if it could not be emailed. A bug report also carries a diagnostics block (`bug_diagnostics`: environment and build from
+same-site path) and the message (1 to 4000 characters). The handler only validates and
+rate-limits, then responds at once ("Thanks! Spicy Al will take a look.", always); the issue, the
+diagnostics and the email run AFTER the response as a background job (`_deliver` via
+`BackgroundJobs`, see Invitation email): the issue and the private diagnostics together, then the
+email carrying the issue link, then the audit entry. Every step stays bounded (20 s email, 15 s
+issue, 10 s diagnostics) and best-effort; a failure is logged and audited, not shown. A bug report also carries a diagnostics block (`bug_diagnostics`: environment and build from
 `TEETIME_ENV`/`TEETIME_BUILD`, the time, the browser, the user id, each connected course with its
 status, last snapshot and login-failure streak, the next 21 days' rows with status, last outcome
 and needs-reconcile, and the last 10 audit actions via `TenantStore.recent_audit`); gathering it
@@ -781,12 +801,14 @@ or inject markup), the page only if it is one of the site's own routes (`PUBLIC_
 dropped; anything else is "(other page)", since `from` is user-controlled), `r-<sha256(user id)[:8]>`,
 and for bugs only the anonymized diagnostics (build, the DATE, course statuses, date counts by
 status); filed concurrently with the private diagnostics; the operator's email gets the issue
-link, and the form warns that the message is public. An audit entry
-records kind, length and `emailed`, never the text. At most 5 reports per user per hour (in-process, per web
+link, and the form warns that the message is public. An audit entry,
+written by the job once the email has been tried, records kind, length, `sent` and `issue`,
+never the text. At most 5 reports per user per hour (in-process, per web
 replica; a 6th is a 429) and the subject's name is capped at 100 characters. "Report a bug" is a small red-outlined button in
 the top bar of every signed-in page, next to Sign out (moved from the footer the same day); "Request a course" sits under Connect a course and on the dashboard's
 Start-here card. The page is now titled **Connected Courses** everywhere.
-Tests: `tests/web/test_web_feedback.py`.
+Tests: `tests/web/test_web_feedback.py`, `tests/web/test_web_feedback_github.py`,
+`tests/web/test_web_instant_send.py`.
 
 ## Deploy: retry starting the migrate job (2026-09-29)
 

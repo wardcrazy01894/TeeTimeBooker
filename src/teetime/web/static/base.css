@@ -222,6 +222,27 @@ button.danger:hover, summary.button.danger:hover { background: var(--danger-soft
 button.small, summary.button.small { padding: 0.25rem 0.65rem; min-height: 2rem; font-size: 0.88rem; }
 button.link { border: 0; background: none; color: var(--accent-strong); padding: 0.25rem 0; min-height: 0; }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
+/* Every click shows at once (2026-09-29). :active is the press, with or without script; app.js
+   adds .is-busy (a spinner after the label) to the clicked submit button or button link while the
+   next page loads. A busy button stays readable even though its form's buttons are disabled. */
+a.button:active, button:active:not(:disabled), summary.button:active { transform: translateY(1px); filter: brightness(0.92); }
+.is-busy { cursor: progress; }
+button.is-busy:disabled { opacity: 0.8; cursor: progress; }
+.is-busy::after {
+  content: "";
+  width: 0.9em;
+  height: 0.9em;
+  flex: none;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .is-busy::after { animation-duration: 2.5s; }
+  a.button:active, button:active:not(:disabled), summary.button:active { transform: none; }
+}
 
 .form-row { display: flex; flex-wrap: wrap; gap: 0 1rem; align-items: flex-end; }
 .form-row > label { flex: 1 1 12rem; }

@@ -9,7 +9,11 @@
    Also with script: each <input type="date" class="datepick"> gets a month calendar paged
    left/right (Google Calendar style: ‹ › buttons, a swipe on touch screens, arrow keys and
    PageUp/PageDown on the days). The native input stays in the form and carries the value;
-   without script it is the only date control. */
+   without script it is the only date control.
+
+   Also with script: every button answers a click at once. A submitted form's buttons are
+   disabled and the clicked one shows a spinner; a button-styled link shows it while the next
+   page loads (see onSubmit / onButtonLinkClick). */
 (function () {
   "use strict";
   document.documentElement.classList.add("js");
@@ -274,6 +278,76 @@
 
     render();
   }
+
+  /* Every button answers a click at once (operator request 2026-09-29: Invite and Report a bug
+     looked dead while the server worked). A submitted form's submit buttons are disabled and the
+     clicked one gets a spinner (.is-busy) and aria-busy; a button-styled link (a.button) gets the
+     same spinner and navigates as normal. The submit event fires only after the browser's own
+     validation passed, so a form with an empty required field is never marked. Disabling waits a
+     tick: a disabled submitter is left out of the form data, and several forms tell actions apart
+     by the clicked button's name/value (action=resend, disable, ...). Returning to the page
+     (pageshow) or 30 s passing gives the buttons back; a form that submits into another tab is
+     left alone. Without script, buttons still show :active. */
+  var SUBMITS = 'button[type="submit"], button:not([type]), input[type="submit"]';
+  // A POST that never navigates (a download, a 204) must not leave the form dead for good.
+  var BUSY_SAFETY_MS = 30000;
+
+  function markBusy(element) {
+    element.classList.add("is-busy");
+    element.setAttribute("aria-busy", "true");
+  }
+
+  function onSubmit(event) {
+    var form = event.target;
+    if (event.defaultPrevented || !(form instanceof HTMLFormElement)) {
+      return;
+    }
+    if (form.target && form.target !== "_self") {
+      return; // submits into another tab/window: this page stays, so it must not look busy
+    }
+    var clicked = event.submitter || form.querySelector(SUBMITS);
+    window.setTimeout(function () {
+      var buttons = form.querySelectorAll(SUBMITS);
+      for (var i = 0; i < buttons.length; i += 1) {
+        buttons[i].disabled = true;
+        buttons[i].setAttribute("data-busy-disabled", "");
+      }
+      if (clicked) {
+        markBusy(clicked);
+      }
+      window.setTimeout(clearBusy, BUSY_SAFETY_MS);
+    }, 0);
+  }
+
+  function onButtonLinkClick(event) {
+    if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey ||
+        event.shiftKey || event.altKey) {
+      return; // a new tab / window / download: this page stays, so it must not look busy
+    }
+    var link = event.target instanceof Element ? event.target.closest("a.button") : null;
+    if (link && !link.target) {
+      markBusy(link);
+    }
+  }
+
+  // On EVERY pageshow, not only a back/forward-cache restore: Firefox also keeps `disabled`
+  // across a soft reload and a non-cached Back. Nothing is busy on a fresh load, so it is a no-op.
+  function clearBusy() {
+    var busy = document.querySelectorAll(".is-busy");
+    for (var i = 0; i < busy.length; i += 1) {
+      busy[i].classList.remove("is-busy");
+      busy[i].removeAttribute("aria-busy");
+    }
+    var disabled = document.querySelectorAll("[data-busy-disabled]");
+    for (var j = 0; j < disabled.length; j += 1) {
+      disabled[j].disabled = false;
+      disabled[j].removeAttribute("data-busy-disabled");
+    }
+  }
+
+  document.addEventListener("submit", onSubmit);
+  document.addEventListener("click", onButtonLinkClick);
+  window.addEventListener("pageshow", clearBusy);
 
   function init() {
     var forms = document.querySelectorAll("form.ranked");

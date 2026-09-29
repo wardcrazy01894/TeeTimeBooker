@@ -23,7 +23,8 @@ import hashlib
 import logging
 import os
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +52,7 @@ from ..tenant.store import TenantStore
 from . import admin_users as admin_users_view
 from . import auth
 from .auth import ForbiddenError
+from .background import BackgroundJobs
 from .github_issues import GitHubIssues
 from .oauth import (
     PROVIDERS,
@@ -355,6 +357,8 @@ class _Ctx:
     probe_limits: ProbeLimits = field(default_factory=ProbeLimits)
     # ``str(course_id)`` -> the name a person reads (default ``courses.names``); never a raw id.
     course_names: Mapping[str, str] = field(default_factory=dict)
+    # Sends that run AFTER the response (invite, resend, feedback); drained on shutdown.
+    jobs: BackgroundJobs = field(default_factory=BackgroundJobs)
 
     def course_name(self, course_id: object) -> str:
         return course_display_name(str(course_id), self.course_names)
@@ -558,16 +562,16 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
 
 
 # Fixed strings keyed by the `notice` query param: nothing user-supplied is ever reflected.
+# The invitation email is sent after the response (``BackgroundJobs``), so the notice cannot
+# know the outcome; the audit entry records it.
 _ADMIN_NOTICES = {
-    "invited": "Invite created and emailed to them. It binds on their first sign-in with Google.",
-    "invited_not_emailed": (
-        "Invite created, but the invitation email couldn't be confirmed as sent (it may still "
-        "arrive). Tell them to sign in with Google using that address, or try Resend invite."
+    "invited": (
+        "Invite created; the invitation email is on its way. It binds on their first sign-in "
+        "with Google. If it doesn't arrive within a few minutes, use Resend invite."
     ),
-    "resent": "Invitation email sent again.",
-    "resend_failed": (
-        "The invitation email couldn't be confirmed as sent (it may still arrive). Try again "
-        "later if they don't get it."
+    "resent": (
+        "Invitation email is on its way. If it still doesn't arrive, tell them to sign in with "
+        "Google using that address."
     ),
     "disabled": "User disabled. Their session is rejected on their next request.",
     "enabled": "User enabled.",
@@ -599,20 +603,23 @@ async def _admin_invite(ctx: _Ctx, operator: User, form: FormData, *, now: datet
         role=role,
         status=UserStatus.INVITED,
     )
-    await ctx.store.upsert_user(invited)
-    emailed = await _send_invitation(ctx, email)
-    await ctx.store.append_audit(
-        user_id=operator.id,
-        action="admin_invite",
-        row_id=None,
-        detail={"invited_user_id": str(invited.id), "role": role.value, "emailed": emailed},
-        at=now,
-    )
-    notice = "invited" if emailed else "invited_not_emailed"
-    return RedirectResponse(f"/admin/users?notice={notice}", status_code=303)
+    await ctx.store.upsert_user(invited)  # BEFORE responding: the invite itself is never lost
+
+    async def email_then_audit() -> None:
+        emailed = await _send_invitation(ctx, email)
+        await ctx.store.append_audit(
+            user_id=operator.id,
+            action="admin_invite",
+            row_id=None,
+            detail={"invited_user_id": str(invited.id), "role": role.value, "sent": emailed},
+            at=now,
+        )
+
+    ctx.jobs.spawn(email_then_audit(), name="admin_invite")
+    return RedirectResponse("/admin/users?notice=invited", status_code=303)
 
 
-# Bounds the operator's request. ACS may already have ACCEPTED the message when this fires (the
+# Bounds the background send. ACS may already have ACCEPTED the message when this fires (the
 # client then polls delivery status), so a timeout reads "couldn't be confirmed", not "failed".
 INVITE_EMAIL_TIMEOUT_S = 20.0
 
@@ -650,16 +657,19 @@ async def _admin_resend_invite(
         raise HTTPException(status_code=404, detail="no such user")
     if target.status is not UserStatus.INVITED:
         raise HTTPException(status_code=400, detail="that person has already signed in")
-    emailed = await _send_invitation(ctx, target.email)
-    await ctx.store.append_audit(
-        user_id=operator.id,
-        action="admin_resend_invite",
-        row_id=None,
-        detail={"invited_user_id": str(target.id), "emailed": emailed},
-        at=now,
-    )
-    notice = "resent" if emailed else "resend_failed"
-    return RedirectResponse(f"/admin/users?notice={notice}", status_code=303)
+
+    async def email_then_audit() -> None:
+        emailed = await _send_invitation(ctx, target.email)
+        await ctx.store.append_audit(
+            user_id=operator.id,
+            action="admin_resend_invite",
+            row_id=None,
+            detail={"invited_user_id": str(target.id), "sent": emailed},
+            at=now,
+        )
+
+    ctx.jobs.spawn(email_then_audit(), name="admin_resend_invite")
+    return RedirectResponse("/admin/users?notice=resent", status_code=303)
 
 
 async def _admin_set_status(
@@ -685,6 +695,10 @@ async def _admin_set_status(
         at=now,
     )
     return RedirectResponse(f"/admin/users?notice={status.value}", status_code=303)
+
+
+# ACA sends SIGTERM and waits 30 s by default before SIGKILL; stay inside it.
+SHUTDOWN_DRAIN_TIMEOUT_S = 20.0
 
 
 def create_app(
@@ -742,13 +756,22 @@ def create_app(
     templates.env.filters["provider_name"] = provider_display_name
     templates.env.globals["static_url"] = _static_url_for(static_asset_versions(STATIC_DIR))
     cookie = CookiePolicy()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        # Let in-flight sends (invites, reports) finish, bounded, before the process exits.
+        await ctx.jobs.drain(timeout_s=SHUTDOWN_DRAIN_TIMEOUT_S)
+
     app = FastAPI(
         title="TeeTimeBooker",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
         dependencies=[Depends(_csrf_guard(ctx))],
+        lifespan=lifespan,
     )
+    app.state.background_jobs = ctx.jobs
     if settings.canonical_host_redirect:
         # Added before the security headers so the redirect carries them too.
         app.add_middleware(_CanonicalHostMiddleware, origin=settings.public_base_url)
