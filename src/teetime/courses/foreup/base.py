@@ -118,6 +118,15 @@ _BOOK_DAILY_LIMIT_MARKERS = ("reservation per day",)
 # as race evidence, the exact misdiagnosis this classification exists to prevent. An
 # unmatched body surfaces as `gone[unknown]`, which is visible and investigable.
 _BOOK_UNAVAILABLE_MARKERS = ("time not available",)
+# "Booking for 10/06/2026 starts at 9/29/2026 6:00am (EDT)" — our POST landed BEFORE the release
+# (observed live 2026-09-29 and 2026-09-30 on the -500 ms POST). Its own wording, so a pre-open
+# rejection is now told apart from a claimed slot. Match the stable " starts at " clause.
+_BOOK_TOO_EARLY_MARKERS = (" starts at ",)
+_BOOK_REJECTION_REASONS: tuple[tuple[tuple[str, ...], SlotGoneReason], ...] = (
+    (_BOOK_DAILY_LIMIT_MARKERS, "daily_limit"),
+    (_BOOK_UNAVAILABLE_MARKERS, "unavailable"),
+    (_BOOK_TOO_EARLY_MARKERS, "too_early"),
+)
 # MB email-OTP challenge markers (announced 2026-07-15; see _guard_otp_challenge).
 # Matched case-insensitively against the ForeUP `msg` field. The API challenge's
 # real wording is unobserved (enforcement is UI-only per the 2026-07-15 live recon),
@@ -369,10 +378,10 @@ class ForeUpAdapter(CourseAdapter):
         if not isinstance(data, dict):
             return "unknown"
         msg = str(data.get("msg", "")).lower()
-        if any(marker in msg for marker in _BOOK_DAILY_LIMIT_MARKERS):
-            return "daily_limit"
-        if any(marker in msg for marker in _BOOK_UNAVAILABLE_MARKERS):
-            return "unavailable"
+        # First match wins, in this order (daily_limit wins a body that matches both, pinned).
+        for markers, reason in _BOOK_REJECTION_REASONS:
+            if any(marker in msg for marker in markers):
+                return reason
         return "unknown"
 
     @staticmethod

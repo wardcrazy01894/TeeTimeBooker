@@ -168,7 +168,11 @@ class RequestConfig(BaseModel):
 class SchedulerConfig(BaseModel):
     timezone: str = "America/New_York"
     fire_time: time = time(6, 0, 0)
-    early_arrival_ms: int = 500
+    # 400 since 2026-09-30 (was 500): ForeUP's clock stopped running ~0.5 s fast on 9/29, and the
+    # -500 ms POST then landed before the release ("starts at 6:00am" → gone[too_early]) on
+    # 9/29 + 9/30, wasting the rank-0 slot; -250 landed after it every day. Operator: try -400,
+    # watch the per-POST line, and move again if -400 is still too early.
+    early_arrival_ms: int = 400
     poll_interval_ms: int = 250
     max_poll_seconds: int = 30
     # Seconds before T0 to start pre-fetching the CAPTCHA token on the race path
@@ -239,7 +243,7 @@ class SchedulerConfig(BaseModel):
     # (Validating it here instead would couple this field to `early_arrival_ms` across
     # every config and test helper for no behavioural gain — the fire path already
     # self-clamps by computing a non-positive, no-sleep delay.)
-    blind_post_stagger_ms: tuple[int, ...] = (-500, -250, 0)
+    blind_post_stagger_ms: tuple[int, ...] = (-400, -250, 0)
 
     @field_validator("blind_post_stagger_ms")
     @classmethod

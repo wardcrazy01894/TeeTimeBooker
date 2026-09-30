@@ -361,7 +361,8 @@ path. So the watcher, local-demo, dry-run, a fallback course, a non-MB course, a
 **Blind net (`_blind_post_course`)** — see `docs/plans/RESEARCH_FALLBACK_PLAN.md` for the ratified
 fallback design: fire the top-`N` ranked in-window synthesized POSTs concurrently but
 STAGGERED ACROSS T0 — each POST sleeps to its own `scheduler.blind_post_stagger_ms` offset
-before going out (default `(-500, -250, 0)` ms relative to T0; docs/plans/STAGGER_PLAN.md)
+before going out (default `(-400, -250, 0)` ms relative to T0 since 2026-09-30, was `(-500, -250, 0)`;
+docs/plans/STAGGER_PLAN.md)
 (`N = min(len(synthesize_blind_slots(...)), captcha_pool_size())` — token-bounded). There is
 **NO concurrent hedge search** (the original hedge was dropped — RESEARCH_FALLBACK_PLAN §2 Q1).
 Then:

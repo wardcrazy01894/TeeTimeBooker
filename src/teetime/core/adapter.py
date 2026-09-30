@@ -26,7 +26,7 @@ from .models import (
 
 # Why a booking POST was definitively rejected. See SlotGoneError for what each means
 # and why the distinction is load-bearing for reading a staggered blind burst.
-SlotGoneReason = Literal["unavailable", "daily_limit", "conflict", "unknown"]
+SlotGoneReason = Literal["unavailable", "too_early", "daily_limit", "conflict", "unknown"]
 
 
 class AdapterError(Exception):
@@ -93,6 +93,10 @@ class SlotGoneError(AdapterError):
       one that CARRIES race/boundary evidence: either someone claimed it first, or our
       POST arrived before the platform's release flip. Byte-identical bodies, which is
       exactly why the burst is staggered.
+    * ``"too_early"`` — the POST landed BEFORE the release ("Booking for <date> starts at
+      <date> 6:00am (EDT)"). First observed 2026-09-29 on the -500 ms POST, once ForeUP's
+      clock stopped running ~0.5 s fast; before that such a POST reached the server at
+      06:00:00 by its clock. Pure boundary evidence: the slot was never contested.
     * ``"daily_limit"`` — rejected by ForeUP's "1 online reservation per day" rule. If ANY
       sibling booked, this is the EXPECTED consequence of our own burst winning and carries
       NO information about the race: observed live 2026-08-16, where the 250 ms stagger let

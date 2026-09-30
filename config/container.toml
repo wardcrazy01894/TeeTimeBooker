@@ -70,7 +70,7 @@ latest   = 10:00:00
 [scheduler]
 timezone         = "America/New_York"
 fire_time        = 06:00:00
-early_arrival_ms = 500
+early_arrival_ms = 400
 poll_interval_ms = 250
 max_poll_seconds = 30
 # Race path (--wait): start the CAPTCHA solve this many seconds before T0 (explicit
@@ -106,7 +106,7 @@ blind_post_fallback_token_reserve = 2
 # exact fire instant and a drop we currently win is unchanged. Offsets ascend with rank, so the
 # "1 reservation/day" rule can only reject a WORSE sibling. Surplus slots reuse the last offset;
 # [] = legacy simultaneous firing. Offsets earlier than -early_arrival_ms are clamped + logged.
-blind_post_stagger_ms = [-500, -250, 0]
+blind_post_stagger_ms = [-400, -250, 0]
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from

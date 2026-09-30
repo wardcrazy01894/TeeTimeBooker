@@ -120,7 +120,7 @@ Variable names are listed in `.env.example` and match the `*_env` defaults in
 | `request.booking_cutoff` | Default `{ days_before = 1, time_of_day = 16:00:00 }`: after 16:00 the day before, no new booking and no upgrade for that date |
 | `request.skip_dates_env` | Names an env var (default `TEETIME_SKIP_DATES`) holding ISO dates to skip, e.g. `"2026-06-14, 2026-06-21"`. Unset, empty or malformed means no skips; it never crashes the bot. Hosted: a Key Vault secret you edit in the Portal with no redeploy |
 | `scheduler.blind_post_max_count` | Blind-POST burst size at T0, Mangrove Bay only (default `3`; `0` disables it and uses plain search-then-book). Capped by the pre-solved CAPTCHA pool; primary course, `--wait` path only |
-| `scheduler.blind_post_stagger_ms` | Per-POST offsets from T0 (default `[-500, -250, 0]`), paired with the ranked slots. The first equals `-early_arrival_ms`, so the best slot keeps its old timing |
+| `scheduler.blind_post_stagger_ms` | Per-POST offsets from T0 (default `[-400, -250, 0]` since 2026-09-30; was `[-500, -250, 0]`), paired with the ranked slots. The first equals `-early_arrival_ms`, so the best slot keeps its old timing |
 | `scheduler.blind_post_fallback_token_reserve` | Spare pre-solved CAPTCHA tokens kept for the fallback search (default `2`) |
 
 Why the burst is staggered: every drop in the log window came back 3/3 or 0/3, never mixed, which
