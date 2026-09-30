@@ -23,4 +23,7 @@ run uv run ruff check .
 run uv run ruff format --check .
 run uv run mypy
 run uv run pytest -m "not integration" -q -p no:cacheprovider
+# The CVE gate on the locked dependency set: an advisory published today fails CI on EVERY PR,
+# whatever the diff, so catch it here too (it needs the network; so does the push).
+run uv run pip-audit
 echo "pre-push: all gates passed" >&2

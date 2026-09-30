@@ -905,7 +905,8 @@ gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_status_ch
 
 **Local pre-push gate (`.githooks/pre-push`).** Runs every command of CI's `test / lint /
 typecheck` job (`uv lock --locked`, `ruff check .`, `ruff format --check .`, `mypy`,
-`pytest -m "not integration"`; pip-audit stays CI-only) with `set -euo pipefail` and blocks the
+`pytest -m "not integration"`, `pip-audit`; the audit joined on 2026-09-30 after a same-day
+urllib3 CVE failed a PR that had passed locally) with `set -euo pipefail` and blocks the
 push on the first failure. Enable once per clone (worktrees share it):
 `git config core.hooksPath .githooks`. It exists because checks read through an output filter
 (`rtk pipe`, `| tail -1`) hid non-zero exits and PRs opened with failing lint. Agents: never
