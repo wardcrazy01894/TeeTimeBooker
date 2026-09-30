@@ -534,6 +534,26 @@ runner may write it only as a group_downgrade) and `LEASED_EDGES`, with ledger s
 `cancelled_group`. Cosmos: `SCHEMA_VERSION` 2 stores `options` as a list and money as exact decimal
 strings; a v1 row/rule document reads back as its single window at rank 1.
 
+### "How the bot picks your tee time" (2026-09-30)
+
+Operator request: users could not tell why the bot took 9:07 over 8:52. Both ranked forms (`/dates`,
+`/rules`) now carry a `<details class="how-picked">` panel under "Time slots, best first"
+(`_macros.html::how_picked`): 1) time slots in rank order; 2) inside one, the time closest to the
+MIDDLE, shown as a server-rendered SVG timeline of 8:00-10:00 AM (every Mangrove Bay tee time a dot,
+the top five as numbered badges, the middle dashed) plus the same order as chips with each time's
+distance ("7 min after", "8 min before"), labelled as a Mangrove Bay example (other courses
+space tee times differently); a tie goes to the earlier time; 3) one tee time per day, upgraded
+(strictly closer, or a better-ranked slot) until the booking cutoff, worded from the app's
+`BookingCutoffConfig` (`ranking_explainer.cutoff_text`), never hard-coded. Step 1 says "tries your
+slots in order" rather than "slot 2 only if slot 1 is empty": a blind burst can include a slot-2
+time when slot 1 has fewer grid times than the burst, or the cross-account allowlist took slot 1's
+best; `_keep_best` and the watcher's upgrade then converge on the rule. The example is COMPUTED by `web/ranking_explainer.py`
+from `BLIND_POST_MORNING_GRID` with the engine's key (distance from the middle, then time), and
+`tests/web/test_ranking_explainer.py` pins it to `MangroveBayAdapter.synthesize_blind_slots`, so
+the page cannot teach a rule the engine does not follow. The SVG uses attributes only (no inline
+`style`), so it works under the CSP and without script; pinned by
+`test_both_booking_forms_explain_how_a_time_is_picked`.
+
 ## MU-R2: Price cap, group floor, group collapse, cross-course upgrade
 
 (§16.3/§16.4): every tenant engine request (booker, watcher row request, the watcher's shared group

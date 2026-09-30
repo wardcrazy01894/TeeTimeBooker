@@ -189,7 +189,11 @@ without script), players (a 1 / 2 / 3 / 4 button row), up to 6 (course, window) 
 (courses may repeat and interleave; ranks are renumbered 1..N), and a max price per player per
 course (blank = that course's default, $100 unless changed on `/accounts`). It saves one row or
 rule per course sharing a group; the bot books the best-ranked option available, holds one tee
-time per day, and moves to a better-ranked option if one opens. If one course cannot be saved the
+time per day, and moves to a better-ranked option if one opens. Under "Time slots, best first" a
+**"How the bot picks your tee time"** panel (closed by default) explains the rule with a worked
+example: an SVG timeline of 8:00-10:00 AM at Mangrove Bay and the times in the order the bot tries
+them (9:00, then 9:07 "7 min after", then 8:52 "8 min before", ...), computed from the real tee
+grid by `web/ranking_explainer.py` and pinned to the engine's order. If one course cannot be saved the
 others still are, and the page says which. Skip, withdraw and deactivate act on the whole group.
 
 Plain HTML forms; the one script (`/static/app.js`, same-origin) only adds conveniences such as
