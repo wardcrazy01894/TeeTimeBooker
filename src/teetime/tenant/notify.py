@@ -389,6 +389,7 @@ _PROBLEM_TEXT: Mapping[UserEventKind, str] = {
 _REJECTION_TEXT: Mapping[str, str] = {
     "daily_limit": "one-per-day limit",
     "unavailable": "time not available",
+    "too_early": "too early (before the booking window opened)",
     "conflict": "conflict (409)",
 }
 

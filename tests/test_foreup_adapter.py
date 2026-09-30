@@ -1328,6 +1328,28 @@ async def test_book_400_time_not_available_is_tagged_unavailable() -> None:
 
 
 @respx.mock
+async def test_book_400_before_the_window_opens_is_tagged_too_early() -> None:
+    """Observed live 2026-09-29 and 2026-09-30 on the -500 ms POST, once ForeUP's clock stopped
+    running ~0.5 s fast: a POST that lands before the release is refused with its own wording.
+    It used to surface as ``gone[unknown]``."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "success": False,
+                "msg": "Booking for 10/06/2026 starts at 9/29/2026 6:00am (EDT)",
+            },
+        )
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "too_early"
+
+
+@respx.mock
 async def test_book_400_unrecognised_body_is_tagged_unknown() -> None:
     """Fail-soft: an unfamiliar 400 body still maps to SlotGoneError (try-next-slot is
     unchanged) but must NOT be silently filed under a reason we did not actually observe."""
@@ -1959,3 +1981,21 @@ async def test_book_does_not_log_response_pii(caplog: pytest.LogCaptureFixture) 
     assert "CONF-42" in caplog.text  # the confirmation id IS logged (safe)
     assert "leak@example.test" not in caplog.text  # PII must NOT be logged
     assert "555-LEAK" not in caplog.text
+
+
+@respx.mock
+async def test_time_not_available_wins_over_a_starts_at_clause() -> None:
+    """The classifier's order is daily_limit, unavailable, too_early: a body carrying both
+    "Time not available" and " starts at " stays ``unavailable`` (race evidence first)."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={"success": False, "msg": "Time not available. Booking starts at 6:00am."},
+        )
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "unavailable"

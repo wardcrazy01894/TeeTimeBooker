@@ -72,7 +72,7 @@ Two paths exist side by side:
 What is live: multi-day Sat+Sun booking with per-day windows, the 16:00-day-before booking cutoff,
 Portal-editable skip-days, within-window upgrade, the race pre-warm bundle (login pre-warm,
 multi-token CAPTCHA pool, search-sleep trim), the Mangrove Bay blind-POST burst (3 POSTs staggered
-`-500/-250/0` ms across T0, keep best, cancel extras, re-guard then fresh-search fallback), the
+`-400/-250/0` ms across T0 since 2026-09-30, was `-500/-250/0`, keep best, cancel extras, re-guard then fresh-search fallback), the
 watcher's duplicate-reservation crash-net, blind-POST rejection reason tagging, log redaction on
 every handler, and email-OTP challenge detection.
 
@@ -575,7 +575,8 @@ pre-fetch.
     `SystemExit` escape the `await`, SIGTERM kills the process, and the parent's own cancellation
     bypasses the results.
 - **The burst is STAGGERED across the release boundary** (STAGGER_PLAN).
-  `scheduler.blind_post_stagger_ms` (default `(-500, -250, 0)`) gives each POST its own offset
+  `scheduler.blind_post_stagger_ms` (default `(-400, -250, 0)`, with `early_arrival_ms = 400`,
+  since 2026-09-30; see the `too_early` reason below) gives each POST its own offset
   from T0, paired positionally with the RANKED slots; `_fire_blind_post` sleeps to `T0 + offset`
   (a non-positive delay fires immediately, so a late cron never waits). Why: every drop in the log
   window came back 3/3 or 0/3, which a real slot race cannot produce; a simultaneous burst
@@ -583,9 +584,9 @@ pre-fetch.
   available."` as a claimed slot (the server `Date` header, logged since `infra/v2.11.0`, has only
   1 s resolution). Staggering orders outcomes by offset (clean cutoff = pre-open rejection,
   unordered = real race) and guarantees one POST is SENT no earlier than T0 (tail offset `0`).
-  - **`stagger[0] == -early_arrival_ms`**, so the rank-0 slot keeps its pre-stagger instant and
-    drops we already win are unchanged; **nothing is ever scheduled earlier than `stagger[0]`**
-    (operator directive 2026-08-15). Both pinned by `tests/test_container_config_parity.py`.
+  - **`stagger[0] == -early_arrival_ms`**, so the rank-0 slot fires at the busy-wait wake instant
+    (T0 − 400 ms since 2026-09-30; it kept the pre-stagger T0 − 500 ms until then);
+    **nothing is ever scheduled earlier than `stagger[0]`** (operator directive 2026-08-15). Both pinned by `tests/test_container_config_parity.py`.
   - **The burst RE-RANKS with `rank_slots_for_request` before pairing offsets.** Offsets ascend
     with position, so the best slot must POST first or the 1-per-day rule could reject it in
     favour of a worse sibling. A `field_validator` rejects a descending offset list.
@@ -596,8 +597,9 @@ pre-fetch.
     that never happened). With `_blind_outcome_label` it is the whole point of the feature:
     **don't drop it when touching the burst loop.**
 - **A blind-POST rejection is tagged with WHY (`SlotGoneError.reason`).** ForeUP returns HTTP 400
-  for two rejections with opposite meaning and no machine-readable discriminator, so
-  `ForeUpAdapter._classify_book_rejection` tags by the `msg` prose:
+  for rejections with opposite meaning and no machine-readable discriminator, so
+  `ForeUpAdapter._classify_book_rejection` tags by the `msg` prose (first match wins, in the
+  `_BOOK_REJECTION_REASONS` order):
   - `unavailable` (`"Time not available."`): claimed first, OR our POST beat the release flip.
     The only reason that bears on the pre-open-vs-race question.
   - `daily_limit` (`"...1 online reservation per day."`): alongside a booked sibling, ForeUP is
@@ -606,11 +608,19 @@ pre-fetch.
     reservation" instead of "TOTAL wipeout, falling back", because the re-guard usually
     short-circuits to `ALREADY_BOOKED` ("usually": it matches date AND party size, so a manual
     booking with another party size still falls through to the harmless fallback search).
+  - `too_early` (`"Booking for <date> starts at <date> 6:00am (EDT)"`): our POST landed BEFORE the
+    release; the slot was never contested. First seen 2026-09-29/30 on the -500 ms POST (a server
+    `Date` of 09:59:59): ForeUP's clock had run ~0.5 s fast until then, so -500 used to arrive at
+    06:00:00 by its clock and often booked. That wasted the rank-0 slot two days running, so the
+    ladder moved to `-400/-250/0` (operator, 2026-09-30: watch it, and move again if -400 is
+    still `too_early`). The operator summary email says "too early (before the booking window
+    opened)".
   - `conflict` (409) and `unknown` (fail-soft default, so other adapters and unobserved wordings
     are never misfiled).
   It is **diagnostic only**: every reason routes identically (`SlotGoneError` → next slot). It
   surfaces as `gone[<reason>]` and `blind-POST N of M slot(s) rejected (<reason>=<count>, …)`.
-  The markers (`_BOOK_DAILY_LIMIT_MARKERS` / `_BOOK_UNAVAILABLE_MARKERS`) match only wordings
+  The markers (`_BOOK_DAILY_LIMIT_MARKERS` / `_BOOK_UNAVAILABLE_MARKERS` /
+  `_BOOK_TOO_EARLY_MARKERS`) match only wordings
   observed live, on the stable prose tail ("make" and "have 1 online reservation per day" both
   seen). Evidential caution: a 1-booked / 2-`daily_limit` shape is NOT evidence of a stagger
   effect; a simultaneous pre-stagger burst produced it on 2026-07-11.
@@ -869,6 +879,7 @@ of them in the same PR.
 | Dependency floor bump / dep-comment edit | `pyproject.toml`: bump the floor AND check the comment above it. A dep comment must name NO tracking version. Enforced for `idna` (only the CVE boundary may be named; the floor may not drop below it). Drifted twice (#106, #204) |
 | New/changed config key or default | `core/config.py` field comment, `config/example.toml` + `container.toml` + `local.toml`, README Configuration, `tests/test_container_config_parity.py` pin, CLAUDE.md invariant if load-bearing |
 | Engine orchestrator/watcher behaviour (`core/*orchestrator*.py`, gates) | CLAUDE.md invariants, PLAN.md §9/§9.1/§12, the owning plan's status banner (and a supersession banner on any plan it retires) |
+| T0 race timing: `early_arrival_ms`, `blind_post_stagger_ms`, a blind-POST rejection reason | `core/config.py` defaults + field comments (the TENANT booker uses these defaults); `config/container.toml` + `example.toml` (+ your untracked `local.toml`); CLAUDE.md status line (What is live) + "Blind-POST burst" bullets (stagger, `stagger[0]`, rejection reasons); README how-it-works step 3 + Configuration table + the etiquette "~N ms window"; PLAN.md §6.1 busy-wait pseudo-code, §9 stagger default, §12 window; MULTIUSER_PLAN §4 race timeline + the MU-18 first-drop checklist; AZURE_PLAN §3 busy-wait note; `src/teetime/courses/CLAUDE.md` MB bullets; BACKLOG retry-burst item; a dated banner on STAGGER_PLAN / BLIND_POST_PLAN; the operator-summary reason text (`tenant/notify.py::_REJECTION_TEXT`). Enforced: `test_every_current_state_doc_names_the_shipped_stagger_ladder` + `test_no_current_state_doc_describes_the_retired_ladder_as_current` (a retired ladder may appear only on a line marked as history) — added 2026-09-30 after the -400 change found eight stale sites |
 | Adapter capability / course quirk (`courses/**`) | `src/teetime/courses/CLAUDE.md`, CLAUDE.md capability bullet |
 | Tenant logic (`src/teetime/tenant/**`) | `docs/MULTIUSER_AS_BUILT.md` (milestone section), MULTIUSER_PLAN.md (§12 row + the section it implements), CLAUDE.md Multi-user invariants and milestone table if state changes |
 | Tenant store semantics or schema (`tenant/store.py`, `in_memory_store.py`, `cosmos/**`, `semantics.py`) | `tests/tenant/conformance.py` (the contract), MULTIUSER_PLAN §3, `QUERIED_PATHS` + `cosmos.bicep` index policy if a new filter path, CLAUDE.md Two-stores bullet |

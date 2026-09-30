@@ -105,7 +105,7 @@ latest   = 10:00:00
 [scheduler]
 timezone               = "America/New_York"   # Mangrove Bay is in ET
 fire_time              = 06:00:00              # local wall-clock; DST handled by zoneinfo
-early_arrival_ms       = 500                   # land 0.5 s before T0
+early_arrival_ms       = 400                   # land 0.4 s before T0 (500 until 2026-09-30)
 poll_interval_ms       = 250
 max_poll_seconds       = 30                    # give up polling after this
 captcha_prefetch_lead_s = 120                  # race path (--wait): start the CAPTCHA solve
@@ -132,7 +132,7 @@ blind_post_fallback_token_reserve = 2          # blind-POST 0-booked fallback re
                                                # token, not a ~75s inline solve. The blind POSTs pop
                                                # their tokens; these REMAIN pooled for the fallback.
                                                # Paid pre-T0 every drop (incl. happy path). 0 = off.
-blind_post_stagger_ms   = [-500, -250, 0]      # blind-POST T0 stagger (docs/plans/STAGGER_PLAN.md): per-POST
+blind_post_stagger_ms   = [-400, -250, 0]      # blind-POST T0 stagger (docs/plans/STAGGER_PLAN.md): per-POST
                                                # fire offsets in MILLISECONDS relative to T0, paired
                                                # positionally with the RANKED blind slots, so the
                                                # burst SPANS ForeUP's release boundary instead of

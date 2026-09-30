@@ -11,6 +11,7 @@ import ast
 import inspect
 import logging
 import random
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -601,3 +602,20 @@ async def test_a_sender_exception_is_logged_with_its_traceback(
     await deliver_operator_summary(Exploding(), to=OPS, summary=summary, exit_code=0, at=AT)
     (rec,) = [r for r in caplog.records if "email sender raised" in r.getMessage()]
     assert rec.exc_info is not None and "RuntimeError" in rec.getMessage()
+
+
+def test_a_too_early_rejection_reads_as_such_in_the_operator_summary() -> None:
+    """2026-09-29/30: the -500 ms POST was refused before ForeUP's release and the email said
+    "rejected: reason unknown". It names the cause now."""
+    ms = timedelta(milliseconds=1)
+    row = replace(
+        _alex_row(),
+        attempts=(
+            SummaryAttempt(_tee(8, 30), T0_ET - 400 * ms, AttemptResult.REJECTED, "too_early"),
+            SummaryAttempt(_tee(8, 37), T0_ET - 250 * ms, AttemptResult.KEPT),
+        ),
+    )
+    body = render_operator_summary(_summary((row,), (_booked_alex(),)), exit_code=0, at=AT).body
+    (line,) = [ln for ln in body.splitlines() if "8:30 AM" in ln and "sent 0.40 s early" in ln]
+    assert "rejected: too early (before the booking window opened)" in line
+    assert "reason unknown" not in body

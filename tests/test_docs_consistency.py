@@ -26,6 +26,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from teetime.core.config import SchedulerConfig
 from teetime.web.routes import ROUTES
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -391,3 +392,78 @@ def test_every_web_route_is_in_the_plans_route_table() -> None:
     documented = set(re.findall(r"`(/[^`]*)`", section))
     missing = sorted({r.path for r in ROUTES} - documented)
     assert not missing, f"routes missing from MULTIUSER_PLAN §8.2: {missing}"
+
+
+_LADDER_DOCS = ("README.md", "CLAUDE.md", "PLAN.md", "MULTIUSER_PLAN.md")
+
+
+def _ladder_forms(ladder: tuple[int, ...]) -> set[str]:
+    nums = [str(n) for n in ladder]
+    return {
+        "/".join(nums),
+        " / ".join(nums),
+        "(" + ", ".join(nums) + ")",
+        "[" + ", ".join(nums) + "]",
+        "(" + ",".join(nums) + ")",
+    }
+
+
+def test_every_current_state_doc_names_the_shipped_stagger_ladder() -> None:
+    """2026-09-30: the ladder moved -500/-250/0 -> -400/-250/0 and a check found six docs
+    still describing the old one as current. Each doc that describes the T0 burst must name the
+    SHIPPED default (``SchedulerConfig``, which the tenant booker uses), and a "~N ms window"
+    claim must match its span. Change the ladder -> the change->docs map row in CLAUDE.md."""
+    shipped = SchedulerConfig().blind_post_stagger_ms
+    forms = _ladder_forms(shipped)
+    span = str(max(shipped) - min(shipped))
+    for name in _LADDER_DOCS:
+        text = (REPO_ROOT / name).read_text(encoding="utf-8")
+        assert any(f in text for f in forms), f"{name} never names the shipped ladder {shipped}"
+        for claimed in re.findall(r"~(\d+) ms window", text):
+            assert claimed == span, f"{name} says a ~{claimed} ms window; the ladder spans {span}"
+    assert SchedulerConfig().early_arrival_ms == -shipped[0]
+
+
+# Every current-state doc + shipped config that talks about the T0 burst (the map row's sites).
+_LADDER_SWEEP = (
+    "README.md",
+    "CLAUDE.md",
+    "PLAN.md",
+    "MULTIUSER_PLAN.md",
+    "BACKLOG.md",
+    "infra/AZURE_PLAN.md",
+    "src/teetime/courses/CLAUDE.md",
+    "config/container.toml",
+    "config/example.toml",
+)
+_RETIRED_LADDER = (-500, -250, 0)
+# Phrases that mark a line as history. Deliberately not a bare "was " or a bare date: ordinary
+# prose and any dated line would slip a stale claim through.
+_HISTORY_MARKERS = (
+    "until 2026-09-30",
+    "since 2026-09-30",
+    "was `",
+    "was -500",
+    "was [-500",
+    "was (-500",
+    "was 500",
+    "2026-09-29/30",
+)
+
+
+def test_no_current_state_doc_describes_the_retired_ladder_as_current() -> None:
+    """Review of the 2026-09-30 sweep: one correct mention per doc is not enough; a stale
+    "fired at T0-0.5" (with a Unicode minus) or "(-500, -250, 0)" elsewhere in the same doc still misleads. Any line
+    naming the retired ladder must mark itself as history."""
+    stale_forms = _ladder_forms(_RETIRED_LADDER) | {
+        "T0\u22120.5",
+        "T0-0.5",
+        "~500 ms",
+        "early_arrival_ms = 500",
+    }
+    offenders = []
+    for name in _LADDER_SWEEP:
+        for n, line in enumerate((REPO_ROOT / name).read_text(encoding="utf-8").splitlines(), 1):
+            if any(f in line for f in stale_forms) and not any(m in line for m in _HISTORY_MARKERS):
+                offenders.append(f"{name}:{n}: {line.strip()[:90]}")
+    assert not offenders, "retired ladder described as current:\n" + "\n".join(offenders)

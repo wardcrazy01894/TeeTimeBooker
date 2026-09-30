@@ -270,7 +270,7 @@ Bot:
     2. Load config; in-process idempotency check on (RequestId, resolved_date); build
        adapter; PRE-AUTH (login NOW so the race window is just GET /times +
        POST /reservations).
-    3. busy_wait_until(T0 - 500ms): coarse asyncio.sleep down to ~2s, then a
+    3. busy_wait_until(T0 - early_arrival_ms; 400 ms since 2026-09-30, was 500): coarse asyncio.sleep down to ~2s, then a
        1ms-cadence fine loop with explicit OS yield (see core/clock.py).
        Sub-second accuracy without CPU starvation.
        RACE PATH ONLY (Orchestrator prefetch_book=True, set by `--wait`): this is a
@@ -361,7 +361,8 @@ path. So the watcher, local-demo, dry-run, a fallback course, a non-MB course, a
 **Blind net (`_blind_post_course`)** — see `docs/plans/RESEARCH_FALLBACK_PLAN.md` for the ratified
 fallback design: fire the top-`N` ranked in-window synthesized POSTs concurrently but
 STAGGERED ACROSS T0 — each POST sleeps to its own `scheduler.blind_post_stagger_ms` offset
-before going out (default `(-500, -250, 0)` ms relative to T0; docs/plans/STAGGER_PLAN.md)
+before going out (default `(-400, -250, 0)` ms relative to T0 since 2026-09-30, was `(-500, -250, 0)`;
+docs/plans/STAGGER_PLAN.md)
 (`N = min(len(synthesize_blind_slots(...)), captcha_pool_size())` — token-bounded). There is
 **NO concurrent hedge search** (the original hedge was dropped — RESEARCH_FALLBACK_PLAN §2 Q1).
 Then:
@@ -675,7 +676,7 @@ dropped; docs/plans/RESEARCH_FALLBACK_PLAN.md §2 Q1).
 The burst is bounded three ways — it is gated to the `--wait` race path, only the PRIMARY
 blind-capable course, and `min(blind_post_max_count, captcha_pool_size())` (each POST needs
 a pre-solved CAPTCHA token) — so it is a one-time fan-out of a handful of requests spread
-over a ~500 ms window (`blind_post_stagger_ms`, docs/plans/STAGGER_PLAN.md), not sustained hammering.
+over a ~400 ms window (`blind_post_stagger_ms`, docs/plans/STAGGER_PLAN.md), not sustained hammering.
 The spread does not widen the footprint: it is the SAME handful of POSTs, deliberately
 de-synchronised rather than repeated, and no slot is ever POSTed twice. Critically, **one booking per request still
 holds**: the orchestrator keeps the best-ranked reservation and cancels every other one it

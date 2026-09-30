@@ -118,6 +118,15 @@ _BOOK_DAILY_LIMIT_MARKERS = ("reservation per day",)
 # as race evidence, the exact misdiagnosis this classification exists to prevent. An
 # unmatched body surfaces as `gone[unknown]`, which is visible and investigable.
 _BOOK_UNAVAILABLE_MARKERS = ("time not available",)
+# "Booking for 10/06/2026 starts at 9/29/2026 6:00am (EDT)" — our POST landed BEFORE the release
+# (observed live 2026-09-29 and 2026-09-30 on the -500 ms POST). Its own wording, so a pre-open
+# rejection is now told apart from a claimed slot. Match the stable " starts at " clause.
+_BOOK_TOO_EARLY_MARKERS = (" starts at ",)
+_BOOK_REJECTION_REASONS: tuple[tuple[tuple[str, ...], SlotGoneReason], ...] = (
+    (_BOOK_DAILY_LIMIT_MARKERS, "daily_limit"),
+    (_BOOK_UNAVAILABLE_MARKERS, "unavailable"),
+    (_BOOK_TOO_EARLY_MARKERS, "too_early"),
+)
 # MB email-OTP challenge markers (announced 2026-07-15; see _guard_otp_challenge).
 # Matched case-insensitively against the ForeUP `msg` field. The API challenge's
 # real wording is unobserved (enforcement is UI-only per the 2026-07-15 live recon),
@@ -369,10 +378,10 @@ class ForeUpAdapter(CourseAdapter):
         if not isinstance(data, dict):
             return "unknown"
         msg = str(data.get("msg", "")).lower()
-        if any(marker in msg for marker in _BOOK_DAILY_LIMIT_MARKERS):
-            return "daily_limit"
-        if any(marker in msg for marker in _BOOK_UNAVAILABLE_MARKERS):
-            return "unavailable"
+        # First match wins, in this order (daily_limit wins a body that matches both, pinned).
+        for markers, reason in _BOOK_REJECTION_REASONS:
+            if any(marker in msg for marker in markers):
+                return reason
         return "unknown"
 
     @staticmethod
@@ -855,16 +864,17 @@ class ForeUpAdapter(CourseAdapter):
             body["captchaid"] = await self._solve_captcha_inline()
             r = await client.post(RESERVATION_PATH, json=body)
         # Early-arrival diagnostic (2026-07-18 miss). The booking job fires
-        # early_arrival_ms (500 ms) BEFORE T0 to offset network latency so the POST
-        # should LAND right as the 06:00 ET window opens. If it instead ARRIVES pre-open,
-        # ForeUP rejects with 400 "Time not available." — byte-identical to a genuine
-        # slot-race loss. ForeUP's Date response header is its own server clock at the
-        # moment it processed this POST: a 400 stamped 05:59:59 = pre-open rejection;
-        # 06:00:00 = the slot was genuinely claimed first. Logged once per book() call on
-        # the FINAL POST (after any MF1 re-POST), success or failure, so a booked drop's
-        # server time can be diffed against a rejected sibling's. Pair with the
-        # orchestrator's "race: busy-wait complete;
-        # firing at ..." line (our NTP-corrected send time) to bracket the round-trip.
+        # early_arrival_ms (400 ms since 2026-09-30, was 500) BEFORE T0 to offset network
+        # latency so the POST should LAND right as the 06:00 ET window opens. If it instead
+        # ARRIVES pre-open, ForeUP rejects with 400 — since 2026-09-29 with its own wording
+        # ("Booking for … starts at …", gone[too_early]); before, a pre-open 400 read "Time not
+        # available.", byte-identical to a genuine slot-race loss. ForeUP's Date response
+        # header is its own server clock at the moment it processed this POST: a 400
+        # stamped 05:59:59 = pre-open rejection; 06:00:00 = the slot was genuinely claimed
+        # first. Logged once per book() call on the FINAL POST (after any MF1 re-POST),
+        # success or failure, so a booked drop's server time can be diffed against a rejected
+        # sibling's. Pair with the orchestrator's "race: busy-wait complete; firing at ..."
+        # line (our NTP-corrected send time) to bracket the round-trip.
         _log.info(
             "ForeUP: book POST for slot %s returned HTTP %d (server Date: %s)",
             slot.slot_id,

@@ -265,8 +265,8 @@ class WatchReport:
 
 def tenant_scheduler() -> SchedulerConfig:
     """The tenant booking job's race knobs: EXACTLY today's booking job's (the shipped
-    ``config/container.toml`` [scheduler] — burst 3, reserve 2, stagger (-500, -250, 0), early
-    arrival 500 ms, lead 120 s; parity-pinned by
+    ``config/container.toml`` [scheduler] — burst 3, reserve 2, stagger (-400, -250, 0), early
+    arrival 400 ms, lead 120 s; parity-pinned by
     ``test_tenant_scheduler_matches_the_shipped_toml_scheduler``). The runner copies each
     event's fire time + zone over it per account (§4.2 S')."""
     return SchedulerConfig()
