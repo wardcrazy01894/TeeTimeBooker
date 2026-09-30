@@ -3,7 +3,7 @@
 # This is the ACTIVE workflow (GitHub only runs workflows under .github/workflows/).
 #
 # Triggers:
-#   pull_request (matched paths) -> bicep build + what-if (advisory)
+#   pull_request (matched paths) -> bicep build (advisory; ci.yml `bicep lint` is the gate)
 #   push to main (matched paths) -> AUTO-DEPLOY to dev (NO approval gate)
 #   workflow_dispatch (environment=dev|prod) -> deploy chosen env
 #   tag infra/v*                 -> deploy to prod (manual approval via environment)
