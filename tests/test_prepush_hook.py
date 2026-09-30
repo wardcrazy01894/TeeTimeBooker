@@ -16,9 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / ".githooks" / "pre-push"
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 
-# pip-audit needs the network and is a CVE gate on the dependency set, not on the diff; CI
-# still runs it. Everything else in the job must also run locally before a push.
-_CI_ONLY = {"uv run pip-audit", "uv sync"}
+# `uv sync` runs in the hook as `uv sync --quiet`. Everything else in the job must run locally
+# before a push, pip-audit included: it was CI-only until 2026-09-30, when a CVE published that
+# morning failed a PR whose local gate had passed. A push needs the network anyway.
+_CI_ONLY = {"uv sync"}
 
 
 def _ci_gate_commands() -> list[str]:
@@ -51,3 +52,4 @@ def test_ci_gate_list_is_not_empty() -> None:
     cmds = _ci_gate_commands()
     assert "uv run ruff check ." in cmds
     assert "uv run mypy" in cmds
+    assert "uv run pip-audit" in cmds
