@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.6.0: 2026-09-30 (`main`@`69abc3a`)](#infrav360-2026-09-30-main69abc3a)
 - [infra/v3.5.0: 2026-09-29 (`main`@`8466ad1`)](#infrav350-2026-09-29-main8466ad1)
 - [infra/v3.4.0: 2026-09-29 (`main`@`f149142`)](#infrav340-2026-09-29-mainf149142)
 - [infra/v3.3.0: 2026-09-29 (`main`@`be66b5a`)](#infrav330-2026-09-29-mainbe66b5a)
@@ -44,6 +45,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.6.0` | 2026-09-30 | `69abc3a` | **changed** (race timing) | Blind-POST ladder -400/-250/0 + `too_early` reason, ranking explainer, full-repo-scan fix batch, prod deploys only code on main (#292–#299) |
 | `infra/v3.5.0` | 2026-09-29 | `8466ad1` | unchanged (web) | Invite + feedback respond at once, every button shows a click, operator Uninvite (#288, #289) |
 | `infra/v3.4.0` | 2026-09-29 | `f149142` | unchanged (web, email, CI) | Mail from hello@spicyteetimebooker.com, Report a bug + Request a course (also filed as anonymized GitHub issues), migrate-start retry (#279–#285) |
 | `infra/v3.3.0` | 2026-09-29 | `be66b5a` | unchanged (web, email, infra) | Connect-a-course CTA, "Connected courses", invitation emails + Resend, dashboard Cancel button, prod email domain stage 1 (#275–#278) |
@@ -68,6 +70,44 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.6.0: 2026-09-30 (`main`@`69abc3a`)
+
+**Booking behaviour CHANGED: the T0 blind-POST ladder.** On 2026-09-29 and 2026-09-30 the -500 ms
+POST (the rank-0, best slot) was refused before the release: `Booking for <date> starts at <date>
+6:00am (EDT)`, server `Date` 09:59:59, logged `gone[unknown]`, and the booking went to the
+second choice. Through 9/28 every POST, -500 included, reached ForeUP at 10:00:00 by its clock
+(it had run ~0.5 s fast; our NTP offset and fire drift stayed within a few ms). Changes:
+
+- **Ladder -500/-250/0 → -400/-250/0**, `early_arrival_ms` 500 → 400 (operator decision; the
+  `SchedulerConfig` defaults the tenant booker uses, plus `container.toml` / `example.toml`).
+  Watch the per-POST line: `blind-POST sent -39Xms (planned -400ms) … → BOOKED` means -400 now
+  lands after the open; `→ gone[too_early]` means move it later again (#298).
+- **`too_early` rejection reason:** that ForeUP body is tagged `too_early`, and the operator
+  summary email says "rejected: too early (before the booking window opened)" instead of
+  "reason unknown" (#298).
+- **Website:** "How the bot picks your tee time" on both booking forms: a timeline + worked
+  8:00-10:00 example (9:00, 9:07, 8:52, ...) computed from the real tee grid and pinned to the
+  engine's order; the cutoff is worded from the config (#299).
+- **Full repo scan fix batch** (#292–#297): one invite per address, the Enable notice, a throttled
+  audit write for rejected sign-ins, the Uninvite vs first-sign-in races (claim-first Cosmos bind);
+  every ACS / GitHub-issue / OAuth / background-job failure logged with its reason, public issue
+  diagnostics without the login-failure count; stale stubs, docstrings, Bicep comments; CI token
+  read-only, web env ↔ `webapp.bicep` parity test, Python 3.14 floor; **Log Analytics daily cap
+  0.5 GB/day** (normal ingestion < 10 MB/day); urllib3 2.8.0 (3 CVEs) with `pip-audit` in the
+  pre-push hook (#293).
+- **Deploy hygiene** (#296 + a repo setting): the `prod` environment accepts only `main` and
+  `infra/v*` tags, and `deploy-prod`'s first step refuses a commit that is not on `main`; deploy
+  jobs have 60-min timeouts and one concurrency group per env. This release is the first deploy
+  through that guard (it passed).
+
+**Deploy:** tag pushed 13:19 ET, approved by Claude on the operator's request, pass 1 skipped
+(AcrPull grant exists), pass 2 + migrations green. **Verified:** both booking jobs, the watch
+job and `teetime-web-prod` (revision `--0000014`) run `teetime:69abc3a…`; `/healthz` 200 on
+https://spicyteetimebooker.com, which serves the new `base.css`; the prod workspace's
+`dailyQuotaGb` reads 0.5; the first watch run on the new image (13:30 ET, `-29846490`) Succeeded
+(`dry_run=False`, Cosmos `prod`, 1 row, 1 search, no errors). **First exercise of the new ladder:**
+the next 06:00 ET booking run (Thu 2026-10-01; Saturday's drop is 2026-10-03).
 
 ## infra/v3.5.0: 2026-09-29 (`main`@`8466ad1`)
 
