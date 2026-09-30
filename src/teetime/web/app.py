@@ -342,21 +342,28 @@ REJECTED_AUDIT_COOLDOWN = timedelta(hours=1)
 
 
 class RejectionAuditThrottle:
-    """At most one rejected-sign-in audit doc per (provider, subject) per ``cooldown``."""
+    """At most one rejected-sign-in audit doc per (provider, subject) per cooldown.
+
+    ``due`` asks; ``record`` is called only after the audit write succeeded, so a failed write
+    never silences a subject. At ``MAX_TRACKED`` live subjects (a flood of distinct identities
+    inside one cooldown) a NEW subject is not audited: memory stays bounded, and the
+    rejected_signin records still count every attempt."""
 
     MAX_TRACKED = 1000
 
     def __init__(self) -> None:
         self._last: dict[tuple[str, str], datetime] = {}
 
-    def should_audit(self, key: tuple[str, str], *, now: datetime) -> bool:
+    def due(self, key: tuple[str, str], *, now: datetime) -> bool:
         last = self._last.get(key)
-        if last is not None and now - last < REJECTED_AUDIT_COOLDOWN:
-            return False
-        if len(self._last) >= self.MAX_TRACKED:  # drop expired entries; memory stays bounded
+        if last is not None:
+            return now - last >= REJECTED_AUDIT_COOLDOWN
+        if len(self._last) >= self.MAX_TRACKED:
             self._last = {k: t for k, t in self._last.items() if now - t < REJECTED_AUDIT_COOLDOWN}
+        return len(self._last) < self.MAX_TRACKED
+
+    def record(self, key: tuple[str, str], *, now: datetime) -> None:
         self._last[key] = now
-        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,17 +511,18 @@ async def _complete_signin(ctx: _Ctx, request: Request, identity: ProviderIdenti
         log.info("signin rejected provider=%s reason=%s", identity.provider, reason)
         if user is None:
             await _remember_rejected_signin(ctx, identity, now=now)
-        if ctx.rejection_audits.should_audit((identity.provider, identity.subject), now=now):
-            await _best_effort_store_write(
-                ctx.store.append_audit(
-                    user_id=None if user is None else user.id,
-                    action=f"signin_rejected_{reason}",
-                    row_id=None,
-                    detail=detail,
-                    at=now,
-                ),
-                what="a rejected sign-in's audit entry",
-            )
+        key = (identity.provider, identity.subject)
+        if ctx.rejection_audits.due(key, now=now) and await _best_effort_store_write(
+            ctx.store.append_audit(
+                user_id=None if user is None else user.id,
+                action=f"signin_rejected_{reason}",
+                row_id=None,
+                detail=detail,
+                at=now,
+            ),
+            what="a rejected sign-in's audit entry",
+        ):
+            ctx.rejection_audits.record(key, now=now)
         request.session.clear()
         raise ForbiddenError("not invited" if user is None else "this account is disabled")
     auth.establish_session(request.session, user=user, identity=identity, now=now)
@@ -529,13 +537,15 @@ REJECTED_EMAILS_MAX = 5
 REJECTED_SIGNIN_WRITE_TIMEOUT_S = 5.0
 
 
-async def _best_effort_store_write(write: Awaitable[object], *, what: str) -> None:
+async def _best_effort_store_write(write: Awaitable[object], *, what: str) -> bool:
     """A write on the UNAUTHENTICATED 403 path: bounded in time, and a failure or a hung store
-    is logged and never changes the 403."""
+    is logged and never changes the 403. True iff it succeeded."""
     try:
         await asyncio.wait_for(write, timeout=REJECTED_SIGNIN_WRITE_TIMEOUT_S)
     except Exception:  # TimeoutError included
         log.warning("could not record %s", what, exc_info=True)
+        return False
+    return True
 
 
 async def _remember_rejected_signin(

@@ -738,9 +738,12 @@ message; prod keeps one warm replica, so this needs a deploy mid-send.
 `TenantStore.delete_invited_user` deletes the user only if still INVITED and never bound (Cosmos:
 IfMatch on the etag just read, so a first sign-in that binds first wins; pinned by
 `test_uninvite_loses_to_a_concurrent_first_sign_in`), audited `admin_uninvite`; a signed-in user
-is a 400 ("use Disable"). The other ordering is closed too (scan 2026-09-30): the bind's own
-write is IfMatch'd on the INVITED doc it queried, so an Uninvite that deleted it first wins and
-the sign-in gets the 403 (`test_a_first_sign_in_loses_to_an_uninvite_that_deleted_the_row_first`).
+is a 400 ("use Disable"). The other ordering is closed too (scan 2026-09-30): the bind takes
+the identity claim (PENDING) first, then writes the user doc IfMatch'd on the INVITED doc it
+queried, then binds the claim, the same order as `upsert_user`. An Uninvite that deleted the row
+first wins (the claim is released, the sign-in gets the 403), and no failure can leave an ACTIVE
+user without its claim (`test_a_first_sign_in_loses_to_an_uninvite_that_deleted_the_row_first`,
+`test_a_transient_failure_while_claiming_leaves_no_half_bound_user`).
 **Invite refuses an address already on the list** (any status, casefolded): it redirects with
 `notice=already_listed` and creates no row, because a second INVITED row outlived an Uninvite of
 the first. Two concurrent submits can still both pass that check (accepted: one operator).
@@ -765,8 +768,8 @@ Without script, `button:active` / `a.button:active` / `summary.button:active` st
 OAuth round trip, and every rejection wrote a 400-day `audit` doc. The `rejected_signin` record
 still counts every attempt, but the audit doc (SF10) is written at most once per
 `(provider, subject)` per `REJECTED_AUDIT_COOLDOWN` (1 h; in-process `RejectionAuditThrottle`,
-at most 1000 subjects tracked, reset on restart: it bounds growth, it is not a security
-boundary). Both writes on the 403 path are now bounded by `REJECTED_SIGNIN_WRITE_TIMEOUT_S` and
+reset on restart: it bounds growth, it is not a security boundary). A subject is recorded only
+after its audit write succeeded; at 1000 live subjects a new one is not audited. Both writes on the 403 path are now bounded by `REJECTED_SIGNIN_WRITE_TIMEOUT_S` and
 best-effort, and each rejection logs `signin rejected provider=… reason=not_invited|disabled`
 (no subject, no email). Tests: `tests/web/test_web_admin_users_list.py`.
 

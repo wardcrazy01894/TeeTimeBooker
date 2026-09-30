@@ -24,6 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from azure.cosmos.exceptions import CosmosHttpResponseError
 from azure.identity.aio import DefaultAzureCredential
 
 from teetime.core.clock import FakeClock
@@ -35,6 +36,7 @@ from teetime.tenant.cosmos.documents import (
     SlotPointer,
     UniquenessClaim,
     claim_key_hash,
+    identity_claim_key,
     to_claim_doc,
     to_row_doc,
     to_slot_doc,
@@ -582,3 +584,60 @@ async def test_a_first_sign_in_loses_to_an_uninvite_that_deleted_the_row_first()
     )
     assert await store.get_user_unscoped(invited.id) is None
     assert await store.get_user_by_subject("google", "s1") is None
+
+
+def _invited_pal() -> User:
+    return User(
+        id=UserId(uuid4()),
+        oauth_provider="",
+        oauth_subject=None,
+        email="pal@x.test",
+        display_name="pal",
+        role=UserRole.MEMBER,
+        status=UserStatus.INVITED,
+    )
+
+
+async def test_a_bind_whose_identity_is_claimed_elsewhere_leaves_the_invite_untouched() -> None:
+    """Review of #292: the claim is taken BEFORE the user doc is written, so a conflict leaves
+    the row INVITED with no subject (never ACTIVE without a claim)."""
+    store, _, global_ = _fake_store()
+    pal = _invited_pal()
+    await store.upsert_user(pal)
+    other = uuid4()
+    held = UniquenessClaim(
+        ClaimKind.IDENTITY,
+        claim_key_hash(ClaimKind.IDENTITY, identity_claim_key("google", "s1")),
+        ClaimState.PENDING,
+        CLAIM_T0,
+        owner_id=other,
+    )
+    await global_.upsert_item(to_claim_doc(held))
+    with pytest.raises(UniquenessConflictError):
+        await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    got = await store.get_user_unscoped(pal.id)
+    assert got is not None and got.status is UserStatus.INVITED and got.oauth_subject is None
+
+
+async def test_a_transient_failure_while_claiming_leaves_no_half_bound_user() -> None:
+    store, _, global_ = _fake_store()
+    pal = _invited_pal()
+    await store.upsert_user(pal)
+
+    async def blip() -> None:
+        raise CosmosHttpResponseError(status_code=503, message="unavailable")
+
+    async def arm_second_write() -> None:  # the hook is one-shot: re-arm for the next write
+        global_.before_write = blip
+
+    # The SECOND global write fails: the claim is written, the user doc is not. (The pre-review
+    # order wrote the ACTIVE user doc first, so this left an ACTIVE user without its claim.)
+    global_.before_write = arm_second_write
+    with pytest.raises(CosmosHttpResponseError):
+        await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    got = await store.get_user_unscoped(pal.id)
+    assert got is not None and got.status is UserStatus.INVITED and got.oauth_subject is None
+    assert await store.get_user_by_subject("google", "s1") is None
+    # ...and a retry binds cleanly.
+    bound = await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    assert bound is not None and bound.status is UserStatus.ACTIVE

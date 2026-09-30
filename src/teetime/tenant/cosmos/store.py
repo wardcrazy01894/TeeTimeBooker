@@ -1454,8 +1454,19 @@ class CosmosTenantStore:
                 bound = replace(
                     user, oauth_provider=provider, oauth_subject=subject, status=UserStatus.ACTIVE
                 )
-                # IfMatch on the INVITED doc just read: an Uninvite that deleted it meanwhile
-                # wins (the bind reports "not invited"), instead of the upsert re-creating it.
+                # Same order as upsert_user: claim (PENDING) -> user doc -> claim BOUND, so no
+                # failure can leave an ACTIVE user without its identity claim (a PENDING claim
+                # whose owner never took the subject is reclaimable, §3.2). The user-doc write
+                # is IfMatch'd on the INVITED doc just read: an Uninvite that deleted it
+                # meanwhile wins (the bind reports "not invited") instead of being undone.
+                key = identity_claim_key(provider, subject)
+                ticket = await self._acquire_claim(
+                    ClaimKind.IDENTITY,
+                    key,
+                    owner=user.id,
+                    holds=self._user_holds,
+                    taken="that sign-in identity is bound to another user",
+                )
                 pk = f"user:{user.id}"
                 try:
                     await self._global.replace_item(
@@ -1466,13 +1477,12 @@ class CosmosTenantStore:
                     )
                 except CosmosHttpResponseError as exc:
                     if _status(exc) in (_HTTP_PRECONDITION_FAILED, _HTTP_NOT_FOUND):
+                        await self._release_claim(ClaimKind.IDENTITY, key, owner=user.id)
                         return None
                     raise
-                try:
-                    await self.upsert_user(bound)  # the identity claim
-                except UniquenessConflictError:
+                if not await self._bind(ClaimKind.IDENTITY, key, ticket, owner=user.id):
                     await self._global.upsert_item(to_user_doc(user))  # back to INVITED
-                    raise
+                    raise UniquenessConflictError("that sign-in identity is bound to another user")
                 return bound
         return None
 

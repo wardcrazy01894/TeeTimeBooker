@@ -300,3 +300,38 @@ async def test_enable_shows_its_notice(
         assert text in (await client.get(r.headers["location"])).text
     got = await store.get_user_unscoped(turk.id)
     assert got is not None and got.status is UserStatus.ACTIVE
+
+
+def test_the_audit_throttle_stays_bounded_under_a_flood_of_identities() -> None:
+    throttle = app_module.RejectionAuditThrottle()
+    cap = throttle.MAX_TRACKED
+    for i in range(cap):
+        assert throttle.due(("github", str(i)), now=T0)
+        throttle.record(("github", str(i)), now=T0)
+    assert not throttle.due(("github", "new"), now=T0)  # full, all live: not audited
+    assert not throttle.due(("github", "0"), now=T0)  # a known one is still in its cooldown
+    later = T0 + app_module.REJECTED_AUDIT_COOLDOWN
+    assert throttle.due(("github", "new"), now=later)  # expired entries were pruned
+    assert len(throttle._last) == 0
+
+
+async def test_a_failed_audit_write_does_not_silence_the_subject(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    provider_mock: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = store.append_audit
+    calls = 0
+
+    async def flaky(**kw: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("store down")
+        await real(**kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "append_audit", flaky)
+    await _stranger_tries(client, provider_mock)
+    await _stranger_tries(client, provider_mock)
+    assert [e.action for e in store.audit_log] == ["signin_rejected_not_invited"]
