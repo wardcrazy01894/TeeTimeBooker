@@ -89,8 +89,8 @@ second choice. Through 9/28 every POST, -500 included, reached ForeUP at 10:00:0
 - **Website:** "How the bot picks your tee time" on both booking forms: a timeline + worked
   8:00-10:00 example (9:00, 9:07, 8:52, ...) computed from the real tee grid and pinned to the
   engine's order; the cutoff is worded from the config (#299).
-- **Full repo scan fix batch** (#292–#297): one invite per address, the Enable notice, throttled
-  rejected-sign-in audit docs, the Uninvite vs first-sign-in races (claim-first Cosmos bind);
+- **Full repo scan fix batch** (#292–#297): one invite per address, the Enable notice, a throttled
+  audit write for rejected sign-ins, the Uninvite vs first-sign-in races (claim-first Cosmos bind);
   every ACS / GitHub-issue / OAuth / background-job failure logged with its reason, public issue
   diagnostics without the login-failure count; stale stubs, docstrings, Bicep comments; CI token
   read-only, web env ↔ `webapp.bicep` parity test, Python 3.14 floor; **Log Analytics daily cap
