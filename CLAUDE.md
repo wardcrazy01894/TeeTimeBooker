@@ -375,7 +375,9 @@ a test that proves the new behaviour, and update this section in the same PR.
   `global` container's `defaultTtl: -1`, pinned by `tests/test_cosmos_bicep.py`), and both stores
   also apply the cut-off when listing. It is written on the UNAUTHENTICATED 403 path, so the write
   is best-effort, bounded (`REJECTED_SIGNIN_WRITE_TIMEOUT_S`), and capped (5 emails, 200-char
-  name); a failure never changes the 403.
+  name); a failure never changes the 403. The rejection's `audit` doc is bounded the same way and
+  written at most once per `(provider, subject)` per `REJECTED_AUDIT_COOLDOWN` (1 h, in-process),
+  because anyone can script the OAuth round trip.
 
 ### Search and book error handling
 

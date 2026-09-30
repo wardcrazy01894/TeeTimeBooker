@@ -182,6 +182,13 @@ CLAIM_RECLAIM_AFTER = timedelta(minutes=10)
 # unconditional (watermarks, counters, lease release). Contention here is two writers at most.
 _MAX_ATTEMPTS = 5
 
+
+class _RetryBind:
+    """bind_invited_user: the INVITED row was rewritten (not deleted) under the IfMatch."""
+
+
+_RETRY_BIND = _RetryBind()
+
 # Every document path the store's queries filter on. The §3.2 index policy (MU-15b, Bicep) must
 # include ALL of them: Cosmos rejects a query that filters on a path excluded from indexing.
 # Pinned against the query strings in this module by test_queried_paths_are_declared.
@@ -1437,6 +1444,17 @@ class CosmosTenantStore:
             await self._release_claim(ClaimKind.IDENTITY, old_key, owner=user.id)
 
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:
+        for _ in range(_MAX_ATTEMPTS):
+            result = await self._bind_invited_once(email=email, provider=provider, subject=subject)
+            if not isinstance(result, _RetryBind):
+                return result
+        return None
+
+    async def _bind_invited_once(
+        self, *, email: str, provider: str, subject: str
+    ) -> User | _RetryBind | None:
+        """One bind attempt; ``_RETRY_BIND`` when the INVITED row changed under the IfMatch but
+        is still INVITED, unbound and for this email (a rewrite, not an Uninvite)."""
         existing = await self.get_user_by_subject(provider, subject)
         if existing is not None:
             return existing
@@ -1447,13 +1465,68 @@ class CosmosTenantStore:
             type="user",
             status=UserStatus.INVITED.value,
         )
-        invited = sorted((from_user_doc(d).item for d in docs), key=lambda u: u.id)
-        for user in invited:
+        invited = sorted((from_user_doc(d) for d in docs), key=lambda s: s.item.id)
+        for stored in invited:
+            user = stored.item
             if user.email.casefold() == wanted:
                 bound = replace(
                     user, oauth_provider=provider, oauth_subject=subject, status=UserStatus.ACTIVE
                 )
-                await self.upsert_user(bound)
+                # Same order as upsert_user: claim (PENDING) -> user doc -> claim BOUND, so no
+                # failure can leave an ACTIVE user without its identity claim (a PENDING claim
+                # whose owner never took the subject is reclaimable, §3.2). The user-doc write
+                # is IfMatch'd on the INVITED doc just read: an Uninvite that deleted it
+                # meanwhile wins (the bind reports "not invited") instead of being undone.
+                key = identity_claim_key(provider, subject)
+                ticket = await self._acquire_claim(
+                    ClaimKind.IDENTITY,
+                    key,
+                    owner=user.id,
+                    holds=self._user_holds,
+                    taken="that sign-in identity is bound to another user",
+                )
+                pk = f"user:{user.id}"
+                try:
+                    written = await self._global.replace_item(
+                        pk,
+                        to_user_doc(bound),
+                        etag=stored.etag,
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                except CosmosHttpResponseError as exc:
+                    if _status(exc) not in (_HTTP_PRECONDITION_FAILED, _HTTP_NOT_FOUND):
+                        raise
+                    now_stored = await self._user(user.id)
+                    if (
+                        now_stored is not None
+                        and now_stored.item.oauth_provider == provider
+                        and now_stored.item.oauth_subject == subject
+                    ):
+                        return now_stored.item  # a concurrent sign-in of this identity bound it
+                    # Uninvited (or changed) meanwhile: drop our claim, but only while it is
+                    # still PENDING; a BOUND one belongs to a sign-in that completed.
+                    await self._release_claim(
+                        ClaimKind.IDENTITY, key, owner=user.id, only_pending=True
+                    )
+                    still_invited = (
+                        now_stored is not None
+                        and now_stored.item.status is UserStatus.INVITED
+                        and now_stored.item.oauth_subject is None
+                        and now_stored.item.email.casefold() == wanted
+                    )
+                    return _RETRY_BIND if still_invited else None
+                if not await self._bind(ClaimKind.IDENTITY, key, ticket, owner=user.id):
+                    try:  # back to INVITED, unless something else wrote the row meanwhile
+                        await self._global.replace_item(
+                            pk,
+                            to_user_doc(user),
+                            etag=written.get("_etag"),
+                            match_condition=MatchConditions.IfNotModified,
+                        )
+                    except CosmosHttpResponseError as exc:
+                        if _status(exc) not in (_HTTP_PRECONDITION_FAILED, _HTTP_NOT_FOUND):
+                            raise
+                    raise UniquenessConflictError("that sign-in identity is bound to another user")
                 return bound
         return None
 
@@ -1724,12 +1797,18 @@ class CosmosTenantStore:
                 return False
             raise
 
-    async def _release_claim(self, kind: ClaimKind, key: str, *, owner: UUID) -> None:
+    async def _release_claim(
+        self, kind: ClaimKind, key: str, *, owner: UUID, only_pending: bool = False
+    ) -> None:
         """Delete ``owner``'s claim on ``key`` (a rename's old key, or a failed connect). Best
-        effort: a leftover is an orphan the reclaim rule recovers."""
+        effort: a leftover is an orphan the reclaim rule recovers. ``only_pending`` leaves a
+        BOUND claim alone (a concurrent operation for the same owner completed)."""
         pk = f"claim:{claim_key_hash(kind, key)}"
         doc = await self._read(self._global, pk, pk)
-        if doc is None or from_claim_doc(doc).item.owner_id != owner:
+        if doc is None:
+            return
+        claim = from_claim_doc(doc).item
+        if claim.owner_id != owner or (only_pending and claim.state is not ClaimState.PENDING):
             return
         try:
             await self._global.delete_item(

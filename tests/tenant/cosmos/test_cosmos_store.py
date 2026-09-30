@@ -24,6 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from azure.cosmos.exceptions import CosmosHttpResponseError
 from azure.identity.aio import DefaultAzureCredential
 
 from teetime.core.clock import FakeClock
@@ -35,6 +36,7 @@ from teetime.tenant.cosmos.documents import (
     SlotPointer,
     UniquenessClaim,
     claim_key_hash,
+    identity_claim_key,
     to_claim_doc,
     to_row_doc,
     to_slot_doc,
@@ -555,3 +557,130 @@ async def test_uninvite_loses_to_a_concurrent_first_sign_in() -> None:
     assert await store.delete_invited_user(invited.id) is False
     bound = await store.get_user_unscoped(invited.id)
     assert bound is not None and bound.status is UserStatus.ACTIVE and bound.oauth_subject == "s1"
+
+
+async def test_a_first_sign_in_loses_to_an_uninvite_that_deleted_the_row_first() -> None:
+    """Scan 2026-09-30, the other ordering: the uninvite deletes between the bind's query and its
+    first write. The bind used to upsert the user back as ACTIVE, so the operator saw "Invite
+    removed" while the person was signed in. The bind's write is IfMatch'd on the INVITED doc."""
+    store, _, global_ = _fake_store()
+    invited = User(
+        id=UserId(uuid4()),
+        oauth_provider="",
+        oauth_subject=None,
+        email="pal@x.test",
+        display_name="pal",
+        role=UserRole.MEMBER,
+        status=UserStatus.INVITED,
+    )
+    await store.upsert_user(invited)
+
+    async def uninvite_first() -> None:
+        assert await store.delete_invited_user(invited.id) is True
+
+    global_.before_write = uninvite_first
+    assert (
+        await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1") is None
+    )
+    assert await store.get_user_unscoped(invited.id) is None
+    assert await store.get_user_by_subject("google", "s1") is None
+
+
+def _invited_pal() -> User:
+    return User(
+        id=UserId(uuid4()),
+        oauth_provider="",
+        oauth_subject=None,
+        email="pal@x.test",
+        display_name="pal",
+        role=UserRole.MEMBER,
+        status=UserStatus.INVITED,
+    )
+
+
+async def test_a_bind_whose_identity_is_claimed_elsewhere_leaves_the_invite_untouched() -> None:
+    """Review of #292: the claim is taken BEFORE the user doc is written, so a conflict leaves
+    the row INVITED with no subject (never ACTIVE without a claim)."""
+    store, _, global_ = _fake_store()
+    pal = _invited_pal()
+    await store.upsert_user(pal)
+    other = uuid4()
+    held = UniquenessClaim(
+        ClaimKind.IDENTITY,
+        claim_key_hash(ClaimKind.IDENTITY, identity_claim_key("google", "s1")),
+        ClaimState.PENDING,
+        CLAIM_T0,
+        owner_id=other,
+    )
+    await global_.upsert_item(to_claim_doc(held))
+    with pytest.raises(UniquenessConflictError):
+        await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    got = await store.get_user_unscoped(pal.id)
+    assert got is not None and got.status is UserStatus.INVITED and got.oauth_subject is None
+
+
+async def test_a_transient_failure_while_claiming_leaves_no_half_bound_user() -> None:
+    store, _, global_ = _fake_store()
+    pal = _invited_pal()
+    await store.upsert_user(pal)
+
+    async def blip() -> None:
+        raise CosmosHttpResponseError(status_code=503, message="unavailable")
+
+    async def arm_second_write() -> None:  # the hook is one-shot: re-arm for the next write
+        global_.before_write = blip
+
+    # The SECOND global write fails: the claim is written, the user doc is not. (The pre-review
+    # order wrote the ACTIVE user doc first, so this left an ACTIVE user without its claim.)
+    global_.before_write = arm_second_write
+    with pytest.raises(CosmosHttpResponseError):
+        await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    got = await store.get_user_unscoped(pal.id)
+    assert got is not None and got.status is UserStatus.INVITED and got.oauth_subject is None
+    assert await store.get_user_by_subject("google", "s1") is None
+    # ...and a retry binds cleanly.
+    bound = await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    assert bound is not None and bound.status is UserStatus.ACTIVE
+
+
+async def test_two_concurrent_first_sign_ins_for_one_identity_keep_the_bound_claim() -> None:
+    """Re-review of #292: a double-fired OAuth callback. B binds completely while A is about to
+    write; A's IfMatch then fails. A must return the bound user, not release B's BOUND claim
+    (that left an ACTIVE user without its identity claim)."""
+    store, _, global_ = _fake_store()
+    pal = _invited_pal()
+    await store.upsert_user(pal)
+    got_b: list[User | None] = []
+
+    async def b_first() -> None:
+        got_b.append(
+            await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+        )
+
+    global_.before_write = b_first
+    got_a = await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    assert got_b and got_b[0] is not None and got_b[0].status is UserStatus.ACTIVE
+    assert got_a is not None and got_a.id == pal.id and got_a.oauth_subject == "s1"
+    claim_pk = f"claim:{claim_key_hash(ClaimKind.IDENTITY, identity_claim_key('google', 's1'))}"
+    claim = await global_.read_item(claim_pk, claim_pk)
+    assert claim["state"] == ClaimState.BOUND.value
+    assert await store.get_user_by_subject("google", "s1") is not None
+
+
+async def test_a_bind_retries_when_the_invited_row_was_rewritten_not_removed() -> None:
+    """Third review of #292: an IfMatch 412 is not always an Uninvite. A rewrite that leaves the
+    row INVITED for this email is retried instead of a spurious "not invited"."""
+    store, _, global_ = _fake_store()
+    pal = _invited_pal()
+    await store.upsert_user(pal)
+
+    async def rewrite() -> None:
+        await store.upsert_user(replace(pal, display_name="Pal"))  # new etag, still INVITED
+
+    async def arm_second_write() -> None:  # the claim is write #1; the user doc write #2
+        global_.before_write = rewrite
+
+    global_.before_write = arm_second_write
+    bound = await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    assert bound is not None and bound.status is UserStatus.ACTIVE and bound.display_name == "Pal"
+    assert await store.get_user_by_subject("google", "s1") is not None

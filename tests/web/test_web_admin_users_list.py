@@ -226,3 +226,112 @@ async def test_a_hung_store_never_holds_up_the_403(
     monkeypatch.setattr(app_module, "REJECTED_SIGNIN_WRITE_TIMEOUT_S", 0.05)
     resp = await asyncio.wait_for(_stranger_tries(client, provider_mock), timeout=5)
     assert resp.status_code == 403
+
+
+async def test_repeat_uninvited_signins_write_one_audit_doc_per_cooldown(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    clock: FakeClock,
+    provider_mock: respx.MockRouter,
+) -> None:
+    """Scan 2026-09-30: anyone can script the OAuth round trip, and each rejection used to add a
+    400-day audit doc. The rejected_signin record still counts every attempt; the audit trail
+    (SF10) records a subject at most once per cooldown."""
+    for _ in range(5):
+        assert (await _stranger_tries(client, provider_mock)).status_code == 403
+    audits = [e for e in store.audit_log if e.action == "signin_rejected_not_invited"]
+    assert len(audits) == 1
+    (rec,) = await store.list_rejected_signins(now=T0)
+    assert rec.attempts == 5
+
+    await _stranger_tries(client, provider_mock, subject="778")  # another subject: audited
+    await clock.sleep(app_module.REJECTED_AUDIT_COOLDOWN.total_seconds())
+    await _stranger_tries(client, provider_mock)  # the cooldown passed: audited again
+    audits = [e for e in store.audit_log if e.action == "signin_rejected_not_invited"]
+    assert [a.detail["subject"] for a in audits] == ["777", "778", "777"]
+
+
+async def test_a_hung_audit_write_never_holds_up_the_403(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    provider_mock: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def hang(**_: object) -> None:
+        await asyncio.Event().wait()  # never set
+
+    monkeypatch.setattr(store, "append_audit", hang)
+    monkeypatch.setattr(app_module, "REJECTED_SIGNIN_WRITE_TIMEOUT_S", 0.05)
+    resp = await asyncio.wait_for(_stranger_tries(client, provider_mock), timeout=5)
+    assert resp.status_code == 403
+
+
+async def test_a_rejected_signin_is_logged_without_the_subject_or_emails(
+    client: httpx.AsyncClient,
+    provider_mock: respx.MockRouter,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO", logger="teetime.web.app")
+    await _stranger_tries(client, provider_mock)
+    lines = [r.getMessage() for r in caplog.records if "signin rejected" in r.getMessage()]
+    assert lines == ["signin rejected provider=github reason=not_invited"]
+
+
+async def test_enable_shows_its_notice(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, provider_mock: respx.MockRouter
+) -> None:
+    turk = await _member_with_a_weekly_booking(client, store, provider_mock)
+    await _sign_in_operator(client, provider_mock)
+    for action, notice, text in (
+        ("disable", "disabled", "User disabled."),
+        ("enable", "enabled", "User enabled."),
+    ):
+        resp = await client.get("/admin/users")
+        r = await client.post(
+            "/admin/users",
+            data={
+                "csrf_token": _csrf(resp),
+                "action": action,
+                "provider": "github",
+                "subject": "42",
+            },
+        )
+        assert r.headers["location"] == f"/admin/users?notice={notice}"
+        assert text in (await client.get(r.headers["location"])).text
+    got = await store.get_user_unscoped(turk.id)
+    assert got is not None and got.status is UserStatus.ACTIVE
+
+
+def test_the_audit_throttle_stays_bounded_under_a_flood_of_identities() -> None:
+    throttle = app_module.RejectionAuditThrottle()
+    cap = throttle.MAX_TRACKED
+    for i in range(cap):
+        assert throttle.due(("github", str(i)), now=T0)
+        throttle.record(("github", str(i)), now=T0)
+    assert not throttle.due(("github", "new"), now=T0)  # full, all live: not audited
+    assert not throttle.due(("github", "0"), now=T0)  # a known one is still in its cooldown
+    later = T0 + app_module.REJECTED_AUDIT_COOLDOWN
+    assert throttle.due(("github", "new"), now=later)  # expired entries were pruned
+    assert len(throttle._last) == 0
+
+
+async def test_a_failed_audit_write_does_not_silence_the_subject(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    provider_mock: respx.MockRouter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = store.append_audit
+    calls = 0
+
+    async def flaky(**kw: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("store down")
+        await real(**kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "append_audit", flaky)
+    await _stranger_tries(client, provider_mock)
+    await _stranger_tries(client, provider_mock)
+    assert [e.action for e in store.audit_log] == ["signin_rejected_not_invited"]
