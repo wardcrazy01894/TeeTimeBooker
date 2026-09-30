@@ -87,7 +87,7 @@ def _form_dict(form: FormData) -> dict[str, str]:
 class _Pages:
     """Page renderers + the form-action runner shared by the handlers."""
 
-    def __init__(self, ctx: "_Ctx") -> None:
+    def __init__(self, ctx: _Ctx) -> None:
         self.ctx = ctx
 
     def base_context(self, request: Request, user: User) -> dict[str, object]:
@@ -205,7 +205,7 @@ class _Pages:
         return RedirectResponse(location, status_code=303)
 
 
-def register_page_routes(app: FastAPI, ctx: "_Ctx", *, current_user: _Dependency) -> None:
+def register_page_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency) -> None:
     pages = _Pages(ctx)
 
     async def on_not_found(request: Request, exc: Exception) -> Response:
@@ -328,7 +328,7 @@ def _register_row_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependen
     row_route("/rows/{id}/withdraw", services.withdraw_row, "withdrawn")
 
 
-def _mu14_wiring(ctx: "_Ctx") -> tuple[Keyring, AdapterFactory]:
+def _mu14_wiring(ctx: _Ctx) -> tuple[Keyring, AdapterFactory]:
     """The keyring + adapter factory the MU-14 actions need; refused (409) when the app was
     built without them, never a crash."""
     if ctx.keyring is None or ctx.adapter_factory is None:

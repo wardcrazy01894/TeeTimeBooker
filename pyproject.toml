@@ -2,7 +2,7 @@
 name = "teetime"
 version = "0.0.0"
 description = "Automated tee-time booking bot (v0: Mangrove Bay / ForeUP)."
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 readme = "README.md"
 authors = [{ name = "Alex Lancaster" }]
 license = { text = "Proprietary" }
@@ -88,7 +88,7 @@ packages = ["src/teetime"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 src = ["src", "tests"]
 # ruff 0.16 began formatting python code blocks INSIDE Markdown. Our plan docs quote
 # FRAGMENTS (bare ctor params, partial class bodies), which ruff parses as standalone
@@ -129,7 +129,7 @@ ignore = [
 "src/teetime/courses/teeitup/base.py" = ["PLR0912", "PLR0915"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
 mypy_path = "src"
 packages = ["teetime"]

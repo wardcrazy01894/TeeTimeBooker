@@ -40,7 +40,7 @@ def read_session(session: MutableMapping[str, Any]) -> SessionIdentity | None:
         user_id = UserId(UUID(str(raw["user_id"])))
         provider, subject = str(raw["provider"]), str(raw["subject"])
         issued_at = datetime.fromisoformat(str(raw["issued_at"]))
-    except (KeyError, ValueError, TypeError):
+    except KeyError, ValueError, TypeError:
         return None
     if issued_at.tzinfo is None or not provider or not subject:
         return None

@@ -65,7 +65,7 @@
 ```
   GitHub Actions CI (azure-iac.yml)
   ┌───────────────────────────────────┐
-  │ bicep build → what-if → deploy    │
+  │ bicep build → deploy              │
   │ (OIDC federated credential)       │
   └─────────────────┬─────────────────┘
                     │ az deployment group create
@@ -215,7 +215,7 @@ infra/
       killswitch-rbac-prod.bicep  # companion: cross-RG role assignment for rg-teetime-prod
                                #   deployed as nested module by killswitch.bicep with scope: resourceGroup(sub, prodRgName)
 .github/workflows/
-  azure-iac.yml                # ACTIVE CI: bicep build + what-if on PR; deploy on merge to main (dev) / tag (prod)
+  azure-iac.yml                # ACTIVE CI: bicep build on PR; deploy on merge to main (dev) / tag (prod)
 ```
 
 **Dependency order for `az deployment group create` (RG-scoped):**
@@ -723,7 +723,7 @@ removed in #43.
 
 | Trigger | Action |
 |---|---|
-| `pull_request` touching `infra/**` or `.github/workflows/azure-iac.yml` | `bicep build` lint + `az deployment group what-if` (read-only) |
+| `pull_request` touching `infra/**` or `.github/workflows/azure-iac.yml` | `bicep build` lint (the PR what-if was removed 2026-09-30, §8.3) |
 | `push` to `main` touching `infra/**` or `.github/workflows/azure-iac.yml` | Same as PR + **auto-deploy to `dev` (no required-reviewer gate — intentional; see below)** |
 | `push` tag matching `infra/v*` | Deploy to `prod` (requires manual approval) |
 | `workflow_dispatch` | Manual deploy to chosen env |
@@ -841,10 +841,11 @@ Container Apps revision configurations. Specifically, it sometimes reports a
 "modify" change on the `configuration.secrets` block even when no change
 occurred, because the platform redacts secret values in the GET response.
 
-**Stance:** treat `what-if` output as advisory on PR. The workflow prints the
-what-if output and continues; it does not fail the PR on what-if change
-detection. Only `bicep build` failures block the PR. The deploy step (`create`)
-is the source of truth for idempotency.
+**Stance:** `what-if` is advisory and run by hand. The PR workflow no longer runs it
+(2026-09-30): it passed only the old core params, not the param-file values the deploy jobs
+parse, so it previewed template defaults rather than what dev deploys. Run it by hand with the
+deploy job's parameters when a preview matters (read-only). Only `bicep build` failures block a
+PR; the deploy step (`create`) is the source of truth for idempotency.
 
 `az deployment group create` with identical Bicep and parameters is fully
 idempotent for all resources in this plan. ACA Jobs do NOT create new revisions
@@ -1132,7 +1133,7 @@ For image-only updates (new bot code, same IaC):
    new image takes effect on the next cron fire.
 
 For IaC changes (Bicep edits):
-1. PR opens → `azure-iac.yml` runs `bicep build` + `what-if`.
+1. PR opens → `azure-iac.yml` runs `bicep build`.
 2. Merge to `main` → `azure-iac.yml` **auto-deploys to dev** (no reviewer gate; see §8.1).
    Dev always runs in dry-run (`dryRun = true` in parameter file).
 3. Tag `infra/v*` → `azure-iac.yml` deploys to prod (requires manual approval).

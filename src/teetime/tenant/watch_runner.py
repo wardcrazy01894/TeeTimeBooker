@@ -589,7 +589,7 @@ class _Run:
                 exc.retry_after_s,
             )
             raise _RateLimitedError from exc
-        except (NoInventoryError, InventoryNotPublishedError):
+        except NoInventoryError, InventoryNotPublishedError:
             return []
         except Exception as exc:  # a transient blip: this group has no slots this run
             log.warning(

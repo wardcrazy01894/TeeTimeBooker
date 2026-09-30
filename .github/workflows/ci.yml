@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
 
+# Least privilege, declared in code rather than inherited from the repo default (scan
+# 2026-09-30; tests/test_ci_workflow_permissions.py).
+permissions:
+  contents: read
+
 jobs:
   # -------------------------------------------------------------------------
   # Python: lint, type-check, and test
@@ -21,8 +26,7 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           # Matches the DEPLOYED interpreter (Dockerfile python:3.14-slim) and local dev
-          # (uv resolves 3.14). requires-python/ruff/mypy keep the >=3.12 floor, but CI
-          # must validate the version prod actually runs.
+          # (uv resolves 3.14); requires-python/ruff/mypy share the same >=3.14 floor.
           python-version: "3.14"
 
       - name: Install uv

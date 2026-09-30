@@ -43,7 +43,7 @@ adding a course) and [`infra/CLAUDE.md`](./infra/CLAUDE.md) (Azure infra and dep
 
 ## What this is
 
-A Python 3.12+ bot that books golf tee times on the ForeUP and TeeItUp platforms. The primary
+A Python 3.14+ bot that books golf tee times on the ForeUP and TeeItUp platforms. The primary
 target is **Mangrove Bay Golf Course** (St. Petersburg, FL; ForeUP), whose online window opens at
 06:00 America/New_York, 7 days ahead; the bot books Saturday and Sunday mornings. TeeItUp courses
 (e.g. Sydney R. Marovitz, Chicago Park District) are also supported. It runs as Azure Container

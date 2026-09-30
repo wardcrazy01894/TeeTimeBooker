@@ -362,7 +362,7 @@ class InMemoryTenantStore:
             if row is None:
                 raise TenantNotFoundError(NOT_FOUND)
             self._commit([(row, outcome_row(row, o))])
-        except (TransitionRefusedError, RowLeaseError, TenantNotFoundError):
+        except TransitionRefusedError, RowLeaseError, TenantNotFoundError:
             # The row moved: keep what the bot did (ledger by account + date) and make the
             # date's active row reconcile it on the next watcher run (M4).
             self._write_ledger(o, course_id=row.course_id if row is not None else None)

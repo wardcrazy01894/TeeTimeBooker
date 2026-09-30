@@ -90,7 +90,7 @@ def render_feedback(kind: str, *, user: User, page: str | None, message: str) ->
 
 
 def register_feedback_routes(
-    app: FastAPI, pages: "_Pages", *, current_user: "Callable[..., Awaitable[Any]]"
+    app: FastAPI, pages: _Pages, *, current_user: Callable[..., Awaitable[Any]]
 ) -> None:
     # No `from __future__ import annotations` in this module: FastAPI must resolve the local
     # `CurrentUser` alias at runtime, or `user` silently becomes a query parameter (422).
@@ -151,7 +151,7 @@ def register_feedback_routes(
 
 
 async def _deliver(
-    ctx: "_Ctx", *, kind: str, user: User, page: str | None, message: str, user_agent: str
+    ctx: _Ctx, *, kind: str, user: User, page: str | None, message: str, user_agent: str
 ) -> None:
     """The background half of a report: the public issue and the private diagnostics (together),
     then the operator's email carrying the issue link, then the audit entry with both outcomes."""
@@ -230,7 +230,7 @@ def _fenced(text: str) -> str:
 
 
 async def _file_issue(
-    ctx: "_Ctx", *, kind: str, user: User, page: str | None, message: str
+    ctx: _Ctx, *, kind: str, user: User, page: str | None, message: str
 ) -> str | None:
     """Best-effort anonymized issue in the public repo; None when not configured or on failure."""
     if ctx.github_issues is None:
@@ -258,7 +258,7 @@ async def _file_issue(
 ISSUE_TIMEOUT_S = 15.0
 
 
-async def public_diagnostics(ctx: "_Ctx", *, user: User) -> str:
+async def public_diagnostics(ctx: _Ctx, *, user: User) -> str:
     """The anonymized half of the diagnostics, fit for a PUBLIC issue: the build, each course's
     name and status, and counts of the next 21 days' dates by status. No names, emails or ids."""
     s = ctx.settings
@@ -279,7 +279,7 @@ async def public_diagnostics(ctx: "_Ctx", *, user: User) -> str:
     return "\n".join([*out, "", "</details>"])
 
 
-async def _public_store_lines(ctx: "_Ctx", *, user: User) -> list[str]:
+async def _public_store_lines(ctx: _Ctx, *, user: User) -> list[str]:
     accounts = await ctx.store.list_accounts_for_user(user.id)
     # Status only: a login-failure count could help link a public issue to a person (the
     # operator's email keeps it).
@@ -310,7 +310,7 @@ def _et(t: datetime) -> str:
     return t.astimezone(_ET).strftime("%a %b %-d %-I:%M %p ET")
 
 
-async def bug_diagnostics(ctx: "_Ctx", *, user: User, user_agent: str) -> str:
+async def bug_diagnostics(ctx: _Ctx, *, user: User, user_agent: str) -> str:
     """What the operator needs to reproduce a bug, gathered best-effort from the store (never a
     course login, never a password): the build, the reporter's courses, next 21 days' dates and
     last actions. A failure yields a one-line note instead: it never blocks the report."""
@@ -333,7 +333,7 @@ async def bug_diagnostics(ctx: "_Ctx", *, user: User, user_agent: str) -> str:
     return "\n".join(head + body)
 
 
-async def _store_diagnostics(ctx: "_Ctx", *, user: User, now: datetime) -> list[str]:
+async def _store_diagnostics(ctx: _Ctx, *, user: User, now: datetime) -> list[str]:
     out = ["", "Courses:"]
     accounts = await ctx.store.list_accounts_for_user(user.id)
     for a in accounts:
@@ -377,7 +377,7 @@ async def _store_diagnostics(ctx: "_Ctx", *, user: User, now: datetime) -> list[
     return out
 
 
-async def _send(ctx: "_Ctx", mail: EmailMessage) -> bool:
+async def _send(ctx: _Ctx, mail: EmailMessage) -> bool:
     to = ctx.settings.operator_email
     if ctx.email_sender is None or not to:
         log.warning("feedback not emailed: email or the operator address is not configured")

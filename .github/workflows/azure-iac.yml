@@ -3,7 +3,7 @@
 # This is the ACTIVE workflow (GitHub only runs workflows under .github/workflows/).
 #
 # Triggers:
-#   pull_request (matched paths) -> bicep build + what-if (advisory)
+#   pull_request (matched paths) -> bicep build (advisory; ci.yml `bicep lint` is the gate)
 #   push to main (matched paths) -> AUTO-DEPLOY to dev (NO approval gate)
 #   workflow_dispatch (environment=dev|prod) -> deploy chosen env
 #   tag infra/v*                 -> deploy to prod (manual approval via environment)
@@ -68,12 +68,12 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # validate — PR only. Read-only: bicep build + advisory what-if. NOTE: this job
+  # validate — PR only. Read-only: bicep build. NOTE: this job
   # is NOT a required check (it needs OIDC, which is unavailable on some PRs). The
   # authoritative merge-gating Bicep check is ci.yml's required `bicep lint` job.
   # ---------------------------------------------------------------------------
   validate:
-    name: Bicep build + what-if (advisory)
+    name: Bicep build (advisory)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -89,23 +89,11 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Bicep build (lint) — advisory (real gate is ci.yml / bicep lint)
         run: az bicep build --file infra/bicep/main.bicep
-      - name: Deployment what-if (advisory, never fails the PR)
-        env:
-          SHARED_ACR_RG: rg-teetime-shared
-        run: |
-          # dev is a non-owner env → it needs the shared ACR (in rg-teetime-shared) name + RG
-          # to validate the cross-RG AcrPull. Resolve best-effort; advisory only.
-          SHARED_ACR_NAME=$(az acr list -g "${SHARED_ACR_RG}" --query "[0].name" -o tsv 2>/dev/null || echo "")
-          az deployment group what-if \
-            --resource-group "${RESOURCE_GROUP}" \
-            --template-file infra/bicep/main.bicep \
-            --parameters envName=dev location="${AZURE_LOCATION}" \
-                         kvSku=standard dryRun=true \
-                         enablePurgeProtection=false \
-                         sharedAcrName="${SHARED_ACR_NAME}" \
-                         sharedAcrResourceGroup="${SHARED_ACR_RG}" \
-                         containerImage='mcr.microsoft.com/k8se/quickstart-jobs:latest' \
-            || true
+      # The what-if that used to run here passed only the old core params and none of the
+      # param-file values the deploy jobs parse (bookingMode, deployWebApp, emailCustomDomain*,
+      # githubIssuesRepo, ...), so it previewed template defaults, not what dev deploys: a noisy
+      # diff nobody could act on. Removed (full-repo scan 2026-09-30); run a what-if by hand with
+      # the deploy job's parameters when a preview matters (read-only, agents may run it).
 
   # ---------------------------------------------------------------------------
   # deploy-dev — AUTO-DEPLOY on push to main, or workflow_dispatch(environment=dev).

@@ -949,7 +949,7 @@ class CosmosTenantStore:
                     batch.upsert(to_booking_doc(entry), role="ledger")
 
             await self._commit([(stored, new)], extra=add_ledger)
-        except (TransitionRefusedError, RowLeaseError, TenantNotFoundError):
+        except TransitionRefusedError, RowLeaseError, TenantNotFoundError:
             # The row moved: keep what the bot did (ledger by account + date) and make the
             # date's active row reconcile it on the next watcher run (M4).
             await self._write_ledger_and_flag(o, ledger)
