@@ -22,9 +22,10 @@ REASON_MAX_LEN = 300
 
 
 def _github_reason(r: httpx.Response) -> str:
-    """GitHub's ``message`` (+ ``errors``): what tells an expired token (401) from a missing
-    Issues permission (403), issues disabled (410) or a rejected title (422). Redacted, capped;
-    it never carries the report (that is in the request, not the response)."""
+    """GitHub's ``message`` plus each error's ``code:field``: what tells an expired token (401)
+    from a missing Issues permission (403), issues disabled (410) or a rejected title (422). An
+    error entry's ``message``/``value`` can echo what was submitted (the title comes from the
+    report), so only the fixed ``code`` and ``field`` names are kept. Redacted, capped."""
     try:
         data = r.json()
     except ValueError:
@@ -32,8 +33,14 @@ def _github_reason(r: httpx.Response) -> str:
     if not isinstance(data, dict):
         return ""
     parts = [str(data.get("message") or "")]
-    if data.get("errors"):
-        parts.append(f"errors={data['errors']}")
+    errors = data.get("errors")
+    if isinstance(errors, list):
+        codes = [
+            ":".join(str(e[k]) for k in ("code", "field") if e.get(k))
+            for e in errors
+            if isinstance(e, dict)
+        ]
+        parts.append("errors=" + ",".join(c for c in codes if c))
     return redact_text(" ".join(p for p in parts if p))[:REASON_MAX_LEN]
 
 

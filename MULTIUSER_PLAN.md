@@ -1112,8 +1112,10 @@ Row transitions map store errors to responses: `RowLeaseError` → 409 "booking 
   `(provider, subject)`, **never** email alone. First sign-in binds the subject to an **invited**
   `users` row. The invite is matched **only against a verified email**: GitHub via `GET /user/emails`
   entries with `verified: true` (never the profile's public `email` field); Google via the
-  `email_verified` claim. Non-invited subjects get a 403 page and an `audit` doc (SF10), plus a best-effort
-  `rejected_signin` record (verified emails, attempt count; 90 days) the operator can invite from.
+  `email_verified` claim. Non-invited subjects get a 403 page and an `audit` doc (SF10; at most
+  one per subject per hour since the 2026-09-30 scan), plus a best-effort `rejected_signin` record
+  (verified emails, attempt count; 90 days) the operator can invite from. Invite refuses an
+  address already on the list.
 - **Session**: signed cookie (Starlette `SessionMiddleware`, itsdangerous) with `Secure`,
   `HttpOnly`, `SameSite=Lax`, `Path=/`, a 12 h absolute lifetime (issued-at inside the payload,
   checked server-side), and rotation on login. The key is the `WEB-SESSION-SECRET` KV secret.

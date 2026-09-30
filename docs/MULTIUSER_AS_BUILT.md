@@ -736,9 +736,20 @@ message; prod keeps one warm replica, so this needs a deploy mid-send.
 
 **Uninvite.** A person still INVITED also gets **Uninvite** (a `<details>` confirm, 2026-09-29):
 `TenantStore.delete_invited_user` deletes the user only if still INVITED and never bound (Cosmos:
-IfMatch on the etag just read, so a racing first sign-in wins; pinned by
+IfMatch on the etag just read, so a first sign-in that binds first wins; pinned by
 `test_uninvite_loses_to_a_concurrent_first_sign_in`), audited `admin_uninvite`; a signed-in user
-is a 400 ("use Disable"). A person
+is a 400 ("use Disable"). The other ordering is closed too (scan 2026-09-30): the bind takes
+the identity claim (PENDING) first, then writes the user doc IfMatch'd on the INVITED doc it
+queried, then binds the claim, the same order as `upsert_user`. An Uninvite that deleted the row
+first wins (the claim is released only while still PENDING, the sign-in gets the 403); a
+concurrent sign-in of the SAME identity that bound first is returned as the result, its BOUND
+claim untouched; a rewrite that leaves the row INVITED for this email is retried (up to 5
+attempts), not reported as "not invited"; and no failure can leave an ACTIVE user without its claim (`test_a_first_sign_in_loses_to_an_uninvite_that_deleted_the_row_first`,
+`test_a_transient_failure_while_claiming_leaves_no_half_bound_user`).
+**Invite refuses an address already on the list** (any status, casefolded): it redirects with
+`notice=already_invited` (Resend) or `already_member` (Enable) and creates no row, because a second INVITED row outlived an Uninvite of
+the first. Two concurrent submits can still both pass that check (accepted: one operator).
+**Enable** now shows its own notice (it redirected with `notice=active`, which had no text). A person
 still INVITED gets a **Resend invite** button (`action=resend`, `user_id`; a signed-in user is a
 400, an unknown id a 404). The invitation is the one email NOT passed through `redact_text`: its
 purpose is to show the invitee their own address, and every part of it is fixed text, that
@@ -754,6 +765,15 @@ non-left click); a back/forward-cache restore (`pageshow` with `persisted`) clea
 submit event fires only after the browser's own validation, so an invalid form is never marked.
 Without script, `button:active` / `a.button:active` / `summary.button:active` still show a press
 (`base.css`).
+
+**Rejected sign-ins (scan 2026-09-30).** Anyone with a Google or GitHub account can script the
+OAuth round trip, and every rejection wrote a 400-day `audit` doc. The `rejected_signin` record
+still counts every attempt, but the audit doc (SF10) is written at most once per
+`(provider, subject)` per `REJECTED_AUDIT_COOLDOWN` (1 h; in-process `RejectionAuditThrottle`,
+reset on restart: it bounds growth, it is not a security boundary). A subject is recorded only
+after its audit write succeeded; at 1000 live subjects a new one is not audited. Both writes on the 403 path are now bounded by `REJECTED_SIGNIN_WRITE_TIMEOUT_S` and
+best-effort, and each rejection logs `signin rejected provider=… reason=not_invited|disabled`
+(no subject, no email). Tests: `tests/web/test_web_admin_users_list.py`.
 
 ## Mail from hello@spicyteetimebooker.com (2026-09-29, stage 1)
 
@@ -822,8 +842,9 @@ The full repo scan asked of every failure path "could we diagnose it from the lo
 Fixed: `AcsEmailClient.send` logs EVERY `ok=False` result (`status`, `operation`, `error`),
 including a failure AFTER ACS accepted the send (a poll error, a terminal `Failed`, the poll
 timeout), which used to leave no line at all; `feedback._send` and the invitation send log an
-undelivered result with its error; `GitHubIssues.create` logs GitHub's `message` (+ `errors`,
-redacted, capped at 300) beside the status, which is what tells an expired token (401) from a
+undelivered result with its error; `GitHubIssues.create` logs GitHub's `message` (+ each
+error's `code:field`, never its `value`, which can echo the report; redacted, capped at 300)
+beside the status, which is what tells an expired token (401) from a
 missing Issues permission (403), issues disabled (410) or a rejected title (422); a background
 job that crashes logs its traceback (the handler's redaction filter scrubs addresses, the reason
 it used to log the class name only); an OAuth failure after the token exchange (a profile or

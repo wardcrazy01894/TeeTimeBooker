@@ -33,7 +33,10 @@ async def test_a_rejection_logs_githubs_reason(
             403,
             json={
                 "message": "Resource not accessible by personal access token",
-                "errors": [{"code": "custom", "message": f"echo {TOKEN}"}],
+                "errors": [
+                    {"code": "custom", "field": "title", "message": f"echo {TOKEN}"},
+                    {"resource": "Issue", "code": "invalid", "value": "the report text"},
+                ],
             },
         )
     )
@@ -42,6 +45,9 @@ async def test_a_rejection_logs_githubs_reason(
     (line,) = [r.getMessage() for r in caplog.records]
     assert "HTTP 403" in line
     assert "Resource not accessible by personal access token" in line
+    assert "custom:title" in line and "invalid" in line
+    # An error entry can echo a submitted value (the title comes from the report): never logged.
+    assert "the report text" not in caplog.text and "echo" not in caplog.text
     assert TOKEN not in caplog.text
 
 
