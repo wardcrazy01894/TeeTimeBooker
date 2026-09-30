@@ -312,7 +312,6 @@ form.ranked .form-row > label { margin: 0; }
 .option > label { margin: 0; }
 .option > label > input, .option > label > select { max-width: none; }
 .option .remove { margin-bottom: 0.1rem; }
-.option-head { display: none; }
 details.more-options > summary {
   cursor: pointer;
   color: var(--accent-strong);

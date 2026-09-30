@@ -683,8 +683,9 @@ the default 3 (`orchestrator.py:879-880`), its `prepare_book` would take the unc
 and it would solve 3 tokens outside the C bound. Registered with k = 0, its prefetch joins the
 coordinated fill and receives nothing. It
 searches at T0 (with `skip_initial_spacing`) and books with a reserve token or an inline solve.
-That is slower (likely to lose prime slots at a contested drop), and it is honest about it. The
-dashboard labels such a row "search-only this drop". **Hard cap:** at most `max_accounts_per_course
+That is slower (likely to lose prime slots at a contested drop), and it is honest about it. (A
+dashboard "search-only this drop" label was planned; nothing persists which rows ran search-only,
+so it was never shown and the dead field was removed on 2026-09-30.) **Hard cap:** at most `max_accounts_per_course
 = 8` connected accounts per course, enforced at connect time (§8.4). This bounds both the token
 math and the anti-bot footprint (§9.6). v1 has 2 users, so neither cap binds.
 
@@ -1088,18 +1089,22 @@ account.
 | Method | Path | Auth | CSRF | Purpose |
 |--------|------|------|------|---------|
 | GET | `/healthz` | none | – | liveness (no DB call) |
-| GET | `/login` / `/auth/{provider}/callback` | none | OAuth `state` + PKCE | sign-in; allowlist check |
+| GET | `/login` / `/login/{provider}` / `/auth/{provider}/callback` | none | OAuth `state` + PKCE | sign-in page / start the provider round trip / finish it; allowlist check |
 | POST | `/logout` | user | yes | clear session |
 | GET | `/` | user | – | dashboard: rows (next 21 days), status, booked tee time, mismatch badges (the snapshot age and the confirmation id were dropped from it on 2026-09-29; the Connected courses page keeps the snapshot age) |
 | GET/POST | `/accounts` / `/accounts/connect` | user | yes | connect a CourseAccount (live login probe, §8.4) |
 | POST | `/accounts/{id}/reverify` | user | yes | re-probe after `auth_failed` |
 | POST | `/accounts/{id}/refresh` | user | yes | live refresh (TTL + rate limit, §8.6) |
+| POST | `/accounts/{id}/price` | user | yes | the account's default price cap (MU-R3) |
+| POST | `/accounts/{id}/adopt` | operator | yes | adopt existing bookings as owned, re-planned and confirmed (MU-16b, `web/adopt.py`) |
+| POST | `/bookings/date`, `/bookings/weekly` | user | yes | the ranked booking form: one date, or a weekly rule (MU-R3) |
 | GET/POST | `/rules`, `/rules/{id}` | user | yes | create/edit/deactivate standing rules (materializes synchronously) |
+| GET | `/dates` | user | – | the dated-row list with its actions (the dashboard's read model) |
 | POST | `/rows` | user | yes | create an explicit dated row |
 | POST | `/rows/{id}/skip`, `/rows/{id}/unskip` | user | yes | state-machine transitions |
 | POST | `/rows/{id}/withdraw` | user | yes | delete an explicit pending row |
 | POST | `/rows/{id}/cancel` | user | yes | managed cancel (§8.5) |
-| GET/POST | `/feedback` | user | POST | Report a bug / Request a course: one form that emails the operator (2026-09-29; `web/feedback.py`) |
+| GET/POST | `/feedback` | user | POST | Report a bug / Request a course: one form that emails the operator and, in prod, files an anonymized public GitHub issue (2026-09-29; `web/feedback.py`, `web/github_issues.py`) |
 | GET/POST | `/admin/users` | operator | yes | invite (emails an invitation, best-effort; Resend and Uninvite for still-invited users) / disable users (allowlist); lists every user (`TenantStore.list_users`) and the uninvited sign-in attempts with an Invite button (`list_rejected_signins`), 2026-09-29 |
 
 Every data query is scoped by the session's `user_id`. There is an IDOR test per route
@@ -1227,10 +1232,11 @@ The site **holds third-party credentials and can cancel real bookings**. Top thr
   {"<kid>": "<b64 32 bytes>"}}`, injected as an env var by ACA's KV secretRef (same pattern as today). The keyring is **never
   fetched through an SDK call**, and it is deliberately kept separate from the Cosmos data plane:
   a Cosmos-only compromise yields ciphertexts, not keys.
-- **Rotation**: add a new kid and set `active` (KV edit + redeploy, since secrets resolve at
-  container start). Then run `teetime tenant-rekey` (idempotent: re-encrypts every blob not on the
-  active kid). Then remove the old kid. Readers accept any kid in the ring. Writers always use
-  `active`.
+- **Rotation** (planned; the `teetime tenant-rekey` command is NOT built, see BACKLOG): add a
+  new kid and set `active` (KV edit + redeploy, since secrets resolve at container start). Then
+  run `teetime tenant-rekey` (idempotent: re-encrypts every blob not on the active kid). Then
+  remove the old kid. Readers accept any kid in the ring. Writers always use `active`. **Until
+  the command exists, never remove a kid**: a blob still on it can never be decrypted again.
 - Plaintext exists only in process memory, per run. It is registered with the log filter (§9.4) and
   never persisted or logged.
 
@@ -1503,7 +1509,7 @@ with no POST, within the limits in §11.2.
 | Change | Doc sites |
 |--------|-----------|
 | New subsystems (tenant, web), Protocols (`TenantStore`, `UserNotifier`), invariants (leases, ownership, pool leases, exit contract) | CLAUDE.md invariant bullets + Package layout + Status; PLAN.md §1/§5/§9/§9.2/§12/§13.1/§16; README architecture + roadmap |
-| New CLI commands (`tenant-run`, `tenant-watch`, `web`, `tenant-seed`, `tenant-plan`, `tenant-migrate`, `tenant-rekey`) + env vars | README; AZURE_PLAN §7.3 env inventory; `compute.bicep`/`webapp.bicep`; CLAUDE.md common commands |
+| New CLI commands (`tenant-run`, `tenant-watch`, `web`, `tenant-plan`, `tenant-migrate`; the planned `tenant-seed` became the web's Adopt (MU-16b) and `tenant-rekey` is not built, BACKLOG) + env vars | README; AZURE_PLAN §7.3 env inventory; `compute.bicep`/`webapp.bicep`; CLAUDE.md common commands |
 | New KV secrets | AZURE_PLAN §7.1; `keyvault.bicep` comments; parity test |
 | Cosmos account in `rg-teetime-shared` + MI data-plane RBAC; **the "no Azure SDK calls at runtime" property is retired for the tenant path** | AZURE_PLAN §2.1 (shared resources), §6 (state persistence: no longer in-process only), §7.2 (MI now used at runtime for Cosmos, plus the §10.5 hand-run role-assignment runbook); CLAUDE.md "no authenticated Azure SDK calls" claims in Status + the Azure v1 paragraph; `infra/CLAUDE.md` module tree; README architecture |
 | New Bicep modules / job loop / cron param / CPU change | `compute.bicep` comments; AZURE_PLAN §3/§5/§9; `infra/CLAUDE.md` module tree; CLAUDE.md + README schedule claims |

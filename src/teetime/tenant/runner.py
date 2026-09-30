@@ -15,8 +15,8 @@ MU-9a (the runner core: ``run_release_event``, ``resolve_credentials``,
 ``assert_blind_methods_present``) and MU-9b (``exit_code_for``, the post-race emails
 ``finish_run``, ``plan_release_event``, the §11.2 log lines, the store-call / writer bounds) are
 IMPLEMENTED; ``teetime tenant-run`` / ``tenant-plan`` (``tenant.booking_job``) run them over the
-store ``tenant.wiring.open_tenant_store`` opens (Cosmos when configured, MU-16a) — no env's
-booking job runs them until its ``bookingMode`` is flipped to ``tenant`` (MU-17).
+store ``tenant.wiring.open_tenant_store`` opens (Cosmos when configured, MU-16a). Both envs'
+booking jobs run them (``bookingMode = tenant``: dev since MU-17, prod since MU-18).
 ``LeasedBookingStore`` (MU-9c, ``tenant.store``) is for the watcher/web only. The tenant
 watcher (MU-10b) lives in ``tenant.watch_runner``.
 """
@@ -206,8 +206,8 @@ class RunReport:
     # outcome JSON was printed to stdout and the watcher reconciles them from live.
     outcome_write_failures: tuple[RowId, ...] = ()
     # Accounts whose login raised AuthError this run. §4.5 flips them to ``auth_failed``, but no
-    # TenantStore write does that yet — TODO(MU-8b): add the account-status write and call it
-    # from ``run_release_event``; until then the operator summary carries these ids.
+    # TenantStore write does that yet (BACKLOG "A hard AuthError should flip the account"), so
+    # the operator summary carries these ids.
     auth_failed_accounts: tuple[CourseAccountId, ...] = ()
 
 
@@ -515,7 +515,7 @@ async def _book_event(
         for e in _row_events(f, by_row[f.account.row_id], buffered.get(f.account.row_id, ()), at=at)
     ]
     events.extend(collapse_events)
-    # TODO(MU-8b): flip these accounts to auth_failed in the store (§4.5, PLAN §12).
+    # Reported only: no store write flips them to auth_failed yet (BACKLOG, §4.5).
     auth_failed = tuple(
         by_row[f.account.row_id].account.id for f in finished if f.account.auth_error
     )

@@ -1,22 +1,18 @@
 // email.bicep — Azure Communication Services Email: Email Service + Azure-managed domain +
 // Communication Service, wired to `tenant/acs_email.py`'s `AcsEmailClient` (MULTIUSER_PLAN
-// §10.1, MU-11 — code-complete, UNWIRED until this module deploys and ACS_EMAIL_CONNECTION is
-// populated). `listKeys()` on the Communication Service writes the connection string straight
+// §10.1, MU-11). `listKeys()` on the Communication Service writes the connection string straight
 // into the Key Vault secret `ACS-EMAIL-CONNECTION` at deploy time — no operator step, no
 // connection string in bicepparam files or CI logs.
 //
-// Gating (MU-15a): deployed by main.bicep ONLY when `deployAcsEmail = true` (default false in
-// BOTH envs). Nothing in this module requires a pre-existing secret (it CREATES its own KV
-// secret via listKeys()), so it would not itself break a toml-mode auto-deploy — it is gated
-// purely per the operator's "don't stand up resources nothing uses yet" instruction (MU-15a
-// brief) and because `Microsoft.Communication` must be registered as a resource provider first
-// (operator step, subscription-scoped — the CI service principal is RG-scoped and cannot
-// self-register a provider; see infra/CLAUDE.md "Register RP before first deploy").
+// Gating (MU-15a): deployed by main.bicep ONLY when `deployAcsEmail = true` (both envs' param
+// files set it). A NEW subscription needs `Microsoft.Communication` registered first (operator
+// step, subscription-scoped: the CI service principal is RG-scoped and cannot self-register a
+// provider; see infra/CLAUDE.md "Register RP before first deploy").
 //
-// Azure-managed email domain (`AzureManagedDomain`): free, auto-verified, sender address is
-// `DoNotReply@<generated-subdomain>.azurecomm.net` — no custom-domain DNS records to manage.
-// `acsEmailSender` (compute.bicep param) must be set to that exact address once known (the
-// domain's `mailFromSenderDomain` output, below); it is a plain (non-secret) value.
+// Azure-managed email domain (`AzureManagedDomain`): free, auto-verified, sender
+// `DoNotReply@<generated-subdomain>.azurecomm.net`. Prod also has a customer-managed domain
+// (`customDomain`, two stages, DNS in Cloudflare) and sends as hello@<customDomain> once linked.
+// main.bicep derives the sender from these outputs unless `acsEmailSender` overrides it.
 //
 // See: MULTIUSER_PLAN.md §10.1/§13 Q3, infra/AZURE_PLAN.md §7.1 (new KV secrets).
 
@@ -155,7 +151,7 @@ resource acsConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
 // Outputs
 // ---------------------------------------------------------------------------
 
-@description('The Azure-managed domain\'s verified sender subdomain (e.g. <hash>.azurecomm.net). The operator sets compute.bicep\'s acsEmailSender param to "DoNotReply@<this value>" once known — see the module header.')
+@description('The Azure-managed domain\'s verified sender subdomain (e.g. <hash>.azurecomm.net). main.bicep derives the DoNotReply@ sender from it when no customer domain is linked.')
 output mailFromSenderDomain string = domain.properties.mailFromSenderDomain
 
 @description('The customer-managed domain\'s DNS records to add in Cloudflare (Domain / SPF / DKIM / DKIM2, each {type, name, value, ttl}); empty when customDomain is empty.')

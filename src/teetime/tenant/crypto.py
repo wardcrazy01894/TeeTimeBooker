@@ -9,12 +9,13 @@ container start. The keyring is never fetched through an SDK call (the Cosmos da
 auth, MULTIUSER_PLAN §10.2), and it is kept out of Cosmos, so a DB-only compromise yields
 ciphertexts, not keys.
 Format: ``{"active": "<kid>", "keys": {"<kid>": "<b64 32 bytes>"}}``. Readers accept any kid in
-the ring; writers always use ``active``. Rotation: add a kid -> set active -> ``teetime
-tenant-rekey`` (idempotent, built on ``rekey_password``) -> drop the old kid.
+the ring; writers always use ``active``. Rotation is NOT supported end to end yet: there is no
+``tenant-rekey`` command (``rekey_password`` / ``needs_rekey`` are the building blocks, BACKLOG).
+Adding a kid and setting it active is safe (readers accept any kid); NEVER drop an old kid while
+a stored blob still uses it, or that password becomes undecryptable.
 
-Plaintext exists only in process memory. Every decrypted value is to be registered with the log
-filter (``core.redaction.register_secret_literals``, engine hook E7 — lands in MU-4) before first
-use; until E7 exists, callers must keep decrypted values out of every log call.
+Plaintext exists only in process memory. Every decrypted value is registered with the log filter
+(``core.redaction.register_secret_literals``, engine hook E7) before first use.
 
 Leak discipline (pinned by ``tests/test_tenant_crypto.py``): no key byte, ciphertext, or plaintext
 ever reaches a ``repr``, an exception message, or an exception chain (neither ``__cause__`` nor

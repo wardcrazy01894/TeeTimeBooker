@@ -183,16 +183,11 @@ class OneOffInput:
 
 @dataclass(frozen=True, slots=True)
 class DashboardRow:
-    """What the dashboard renders per row: DB status + the account snapshot, with its age
-    labelled, and a mismatch badge (§7.4)."""
+    """What the dashboard renders per row: DB status and a mismatch badge against the account
+    snapshot (§7.4)."""
 
     row: RequestRow
-    snapshot_observed_at: datetime | None
-    snapshot_trusted: bool
     mismatch: str | None  # "not_seen_at_course" | "manual_reservation" | None
-    # Always False until the booking runner (MU-9a) persists which rows ran search-only (§5.3):
-    # there is no stored signal to read yet.
-    search_only_last_drop: bool
     booked_tee_time_local: str | None  # "09:30", course-local
     can_rerequest: bool  # a cancelled date with no active row: offer "Re-request this date"
     frozen: bool
@@ -322,7 +317,8 @@ def _refused(exc: Exception, *, row: RequestRow | None = None) -> ActionRefusedE
             one_off=OneOffPrefill(
                 account_id=row.course_account_id,
                 target_date=row.target_date,
-                # Until MU-R3 the web creates single-option rows only, so options[0] is exact.
+                # The one-off form takes ONE window: a ranked row prefills its first choice;
+                # options 2+ are re-added on the Dates page (BACKLOG: prefill every option).
                 window_earliest=row.options[0].earliest,
                 window_latest=row.options[0].latest,
                 party_size=row.party_size,
@@ -439,10 +435,7 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
         out.append(
             DashboardRow(
                 row=row,
-                snapshot_observed_at=snap.observed_at if snap is not None else None,
-                snapshot_trusted=snap.trusted if snap is not None else False,
                 mismatch=await reader.mismatch(row, snap),
-                search_only_last_drop=False,
                 booked_tee_time_local=booked_local,
                 booked_rank=booked_rank(row),
                 can_rerequest=(

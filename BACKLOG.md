@@ -133,6 +133,18 @@ delete it here when it ships.
 - **Run the Cosmos integration conformance leg** (README, Development): the index policy now
   equals `CosmosTenantStore.QUERIED_PATHS` (pinned by `tests/test_cosmos_bicep.py`), but the suite
   had not yet been run against the real account when MU-15b landed.
+- **`teetime tenant-rekey` for keyring rotation** (full-repo scan 2026-09-30). The rotation
+  runbook (MULTIUSER_PLAN §9.2) needs a command that re-encrypts every stored course password onto
+  the active kid; `tenant/crypto.py::rekey_password` / `needs_rekey` exist and are tested, but no
+  command calls them. Until it exists, adding a kid is safe and dropping one is NOT: a blob still
+  on the dropped kid can never be decrypted again.
+- **A hard `AuthError` should flip the account to `auth_failed`** (MULTIUSER_PLAN §4.5; was
+  mis-tagged `TODO(MU-8b)`). `TenantStore` has no system-side account-status write, so the
+  booker and the watcher only REPORT `auth_failed_accounts` in the operator summary and the
+  account stays ACTIVE. Low impact today: ForeUP `authenticate()` soft-fails (only `book()`
+  raises `AuthError`), and the watcher's 3-strike `record_soft_auth_failure` does flip it.
+- **"Add it as a one-off instead" prefills only the first-choice window** (scan 2026-09-30): the
+  one-off form takes one window, so a ranked row's options 2+ must be re-added by hand.
 - **Rule deletion must clear the `ruleday|<weekday>` pointer atomically** (surfaced in the MU-6
   review). The store has no rule delete yet; when MU-8b (Cosmos) or MU-13 (web) adds one, it must
   remove the rule doc and its weekday pointer in ONE batch, or that weekday is blocked to every new

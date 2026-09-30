@@ -99,10 +99,10 @@ param watchMode string = 'toml'
 @description('Watch job cron expression (UTC). Prod default */10 * * * * (every 10 min, year-round — AZURE_PLAN §5.4). Dev may run hourly instead (operator directive, MULTIUSER_PLAN §12 MU-15a) to cut dev Log Analytics/compute noise now that the watcher polls on every run; this is a per-env PARAM, not a hard-coded value, so prod is untouched by the dev change.')
 param watchCron string = '*/10 * * * *'
 
-@description('Cosmos DB endpoint URI for the tenant store (e.g. https://cosmos-teetime-shared.documents.azure.com:443/). Wired as TENANT_COSMOS_ENDPOINT ONLY when bookingMode/watchMode == "tenant". Empty by default — MU-15a ships no Cosmos account (that is MU-15b); the default toml mode never reads this value.')
+@description('Cosmos DB endpoint URI for the tenant store (e.g. https://cosmos-teetime-shared.documents.azure.com:443/). Wired as TENANT_COSMOS_ENDPOINT ONLY when bookingMode/watchMode == "tenant". Empty by default (the toml mode never reads it); both envs pass the shared Cosmos account (MU-15b).')
 param tenantCosmosEndpoint string = ''
 
-@description('ACS Email "from" sender address (e.g. DoNotReply@<acs-managed-domain>). Wired as ACS_EMAIL_SENDER (a plain value, not a secret — it is not sensitive) ONLY when bookingMode/watchMode == "tenant". Empty by default; MU-15a\'s toml mode never reads this value.')
+@description('ACS Email "from" sender address (e.g. DoNotReply@<acs-managed-domain>). Wired as ACS_EMAIL_SENDER (a plain value, not a secret — it is not sensitive) ONLY when bookingMode/watchMode == "tenant". Empty by default (the toml mode never reads it); main.bicep derives it from the email module.')
 param acsEmailSender string = ''
 
 // ---------------------------------------------------------------------------

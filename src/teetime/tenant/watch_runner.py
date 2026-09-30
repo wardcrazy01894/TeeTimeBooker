@@ -61,8 +61,8 @@ account flip to ``auth_failed`` needs a ``TenantStore`` write that does not exis
 gap MU-9b has); the soft-auth threshold flip is the store's.
 
 ``teetime tenant-watch`` runs it over the store ``tenant.wiring.open_tenant_store`` opens
-(Cosmos when configured, MU-16a); no env's watch job runs it until its ``watchMode`` is flipped
-to ``tenant`` (MU-17).
+(Cosmos when configured, MU-16a). Both envs' watch jobs run it (``watchMode = tenant``: dev
+since MU-17, prod since MU-18).
 """
 
 from __future__ import annotations

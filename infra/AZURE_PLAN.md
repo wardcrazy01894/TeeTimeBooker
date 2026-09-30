@@ -606,6 +606,19 @@ as above. Nothing here exists in the default `toml` mode.
 | `GITHUB_ISSUES_TOKEN` / `GITHUB_ISSUES_REPO` | secret `GITHUB-ISSUES-TOKEN` / plain (`githubIssuesRepo`) | no | no | only where `githubIssuesRepo` is set (prod) |
 | `TWOCAPTCHA_API_KEY` | secret `TWOCAPTCHA-API-KEY` | yes (shared with toml) | no | no |
 
+**Web-only env** (`teetime-web-<env>`, always set when `deployWebApp`; README's web env table is
+the per-variable reference):
+
+| Env var | Kind | Notes |
+|---|---|---|
+| `TEETIME_PUBLIC_BASE_URL` | plain (`webPublicBaseUrl`) | OAuth redirect base; empty = fail closed at startup |
+| `WEB_SESSION_SECRET` | secret `WEB-SESSION-SECRET` | signs the session cookie |
+| `OAUTH_GOOGLE_CLIENT_ID` / `OAUTH_GOOGLE_CLIENT_SECRET` | secrets `OAUTH-GOOGLE-CLIENT-ID` / `-SECRET` | Google sign-in (GitHub sign-in is not deployed) |
+| `TEETIME_OPERATOR_EMAIL` | secret `OPERATOR-NOTIFY-EMAIL` | the operator's address (the web's name for the jobs' `OPERATOR_NOTIFY_EMAIL`) |
+| `TEETIME_WEB_DRY_RUN` | plain (`dryRun`) | refuses cancel in a dry-run env |
+| `TEETIME_ENV` / `TEETIME_BUILD` | plain (`envName` / the image tag) | shown in bug-report diagnostics |
+| `TEETIME_CANONICAL_HOST_REDIRECT` | plain (true iff `webCustomDomain` is set) | one canonical host (CLAUDE.md) |
+
 The store builder fails closed on a half-configured env: `TENANT_COSMOS_DATABASE` is always set
 in tenant mode, so a tenant job whose `tenantCosmosEndpoint` param was left empty refuses to start
 instead of running over an empty in-memory store and exiting 0. `TENANT_COSMOS_DATABASE` is never
@@ -629,6 +642,11 @@ password before the next scheduled run), use:
 az containerapp job start --name teetime-job-<envName>-edt --resource-group rg-teetime-<envName>
 ```
 This triggers a manual execution that will pick up the new secret.
+
+**`TENANT-CREDS-KEYRING` is different:** it encrypts the stored course passwords. Adding a key
+and making it `active` is safe, but NEVER remove a key id from it: there is no `tenant-rekey`
+command yet (BACKLOG), so a stored password still encrypted under the removed key could never be
+decrypted again (MULTIUSER_PLAN §9.2).
 
 **CRITICAL:** purge protection is NOT enabled by default on new Key Vaults
 (soft-delete IS enabled by default with 90-day retention).

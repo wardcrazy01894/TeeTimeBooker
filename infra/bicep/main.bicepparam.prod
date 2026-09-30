@@ -81,15 +81,15 @@ param watchMode = 'tenant'
 param watchCron = '*/10 * * * *'
 
 // The shared free-tier account in rg-teetime-shared (MU-15b); the database is the env name
-// (`prod`), where the prod MI holds its data-plane role. Empty sender = main.bicep derives
-// DoNotReply@<the ACS managed domain> from the email module output.
+// (`prod`), where the prod MI holds its data-plane role. Empty sender = main.bicep derives it
+// from the email module: hello@spicyteetimebooker.com (emailCustomDomainLinked below).
 param tenantCosmosEndpoint = 'https://cosmos-teetime-shared.documents.azure.com:443/'
 param acsEmailSender = ''
 
 // Needs, in kv-teetime-prod-4jte: WEB-SESSION-SECRET, OAUTH-GOOGLE-CLIENT-ID/SECRET,
 // TENANT-CREDS-KEYRING, OPERATOR-NOTIFY-EMAIL, and Key Vault Secrets Officer for the CI SP (so
-// email.bicep can write ACS-EMAIL-CONNECTION). The URL is teetime-web-prod.<the prod ACA
-// environment's default domain> and must match the Google client's redirect URI.
+// email.bicep can write ACS-EMAIL-CONNECTION), plus GITHUB-ISSUES-TOKEN (githubIssuesRepo). The
+// URL is the custom domain and must match the Google client's redirect URI.
 param deployWebApp = true
 param deployAcsEmail = true
 param webPublicBaseUrl = 'https://spicyteetimebooker.com'

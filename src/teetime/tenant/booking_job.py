@@ -1,7 +1,7 @@
 """The wiring behind ``teetime tenant-run`` / ``teetime tenant-plan`` (MULTIUSER_PLAN §4.2,
 §4.5, §8.7; MU-9b). The CLI opens the tenant store through ``tenant.wiring.open_tenant_store``
-(Cosmos when ``TENANT_COSMOS_ENDPOINT`` is set, MU-16a); no env's booking job runs it until its
-``bookingMode`` is ``tenant`` (MU-17).
+(Cosmos when ``TENANT_COSMOS_ENDPOINT`` is set, MU-16a). Both envs' booking jobs run it
+(``bookingMode = tenant``: dev since MU-17, prod since MU-18).
 
 ``run_booking_job`` is the job, in §4.2 order: NTP offset (wait path only) -> keyring + config
 from the environment (a failure is systemic: exit non-zero, operator told) ->

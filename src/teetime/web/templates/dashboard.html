@@ -42,7 +42,6 @@
             <span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>
             {% if r.mismatch == "not_seen_at_course" %}<span class="badge">not seen at course</span>{% endif %}
             {% if r.mismatch == "manual_reservation" %}<span class="badge">manual reservation</span>{% endif %}
-            {% if r.search_only_last_drop %}<span class="badge">search-only this drop</span>{% endif %}
           </td>
           <td class="tee">
             {% if r.booked_tee_time_local %}{{ r.booked_tee_time_local }}{% else %}<span class="muted">—</span>{% endif %}

@@ -69,7 +69,7 @@ infra/
                              #   + (MU-16a, tenant mode only) the Manual teetime-migrate-<env>
                              #   job (`tenant-migrate`, no KV secret, NOT a killswitch target);
                              #   azure-iac.yml starts + awaits it right after deploy pass 2.
-      webapp.bicep           # NEW (MU-15a): Container App teetime-web-<env> (`teetime web`),
+      webapp.bicep           # MU-15a: Container App teetime-web-<env> (`teetime web`),
                              #   minReplicas = webMinReplicas (prod 1 always warm, dev 0
                              #   scale-to-zero; latch forces 0), same ACA environment as the jobs. Gated on
                              #   deployWebApp (dev true since MU-17, prod true since MU-18 stage A). Ingress + max-replicas
@@ -79,16 +79,18 @@ infra/
                              #   customDomain (prod spicyteetimebooker.com): apex + www bound
                              #   SNI to managed certs mc-<host-dashed>, created once by the
                              #   AZURE_PLAN §10.9 runbook BEFORE the first deploy that sets it.
-      email.bicep            # NEW (MU-15a): ACS Communication Service + Email Service +
+                             #   githubIssuesRepo (prod only): GITHUB-ISSUES-TOKEN secretRef +
+                             #   GITHUB_ISSUES_* env, site reports -> anonymized GitHub issues.
+      email.bicep            # MU-15a: ACS Communication Service + Email Service +
                              #   Azure-managed domain (+ prod's customer-managed
                              #   spicyteetimebooker.com, 2026-09-29: emailCustomDomain creates it,
                              #   emailCustomDomainLinked links it + adds hello@ as the sender;
                              #   AZURE_PLAN §10.10); writes KV secret ACS-EMAIL-CONNECTION via
-                             #   listKeys() at deploy time. Gated on deployAcsEmail (dev true,
-                             #   prod false). Requires Microsoft.Communication RP registration +
+                             #   listKeys() at deploy time. Gated on deployAcsEmail (true in
+                             #   both envs). Requires Microsoft.Communication RP registration +
                              #   "Key Vault Secrets Officer" for the CI deploy identity (operator,
                              #   one-time — see the module header).
-      cosmos.bicep           # NEW (MU-15b): the shared free-tier Cosmos DB account for the
+      cosmos.bicep           # MU-15b: the shared free-tier Cosmos DB account for the
                              #   multi-user tenant store. DEPLOYED STANDALONE by the operator to
                              #   rg-teetime-shared (like the shared ACR), never by main.bicep/CI.
                              #   prod+dev databases at 400 RU/s, totalThroughputLimit 1000, no account

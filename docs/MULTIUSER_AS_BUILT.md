@@ -208,7 +208,8 @@ authoritative → `summary_email_failed`), then the user events through `StoreUs
 (`TenantStore.get_user_unscoped`, a new conformance-pinned system read). An unconfigured
 `ACS_EMAIL_*`/`OPERATOR_NOTIFY_EMAIL` yields an `UnconfiguredEmailSender` whose every send fails, so
 a run with anything to report exits non-zero. The `AuthError` → account `auth_failed` flip has no
-store write yet: `RunReport.auth_failed_accounts` carries it (TODO MU-8b).
+store write yet: `RunReport.auth_failed_accounts` carries it (BACKLOG: "A hard `AuthError`
+should flip the account to `auth_failed`").
 
 **Bounds (#233 review):** every READ #1 / WRITE #1 store call is abandoned after
 `STORE_CALL_TIMEOUT_S` (20 s) and never runs into the race window (clamped to T0 − lead − 1 s when
