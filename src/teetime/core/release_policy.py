@@ -5,12 +5,11 @@ A ``ReleasePolicy`` says "tee times for date D become bookable at ``release_time
 adapters carry it as a ``ClassVar`` and adapters may only import ``core`` (layering, §2.2).
 
 Implemented in MULTIUSER_PLAN MU-1 (E4). Adapters carry the data (``MangroveBayAdapter.
-release_policy``, ``SydneyMarovitzAdapter.release_policy``) but NOTHING on the production path
-reads it yet: the single-user CLI path keeps reading ``scheduler.timezone`` /
-``scheduler.fire_time`` / ``target_offsets`` from TOML until the cutover (§11), and the ACA crons
-stay hand-written in ``compute.bicep`` until MU-15a derives them from ``cron_pair``. Until then
-``tests/test_release_policy.py::test_cron_pair_mb_matches_compute_bicep`` pins that the derivation
-EQUALS what prod ships.
+release_policy``, ``SydneyMarovitzAdapter.release_policy``); the tenant path reads it (the booker,
+the watcher, the materializer), and the ACA booking crons in ``compute.bicep`` are derived from
+``infra/bicep/release_events.json``, whose parity with ``cron_pair`` is pinned by
+``tests/test_release_events_parity.py``. The TOML path still reads ``scheduler.timezone`` /
+``scheduler.fire_time`` / ``target_offsets`` from its config.
 
 Every helper is a pure function of its arguments — no wall-clock reads. Callers pass ``now_utc``
 from an injected ``Clock`` (``clock.now_utc()``), so the tenant runner stays ``FakeClock``-

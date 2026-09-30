@@ -1,4 +1,4 @@
-"""Multi-user tenant layer (MULTIUSER_PLAN.md). STUBS ONLY: nothing here is wired yet.
+"""Multi-user tenant layer (MULTIUSER_PLAN.md): what dev and prod run since MU-17 / MU-18.
 
 Replaces the single-user shell (TOML config, CLI env-var creds, per-run ``InMemoryStore`` and
 ``ConsoleNotifier``) with durable users, course accounts, standing rules and dated request rows,

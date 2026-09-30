@@ -26,6 +26,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from teetime.web.routes import ROUTES
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Docs that carry a "latest [prod] infra tag `infra/vX.Y.Z`" current-state claim.
@@ -377,3 +379,15 @@ def test_no_tracked_file_contains_a_merge_conflict_marker() -> None:
         if path.is_file() and conflict_markers(path.read_text(errors="replace")):
             offenders.append(rel)
     assert offenders == []
+
+
+def test_every_web_route_is_in_the_plans_route_table() -> None:
+    """MULTIUSER_PLAN §8.2 says ``web/routes.py::ROUTES`` is its contract table; the scan of
+    2026-09-30 found six routes missing from it. Every route path must appear there, in
+    backticks, so a new route cannot land without its row."""
+    plan = (REPO_ROOT / "MULTIUSER_PLAN.md").read_text(encoding="utf-8")
+    start = plan.index("### 8.2 Routes")
+    section = plan[start : plan.index("\n### ", start + 1)]
+    documented = set(re.findall(r"`(/[^`]*)`", section))
+    missing = sorted({r.path for r in ROUTES} - documented)
+    assert not missing, f"routes missing from MULTIUSER_PLAN §8.2: {missing}"

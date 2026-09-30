@@ -487,11 +487,6 @@ def _params(**values: object) -> list[dict[str, object]]:
     return [{"name": f"@{name}", "value": value} for name, value in values.items()]
 
 
-def _body(doc: Mapping[str, Any]) -> dict[str, Any]:
-    """A read document minus the Cosmos system properties, ready to write back."""
-    return {k: v for k, v in doc.items() if not k.startswith("_")}
-
-
 @dataclass(frozen=True, slots=True)
 class _ClaimTicket:
     pk: str

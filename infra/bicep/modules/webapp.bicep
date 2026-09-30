@@ -1,19 +1,17 @@
 // webapp.bicep — Container App `teetime-web-<env>` serving `teetime web` (MULTIUSER_PLAN §8,
-// MU-12/13/14; the app itself is code-complete but UNWIRED to infra until this module deploys).
+// MU-12/13/14).
 //
 // Container App (minReplicas from the `minReplicas` param: prod 1, dev 0; maxReplicas 1) in the SAME Container Apps
 // Environment the ACA Jobs use (compute.bicep's acaEnvironmentId output) — one environment per
 // RG keeps this to a single Consumption plan, no extra environment cost.
 //
-// Gating (MU-15a): this module is deployed by main.bicep ONLY when `deployWebApp = true`
-// (default false in BOTH envs' param files). Reason: the Container App's secretRefs point at
-// Key Vault secrets (WEB-SESSION-SECRET, OAUTH-GOOGLE-CLIENT-ID, OAUTH-GOOGLE-CLIENT-SECRET)
-// that the operator has NOT pre-created — the Google OAuth client does not exist yet. ACA
-// validates KV secret refs at container-CREATE time, so deploying this module unconditionally
-// would break the dev auto-deploy on the very next merge to main. Flip `deployWebApp = true`
-// only after the operator has created those three secrets (see the PR body for the exact
-// `az keyvault secret set` commands and the Google Cloud Console steps to obtain the OAuth
-// client — never do this from an agent per the deploy-safety rules, infra/CLAUDE.md).
+// Gating (MU-15a): this module is deployed by main.bicep ONLY when `deployWebApp = true` (both
+// envs' param files set it: dev since MU-17, prod since MU-18). The Container App's secretRefs
+// point at Key Vault secrets (WEB-SESSION-SECRET, OAUTH-GOOGLE-CLIENT-ID,
+// OAUTH-GOOGLE-CLIENT-SECRET) and ACA validates them at container-CREATE time, so a NEW env must
+// have the operator create those secrets before flipping it true (never from an agent, per the
+// deploy-safety rules, infra/CLAUDE.md). In prod the app also references GITHUB-ISSUES-TOKEN
+// when `githubIssuesRepo` is set (site reports -> anonymized GitHub issues).
 // MU-16a: with `tenantCosmosEndpoint` non-empty the app ALSO references TENANT-CREDS-KEYRING and
 // ACS-EMAIL-CONNECTION (see `tenantBackend` below), which must exist first too.
 //
@@ -24,14 +22,10 @@
 // no replica running, so a CI redeploy after the killswitch fires cannot bring the site back up
 // even if `deployWebApp` stays true. See test_webapp_ingress_disabled_when_killswitch_fired.
 //
-// Known limitation (accepted for MU-15a, tracked for the eventual cutover): `publicBaseUrl` is
-// a PARAM, not derived from this resource's own FQDN — the Container App's default hostname
-// (`<app>.<hash>.<region>.azurecontainerapps.io`) is only known AFTER first creation, a
-// chicken-and-egg Bicep cannot resolve inline without a second deploy pass. The operator sets
-// `webPublicBaseUrl` to `https://<observed-fqdn>` (or a custom domain) in a follow-up param
-// change once `deployWebApp` is first flipped true — until then TEETIME_PUBLIC_BASE_URL is
-// empty and the container fails closed at startup (WebConfigError), which is fine because the
-// module is not deployed with traffic-serving intent in this PR.
+// `publicBaseUrl` is a PARAM, not derived from this resource's own FQDN: the default hostname
+// (`<app>.<hash>.<region>.azurecontainerapps.io`) is only known AFTER first creation. Prod sets
+// `webPublicBaseUrl` to its custom domain (https://spicyteetimebooker.com); dev to its observed
+// FQDN. Empty, the container fails closed at startup (WebConfigError).
 //
 // See: infra/AZURE_PLAN.md §3/§5/§7, MULTIUSER_PLAN.md §10.1/§12 MU-15a.
 
