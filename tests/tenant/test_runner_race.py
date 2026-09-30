@@ -279,7 +279,7 @@ async def test_runner_uses_unmodified_orchestrator_per_account(
 
 
 async def test_runner_two_accounts_each_get_stagger_and_rank0_first() -> None:
-    """Two accounts wanting the SAME window: each fires its OWN burst at exactly -500/-250/0 ms
+    """Two accounts wanting the SAME window: each fires its OWN burst at exactly -400/-250/0 ms
     (VirtualClock), its rank-0 first, over DISJOINT allowlisted slots from the snake draft —
     the first drafter holds the 08:15 midpoint slot, the second the next best (08:00)."""
     store = new_store()
@@ -295,8 +295,8 @@ async def test_runner_two_accounts_each_get_stagger_and_rank0_first() -> None:
     await _run(store, clock, ScriptedFactory(adapters=dict(adapters)))
 
     one, two = adapters[first.account.id], adapters[second.account.id]
-    assert one.send_offsets_ms() == [-500, -250, 0]
-    assert two.send_offsets_ms() == [-500, -250, 0]
+    assert one.send_offsets_ms() == [-400, -250, 0]
+    assert two.send_offsets_ms() == [-400, -250, 0]
     # Snake draft over (first, second): round 0 -> 08:15, 08:00; round 1 (reversed) -> 08:30,
     # 07:45; round 2 -> 08:45, 07:30. Each burst POSTs its own picks in rank order.
     assert one.book_slot_ids == ["s-0815", "s-0745", "s-0845"]
@@ -345,7 +345,7 @@ async def test_runner_overflow_account_runs_search_path() -> None:
     )
 
     blind, overflow = factory.built[first.account.id], factory.built[second.account.id]
-    assert blind.search_call_count == 0 and blind.send_offsets_ms() == [-500, -250, 0]
+    assert blind.search_call_count == 0 and blind.send_offsets_ms() == [-400, -250, 0]
     assert overflow.synthesize_blind_slots_call_count <= 1  # allocation input only
     assert overflow.search_call_count >= 1
     assert overflow.book_slot_ids == [f"fake-slot-{TARGET.isoformat()}"]  # the searched slot

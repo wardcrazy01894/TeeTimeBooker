@@ -637,7 +637,7 @@ pool per course.
   account in draft order, round 1 gives the second to each, and so on until each lease reaches k_i.
   Remaining arrivals go to the reserve. If the fill falls short, every account's **rank-0** POST
   still has a token before anyone's surplus POST does.
-- **Freshness order.** The earliest arrivals go to burst leases (fired at T0−0.5…T0). The latest go
+- **Freshness order.** The earliest arrivals go to burst leases (fired at T0−0.4…T0; T0−0.5 until 2026-09-30). The latest go
   to the reserve (used by fallbacks at T0+5…T0+30 s). That matches today's FIFO intent.
 - **FIFO single-use pop** within a lease (`popleft`, never returned).
 - **MF1 is preserved.** A token from a lease or the reserve counts as `from_pool=True`, so a

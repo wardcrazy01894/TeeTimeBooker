@@ -422,3 +422,32 @@ def test_every_current_state_doc_names_the_shipped_stagger_ladder() -> None:
         for claimed in re.findall(r"~(\d+) ms window", text):
             assert claimed == span, f"{name} says a ~{claimed} ms window; the ladder spans {span}"
     assert SchedulerConfig().early_arrival_ms == -shipped[0]
+
+
+# Every current-state doc + shipped config that talks about the T0 burst (the map row's sites).
+_LADDER_SWEEP = (
+    "README.md",
+    "CLAUDE.md",
+    "PLAN.md",
+    "MULTIUSER_PLAN.md",
+    "BACKLOG.md",
+    "infra/AZURE_PLAN.md",
+    "src/teetime/courses/CLAUDE.md",
+    "config/container.toml",
+    "config/example.toml",
+)
+_RETIRED_LADDER = (-500, -250, 0)
+_HISTORY_MARKERS = ("until 2026-09-30", "was ", "2026-09-29", "2026-09-30")
+
+
+def test_no_current_state_doc_describes_the_retired_ladder_as_current() -> None:
+    """Review of the 2026-09-30 sweep: one correct mention per doc is not enough; a stale
+    "fired at T0-0.5" (with a Unicode minus) or "(-500, -250, 0)" elsewhere in the same doc still misleads. Any line
+    naming the retired ladder must mark itself as history."""
+    stale_forms = _ladder_forms(_RETIRED_LADDER) | {"T0\u22120.5", "T0-0.5", "~500 ms"}
+    offenders = []
+    for name in _LADDER_SWEEP:
+        for n, line in enumerate((REPO_ROOT / name).read_text(encoding="utf-8").splitlines(), 1):
+            if any(f in line for f in stale_forms) and not any(m in line for m in _HISTORY_MARKERS):
+                offenders.append(f"{name}:{n}: {line.strip()[:90]}")
+    assert not offenders, "retired ladder described as current:\n" + "\n".join(offenders)
