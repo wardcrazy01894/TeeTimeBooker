@@ -1812,7 +1812,8 @@ One form, used for BOTH a one-off date and a weekly standing rule (the only diff
    **$100** unless the user changed it on the account page (per person, per course).
 
 Stated on the form: the bot books the **highest-ranked available option** (ties inside one option
-broken by closeness to the window's midpoint). It holds at most **one** tee time per person per day,
+broken by closeness to the window's midpoint). Since 2026-09-30 a "How the bot picks your tee
+time" panel shows it with a worked 8:00-10:00 example (9:00, 9:07, 8:52, ...; an SVG timeline). It holds at most **one** tee time per person per day,
 and if a higher-ranked option opens later it moves to it (upgrade) and cancels the lower one.
 
 Most usage is expected to be one-off dates, so the dashboard's primary action is "Book a date", with

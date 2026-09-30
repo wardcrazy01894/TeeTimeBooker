@@ -276,3 +276,17 @@ async def test_the_date_field_carries_the_server_computed_min(
     assert re.search(
         rf'<input type="date" name="target_date" class="datepick" min="{today.isoformat()}"', page
     )
+
+
+@pytest.mark.parametrize("path", ["/dates", "/rules"])
+async def test_both_booking_forms_explain_how_a_time_is_picked(
+    client: httpx.AsyncClient, member: Member, path: str
+) -> None:
+    page = (await client.get(path)).text
+    panel = page[page.index('class="how-picked"') :]
+    panel = panel[: panel.index("</details>")]
+    assert "How the bot picks your tee time" in panel
+    assert "middle" in panel
+    order = [panel.index(t) for t in ("9:00 AM", "9:07 AM", "8:52 AM")]
+    assert order == sorted(order)  # shown best first
+    assert "<svg" in panel and "style=" not in panel  # CSP: no inline style, even in the SVG

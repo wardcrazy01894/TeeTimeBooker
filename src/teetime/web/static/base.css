@@ -468,3 +468,37 @@ a.button.small.report-bug { font-size: 0.85rem; padding: 0.25rem 0.65rem; min-he
 a.button.small.report-bug:hover { background: var(--danger-soft); }
 form.feedback { display: grid; gap: 0.75rem; }
 form.feedback textarea { width: 100%; font: inherit; }
+
+/* "How the bot picks your tee time" (templates/_macros.html::how_picked). */
+details.how-picked {
+  margin: 0.2rem 0 0.8rem;
+  padding: 0.5rem 0.8rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+details.how-picked > summary { cursor: pointer; color: var(--accent-strong); font-weight: 600; }
+.pick-steps { margin: 0.6rem 0 0.2rem; padding-left: 1.2rem; display: grid; gap: 0.6rem; }
+.pick-timeline { display: block; width: 100%; max-width: 440px; height: auto; margin: 0.5rem 0 0.2rem; }
+.pick-timeline .axis { stroke: var(--muted); stroke-width: 2; }
+.pick-timeline .middle { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 4 3; }
+.pick-timeline .middle-label { fill: var(--accent-strong); font-size: 13px; font-weight: 600; }
+.pick-timeline .tee { fill: var(--muted); }
+.pick-timeline .rank { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.pick-timeline .rank-1 { fill: var(--accent); }
+.pick-timeline .rank-num { fill: var(--accent-strong); font-size: 12px; font-weight: 700; }
+.pick-timeline .rank-1 + .rank-num { fill: var(--on-accent); }
+.pick-timeline .end-label { fill: var(--muted); font-size: 13px; }
+.pick-order { list-style: none; padding: 0; margin: 0.3rem 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.pick-order > li {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.2rem 0.55rem 0.2rem 0.25rem;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+}
+.pick-order > li.more { background: none; border: none; padding-left: 0.2rem; }
+.rank-chip {
+  display: inline-grid; place-items: center; width: 1.4rem; height: 1.4rem;
+  border-radius: 50%; background: var(--accent-soft); color: var(--accent-strong);
+  font-size: 0.8rem; font-weight: 700;
+}
+.pick-order > li:first-child .rank-chip { background: var(--accent); color: var(--on-accent); }

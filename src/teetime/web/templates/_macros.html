@@ -65,6 +65,42 @@
 </div>
 {% endmacro %}
 
+{# How a time is picked (operator request 2026-09-30): rank order across time slots; inside one,
+   the time closest to the MIDDLE. `ex` is web/ranking_explainer.py's worked example (Mangrove
+   Bay's real tee times, pinned to the engine's order). The timeline is an SVG: its x/y
+   attributes are not styles, so it works under the CSP and without script. #}
+{% macro how_picked(ex) %}
+<details class="how-picked">
+  <summary>How the bot picks your tee time</summary>
+  <ol class="pick-steps">
+    <li><strong>Time slots in rank order.</strong> It tries time slot 1 first, and only moves to time slot 2 if nothing in slot 1 is available (then slot 3, and so on).</li>
+    <li><strong>Inside a time slot, it aims for the middle.</strong> For {{ ex.earliest_label }} to {{ ex.latest_label }} the middle is {{ ex.middle_label }}, so it tries:
+      <svg class="pick-timeline" viewBox="0 0 400 96" role="img" aria-label="Timeline from {{ ex.earliest_label }} to {{ ex.latest_label }}: the closer a tee time is to {{ ex.middle_label }}, the better">
+        <line class="axis" x1="16" y1="52" x2="384" y2="52"/>
+        <line class="middle" x1="200" y1="14" x2="200" y2="62"/>
+        <text class="middle-label" x="200" y="11" text-anchor="middle">middle</text>
+        {% for t in ex.tees %}
+        {% set x = 16 + t.x_pct * 3.68 %}
+        <circle class="tee" cx="{{ '%.1f' % x }}" cy="52" r="3"/>
+        {% if t.rank %}
+        <circle class="rank rank-{{ t.rank }}" cx="{{ '%.1f' % x }}" cy="32" r="9"/>
+        <text class="rank-num" x="{{ '%.1f' % x }}" y="36" text-anchor="middle">{{ t.rank }}</text>
+        {% endif %}
+        {% endfor %}
+        <text class="end-label" x="16" y="82" text-anchor="start">{{ ex.earliest_label }}</text>
+        <text class="end-label" x="384" y="82" text-anchor="end">{{ ex.latest_label }}</text>
+      </svg>
+      <ol class="pick-order">
+        {% for t in ex.ranked %}<li><span class="rank-chip">{{ loop.index }}</span><span class="tabular">{{ t.label }}</span><span class="hint">{{ t.offset_text }}</span></li>{% endfor %}
+        <li class="more hint">and so on, outward from the middle</li>
+      </ol>
+      <p class="hint">Closer to the middle wins, before or after it: {{ ex.ranked[1].label }} ({{ ex.ranked[1].offset_text }}) beats {{ ex.ranked[2].label }} ({{ ex.ranked[2].offset_text }}). When two times are equally close, the earlier one wins.</p>
+    </li>
+    <li><strong>One tee time per day, upgraded if a better one opens.</strong> It keeps checking after it books. If a time in a better-ranked slot, or closer to the middle, opens up before the booking cutoff (4 PM the day before), it switches to it.</li>
+  </ol>
+</details>
+{% endmacro %}
+
 {# MU-R3 (§16.1): ONE ranked list of (course, time window) options, for a date or every week.
    Order is a rank number per option. Option 1 shows up front; the rest wait behind "Add another
    time slot" (a <details> without script; one row at a time with /static/app.js). #}
@@ -87,6 +123,7 @@
   </div>
   <div class="options">
     <h3>Time slots, best first</h3>
+    {{ how_picked(ranking_example) }}
     {% for i in option_slots %}{% if loop.first %}{{ option_row(i, accounts, true) }}{% endif %}{% endfor %}
     <details class="more-options">
       <summary>Add another time slot</summary>
@@ -103,7 +140,7 @@
     </div>
     <p class="hint">Blank uses the course's default (set on the Connected Courses page).</p>
   </fieldset>
-  <p class="hint">The bot books the highest-ranked option that is available (inside one option, the time closest to the middle of the window). It holds at most one tee time per day, and moves to a better-ranked option if one opens later.</p>
+  <p class="hint">The bot books the highest-ranked time slot that has a tee time, aiming for the middle of that slot (see "How the bot picks your tee time" above). It holds at most one tee time per day.</p>
   <div class="actions">
     <button type="submit">{% if weekly %}Save weekly booking{% else %}Book this date{% endif %}</button>
   </div>
