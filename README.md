@@ -76,7 +76,7 @@ Apps Jobs, and the golf course sends booking confirmations directly.
 2. On a wanted day the bot logs in and pre-solves CAPTCHAs during the wait, then busy-waits to T0.
 3. At T0 Mangrove Bay **blind-POSTs** the top slots nearest the window midpoint without waiting
    for a search: up to `scheduler.blind_post_max_count` (default 3) POSTs, staggered
-   `-500 / -250 / 0` ms across the open. It keeps the best booking and cancels any extras.
+   `-400 / -250 / 0` ms across the open. It keeps the best booking and cancels any extras.
    ForeUP's one-reservation-per-day rule rejects the surplus POSTs once one lands; that is the
    accepted cost of the hedge.
 4. Only if no blind POST books does it re-check for an existing booking and run one fresh search,
@@ -390,5 +390,5 @@ Engine milestones in detail: [PLAN.md §16](./PLAN.md) and §20. Multi-user mile
   invite-only.
 - Anti-bot etiquette: honest User-Agent, ≥250 ms between requests, automatic 429 backoff. The one
   exception is the Mangrove Bay T0 blind-POST burst: a handful of book POSTs staggered across a
-  ~500 ms window, no slot POSTed twice, all but the best cancelled at once, still one booking per
+  ~400 ms window, no slot POSTed twice, all but the best cancelled at once, still one booking per
   request. See [PLAN.md §12](./PLAN.md).

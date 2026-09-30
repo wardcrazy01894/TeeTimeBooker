@@ -584,9 +584,9 @@ pre-fetch.
   available."` as a claimed slot (the server `Date` header, logged since `infra/v2.11.0`, has only
   1 s resolution). Staggering orders outcomes by offset (clean cutoff = pre-open rejection,
   unordered = real race) and guarantees one POST is SENT no earlier than T0 (tail offset `0`).
-  - **`stagger[0] == -early_arrival_ms`**, so the rank-0 slot keeps its pre-stagger instant and
-    drops we already win are unchanged; **nothing is ever scheduled earlier than `stagger[0]`**
-    (operator directive 2026-08-15). Both pinned by `tests/test_container_config_parity.py`.
+  - **`stagger[0] == -early_arrival_ms`**, so the rank-0 slot fires at the busy-wait wake instant
+    (T0 − 400 ms since 2026-09-30; it kept the pre-stagger T0 − 500 ms until then);
+    **nothing is ever scheduled earlier than `stagger[0]`** (operator directive 2026-08-15). Both pinned by `tests/test_container_config_parity.py`.
   - **The burst RE-RANKS with `rank_slots_for_request` before pairing offsets.** Offsets ascend
     with position, so the best slot must POST first or the 1-per-day rule could reject it in
     favour of a worse sibling. A `field_validator` rejects a descending offset list.
@@ -879,6 +879,7 @@ of them in the same PR.
 | Dependency floor bump / dep-comment edit | `pyproject.toml`: bump the floor AND check the comment above it. A dep comment must name NO tracking version. Enforced for `idna` (only the CVE boundary may be named; the floor may not drop below it). Drifted twice (#106, #204) |
 | New/changed config key or default | `core/config.py` field comment, `config/example.toml` + `container.toml` + `local.toml`, README Configuration, `tests/test_container_config_parity.py` pin, CLAUDE.md invariant if load-bearing |
 | Engine orchestrator/watcher behaviour (`core/*orchestrator*.py`, gates) | CLAUDE.md invariants, PLAN.md §9/§9.1/§12, the owning plan's status banner (and a supersession banner on any plan it retires) |
+| T0 race timing: `early_arrival_ms`, `blind_post_stagger_ms`, a blind-POST rejection reason | `core/config.py` defaults + field comments (the TENANT booker uses these defaults); `config/container.toml` + `example.toml` (+ your untracked `local.toml`); CLAUDE.md status line (What is live) + "Blind-POST burst" bullets (stagger, `stagger[0]`, rejection reasons); README how-it-works step 3 + Configuration table + the etiquette "~N ms window"; PLAN.md §6.1 busy-wait pseudo-code, §9 stagger default, §12 window; MULTIUSER_PLAN §4 race timeline + the MU-18 first-drop checklist; AZURE_PLAN §3 busy-wait note; `src/teetime/courses/CLAUDE.md` MB bullets; BACKLOG retry-burst item; a dated banner on STAGGER_PLAN / BLIND_POST_PLAN; the operator-summary reason text (`tenant/notify.py::_REJECTION_TEXT`). Enforced: `test_every_current_state_doc_names_the_shipped_stagger_ladder` (added 2026-09-30 after the -400 change found six stale docs) |
 | Adapter capability / course quirk (`courses/**`) | `src/teetime/courses/CLAUDE.md`, CLAUDE.md capability bullet |
 | Tenant logic (`src/teetime/tenant/**`) | `docs/MULTIUSER_AS_BUILT.md` (milestone section), MULTIUSER_PLAN.md (§12 row + the section it implements), CLAUDE.md Multi-user invariants and milestone table if state changes |
 | Tenant store semantics or schema (`tenant/store.py`, `in_memory_store.py`, `cosmos/**`, `semantics.py`) | `tests/tenant/conformance.py` (the contract), MULTIUSER_PLAN §3, `QUERIED_PATHS` + `cosmos.bicep` index policy if a new filter path, CLAUDE.md Two-stores bullet |

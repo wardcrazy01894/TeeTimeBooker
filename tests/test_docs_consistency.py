@@ -26,6 +26,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from teetime.core.config import SchedulerConfig
 from teetime.web.routes import ROUTES
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -391,3 +392,33 @@ def test_every_web_route_is_in_the_plans_route_table() -> None:
     documented = set(re.findall(r"`(/[^`]*)`", section))
     missing = sorted({r.path for r in ROUTES} - documented)
     assert not missing, f"routes missing from MULTIUSER_PLAN §8.2: {missing}"
+
+
+_LADDER_DOCS = ("README.md", "CLAUDE.md", "PLAN.md", "MULTIUSER_PLAN.md")
+
+
+def _ladder_forms(ladder: tuple[int, ...]) -> set[str]:
+    nums = [str(n) for n in ladder]
+    return {
+        "/".join(nums),
+        " / ".join(nums),
+        "(" + ", ".join(nums) + ")",
+        "[" + ", ".join(nums) + "]",
+        "(" + ",".join(nums) + ")",
+    }
+
+
+def test_every_current_state_doc_names_the_shipped_stagger_ladder() -> None:
+    """2026-09-30: the ladder moved -500/-250/0 -> -400/-250/0 and a check found six docs
+    still describing the old one as current. Each doc that describes the T0 burst must name the
+    SHIPPED default (``SchedulerConfig``, which the tenant booker uses), and a "~N ms window"
+    claim must match its span. Change the ladder -> the change->docs map row in CLAUDE.md."""
+    shipped = SchedulerConfig().blind_post_stagger_ms
+    forms = _ladder_forms(shipped)
+    span = str(max(shipped) - min(shipped))
+    for name in _LADDER_DOCS:
+        text = (REPO_ROOT / name).read_text(encoding="utf-8")
+        assert any(f in text for f in forms), f"{name} never names the shipped ladder {shipped}"
+        for claimed in re.findall(r"~(\d+) ms window", text):
+            assert claimed == span, f"{name} says a ~{claimed} ms window; the ladder spans {span}"
+    assert SchedulerConfig().early_arrival_ms == -shipped[0]
