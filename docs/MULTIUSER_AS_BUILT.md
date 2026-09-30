@@ -741,11 +741,12 @@ IfMatch on the etag just read, so a first sign-in that binds first wins; pinned 
 is a 400 ("use Disable"). The other ordering is closed too (scan 2026-09-30): the bind takes
 the identity claim (PENDING) first, then writes the user doc IfMatch'd on the INVITED doc it
 queried, then binds the claim, the same order as `upsert_user`. An Uninvite that deleted the row
-first wins (the claim is released, the sign-in gets the 403), and no failure can leave an ACTIVE
-user without its claim (`test_a_first_sign_in_loses_to_an_uninvite_that_deleted_the_row_first`,
+first wins (the claim is released only while still PENDING, the sign-in gets the 403); a
+concurrent sign-in of the SAME identity that bound first is returned as the result, its BOUND
+claim untouched; and no failure can leave an ACTIVE user without its claim (`test_a_first_sign_in_loses_to_an_uninvite_that_deleted_the_row_first`,
 `test_a_transient_failure_while_claiming_leaves_no_half_bound_user`).
 **Invite refuses an address already on the list** (any status, casefolded): it redirects with
-`notice=already_listed` and creates no row, because a second INVITED row outlived an Uninvite of
+`notice=already_invited` (Resend) or `already_member` (Enable) and creates no row, because a second INVITED row outlived an Uninvite of
 the first. Two concurrent submits can still both pass that check (accepted: one operator).
 **Enable** now shows its own notice (it redirected with `notice=active`, which had no text). A person
 still INVITED gets a **Resend invite** button (`action=resend`, `user_id`; a signed-in user is a

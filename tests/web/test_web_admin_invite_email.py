@@ -187,13 +187,22 @@ async def test_uninvite_refuses_someone_who_signed_in_or_does_not_exist(
     assert (await _post(client, {"action": "uninvite", "user_id": "nope"})).status_code == 400
 
 
-@pytest.mark.parametrize("status", [UserStatus.INVITED, UserStatus.ACTIVE, UserStatus.DISABLED])
+@pytest.mark.parametrize(
+    ("status", "notice", "text"),
+    [
+        (UserStatus.INVITED, "already_invited", "Use Resend invite"),
+        (UserStatus.ACTIVE, "already_member", "already has an account"),
+        (UserStatus.DISABLED, "already_member", "use Enable"),
+    ],
+)
 async def test_inviting_an_address_already_on_the_list_creates_no_second_row(
     client: httpx.AsyncClient,
     store: InMemoryTenantStore,
     provider_mock: respx.MockRouter,
     sender: FakeEmailSender,
     status: UserStatus,
+    notice: str,
+    text: str,
 ) -> None:
     """Scan 2026-09-30: a second INVITED row for one address outlived an Uninvite of the first
     (whichever row sorts first binds), so "can no longer sign in" was false."""
@@ -202,11 +211,11 @@ async def test_inviting_an_address_already_on_the_list_creates_no_second_row(
     await _sign_in_operator(client, provider_mock)
     r = await _post(client, {"action": "invite", "email": FRIEND.upper(), "role": "member"})
     assert r.status_code == 303
-    assert r.headers["location"] == "/admin/users?notice=already_listed"
+    assert r.headers["location"] == f"/admin/users?notice={notice}"
     assert [u.id for u in await store.list_users() if u.email == FRIEND] == [existing.id]
     assert sender.sent == []
     page = (await client.get(r.headers["location"])).text
-    assert "already on the list" in page
+    assert text in page
 
 
 async def test_invite_refuses_an_unknown_role(

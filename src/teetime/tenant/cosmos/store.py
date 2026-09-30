@@ -1469,19 +1469,39 @@ class CosmosTenantStore:
                 )
                 pk = f"user:{user.id}"
                 try:
-                    await self._global.replace_item(
+                    written = await self._global.replace_item(
                         pk,
                         to_user_doc(bound),
                         etag=stored.etag,
                         match_condition=MatchConditions.IfNotModified,
                     )
                 except CosmosHttpResponseError as exc:
-                    if _status(exc) in (_HTTP_PRECONDITION_FAILED, _HTTP_NOT_FOUND):
-                        await self._release_claim(ClaimKind.IDENTITY, key, owner=user.id)
-                        return None
-                    raise
+                    if _status(exc) not in (_HTTP_PRECONDITION_FAILED, _HTTP_NOT_FOUND):
+                        raise
+                    now_stored = await self._user(user.id)
+                    if (
+                        now_stored is not None
+                        and now_stored.item.oauth_provider == provider
+                        and now_stored.item.oauth_subject == subject
+                    ):
+                        return now_stored.item  # a concurrent sign-in of this identity bound it
+                    # Uninvited (or changed) meanwhile: drop our claim, but only while it is
+                    # still PENDING; a BOUND one belongs to a sign-in that completed.
+                    await self._release_claim(
+                        ClaimKind.IDENTITY, key, owner=user.id, only_pending=True
+                    )
+                    return None
                 if not await self._bind(ClaimKind.IDENTITY, key, ticket, owner=user.id):
-                    await self._global.upsert_item(to_user_doc(user))  # back to INVITED
+                    try:  # back to INVITED, unless something else wrote the row meanwhile
+                        await self._global.replace_item(
+                            pk,
+                            to_user_doc(user),
+                            etag=written.get("_etag"),
+                            match_condition=MatchConditions.IfNotModified,
+                        )
+                    except CosmosHttpResponseError as exc:
+                        if _status(exc) not in (_HTTP_PRECONDITION_FAILED, _HTTP_NOT_FOUND):
+                            raise
                     raise UniquenessConflictError("that sign-in identity is bound to another user")
                 return bound
         return None
@@ -1753,12 +1773,18 @@ class CosmosTenantStore:
                 return False
             raise
 
-    async def _release_claim(self, kind: ClaimKind, key: str, *, owner: UUID) -> None:
+    async def _release_claim(
+        self, kind: ClaimKind, key: str, *, owner: UUID, only_pending: bool = False
+    ) -> None:
         """Delete ``owner``'s claim on ``key`` (a rename's old key, or a failed connect). Best
-        effort: a leftover is an orphan the reclaim rule recovers."""
+        effort: a leftover is an orphan the reclaim rule recovers. ``only_pending`` leaves a
+        BOUND claim alone (a concurrent operation for the same owner completed)."""
         pk = f"claim:{claim_key_hash(kind, key)}"
         doc = await self._read(self._global, pk, pk)
-        if doc is None or from_claim_doc(doc).item.owner_id != owner:
+        if doc is None:
+            return
+        claim = from_claim_doc(doc).item
+        if claim.owner_id != owner or (only_pending and claim.state is not ClaimState.PENDING):
             return
         try:
             await self._global.delete_item(

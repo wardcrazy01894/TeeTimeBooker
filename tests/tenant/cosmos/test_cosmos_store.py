@@ -641,3 +641,27 @@ async def test_a_transient_failure_while_claiming_leaves_no_half_bound_user() ->
     # ...and a retry binds cleanly.
     bound = await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
     assert bound is not None and bound.status is UserStatus.ACTIVE
+
+
+async def test_two_concurrent_first_sign_ins_for_one_identity_keep_the_bound_claim() -> None:
+    """Re-review of #292: a double-fired OAuth callback. B binds completely while A is about to
+    write; A's IfMatch then fails. A must return the bound user, not release B's BOUND claim
+    (that left an ACTIVE user without its identity claim)."""
+    store, _, global_ = _fake_store()
+    pal = _invited_pal()
+    await store.upsert_user(pal)
+    got_b: list[User | None] = []
+
+    async def b_first() -> None:
+        got_b.append(
+            await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+        )
+
+    global_.before_write = b_first
+    got_a = await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    assert got_b and got_b[0] is not None and got_b[0].status is UserStatus.ACTIVE
+    assert got_a is not None and got_a.id == pal.id and got_a.oauth_subject == "s1"
+    claim_pk = f"claim:{claim_key_hash(ClaimKind.IDENTITY, identity_claim_key('google', 's1'))}"
+    claim = await global_.read_item(claim_pk, claim_pk)
+    assert claim["state"] == ClaimState.BOUND.value
+    assert await store.get_user_by_subject("google", "s1") is not None

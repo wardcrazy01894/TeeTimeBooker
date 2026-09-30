@@ -625,9 +625,12 @@ _ADMIN_NOTICES = {
     ),
     "disabled": "User disabled. Their session is rejected on their next request.",
     "enabled": "User enabled.",
-    "already_listed": (
-        "That address is already on the list, so no second invite was made. Use Resend invite "
-        "for someone who hasn't signed in yet."
+    "already_invited": (
+        "That address is already invited, so no second invite was made. Use Resend invite to "
+        "email it again."
+    ),
+    "already_member": (
+        "That address already has an account, so no invite was made. If it is disabled, use Enable."
     ),
 }
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -650,8 +653,14 @@ async def _admin_invite(ctx: _Ctx, operator: User, form: FormData, *, now: datet
         raise HTTPException(status_code=400, detail="invalid role") from e
     # One row per address: a second INVITED row would outlive an Uninvite of the first (the
     # earliest-sorting row binds). Two concurrent submits can still both pass this check.
-    if any(u.email.casefold() == email for u in await ctx.store.list_users()):
-        return RedirectResponse("/admin/users?notice=already_listed", status_code=303)
+    same = [u for u in await ctx.store.list_users() if u.email.casefold() == email]
+    if same:
+        notice = (
+            "already_invited"
+            if all(u.status is UserStatus.INVITED for u in same)
+            else "already_member"
+        )
+        return RedirectResponse(f"/admin/users?notice={notice}", status_code=303)
     invited = User(
         id=UserId(uuid4()),
         oauth_provider="",  # unknown until the invitee signs in; bind_invited_user sets it
