@@ -6,9 +6,12 @@ pytest-importable — see the other `test_*_bicep.py` files).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
+
+from teetime.web.app import WEB_ENV_VARS
 
 MODULES = Path(__file__).resolve().parent.parent / "infra" / "bicep" / "modules"
 MAIN_BICEP = Path(__file__).resolve().parent.parent / "infra" / "bicep" / "main.bicep"
@@ -247,3 +250,17 @@ def test_prod_files_issues_in_the_public_repo_dev_does_not() -> None:
         in (params / "main.bicepparam.prod").read_text()
     )
     assert "param githubIssuesRepo = ''" in (params / "main.bicepparam.dev").read_text()
+
+
+# The web reads these; they are deliberately NOT deployed (GitHub sign-in is not offered).
+_WEB_ENV_NOT_DEPLOYED = {"OAUTH_GITHUB_CLIENT_ID", "OAUTH_GITHUB_CLIENT_SECRET"}
+
+
+def test_every_web_env_var_is_wired_in_webapp_bicep(webapp_bicep: str) -> None:
+    """Scan 2026-09-30: most web env vars are optional, so a rename in either place degrades
+    quietly (no build in bug reports, no canonical redirect, no issues filed). Every name the web
+    reads is set in webapp.bicep, except the allowlisted undeployed ones."""
+    wired = set(re.findall(r"name: '([A-Z0-9_]+)'", webapp_bicep))
+    missing = sorted(set(WEB_ENV_VARS) - _WEB_ENV_NOT_DEPLOYED - wired)
+    assert not missing, f"read by the web but not set in webapp.bicep: {missing}"
+    assert not (_WEB_ENV_NOT_DEPLOYED & wired), "an allowlisted var is deployed: drop it here"

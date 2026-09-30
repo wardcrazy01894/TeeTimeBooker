@@ -149,7 +149,7 @@ def _parse_json(text: str) -> tuple[object, str | None]:
 def _b64decode_or_none(text: str) -> bytes | None:
     try:
         return base64.b64decode(text, validate=True)
-    except (binascii.Error, ValueError):
+    except binascii.Error, ValueError:
         return None
 
 

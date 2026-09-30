@@ -646,7 +646,7 @@ class ForeUpAdapter(CourseAdapter):
             for raw in raw_list:
                 try:
                     slot = _parse_slot(raw, target_date, self.course_id, tz)
-                except (KeyError, ValueError, InvalidOperation):
+                except KeyError, ValueError, InvalidOperation:
                     # Don't drop silently: search() backs the 06:00 booking decision. A ForeUP
                     # /times schema change makes EVERY slot unparseable → search returns [] →
                     # the bot reports NO_INVENTORY, indistinguishable from a genuinely empty

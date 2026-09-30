@@ -119,7 +119,7 @@ async def adopt(
 
 
 def register_adopt_routes(
-    app: FastAPI, pages: "_Pages", *, current_user: "Callable[..., Awaitable[Any]]"
+    app: FastAPI, pages: _Pages, *, current_user: Callable[..., Awaitable[Any]]
 ) -> None:
     ctx: _Ctx = pages.ctx
     CurrentUser = Annotated[User, Depends(current_user)]  # noqa: N806 — type alias

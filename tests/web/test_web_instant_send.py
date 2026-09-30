@@ -293,3 +293,19 @@ def test_base_css_has_the_busy_spinner_and_a_pressed_state() -> None:
     assert "prefers-reduced-motion" in css
     for selector in ("button:active", "a.button:active", "summary.button:active"):
         assert selector in css
+
+
+async def test_app_shutdown_drains_pending_jobs(app: FastAPI) -> None:
+    """Scan 2026-09-30: nothing proved the lifespan wires the drain. Without it every deploy
+    (a revision swap) would silently drop in-flight invite and report sends."""
+    done: list[int] = []
+
+    async def send() -> None:
+        await asyncio.sleep(0.05)
+        done.append(1)
+
+    async with app.router.lifespan_context(app):
+        app.state.background_jobs.spawn(send(), name="send")
+        assert done == []
+    assert done == [1]  # shutdown waited for it
+    assert app.state.background_jobs.pending == 0

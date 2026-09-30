@@ -75,7 +75,7 @@ def _retry_after_s(exc: BaseException) -> float | None:
         return None
     try:
         return float(headers.get(_RETRY_AFTER_HEADER)) / 1000.0
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

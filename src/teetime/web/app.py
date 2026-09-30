@@ -136,7 +136,7 @@ class WebConfigError(ValueError):
 @dataclass(frozen=True, slots=True)
 class WebSettings:
     """Resolved from env at startup. Secrets arrive as env vars via ACA KV secretRefs (the
-    env-var NAMES are the contract; ``test_tenant_env_refs_wired_in_compute_bicep`` pins them).
+    env-var NAMES are the contract; ``test_every_web_env_var_is_wired_in_webapp_bicep`` pins them).
     Every secret-bearing field is ``repr=False``; the entrypoint registers them with the log
     filter (E7). ``public_base_url`` is the ONE setting the OAuth redirect URIs derive from
     (the free Container Apps hostname today; a custom domain later is a one-value change)."""

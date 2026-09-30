@@ -459,7 +459,7 @@ class WatchOrchestrator:
             if creds is not None:
                 await adapter.authenticate(creds)
             existing = await adapter.list_reservations()
-        except (CaptchaError, AuthError, RateLimitError):
+        except CaptchaError, AuthError, RateLimitError:
             # Operator-action / explicit-backoff errors must surface exactly as they do from the
             # search loop and the adjacent _try_upgrade — re-raise.
             raise
@@ -559,7 +559,7 @@ class WatchOrchestrator:
                 for res in extras:
                     try:
                         await adapter.cancel_reservation(res.confirmation_code)
-                    except (RateLimitError, CaptchaError, AuthError):
+                    except RateLimitError, CaptchaError, AuthError:
                         # Watch-contract errors — check_once's handlers own these.
                         raise
                     except Exception as exc:

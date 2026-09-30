@@ -132,7 +132,16 @@ delete it here when it ships.
   logs in on every watch run (6/hour) until the row books or freezes. Add a flag-clear outcome.
 - **Run the Cosmos integration conformance leg** (README, Development): the index policy now
   equals `CosmosTenantStore.QUERIED_PATHS` (pinned by `tests/test_cosmos_bicep.py`), but the suite
-  had not yet been run against the real account when MU-15b landed.
+  had not yet been run against the real account when MU-15b landed. The 2026-09-30 scan found the
+  148 integration tests run nowhere automatically, so `delete_invited_user` (IfMatch delete) and
+  the `rejected_signin` per-item TTL are verified only against the fake container. Wanted: a
+  weekly + `workflow_dispatch` workflow running `pytest -m integration tests/tenant/cosmos` over
+  OIDC against the `-ci` containers. Operator prerequisite: a Cosmos data-plane role for the CI
+  service principal on the dev database (created by hand, AZURE_PLAN §7.2a). The live ForeUP
+  canary (`tests/test_foreup_canary.py`) needs credentials and stays manual.
+- **authlib's httpx integration is deprecated** (`AuthlibDeprecationWarning: ... use httpx2`,
+  seen at test collection 2026-09-30). The OAuth flow uses it; move to the replacement before an
+  authlib release drops it.
 - **`teetime tenant-rekey` for keyring rotation** (full-repo scan 2026-09-30). The rotation
   runbook (MULTIUSER_PLAN §9.2) needs a command that re-encrypts every stored course password onto
   the active kid; `tenant/crypto.py::rekey_password` / `needs_rekey` exist and are tested, but no

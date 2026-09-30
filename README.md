@@ -94,7 +94,7 @@ Apps Jobs, and the golf course sends booking confirmations directly.
 
 ## Quick start
 
-Prerequisites: Python 3.12+, [`uv`](https://docs.astral.sh/uv/) (`brew install uv`), and a ForeUP
+Prerequisites: Python 3.14+, [`uv`](https://docs.astral.sh/uv/) (`brew install uv`), and a ForeUP
 account with Mangrove Bay access (not needed for the fake-adapter demo).
 
 ```bash
