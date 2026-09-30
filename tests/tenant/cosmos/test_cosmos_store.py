@@ -665,3 +665,22 @@ async def test_two_concurrent_first_sign_ins_for_one_identity_keep_the_bound_cla
     claim = await global_.read_item(claim_pk, claim_pk)
     assert claim["state"] == ClaimState.BOUND.value
     assert await store.get_user_by_subject("google", "s1") is not None
+
+
+async def test_a_bind_retries_when_the_invited_row_was_rewritten_not_removed() -> None:
+    """Third review of #292: an IfMatch 412 is not always an Uninvite. A rewrite that leaves the
+    row INVITED for this email is retried instead of a spurious "not invited"."""
+    store, _, global_ = _fake_store()
+    pal = _invited_pal()
+    await store.upsert_user(pal)
+
+    async def rewrite() -> None:
+        await store.upsert_user(replace(pal, display_name="Pal"))  # new etag, still INVITED
+
+    async def arm_second_write() -> None:  # the claim is write #1; the user doc write #2
+        global_.before_write = rewrite
+
+    global_.before_write = arm_second_write
+    bound = await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1")
+    assert bound is not None and bound.status is UserStatus.ACTIVE and bound.display_name == "Pal"
+    assert await store.get_user_by_subject("google", "s1") is not None

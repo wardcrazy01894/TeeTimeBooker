@@ -182,6 +182,13 @@ CLAIM_RECLAIM_AFTER = timedelta(minutes=10)
 # unconditional (watermarks, counters, lease release). Contention here is two writers at most.
 _MAX_ATTEMPTS = 5
 
+
+class _RetryBind:
+    """bind_invited_user: the INVITED row was rewritten (not deleted) under the IfMatch."""
+
+
+_RETRY_BIND = _RetryBind()
+
 # Every document path the store's queries filter on. The §3.2 index policy (MU-15b, Bicep) must
 # include ALL of them: Cosmos rejects a query that filters on a path excluded from indexing.
 # Pinned against the query strings in this module by test_queried_paths_are_declared.
@@ -1437,6 +1444,17 @@ class CosmosTenantStore:
             await self._release_claim(ClaimKind.IDENTITY, old_key, owner=user.id)
 
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:
+        for _ in range(_MAX_ATTEMPTS):
+            result = await self._bind_invited_once(email=email, provider=provider, subject=subject)
+            if not isinstance(result, _RetryBind):
+                return result
+        return None
+
+    async def _bind_invited_once(
+        self, *, email: str, provider: str, subject: str
+    ) -> User | _RetryBind | None:
+        """One bind attempt; ``_RETRY_BIND`` when the INVITED row changed under the IfMatch but
+        is still INVITED, unbound and for this email (a rewrite, not an Uninvite)."""
         existing = await self.get_user_by_subject(provider, subject)
         if existing is not None:
             return existing
@@ -1490,7 +1508,13 @@ class CosmosTenantStore:
                     await self._release_claim(
                         ClaimKind.IDENTITY, key, owner=user.id, only_pending=True
                     )
-                    return None
+                    still_invited = (
+                        now_stored is not None
+                        and now_stored.item.status is UserStatus.INVITED
+                        and now_stored.item.oauth_subject is None
+                        and now_stored.item.email.casefold() == wanted
+                    )
+                    return _RETRY_BIND if still_invited else None
                 if not await self._bind(ClaimKind.IDENTITY, key, ticket, owner=user.id):
                     try:  # back to INVITED, unless something else wrote the row meanwhile
                         await self._global.replace_item(
