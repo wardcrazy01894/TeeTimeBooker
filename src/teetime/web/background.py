@@ -4,9 +4,9 @@ Invite, Resend invite and Report a bug used to await the email send (ACS polls t
 status every 2 s) and the GitHub issue before redirecting, so the page hung 5-20 s. Those
 handlers now ``spawn`` the send and respond at once. ``BackgroundJobs`` keeps a strong reference
 to each task (the event loop holds only a weak one, so an unreferenced task can be garbage
-collected mid-flight) and logs a failure by exception CLASS NAME only (the message could carry
-an address). ``drain`` awaits what is pending, bounded, then cancels the rest: the app's
-lifespan calls it on shutdown, tests call it before asserting.
+collected mid-flight) and logs a failure with its traceback (an address in it is scrubbed by
+the handler's redaction filter). ``drain`` awaits what is pending, bounded, then cancels the
+rest: the app's lifespan calls it on shutdown, tests call it before asserting.
 
 A job is best-effort: a process that dies mid-send loses it, exactly like a request that timed
 out before. Each job bounds its own calls and writes its own audit entry when it finishes.
@@ -42,7 +42,11 @@ class BackgroundJobs:
             return
         exc = task.exception()
         if exc is not None:
-            log.warning("background job %s failed: %s", task.get_name(), type(exc).__name__)
+            # The traceback is what makes a bug in a send path diagnosable. It may carry an
+            # address; the handler's redaction filter scrubs it (install_log_redaction).
+            log.warning(
+                "background job %s failed: %s", task.get_name(), type(exc).__name__, exc_info=exc
+            )
 
     async def drain(self, timeout_s: float) -> None:
         """Wait up to ``timeout_s`` for every pending job, then cancel what is left."""

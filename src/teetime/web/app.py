@@ -457,6 +457,8 @@ def _register_public_routes(app: FastAPI, ctx: _Ctx) -> None:
         try:
             identity = await ctx.oauth.finish(request, provider)
         except OAuthFlowError as e:
+            # The reason is a path + status or a malformed-profile note: no PII.
+            log.warning("sign-in failed provider=%s: %s", provider, e)
             raise HTTPException(status_code=400, detail="sign-in could not be completed") from e
         return await _complete_signin(ctx, request, identity)
 
@@ -643,7 +645,9 @@ async def _send_invitation(ctx: _Ctx, email: str) -> bool:
         log.warning("invitation email failed", exc_info=True)
         return False
     if not result.ok:
-        log.warning("invitation email not delivered (status=%s)", result.status)
+        log.warning(
+            "invitation email not delivered (status=%s error=%s)", result.status, result.error
+        )
     return result.ok
 
 

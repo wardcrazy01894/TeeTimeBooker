@@ -274,21 +274,18 @@ async def public_diagnostics(ctx: "_Ctx", *, user: User) -> str:
             _public_store_lines(ctx, user=user), timeout=DIAGNOSTICS_TIMEOUT_S
         )
     except Exception as exc:  # TimeoutError included
+        log.warning("bug-report public diagnostics failed", exc_info=True)
         out.append(f"- (diagnostics unavailable: {type(exc).__name__})")
     return "\n".join([*out, "", "</details>"])
 
 
 async def _public_store_lines(ctx: "_Ctx", *, user: User) -> list[str]:
     accounts = await ctx.store.list_accounts_for_user(user.id)
-    out = [
-        f"- {ctx.course_name(a.course_id)}: {a.status.value}"
-        + (
-            f", {a.consecutive_soft_auth_failures} login failures in a row"
-            if a.consecutive_soft_auth_failures
-            else ""
-        )
-        for a in accounts
-    ] or ["- No course connected"]
+    # Status only: a login-failure count could help link a public issue to a person (the
+    # operator's email keeps it).
+    out = [f"- {ctx.course_name(a.course_id)}: {a.status.value}" for a in accounts] or [
+        "- No course connected"
+    ]
     today = ctx.clock.now_utc().date()
     rows = await ctx.store.list_rows_for_user(
         user.id, from_date=today, to_date=today + timedelta(days=MIN_HORIZON_DAYS)
@@ -393,4 +390,8 @@ async def _send(ctx: "_Ctx", mail: EmailMessage) -> bool:
     except Exception:  # TimeoutError included
         log.warning("feedback email failed", exc_info=True)
         return False
+    if not result.ok:
+        log.warning(
+            "feedback email not delivered (status=%s error=%s)", result.status, result.error
+        )
     return bool(result.ok)

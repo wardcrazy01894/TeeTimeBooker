@@ -10,7 +10,7 @@
     <label>{{ prompt }}
       <textarea name="message" rows="6" maxlength="{{ max_len }}" required></textarea>
     </label>
-    <p class="hint">This goes to Spicy Al by email, with your name and email address so Spicy Al can reply.{% if files_issue %} Your message is also posted publicly as a GitHub issue, without your name or email, so it can be tracked; please leave out anything private.{% endif %}</p>
+    <p class="hint">This goes to Spicy Al by email, with your name and email address so Spicy Al can reply.{% if files_issue %} Your message is also posted publicly as a GitHub issue, without your name or email, so it can be tracked; please leave out anything private.{% if kind == "bug" %} The issue also lists your connected courses and how many upcoming dates each status has, never names or times.{% endif %}{% endif %}</p>
     <button type="submit" class="primary">Send</button>
   </form>
 </section>

@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
+from dataclasses import replace
+from uuid import UUID
 
 import httpx
 import pytest
@@ -20,6 +23,7 @@ from fastapi import FastAPI
 from teetime.core.clock import FakeClock
 from teetime.core.redaction import redact_text
 from teetime.tenant.in_memory_store import InMemoryTenantStore
+from teetime.tenant.models import UserId
 from teetime.tenant.notify import FakeEmailSender
 from teetime.web.app import WebSettings, create_app
 from teetime.web.github_issues import GitHubIssues
@@ -186,3 +190,70 @@ async def test_the_public_diagnostics_carry_no_minute_level_timestamp(
     body = json.loads(route.calls.last.request.content)["body"]
     assert "UTC" not in body
     assert re.search(r"\d{2}:\d{2}", body) is None
+
+
+async def test_the_public_diagnostics_leave_out_login_failures(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    provider_mock: respx.MockRouter,
+    sender: FakeEmailSender,
+    member: str,
+) -> None:
+    """Scan 2026-09-30: with a handful of users, "N login failures in a row" in a PUBLIC issue
+    helps link it to a person. The operator's email keeps it."""
+    (account,) = await store.list_accounts_for_user(UserId(UUID(member)))
+    await store.upsert_account(replace(account, consecutive_soft_auth_failures=2))
+    route = provider_mock.post(ISSUES_URL).mock(
+        return_value=httpx.Response(201, json={"html_url": "https://github.com/o/r/issues/11"})
+    )
+    await _report(client, "bug", "login broken")
+    body = json.loads(route.calls.last.request.content)["body"]
+    assert "Mangrove Bay: active" in body and "login failures" not in body
+    assert "login failures in a row 2" in sender.sent[0].body
+
+
+@pytest.mark.usefixtures("member")
+async def test_the_bug_form_says_what_the_public_diagnostics_contain(
+    client: httpx.AsyncClient,
+) -> None:
+    bug = (await client.get("/feedback?kind=bug")).text
+    assert "your connected courses and how many upcoming dates each status has" in bug
+    course = (await client.get("/feedback?kind=course")).text
+    assert "connected courses" not in course
+
+
+async def test_a_report_email_that_was_not_delivered_is_logged(
+    client: httpx.AsyncClient,
+    provider_mock: respx.MockRouter,
+    sender: FakeEmailSender,
+    member: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider_mock.post(ISSUES_URL).mock(
+        return_value=httpx.Response(201, json={"html_url": "https://github.com/o/r/issues/12"})
+    )
+    sender.fail = True
+    caplog.set_level(logging.WARNING, logger="teetime.web.feedback")
+    await _report(client, "bug", "boom")
+    assert any("feedback email not delivered" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_public_diagnostics_failure_is_logged(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    provider_mock: respx.MockRouter,
+    member: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_mock.post(ISSUES_URL).mock(
+        return_value=httpx.Response(201, json={"html_url": "https://github.com/o/r/issues/13"})
+    )
+
+    async def boom(*_: object, **__: object) -> list[object]:
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(store, "list_accounts_for_user", boom)
+    caplog.set_level(logging.WARNING, logger="teetime.web.feedback")
+    await _report(client, "bug", "boom")
+    assert any("public diagnostics failed" in r.getMessage() for r in caplog.records)

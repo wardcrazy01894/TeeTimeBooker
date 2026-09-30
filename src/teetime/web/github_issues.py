@@ -12,12 +12,29 @@ import logging
 
 import httpx
 
-from ..core.redaction import register_secret_literals
+from ..core.redaction import redact_text, register_secret_literals
 
 log = logging.getLogger(__name__)
 
 API = "https://api.github.com"
 TIMEOUT_S = 10.0
+REASON_MAX_LEN = 300
+
+
+def _github_reason(r: httpx.Response) -> str:
+    """GitHub's ``message`` (+ ``errors``): what tells an expired token (401) from a missing
+    Issues permission (403), issues disabled (410) or a rejected title (422). Redacted, capped;
+    it never carries the report (that is in the request, not the response)."""
+    try:
+        data = r.json()
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    parts = [str(data.get("message") or "")]
+    if data.get("errors"):
+        parts.append(f"errors={data['errors']}")
+    return redact_text(" ".join(p for p in parts if p))[:REASON_MAX_LEN]
 
 
 class GitHubIssues:
@@ -41,7 +58,9 @@ class GitHubIssues:
                     },
                 )
             if r.status_code != httpx.codes.CREATED:
-                log.warning("GitHub issue not created: HTTP %s", r.status_code)
+                log.warning(
+                    "GitHub issue not created: HTTP %s %s", r.status_code, _github_reason(r)
+                )
                 return None
             url = r.json().get("html_url")
             return url if isinstance(url, str) else None
