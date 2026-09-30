@@ -73,8 +73,8 @@
 <details class="how-picked">
   <summary>How the bot picks your tee time</summary>
   <ol class="pick-steps">
-    <li><strong>Time slots in rank order.</strong> It tries time slot 1 first, and only moves to time slot 2 if nothing in slot 1 is available (then slot 3, and so on).</li>
-    <li><strong>Inside a time slot, it aims for the middle.</strong> For {{ ex.earliest_label }} to {{ ex.latest_label }} the middle is {{ ex.middle_label }}, so it tries:
+    <li><strong>Time slots in rank order.</strong> It tries your time slots in order: slot 1's times first, then slot 2's, and so on. If it ever ends up with a lower-ranked one, it keeps trying for better (step 3).</li>
+    <li><strong>Inside a time slot, it aims for the middle.</strong> Example at Mangrove Bay, where tee times are 7 or 8 minutes apart (other courses space them differently): for {{ ex.earliest_label }} to {{ ex.latest_label }} the middle is {{ ex.middle_label }}, so it tries:
       <svg class="pick-timeline" viewBox="0 0 400 96" role="img" aria-label="Timeline from {{ ex.earliest_label }} to {{ ex.latest_label }}: the closer a tee time is to {{ ex.middle_label }}, the better">
         <line class="axis" x1="16" y1="52" x2="384" y2="52"/>
         <line class="middle" x1="200" y1="14" x2="200" y2="62"/>
@@ -96,7 +96,7 @@
       </ol>
       <p class="hint">Closer to the middle wins, before or after it: {{ ex.ranked[1].label }} ({{ ex.ranked[1].offset_text }}) beats {{ ex.ranked[2].label }} ({{ ex.ranked[2].offset_text }}). When two times are equally close, the earlier one wins.</p>
     </li>
-    <li><strong>One tee time per day, upgraded if a better one opens.</strong> It keeps checking after it books. If a time in a better-ranked slot, or closer to the middle, opens up before the booking cutoff (4 PM the day before), it switches to it.</li>
+    <li><strong>One tee time per day, upgraded if a better one opens.</strong> It keeps checking after it books. If a time in a better-ranked slot, or strictly closer to the middle, opens up before the booking cutoff ({{ booking_cutoff_text }}), it switches to it.</li>
   </ol>
 </details>
 {% endmacro %}

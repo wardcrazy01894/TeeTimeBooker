@@ -62,7 +62,7 @@ from .oauth import (
     ProviderIdentity,
 )
 from .pages import register_page_routes
-from .ranking_explainer import ranking_example
+from .ranking_explainer import cutoff_text, ranking_example
 from .security import CookiePolicy, security_headers, verify_csrf_token
 from .services import ProbeLimits, RefreshCache
 
@@ -854,6 +854,9 @@ def create_app(
     templates.env.filters["provider_name"] = provider_display_name
     templates.env.globals["static_url"] = _static_url_for(static_asset_versions(STATIC_DIR))
     templates.env.globals["ranking_example"] = ranking_example()
+    templates.env.globals["booking_cutoff_text"] = cutoff_text(
+        ctx.cutoff.days_before, ctx.cutoff.time_of_day
+    )
     cookie = CookiePolicy()
 
     @asynccontextmanager

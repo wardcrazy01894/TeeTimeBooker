@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from teetime.core.models import BookingRequest, CourseId, Player, RequestId, TimeWindow
 from teetime.courses.foreup.mangrove_bay import MangroveBayAdapter
-from teetime.web.ranking_explainer import ranking_example
+from teetime.web.ranking_explainer import cutoff_text, ranking_example
 
 
 def _engine_order(earliest: time, latest: time) -> list[str]:
@@ -58,3 +58,9 @@ def test_the_timeline_places_every_tee_time_inside_the_window() -> None:
     assert ex.tees[0].x_pct == 0.0 and ex.tees[-1].x_pct == 100.0  # 8:00 and 10:00 are tee times
     assert all(0.0 <= t.x_pct <= 100.0 for t in ex.tees)
     assert {t.rank for t in ex.tees if t.rank} == set(range(1, len(ex.ranked) + 1))
+
+
+def test_the_cutoff_is_worded_from_the_config() -> None:
+    assert cutoff_text(1, time(16, 0)) == "4 PM the day before"
+    assert cutoff_text(2, time(9, 30)) == "9:30 AM, 2 days before"
+    assert cutoff_text(0, time(12, 0)) == "12 PM that day"

@@ -87,3 +87,14 @@ def ranking_example(
         tees=tees,
         ranked=ranked,
     )
+
+
+def cutoff_text(days_before: int, time_of_day: time) -> str:
+    """The booking cutoff in words, from the configured ``BookingCutoffConfig`` ("4 PM the day
+    before"), so the panel never states a cutoff the watcher does not use."""
+    clock = f"{time_of_day:%I:%M %p}".lstrip("0").replace(":00 ", " ")
+    if days_before == 0:
+        return f"{clock} that day"
+    if days_before == 1:
+        return f"{clock} the day before"
+    return f"{clock}, {days_before} days before"

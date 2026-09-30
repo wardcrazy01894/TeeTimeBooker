@@ -287,6 +287,9 @@ async def test_both_booking_forms_explain_how_a_time_is_picked(
     panel = panel[: panel.index("</details>")]
     assert "How the bot picks your tee time" in panel
     assert "middle" in panel
-    order = [panel.index(t) for t in ("9:00 AM", "9:07 AM", "8:52 AM")]
-    assert order == sorted(order)  # shown best first
+    chips = panel[panel.index('class="pick-order"') :]
+    order = [chips.index(t) for t in ("9:00 AM", "9:07 AM", "8:52 AM")]
+    assert order == sorted(order)  # the chips list them best first
+    assert "Example at Mangrove Bay" in panel
+    assert "before the booking cutoff (4 PM the day before)" in panel  # from BookingCutoffConfig
     assert "<svg" in panel and "style=" not in panel  # CSP: no inline style, even in the SVG
