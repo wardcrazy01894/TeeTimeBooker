@@ -131,7 +131,12 @@ workflow; there is no copy under `infra/ci/`.
 **Dev deploy policy:** merges to `main` that touch `infra/**` or the workflow
 file auto-deploy to dev with NO required-reviewer gate (intentional per operator
 request). Prod deploys require a manual approval gate on the GitHub `prod`
-environment and are triggered by `infra/v*` tag pushes.
+environment and are triggered by `infra/v*` tag pushes (or a manual dispatch). A merge to main
+never deploys prod. Since 2026-09-30 prod also only takes code that is on main: the `prod`
+environment allows only `main` and `infra/v*` tags (repo setting), and `deploy-prod`'s first
+step refuses a commit that is not an ancestor of `origin/main`
+(`tests/test_azure_iac_prod_guard.py`). Deploy jobs have `timeout-minutes: 45` and one
+concurrency group per env.
 
 **Inline parameters:** `azure-iac.yml` deploys with INLINE parameters, so a value set in a
 `.bicepparam` file does nothing until the workflow parses and passes it too (a missed one kept

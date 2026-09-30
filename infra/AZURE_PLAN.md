@@ -739,7 +739,9 @@ Setup steps for prod environment (one-time):
 1. GitHub repo > Settings > Environments > New environment > name: `prod`
 2. Under "Deployment protection rules" > enable "Required reviewers"
 3. Add the operator GitHub account as required reviewer
-4. Save.
+4. Under "Deployment branches and tags" > "Selected branches and tags": add branch `main` and
+   tag `infra/v*` (done 2026-09-30). `deploy-prod` also refuses a commit that is not on `main`.
+5. Save.
 
 The `dev` environment (if configured in GitHub) should have NO required
 reviewers — any push to `main` that touches `infra/**` deploys automatically.
