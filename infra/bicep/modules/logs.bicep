@@ -29,7 +29,8 @@ param retentionDays int = 30
 // A string because Bicep has no float literal (json() converts it). Normal ingestion is under
 // 10 MB/day per env (Usage, 2026-09-16..30), so this never binds in practice; it bounds a log
 // flood (a crash loop, httpx INFO from the always-warm web) that only the $50 killswitch would
-// otherwise stop. When hit, ingestion pauses until the next UTC day (tests/test_logs_bicep.py).
+// otherwise stop. When hit, ingestion pauses until the next UTC day, so the flood's own logs
+// are lost past the cap: the accepted trade (tests/test_logs_bicep.py).
 @description('Log Analytics daily ingestion cap in GB (e.g. \'0.5\').')
 param dailyQuotaGb string = '0.5'
 

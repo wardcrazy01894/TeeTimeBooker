@@ -295,8 +295,8 @@ free grant), plus up to ~$6/month for prod's always-warm web replica.
 - **IaC:** Bicep modules `identity`, `registry` (one shared ACR in `rg-teetime-shared`),
   `keyvault`, `logs`, `compute`, `budget`, `killswitch` + `killswitch-rbac-prod`, `webapp`,
   `email`, and the standalone `cosmos` account. Booking jobs are derived from
-  `infra/bicep/release_events.json`. `.github/workflows/azure-iac.yml` runs `bicep build` +
-  `what-if` on PRs and deploys.
+  `infra/bicep/release_events.json`. `.github/workflows/azure-iac.yml` runs `bicep build` on PRs
+  and deploys.
 - **Cost killswitch:** a $50 actual-spend budget fires a Logic App that disables and stops every
   ACA Job and stops the web apps; a $20 email-only budget is the early warning.
 - **CI auth:** OIDC federated credentials, no client secret. GitHub secrets (AZURE_PLAN §8.2):
