@@ -437,14 +437,30 @@ _LADDER_SWEEP = (
     "config/example.toml",
 )
 _RETIRED_LADDER = (-500, -250, 0)
-_HISTORY_MARKERS = ("until 2026-09-30", "was ", "2026-09-29", "2026-09-30")
+# Phrases that mark a line as history. Deliberately not a bare "was " or a bare date: ordinary
+# prose and any dated line would slip a stale claim through.
+_HISTORY_MARKERS = (
+    "until 2026-09-30",
+    "since 2026-09-30",
+    "was `",
+    "was -500",
+    "was [-500",
+    "was (-500",
+    "was 500",
+    "2026-09-29/30",
+)
 
 
 def test_no_current_state_doc_describes_the_retired_ladder_as_current() -> None:
     """Review of the 2026-09-30 sweep: one correct mention per doc is not enough; a stale
     "fired at T0-0.5" (with a Unicode minus) or "(-500, -250, 0)" elsewhere in the same doc still misleads. Any line
     naming the retired ladder must mark itself as history."""
-    stale_forms = _ladder_forms(_RETIRED_LADDER) | {"T0\u22120.5", "T0-0.5", "~500 ms"}
+    stale_forms = _ladder_forms(_RETIRED_LADDER) | {
+        "T0\u22120.5",
+        "T0-0.5",
+        "~500 ms",
+        "early_arrival_ms = 500",
+    }
     offenders = []
     for name in _LADDER_SWEEP:
         for n, line in enumerate((REPO_ROOT / name).read_text(encoding="utf-8").splitlines(), 1):

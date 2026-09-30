@@ -323,8 +323,9 @@ async def test_burst_wires_each_offset_to_its_own_post() -> None:
     Both are well covered in isolation, but nothing pinned the wiring between them: the
     burst would still book, count 3 POSTs, and POST the best slot first if it passed
     ``offsets[0]`` to all three tasks (i.e. no stagger at all) or if the offset↔slot zip
-    were transposed. This asserts the three tasks sleep 0 / 250 / 500 ms — the shipped
-    ``(-500, -250, 0)`` ladder measured from the busy-wait wakeup at T0-500ms.
+    were transposed. This asserts the three tasks sleep 0 / 250 / 500 ms — this test's
+    ``(-500, -250, 0)`` ladder (the shipped one until 2026-09-30) measured from the busy-wait
+    wakeup at T0-500ms.
     """
     t0 = datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC)
     clock = BurstRecordingClock(start=t0 - timedelta(milliseconds=500))
