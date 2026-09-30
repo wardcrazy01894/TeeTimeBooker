@@ -555,3 +555,30 @@ async def test_uninvite_loses_to_a_concurrent_first_sign_in() -> None:
     assert await store.delete_invited_user(invited.id) is False
     bound = await store.get_user_unscoped(invited.id)
     assert bound is not None and bound.status is UserStatus.ACTIVE and bound.oauth_subject == "s1"
+
+
+async def test_a_first_sign_in_loses_to_an_uninvite_that_deleted_the_row_first() -> None:
+    """Scan 2026-09-30, the other ordering: the uninvite deletes between the bind's query and its
+    first write. The bind used to upsert the user back as ACTIVE, so the operator saw "Invite
+    removed" while the person was signed in. The bind's write is IfMatch'd on the INVITED doc."""
+    store, _, global_ = _fake_store()
+    invited = User(
+        id=UserId(uuid4()),
+        oauth_provider="",
+        oauth_subject=None,
+        email="pal@x.test",
+        display_name="pal",
+        role=UserRole.MEMBER,
+        status=UserStatus.INVITED,
+    )
+    await store.upsert_user(invited)
+
+    async def uninvite_first() -> None:
+        assert await store.delete_invited_user(invited.id) is True
+
+    global_.before_write = uninvite_first
+    assert (
+        await store.bind_invited_user(email="pal@x.test", provider="google", subject="s1") is None
+    )
+    assert await store.get_user_unscoped(invited.id) is None
+    assert await store.get_user_by_subject("google", "s1") is None

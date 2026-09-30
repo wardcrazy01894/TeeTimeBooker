@@ -1447,13 +1447,32 @@ class CosmosTenantStore:
             type="user",
             status=UserStatus.INVITED.value,
         )
-        invited = sorted((from_user_doc(d).item for d in docs), key=lambda u: u.id)
-        for user in invited:
+        invited = sorted((from_user_doc(d) for d in docs), key=lambda s: s.item.id)
+        for stored in invited:
+            user = stored.item
             if user.email.casefold() == wanted:
                 bound = replace(
                     user, oauth_provider=provider, oauth_subject=subject, status=UserStatus.ACTIVE
                 )
-                await self.upsert_user(bound)
+                # IfMatch on the INVITED doc just read: an Uninvite that deleted it meanwhile
+                # wins (the bind reports "not invited"), instead of the upsert re-creating it.
+                pk = f"user:{user.id}"
+                try:
+                    await self._global.replace_item(
+                        pk,
+                        to_user_doc(bound),
+                        etag=stored.etag,
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                except CosmosHttpResponseError as exc:
+                    if _status(exc) in (_HTTP_PRECONDITION_FAILED, _HTTP_NOT_FOUND):
+                        return None
+                    raise
+                try:
+                    await self.upsert_user(bound)  # the identity claim
+                except UniquenessConflictError:
+                    await self._global.upsert_item(to_user_doc(user))  # back to INVITED
+                    raise
                 return bound
         return None
 

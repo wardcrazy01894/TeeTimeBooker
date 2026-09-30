@@ -736,9 +736,15 @@ message; prod keeps one warm replica, so this needs a deploy mid-send.
 
 **Uninvite.** A person still INVITED also gets **Uninvite** (a `<details>` confirm, 2026-09-29):
 `TenantStore.delete_invited_user` deletes the user only if still INVITED and never bound (Cosmos:
-IfMatch on the etag just read, so a racing first sign-in wins; pinned by
+IfMatch on the etag just read, so a first sign-in that binds first wins; pinned by
 `test_uninvite_loses_to_a_concurrent_first_sign_in`), audited `admin_uninvite`; a signed-in user
-is a 400 ("use Disable"). A person
+is a 400 ("use Disable"). The other ordering is closed too (scan 2026-09-30): the bind's own
+write is IfMatch'd on the INVITED doc it queried, so an Uninvite that deleted it first wins and
+the sign-in gets the 403 (`test_a_first_sign_in_loses_to_an_uninvite_that_deleted_the_row_first`).
+**Invite refuses an address already on the list** (any status, casefolded): it redirects with
+`notice=already_listed` and creates no row, because a second INVITED row outlived an Uninvite of
+the first. Two concurrent submits can still both pass that check (accepted: one operator).
+**Enable** now shows its own notice (it redirected with `notice=active`, which had no text). A person
 still INVITED gets a **Resend invite** button (`action=resend`, `user_id`; a signed-in user is a
 400, an unknown id a 404). The invitation is the one email NOT passed through `redact_text`: its
 purpose is to show the invitee their own address, and every part of it is fixed text, that
@@ -754,6 +760,15 @@ non-left click); a back/forward-cache restore (`pageshow` with `persisted`) clea
 submit event fires only after the browser's own validation, so an invalid form is never marked.
 Without script, `button:active` / `a.button:active` / `summary.button:active` still show a press
 (`base.css`).
+
+**Rejected sign-ins (scan 2026-09-30).** Anyone with a Google or GitHub account can script the
+OAuth round trip, and every rejection wrote a 400-day `audit` doc. The `rejected_signin` record
+still counts every attempt, but the audit doc (SF10) is written at most once per
+`(provider, subject)` per `REJECTED_AUDIT_COOLDOWN` (1 h; in-process `RejectionAuditThrottle`,
+at most 1000 subjects tracked, reset on restart: it bounds growth, it is not a security
+boundary). Both writes on the 403 path are now bounded by `REJECTED_SIGNIN_WRITE_TIMEOUT_S` and
+best-effort, and each rejection logs `signin rejected provider=… reason=not_invited|disabled`
+(no subject, no email). Tests: `tests/web/test_web_admin_users_list.py`.
 
 ## Mail from hello@spicyteetimebooker.com (2026-09-29, stage 1)
 

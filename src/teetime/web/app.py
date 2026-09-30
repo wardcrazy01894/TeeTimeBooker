@@ -26,7 +26,7 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -334,6 +334,31 @@ class _CanonicalHostMiddleware:
         return False
 
 
+# Anyone with a Google or GitHub account can script the OAuth round trip, and each audit doc
+# lives 400 days. The rejected_signin record counts every attempt; the audit trail (SF10) needs
+# a subject only once per cooldown. In-process (per replica, reset on restart): it bounds growth,
+# it is not a security boundary.
+REJECTED_AUDIT_COOLDOWN = timedelta(hours=1)
+
+
+class RejectionAuditThrottle:
+    """At most one rejected-sign-in audit doc per (provider, subject) per ``cooldown``."""
+
+    MAX_TRACKED = 1000
+
+    def __init__(self) -> None:
+        self._last: dict[tuple[str, str], datetime] = {}
+
+    def should_audit(self, key: tuple[str, str], *, now: datetime) -> bool:
+        last = self._last.get(key)
+        if last is not None and now - last < REJECTED_AUDIT_COOLDOWN:
+            return False
+        if len(self._last) >= self.MAX_TRACKED:  # drop expired entries; memory stays bounded
+            self._last = {k: t for k, t in self._last.items() if now - t < REJECTED_AUDIT_COOLDOWN}
+        self._last[key] = now
+        return True
+
+
 @dataclass(frozen=True, slots=True)
 class _Ctx:
     """Everything the routes and dependencies share; built once per ``create_app``."""
@@ -359,6 +384,7 @@ class _Ctx:
     course_names: Mapping[str, str] = field(default_factory=dict)
     # Sends that run AFTER the response (invite, resend, feedback); drained on shutdown.
     jobs: BackgroundJobs = field(default_factory=BackgroundJobs)
+    rejection_audits: RejectionAuditThrottle = field(default_factory=RejectionAuditThrottle)
 
     def course_name(self, course_id: object) -> str:
         return course_display_name(str(course_id), self.course_names)
@@ -474,16 +500,21 @@ async def _complete_signin(ctx: _Ctx, request: Request, identity: ProviderIdenti
         "verified_email_count": len(identity.verified_emails),
     }
     if user is None or user.status is not UserStatus.ACTIVE:
-        action = "signin_rejected_not_invited" if user is None else "signin_rejected_disabled"
-        await ctx.store.append_audit(
-            user_id=None if user is None else user.id,
-            action=action,
-            row_id=None,
-            detail=detail,
-            at=now,
-        )
+        reason = "not_invited" if user is None else "disabled"
+        log.info("signin rejected provider=%s reason=%s", identity.provider, reason)
         if user is None:
             await _remember_rejected_signin(ctx, identity, now=now)
+        if ctx.rejection_audits.should_audit((identity.provider, identity.subject), now=now):
+            await _best_effort_store_write(
+                ctx.store.append_audit(
+                    user_id=None if user is None else user.id,
+                    action=f"signin_rejected_{reason}",
+                    row_id=None,
+                    detail=detail,
+                    at=now,
+                ),
+                what="a rejected sign-in's audit entry",
+            )
         request.session.clear()
         raise ForbiddenError("not invited" if user is None else "this account is disabled")
     auth.establish_session(request.session, user=user, identity=identity, now=now)
@@ -498,24 +529,30 @@ REJECTED_EMAILS_MAX = 5
 REJECTED_SIGNIN_WRITE_TIMEOUT_S = 5.0
 
 
+async def _best_effort_store_write(write: Awaitable[object], *, what: str) -> None:
+    """A write on the UNAUTHENTICATED 403 path: bounded in time, and a failure or a hung store
+    is logged and never changes the 403."""
+    try:
+        await asyncio.wait_for(write, timeout=REJECTED_SIGNIN_WRITE_TIMEOUT_S)
+    except Exception:  # TimeoutError included
+        log.warning("could not record %s", what, exc_info=True)
+
+
 async def _remember_rejected_signin(
     ctx: _Ctx, identity: ProviderIdentity, *, now: datetime
 ) -> None:
     """Best-effort: an uninvited identity (verified emails only, capped) for the operator's
-    ``/admin/users`` list. A failure or a hung store is logged and never changes the 403."""
-    try:
-        await asyncio.wait_for(
-            ctx.store.record_rejected_signin(
-                provider=identity.provider,
-                subject=identity.subject,
-                emails=tuple(identity.verified_emails[:REJECTED_EMAILS_MAX]),
-                display_name=identity.display_name[:REJECTED_NAME_MAX_LEN],
-                at=now,
-            ),
-            timeout=REJECTED_SIGNIN_WRITE_TIMEOUT_S,
-        )
-    except Exception:  # TimeoutError included
-        log.warning("could not record an uninvited sign-in", exc_info=True)
+    ``/admin/users`` list."""
+    await _best_effort_store_write(
+        ctx.store.record_rejected_signin(
+            provider=identity.provider,
+            subject=identity.subject,
+            emails=tuple(identity.verified_emails[:REJECTED_EMAILS_MAX]),
+            display_name=identity.display_name[:REJECTED_NAME_MAX_LEN],
+            at=now,
+        ),
+        what="an uninvited sign-in",
+    )
 
 
 def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency) -> None:
@@ -578,6 +615,10 @@ _ADMIN_NOTICES = {
     ),
     "disabled": "User disabled. Their session is rejected on their next request.",
     "enabled": "User enabled.",
+    "already_listed": (
+        "That address is already on the list, so no second invite was made. Use Resend invite "
+        "for someone who hasn't signed in yet."
+    ),
 }
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -597,6 +638,10 @@ async def _admin_invite(ctx: _Ctx, operator: User, form: FormData, *, now: datet
         role = UserRole(_form_str(form, "role") or UserRole.MEMBER.value)
     except ValueError as e:
         raise HTTPException(status_code=400, detail="invalid role") from e
+    # One row per address: a second INVITED row would outlive an Uninvite of the first (the
+    # earliest-sorting row binds). Two concurrent submits can still both pass this check.
+    if any(u.email.casefold() == email for u in await ctx.store.list_users()):
+        return RedirectResponse("/admin/users?notice=already_listed", status_code=303)
     invited = User(
         id=UserId(uuid4()),
         oauth_provider="",  # unknown until the invitee signs in; bind_invited_user sets it
@@ -722,7 +767,8 @@ async def _admin_set_status(
         detail={"provider": provider, "subject": subject, "target_user_id": str(target.id)},
         at=now,
     )
-    return RedirectResponse(f"/admin/users?notice={status.value}", status_code=303)
+    notice = "enabled" if enable else "disabled"
+    return RedirectResponse(f"/admin/users?notice={notice}", status_code=303)
 
 
 # ACA sends SIGTERM and waits 30 s by default before SIGKILL; stay inside it.
