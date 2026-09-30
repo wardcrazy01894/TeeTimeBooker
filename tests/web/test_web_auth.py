@@ -323,3 +323,21 @@ async def test_oauth_exchange_never_logs_secret(
         rendered = f"{record.getMessage()} {record.args!r} {record.exc_text or ''}"
         for secret in _OAUTH_SECRETS:
             assert secret not in rendered, (record.name, secret)
+
+
+async def test_a_provider_failure_after_the_token_exchange_is_logged(
+    client: httpx.AsyncClient,
+    provider_mock: respx.MockRouter,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Scan 2026-09-30: a broken `user/emails` fetch was a silent 400; only user complaints
+    would have shown it. The reason carries no PII (a path and a status)."""
+    mock_github(provider_mock, GitHubIdentity(subject="42", emails=[("a@x.test", True)]))
+    provider_mock.get("https://api.github.com/user/emails").mock(
+        return_value=httpx.Response(500, json={})
+    )
+    caplog.set_level(logging.WARNING, logger="teetime.web.app")
+    r = await sign_in(client)
+    assert r.status_code == 400
+    (line,) = [x.getMessage() for x in caplog.records if "sign-in failed" in x.getMessage()]
+    assert "github" in line and "returned 500" in line

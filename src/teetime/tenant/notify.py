@@ -633,6 +633,7 @@ async def _safe_send(sender: EmailSender, message: EmailMessage) -> EmailSendRes
     try:
         return await sender.send(message)
     except Exception as exc:  # a sender bug must never mask a booking outcome
+        log.warning("email sender raised %s", type(exc).__name__, exc_info=True)
         return EmailSendResult(ok=False, status="error", error=type(exc).__name__)
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 import random
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID
@@ -584,3 +585,19 @@ def test_render_invitation_shows_the_address_unredacted() -> None:
     """The one email whose job is to show an address: the redaction filter would mask it."""
     body = render_invitation("Pal@Example.com", site_url="https://x.test").body
     assert "(Pal@Example.com)" in body and "redacted" not in body
+
+
+async def test_a_sender_exception_is_logged_with_its_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Scan 2026-09-30: _safe_send kept the class name only, so a sender bug was undiagnosable."""
+
+    class Exploding:
+        async def send(self, message: EmailMessage) -> EmailSendResult:
+            raise RuntimeError("boom")
+
+    caplog.set_level(logging.WARNING, logger="teetime.tenant.notify")
+    summary = RunSummary(events=(_event(UserEventKind.BOOKED),))
+    await deliver_operator_summary(Exploding(), to=OPS, summary=summary, exit_code=0, at=AT)
+    (rec,) = [r for r in caplog.records if "email sender raised" in r.getMessage()]
+    assert rec.exc_info is not None and "RuntimeError" in rec.getMessage()

@@ -272,3 +272,44 @@ async def test_acs_accepted_without_operation_location_is_failure() -> None:
 def test_acs_connection_is_frozen_dataclass() -> None:
     conn = AcsConnection(endpoint=ENDPOINT, access_key=KA_KEY)
     assert conn.host == HOST
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("poll", "status"),
+    [
+        (httpx.Response(500, json={"error": {"code": "Boom", "message": "x"}}), "HTTP 500"),
+        (
+            httpx.Response(
+                200,
+                json={"id": "op-1", "status": "Failed", "error": {"code": "Suppressed"}},
+            ),
+            "Failed",
+        ),
+    ],
+)
+async def test_a_failure_after_acceptance_is_logged(
+    caplog: pytest.LogCaptureFixture, poll: httpx.Response, status: str
+) -> None:
+    """Scan 2026-09-30: a send ACS accepted but then failed (poll error, terminal Failed) used to
+    return ok=False with NO log line, so a lost bug-report email was undiagnosable."""
+    caplog.set_level(logging.WARNING, logger="teetime.tenant.acs_email")
+    respx.post(SEND_URL).mock(return_value=_accepted())
+    respx.get(OP_URL).mock(return_value=poll)
+    result = await _client(max_retries=0).send(MSG)
+    assert result.ok is False and result.status == status
+    (line,) = [r.getMessage() for r in caplog.records if "ACS email not sent" in r.getMessage()]
+    assert f"status={status}" in line
+    if status == "Failed":  # a poll that ran out of retries reports no operation id
+        assert "operation=op-1" in line and "Suppressed" in line
+    assert MSG.to not in caplog.text
+
+
+@respx.mock
+async def test_a_poll_timeout_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="teetime.tenant.acs_email")
+    respx.post(SEND_URL).mock(return_value=_accepted())
+    respx.get(OP_URL).mock(return_value=httpx.Response(200, json={"status": "Running"}))
+    result = await _client(poll_timeout_s=3.0, poll_interval_s=2.0).send(MSG)
+    assert result.status == "timeout"
+    assert any("status=timeout" in r.getMessage() for r in caplog.records)

@@ -16,6 +16,7 @@ import respx
 from fastapi import FastAPI
 
 from teetime.core.clock import FakeClock
+from teetime.core.redaction import install_log_redaction
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.notify import EmailMessage, EmailSendResult, FakeEmailSender
 from teetime.web.app import WebSettings, create_app
@@ -76,17 +77,24 @@ async def test_drain_cancels_what_is_still_running_at_the_timeout() -> None:
     assert jobs.pending == 0
 
 
-async def test_a_failing_job_is_logged_by_class_name_only(caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_failing_job_logs_its_traceback_with_addresses_redacted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Scan 2026-09-30: a crashed job logged its class name only, so a bug in a send path was
+    undiagnosable. The traceback is logged now; the handler's redaction filter scrubs addresses
+    from it (the reason it used to be dropped)."""
+    install_log_redaction()  # production wiring; tests/conftest.py undoes it after the test
     jobs = BackgroundJobs()
 
     async def boom() -> None:
-        raise RuntimeError("secret detail")
+        raise RuntimeError("could not mail pal@example.test")
 
     with caplog.at_level(logging.WARNING):
         jobs.spawn(boom(), name="boom")
         await jobs.drain(timeout_s=1)
-    assert "RuntimeError" in caplog.text
-    assert "secret detail" not in caplog.text
+    assert "background job boom failed: RuntimeError" in caplog.text
+    assert "in boom" in caplog.text  # the traceback names the failing frame
+    assert "pal@example.test" not in caplog.text
 
 
 # --- invite / resend ---------------------------------------------------------------------------

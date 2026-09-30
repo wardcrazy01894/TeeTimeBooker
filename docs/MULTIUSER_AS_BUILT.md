@@ -836,6 +836,26 @@ Start-here card. The page is now titled **Connected Courses** everywhere.
 Tests: `tests/web/test_web_feedback.py`, `tests/web/test_web_feedback_github.py`,
 `tests/web/test_web_instant_send.py`.
 
+## Failures diagnosable from the logs (scan 2026-09-30)
+
+The full repo scan asked of every failure path "could we diagnose it from the logs alone?"
+Fixed: `AcsEmailClient.send` logs EVERY `ok=False` result (`status`, `operation`, `error`),
+including a failure AFTER ACS accepted the send (a poll error, a terminal `Failed`, the poll
+timeout), which used to leave no line at all; `feedback._send` and the invitation send log an
+undelivered result with its error; `GitHubIssues.create` logs GitHub's `message` (+ each
+error's `code:field`, never its `value`, which can echo the report; redacted, capped at 300)
+beside the status, which is what tells an expired token (401) from a
+missing Issues permission (403), issues disabled (410) or a rejected title (422); a background
+job that crashes logs its traceback (the handler's redaction filter scrubs addresses, the reason
+it used to log the class name only); an OAuth failure after the token exchange (a profile or
+`user/emails` fetch error, a missing id) logs `sign-in failed provider=…: <reason>` (no PII);
+a public-diagnostics failure and a raising email sender (`notify._safe_send`) log with
+traceback. Privacy: the PUBLIC issue's diagnostics no longer carry the login-failure count (the
+operator's email keeps it), and the bug form says what the public diagnostics contain. Tests:
+`tests/web/test_github_issues.py` (also the tilde-fence escape and the title cap),
+`tests/tenant/test_acs_email.py`, `tests/web/test_web_feedback_github.py`,
+`tests/web/test_web_auth.py`, `tests/web/test_web_instant_send.py`, `tests/tenant/test_notify.py`.
+
 ## Deploy: retry starting the migrate job (2026-09-29)
 
 A dev deploy (#280's) failed only because the CLI call that starts `teetime-migrate-dev` got

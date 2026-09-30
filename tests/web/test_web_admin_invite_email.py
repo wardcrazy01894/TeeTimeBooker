@@ -3,6 +3,7 @@ still-invited people get a Resend button, and a mail problem never loses the inv
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import replace
 
@@ -185,6 +186,20 @@ async def test_uninvite_refuses_someone_who_signed_in_or_does_not_exist(
     missing = "00000000-0000-4000-8000-000000000000"
     assert (await _post(client, {"action": "uninvite", "user_id": missing})).status_code == 404
     assert (await _post(client, {"action": "uninvite", "user_id": "nope"})).status_code == 400
+
+
+async def test_an_undelivered_invitation_logs_the_acs_error(
+    client: httpx.AsyncClient,
+    provider_mock: respx.MockRouter,
+    sender: FakeEmailSender,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sender.fail = True
+    caplog.set_level(logging.WARNING, logger="teetime.web.app")
+    await _sign_in_operator(client, provider_mock)
+    await _post(client, {"action": "invite", "email": FRIEND, "role": "member"})
+    (line,) = [r.getMessage() for r in caplog.records if "invitation email not" in r.getMessage()]
+    assert "error=" in line
 
 
 @pytest.mark.parametrize(

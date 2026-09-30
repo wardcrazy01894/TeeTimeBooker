@@ -205,9 +205,10 @@ class AcsEmailClient:
     async def send(self, message: EmailMessage) -> EmailSendResult:
         try:
             if self._http is not None:
-                return await self._send(self._http, message)
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                return await self._send(client, message)
+                result = await self._send(self._http, message)
+            else:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    result = await self._send(client, message)
         except _RetriesExhaustedError as exc:
             result = EmailSendResult(ok=False, status=exc.status, error=exc.error)
         except Exception as exc:  # never raise: a mail failure must not mask an outcome
@@ -215,7 +216,15 @@ class AcsEmailClient:
             # it is diagnosable from logs; the redaction filter scrubs it on the way out.
             log.warning("ACS email not sent: unexpected %s", type(exc).__name__, exc_info=True)
             return EmailSendResult(ok=False, status="error", error=type(exc).__name__)
-        log.warning("ACS email not sent: status=%s error=%s", result.status, result.error)
+        # Every failure, including one AFTER ACS accepted the send (a poll error, a terminal
+        # Failed, the poll timeout), gets one line: callers may only keep ``ok``.
+        if not result.ok:
+            log.warning(
+                "ACS email not sent: status=%s operation=%s error=%s",
+                result.status,
+                result.operation_id,
+                result.error,
+            )
         return result
 
     async def _send(self, client: httpx.AsyncClient, message: EmailMessage) -> EmailSendResult:
