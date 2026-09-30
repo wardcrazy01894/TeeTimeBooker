@@ -1981,3 +1981,21 @@ async def test_book_does_not_log_response_pii(caplog: pytest.LogCaptureFixture) 
     assert "CONF-42" in caplog.text  # the confirmation id IS logged (safe)
     assert "leak@example.test" not in caplog.text  # PII must NOT be logged
     assert "555-LEAK" not in caplog.text
+
+
+@respx.mock
+async def test_time_not_available_wins_over_a_starts_at_clause() -> None:
+    """The classifier's order is daily_limit, unavailable, too_early: a body carrying both
+    "Time not available" and " starts at " stays ``unavailable`` (race evidence first)."""
+    respx.post(f"{FOREUP_BASE_URL}{RESERVATION_PATH}").mock(
+        return_value=httpx.Response(
+            400,
+            json={"success": False, "msg": "Time not available. Booking starts at 6:00am."},
+        )
+    )
+    async with httpx.AsyncClient(**_CLIENT_KWARGS) as client:
+        adapter = _adapter(client)
+        adapter._logged_in = True
+        with pytest.raises(SlotGoneError) as excinfo:
+            await adapter.book(_gone_slot(), _request())
+    assert excinfo.value.reason == "unavailable"

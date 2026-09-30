@@ -66,8 +66,9 @@ log = logging.getLogger(__name__)
 def _blind_outcome_label(result: BookingResult | BaseException) -> str:
     """Compact outcome tag for the per-POST blind-burst diagnostic line.
 
-    Coarse, but a SlotGone carries its `reason` (see SlotGoneError): "unavailable" is
-    race/boundary evidence, while "daily_limit" is ForeUP bouncing the surplus POSTs of a
+    Coarse, but a SlotGone carries its `reason` (see SlotGoneError): "unavailable" is race
+    evidence and "too_early" boundary evidence (the POST beat the release), while
+    "daily_limit" is ForeUP bouncing the surplus POSTs of a
     burst we ALREADY won and says nothing about the race. Collapsing them hid that
     distinction on 2026-08-16, when a 1-booked/2-daily_limit burst read as two lost races.
     The detailed per-failure logging still happens below. PII-free — slot ids, exception

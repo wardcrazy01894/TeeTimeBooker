@@ -864,10 +864,11 @@ class ForeUpAdapter(CourseAdapter):
             body["captchaid"] = await self._solve_captcha_inline()
             r = await client.post(RESERVATION_PATH, json=body)
         # Early-arrival diagnostic (2026-07-18 miss). The booking job fires
-        # early_arrival_ms (500 ms) BEFORE T0 to offset network latency so the POST
-        # should LAND right as the 06:00 ET window opens. If it instead ARRIVES pre-open,
-        # ForeUP rejects with 400 "Time not available." — byte-identical to a genuine
-        # slot-race loss. ForeUP's Date response header is its own server clock at the
+        # early_arrival_ms (400 ms since 2026-09-30, was 500) BEFORE T0 to offset network
+        # latency so the POST should LAND right as the 06:00 ET window opens. If it instead
+        # ARRIVES pre-open, ForeUP rejects with 400 — since 2026-09-29 with its own wording
+        # ("Booking for … starts at …", gone[too_early]); before, a pre-open 400 read "Time not
+        # available.", byte-identical to a genuine slot-race loss. ForeUP's Date response header is its own server clock at the
         # moment it processed this POST: a 400 stamped 05:59:59 = pre-open rejection;
         # 06:00:00 = the slot was genuinely claimed first. Logged once per book() call on
         # the FINAL POST (after any MF1 re-POST), success or failure, so a booked drop's

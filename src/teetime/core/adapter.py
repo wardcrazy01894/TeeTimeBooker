@@ -89,10 +89,10 @@ class SlotGoneError(AdapterError):
     the next-ranked slot) — but the values carry opposite evidential weight when reading
     a staggered blind burst (STAGGER_PLAN §3.3):
 
-    * ``"unavailable"`` — the slot was not bookable ("Time not available."). This is the
-      one that CARRIES race/boundary evidence: either someone claimed it first, or our
-      POST arrived before the platform's release flip. Byte-identical bodies, which is
-      exactly why the burst is staggered.
+    * ``"unavailable"`` — the slot was not bookable ("Time not available."). Race evidence:
+      someone claimed it first (historically it could also mean our POST beat the release
+      flip, byte-identical, which is why the burst is staggered; since 2026-09-29 ForeUP
+      reports a pre-open POST as ``"too_early"`` instead).
     * ``"too_early"`` — the POST landed BEFORE the release ("Booking for <date> starts at
       <date> 6:00am (EDT)"). First observed 2026-09-29 on the -500 ms POST, once ForeUP's
       clock stopped running ~0.5 s fast; before that such a POST reached the server at
