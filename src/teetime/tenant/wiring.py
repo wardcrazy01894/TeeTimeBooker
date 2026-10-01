@@ -15,8 +15,9 @@
 
 ``user_notifier_from_env`` is the users' mail path for the watcher and the web: ACS when
 ``ACS_EMAIL_CONNECTION`` + ``ACS_EMAIL_SENDER`` are set, else a logging stand-in (kind + row id
-only). The booker keeps its own SF6 rule (``booking_job.operator_sink_from_env``: an unconfigured
-mail path fails every send so misses can never hide).
+only); with ``OPERATOR_NOTIFY_EMAIL`` it also copies the operator on every booking the watcher
+makes (2026-10-01). The booker keeps its own SF6 rule (``booking_job.operator_sink_from_env``:
+an unconfigured mail path fails every send so misses can never hide).
 """
 
 from __future__ import annotations

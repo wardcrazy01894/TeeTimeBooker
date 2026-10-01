@@ -266,6 +266,13 @@ class StoreUserNotifier:
             )
 
 
+def booker_user_notifier(store: _UserDirectory, sender: EmailSender) -> StoreUserNotifier:
+    """The booker's user notifier: deliberately WITHOUT the per-booking operator copy. Its run
+    summary already lists every booking, so a copy per row would double the 06:00 mail. The only
+    ``StoreUserNotifier`` the booker builds goes through here (pinned by an AST test)."""
+    return StoreUserNotifier(store, sender)
+
+
 async def run_booking_job(
     *,
     event_key: str,
@@ -294,7 +301,7 @@ async def run_booking_job(
     sink = operator or operator_sink_from_env(source)
     # The deploy sets TEETIME_ENV (dev/prod) so the operator can tell the two summaries apart.
     environment = source.get(TEETIME_ENV_VAR, "").strip() or None
-    notifier = StoreUserNotifier(store, sink.sender)
+    notifier = booker_user_notifier(store, sink.sender)
     failure, keyring, api_key = _load_config(source, dry_run=dry_run)
     if failure is not None or keyring is None:
         report = RunReport(
