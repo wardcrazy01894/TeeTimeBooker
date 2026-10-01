@@ -727,6 +727,15 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   `reconcile_eligible` = owned. A manual reservation is never upgraded or cancelled by the bot.
 - **Dry-run environments never mutate reservations** (§7.8): no upgrade, no reconcile-cancel, no
   `cancelled(external)` write, and the web refuses cancel.
+- **The operator hears about EVERY booking** (2026-10-01). The booker's run summary covers the
+  release run; for a tee time the watcher books or upgrades between runs, `StoreUserNotifier`
+  (with `operator_to` from `OPERATOR_NOTIFY_EMAIL`, tag from `TEETIME_ENV`) sends one
+  `render_operator_booking_notice` email per `OPERATOR_COPY_KINDS` event after the user's own,
+  even when the user cannot be mailed. The booker constructs its notifier WITHOUT it (no
+  duplicate of the summary). Web emails never hold a response: the cancel email is a
+  `BackgroundJobs` job like invites and reports (`cancel_row(jobs=…)`); our side hands mail to
+  ACS in ~1 s, and `AcsEmailClient` logs the send-to-Succeeded duration so a slow delivery can be
+  placed (ours vs ACS's).
 - **Tenant exit codes are non-zero only for systemic causes** (`runner.exit_code_for`,
   `watch_exit_status`, §4.5/§7.9): store failures, keyring, decrypt failures, CAPTCHA/OTP,
   UNCERTAIN (booker), the self-deadline, a failed outcome write, a failed operator summary. One

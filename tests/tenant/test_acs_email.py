@@ -313,3 +313,21 @@ async def test_a_poll_timeout_is_logged(caplog: pytest.LogCaptureFixture) -> Non
     result = await _client(poll_timeout_s=3.0, poll_interval_s=2.0).send(MSG)
     assert result.status == "timeout"
     assert any("status=timeout" in r.getMessage() for r in caplog.records)
+
+
+@respx.mock
+async def test_a_successful_send_logs_how_long_acs_took(caplog: pytest.LogCaptureFixture) -> None:
+    """Operator report 2026-10-01: a user's cancel email arrived minutes after the course's own.
+    Our logs showed only WHEN the send succeeded, not how long ACS held the request, so the one
+    line a success writes now carries the send-to-Succeeded duration on the injected clock."""
+    respx.post(SEND_URL).mock(return_value=_accepted())
+    respx.get(OP_URL).mock(
+        side_effect=[
+            httpx.Response(200, json={"id": "op-1", "status": "Running"}),
+            httpx.Response(200, json={"id": "op-1", "status": "Succeeded"}),
+        ]
+    )
+    with caplog.at_level(logging.INFO):
+        result = await _client(poll_interval_s=2.0).send(MSG)
+    assert result.ok
+    assert "ACS email delivered to the service: operation=op-1 in 2.0 s" in caplog.text

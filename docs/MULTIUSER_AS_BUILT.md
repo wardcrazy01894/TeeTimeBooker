@@ -320,6 +320,25 @@ send; it RETURNS an `EmailSendResult` and never raises. `load_acs_settings` read
 `UserEventKind` gained the operator-only `NEEDS_RECONCILE`. `FakeEmailSender` is the test double.
 Tests: `tests/tenant/test_{notify,acs_email}.py`.
 
+### Every booking reaches the operator; the cancel email leaves the request path (2026-10-01)
+
+The first new user's session showed two gaps. (1) The operator heard about the 06:00 run (its
+summary) but not about a tee time the **watcher** booked in the afternoon (a date requested inside
+the 7-day window). `notify.OPERATOR_COPY_KINDS` (BOOKED, UPGRADED) and
+`render_operator_booking_notice` add one short operator email per such event (who, course, date,
+tee time, how, tagged `[TeeTimeBooker · PROD]`); `StoreUserNotifier(operator_to=…, environment=…)`
+sends it after the user's own mail, and still sends it when the user cannot be mailed.
+`wiring.user_notifier_from_env` reads `OPERATOR_NOTIFY_EMAIL` + `TEETIME_ENV` (the watch job already
+had both from `compute.bicep`), so `tenant-watch` and `web` get the copy; the booker constructs its
+notifier without it because its run summary lists every booking. (2) The user's cancel email
+"took minutes" while the course's came at once. Prod logs for 2026-09-28 … 10-01 put the ForeUP
+DELETE and the ACS `202 Accepted` within one second of each other every time, and ACS's
+`Succeeded` 2-6 s later, so the lag is downstream of ACS (the Azure-managed sending pool); what
+the page DID do was wait for that poll before redirecting. `services.cancel_row(jobs=…)` now
+spawns the email on `BackgroundJobs` like invites and reports (`jobs=None` keeps the awaited path
+for tests), and `AcsEmailClient` logs the send-to-Succeeded duration on every success
+(`… operation=<id> in 2.0 s`) so the next report can be read off the logs.
+
 ### Operator summary v2 (2026-09-28)
 
 The first live summaries were one terse line per event (`booked | user=d16e0d4b |

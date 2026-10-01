@@ -602,7 +602,7 @@ as above. Nothing here exists in the default `toml` mode.
 | `TENANT_CREDS_KEYRING` | secret `TENANT-CREDS-KEYRING` | yes | no | yes |
 | `ACS_EMAIL_CONNECTION` | secret `ACS-EMAIL-CONNECTION` | yes | no | yes |
 | `ACS_EMAIL_SENDER` | plain (`acsEmailSender`) | yes | no | yes |
-| `OPERATOR_NOTIFY_EMAIL` | secret `OPERATOR-NOTIFY-EMAIL` | yes | no | no |
+| `OPERATOR_NOTIFY_EMAIL` | secret `OPERATOR-NOTIFY-EMAIL` | yes (the booker's run summary; the watcher's per-booking operator copy, 2026-10-01) | no | no |
 | `GITHUB_ISSUES_TOKEN` / `GITHUB_ISSUES_REPO` | secret `GITHUB-ISSUES-TOKEN` / plain (`githubIssuesRepo`) | no | no | only where `githubIssuesRepo` is set (prod) |
 | `TWOCAPTCHA_API_KEY` | secret `TWOCAPTCHA-API-KEY` | yes (shared with toml) | no | no |
 

@@ -39,7 +39,16 @@ from ..courses.names import COURSE_DISPLAY_NAMES
 from .acs_email import AcsConfigError, AcsEmailClient, load_acs_settings
 from .crypto import KEYRING_ENV_VAR, Keyring, KeyringError, load_keyring_from_env
 from .models import CourseAccount, User, UserId, UserStatus
-from .notify import EmailMessage, EmailSender, EmailSendResult, EmailUserNotifier, UserEvent
+from .notify import (
+    OPERATOR_COPY_KINDS,
+    EmailMessage,
+    EmailSender,
+    EmailSendResult,
+    EmailUserNotifier,
+    UserEvent,
+    _safe_send,
+    render_operator_booking_notice,
+)
 from .runner import (
     EventPlan,
     OperatorSink,
@@ -199,7 +208,12 @@ class _UserDirectory(Protocol):
 class StoreUserNotifier:
     """The runner's ``UserNotifier``: looks each event's user up (a post-race system read) and
     mails them through an ``EmailUserNotifier`` bound to that ONE user. An unknown or disabled
-    user is skipped with a log line (ids only)."""
+    user is skipped with a log line (ids only).
+
+    With ``operator_to`` set (the watcher and the web, from ``OPERATOR_NOTIFY_EMAIL``), every
+    ``OPERATOR_COPY_KINDS`` event (a booking or an upgrade) ALSO sends the operator one short
+    notice (operator request 2026-10-01), even when the user could not be mailed. The booker
+    leaves it unset: its run summary already lists every booking."""
 
     def __init__(
         self,
@@ -207,11 +221,15 @@ class StoreUserNotifier:
         sender: EmailSender,
         *,
         course_labels: Mapping[CourseId, str] | None = None,
+        operator_to: str | None = None,
+        environment: str | None = None,
     ) -> None:
         self._directory = directory
         self._sender = sender
         # Emails name the course (``courses.names``), never its id; an override wins.
         self._labels = dict(COURSE_DISPLAY_NAMES if course_labels is None else course_labels)
+        self.operator_to = operator_to
+        self.environment = environment
 
     async def send(self, event: UserEvent) -> None:
         user = await self._directory.get_user_unscoped(event.user_id) if event.user_id else None
@@ -222,9 +240,32 @@ class StoreUserNotifier:
                 event.user_id,
                 event.kind.value,
             )
-            return
-        notifier = EmailUserNotifier(self._sender, user=user, course_labels=self._labels)
-        await notifier.send(event)
+        else:
+            notifier = EmailUserNotifier(self._sender, user=user, course_labels=self._labels)
+            await notifier.send(event)
+        if self.operator_to and event.kind in OPERATOR_COPY_KINDS:
+            await self._copy_operator(event, user)
+
+    async def _copy_operator(self, event: UserEvent, user: User | None) -> None:
+        label = self._labels.get(event.course_id) if event.course_id is not None else None
+        rendered = render_operator_booking_notice(
+            event,
+            user_name=user.display_name if user is not None else None,
+            course_label=label,
+            environment=self.environment,
+        )
+        result = await _safe_send(
+            self._sender,
+            EmailMessage(to=self.operator_to or "", subject=rendered.subject, body=rendered.body),
+        )
+        if not result.ok:
+            log.warning(
+                "operator copy of %s for row %s not delivered (status=%s error=%s)",
+                event.kind.value,
+                event.row_id,
+                result.status,
+                result.error,
+            )
 
 
 async def run_booking_job(

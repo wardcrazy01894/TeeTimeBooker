@@ -27,6 +27,7 @@ from teetime.tenant import notify
 from teetime.tenant.golf_quips import GOLF_QUIPS
 from teetime.tenant.models import RowId, User, UserId, UserRole, UserStatus
 from teetime.tenant.notify import (
+    OPERATOR_COPY_KINDS,
     USER_FACING_KINDS,
     AttemptResult,
     BufferingNotifier,
@@ -43,6 +44,7 @@ from teetime.tenant.notify import (
     deliver_operator_summary,
     first_name,
     render_invitation,
+    render_operator_booking_notice,
     render_operator_summary,
     render_user_event,
 )
@@ -619,3 +621,46 @@ def test_a_too_early_rejection_reads_as_such_in_the_operator_summary() -> None:
     (line,) = [ln for ln in body.splitlines() if "8:30 AM" in ln and "sent 0.40 s early" in ln]
     assert "rejected: too early (before the booking window opened)" in line
     assert "reason unknown" not in body
+
+
+# --- operator copy of every booking (operator request 2026-10-01) -------------------------------
+
+
+def test_operator_booking_notice_names_who_what_and_when() -> None:
+    """The operator wants to know EVERY time someone gets a tee time, not only at the 06:00 run:
+    one short email per watcher booking, by display name, course, date and tee time, tagged with
+    the environment so dev and prod never read alike."""
+    event = _event(UserEventKind.BOOKED, detail="watcher")
+    mail = render_operator_booking_notice(
+        event, user_name="Andrew Golfer", course_label="Mangrove Bay", environment="prod"
+    )
+    assert (
+        mail.subject
+        == "[TeeTimeBooker · PROD] Booked: Andrew Golfer · Mangrove Bay Sat Oct 10 at 8:12 AM"
+    )
+    assert "Andrew Golfer" in mail.body
+    assert "Mangrove Bay" in mail.body
+    assert "Saturday, October 10" in mail.body
+    assert "8:12 AM" in mail.body
+    assert "watcher" in mail.body  # how it got booked (a check between drops)
+    assert str(MB) not in mail.subject + mail.body
+
+
+def test_operator_booking_notice_for_an_upgrade_says_so_and_tolerates_no_name() -> None:
+    event = _event(UserEventKind.UPGRADED, detail="watcher")
+    mail = render_operator_booking_notice(
+        event, user_name=None, course_label="Mangrove Bay", environment=None
+    )
+    assert mail.subject.startswith("[TeeTimeBooker] Upgraded: user 11111111 ·")
+    assert "moved to a better tee time" in mail.body
+
+
+def test_operator_booking_notice_refuses_a_non_booking_kind() -> None:
+    with pytest.raises(ValueError, match="booking"):
+        render_operator_booking_notice(
+            _event(UserEventKind.CANCELLED), user_name="x", course_label="MB", environment=None
+        )
+
+
+def test_operator_copy_kinds_are_exactly_the_bookings() -> None:
+    assert frozenset({UserEventKind.BOOKED, UserEventKind.UPGRADED}) == OPERATOR_COPY_KINDS
