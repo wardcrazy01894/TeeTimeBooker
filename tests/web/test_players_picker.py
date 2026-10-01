@@ -13,7 +13,11 @@ TEMPLATES = Path(__file__).resolve().parents[2] / "src" / "teetime" / "web" / "t
 
 def _macro(name: str):  # type: ignore[no-untyped-def]
     env = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
-    env.filters["course_name"] = str  # the app registers the real one; unused by this macro
+    # The app registers the real ones; unused by this macro, but Jinja resolves filters at
+    # compile time for the whole file.
+    env.filters["course_name"] = str
+    env.filters["course_signup_url"] = lambda _c: None
+    env.filters["release_cycle"] = lambda _c: None
     return getattr(env.get_template("_macros.html").module, name)
 
 

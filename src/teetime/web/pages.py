@@ -169,6 +169,10 @@ class _Pages:
             ctx.store, user_id=user.id, clock=ctx.clock, policies=ctx.policies
         )
         context["courses"] = sorted(ctx.policies)
+        # A course already connected leaves the Connect form (2026-10-01: blank username and
+        # password boxes under a connected course read as "do it again?").
+        connected = {str(v.account.course_id) for v in context["views"]}  # type: ignore[attr-defined]
+        context["connectable"] = [c for c in context["courses"] if c not in connected]  # type: ignore[attr-defined]
         context["adoptions"] = (
             {
                 str(v.account.id): await adopt.preview(

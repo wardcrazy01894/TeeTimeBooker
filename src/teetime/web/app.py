@@ -43,7 +43,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ..core.clock import Clock
 from ..core.config import BookingCutoffConfig
 from ..core.release_policy import ReleasePolicy
-from ..courses.names import COURSE_DISPLAY_NAMES, course_display_name
+from ..courses.names import COURSE_DISPLAY_NAMES, COURSE_SIGNUP_URLS, course_display_name
 from ..tenant.crypto import Keyring
 from ..tenant.models import User, UserId, UserRole, UserStatus
 from ..tenant.notify import EmailMessage, EmailSender, UserNotifier, render_invitation
@@ -53,6 +53,7 @@ from . import admin_users as admin_users_view
 from . import auth
 from .auth import ForbiddenError
 from .background import BackgroundJobs
+from .course_info import ReleaseCycle, release_cycle
 from .github_issues import GitHubIssues
 from .oauth import (
     PROVIDERS,
@@ -390,12 +391,25 @@ class _Ctx:
     probe_limits: ProbeLimits = field(default_factory=ProbeLimits)
     # ``str(course_id)`` -> the name a person reads (default ``courses.names``); never a raw id.
     course_names: Mapping[str, str] = field(default_factory=dict)
+    # ``str(course_id)`` -> the course's own booking site (default ``courses.names``), linked
+    # from Connect a course as where to create the login the bot will use.
+    course_signup_urls: Mapping[str, str] = field(default_factory=dict)
     # Sends that run AFTER the response (invite, resend, feedback); drained on shutdown.
     jobs: BackgroundJobs = field(default_factory=BackgroundJobs)
     rejection_audits: RejectionAuditThrottle = field(default_factory=RejectionAuditThrottle)
 
     def course_name(self, course_id: object) -> str:
         return course_display_name(str(course_id), self.course_names)
+
+    def release_cycle(self, course_id: object) -> ReleaseCycle | None:
+        """The course's release cycle in words (``web/course_info.py``), None for a course with
+        no hosted policy (nothing is shown rather than a guess)."""
+        policy = self.policies.get(str(course_id))
+        if policy is None:
+            return None
+        return release_cycle(
+            policy, cutoff_text=cutoff_text(self.cutoff.days_before, self.cutoff.time_of_day)
+        )
 
     def page(
         self, request: Request, name: str, context: dict[str, Any], *, status_code: int = 200
@@ -812,6 +826,7 @@ def create_app(
     cutoff: BookingCutoffConfig | None = None,
     adapter_factory: AdapterFactory | None = None,
     course_names: Mapping[str, str] | None = None,
+    course_signup_urls: Mapping[str, str] | None = None,
 ) -> FastAPI:
     """Build the ASGI app. MU-14 (connect, refresh, cancel) needs ``keyring`` (decrypt /
     encrypt the course passwords) and ``adapter_factory`` (one throwaway ForeUP adapter per
@@ -822,7 +837,9 @@ def create_app(
     course with no policy cannot take a standing rule (one-off dates still work), and the
     policies' courses are the ones an account can be connected to (MU-14). ``course_names``
     (``str(course_id)`` -> display name, default ``courses.names.COURSE_DISPLAY_NAMES``) is what
-    every page shows instead of a course id; an unknown id falls back to itself."""
+    every page shows instead of a course id; an unknown id falls back to itself.
+    ``course_signup_urls`` (default ``courses.names.COURSE_SIGNUP_URLS``) is where Connect a
+    course sends a person to create the course login; a course without one gets no link."""
     templates = Jinja2Templates(directory=str(_HERE / "templates"))
     ctx = _Ctx(
         settings=settings,
@@ -849,8 +866,15 @@ def create_app(
             if course_names is None
             else dict(course_names)
         ),
+        course_signup_urls=(
+            {str(cid): url for cid, url in COURSE_SIGNUP_URLS.items()}
+            if course_signup_urls is None
+            else dict(course_signup_urls)
+        ),
     )
     templates.env.filters["course_name"] = ctx.course_name
+    templates.env.filters["course_signup_url"] = lambda cid: ctx.course_signup_urls.get(str(cid))
+    templates.env.filters["release_cycle"] = ctx.release_cycle
     templates.env.filters["provider_name"] = provider_display_name
     templates.env.globals["static_url"] = _static_url_for(static_asset_versions(STATIC_DIR))
     templates.env.globals["ranking_example"] = ranking_example()

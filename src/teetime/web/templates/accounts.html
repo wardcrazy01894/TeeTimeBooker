@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import error_block %}
+{% from "_macros.html" import error_block, course_facts %}
 {% block title %}Connected Courses · TeeTimeBooker{% endblock %}
 {% block content %}
 <h1>Connected Courses</h1>
@@ -17,6 +17,8 @@
     {% if v.account.verified_at %}<span>Verified {{ v.account.verified_at.strftime('%Y-%m-%d') }}</span>{% endif %}
     <span>Reservations {{ v.snapshot_label }}</span>
   </p>
+  {% set cycle = v.account.course_id | release_cycle %}
+  {% if cycle %}<p class="release-cycle">{{ cycle.opens }} {{ cycle.tip }}</p>{% endif %}
   <div class="card-actions">
     {% if v.account.status.value == "active" %}
     <form method="post" action="/accounts/{{ v.account.id }}/refresh" class="inline">
@@ -44,18 +46,25 @@
 <section>
   <h2>Connect a course</h2>
   <p class="hint">Don't see your course? <a href="/feedback?kind=course&amp;from=/accounts">Request a course</a>.</p>
-  {% if courses %}
+  {% if connectable %}
+  <div class="callout">
+    <p><strong>Use the login you already have at the course.</strong> This doesn't create an account anywhere: the bot signs in to the course's own booking site as you, with the username and password you already use there. It checks them with one live login, stores the password encrypted and never shows it again.</p>
+    <p>No login at the course yet? Create one on the course's booking site first, then come back and connect it:</p>
+    {{ course_facts(connectable, true) }}
+  </div>
   <form method="post" action="/accounts/connect">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Course
-      <select name="course_id">
-        {% for c in courses %}<option value="{{ c }}">{{ c | course_name }}</option>{% endfor %}
+      <select name="course_id" class="connect-course">
+        {% for c in connectable %}<option value="{{ c }}">{{ c | course_name }}</option>{% endfor %}
       </select>
     </label>
     <label>Course username <input type="text" name="username" autocomplete="username" required></label>
     <label>Course password <input type="password" name="password" autocomplete="current-password" required></label>
     <button type="submit" class="primary">Connect</button>
   </form>
+  {% elif courses %}
+  <p class="placeholder">Every course this site supports is connected to your account. Changed a course password? Use <strong>Re-verify</strong> on that course above.</p>
   {% else %}
   <p class="placeholder">No course is available to connect yet.</p>
   {% endif %}

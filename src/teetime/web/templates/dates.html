@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, status, one_off_form, error_block, windows, ranked_form, nice_date %}
+{% from "_macros.html" import hhmm, status, one_off_form, error_block, windows, ranked_form, nice_date, course_facts %}
 {% block title %}Dates · TeeTimeBooker{% endblock %}
 {% block content %}
 <h1>Dates</h1>
@@ -75,6 +75,7 @@
   <h2>Book a date</h2>
   {% if accounts %}
   <p class="hint">A date booked here replaces a weekly booking for that date.</p>
+  {{ course_facts(accounts | map(attribute="course_id")) }}
   {{ ranked_form(csrf_token, accounts, "/bookings/date", option_slots, weekdays, false, min_date) }}
   {% else %}
   <p class="placeholder">Connect a course first. <a href="/accounts">Go to Connected Courses</a>.</p>

@@ -106,8 +106,14 @@ async def test_no_raw_course_id_is_visible_on_any_main_page(
 
 
 async def test_connect_dropdown_shows_names_but_posts_the_course_id(
-    client: httpx.AsyncClient, member: Member
+    client: httpx.AsyncClient, store: InMemoryTenantStore, provider_mock: respx.MockRouter
 ) -> None:
+    # A user with NOTHING connected yet: a connected course leaves the dropdown (2026-10-01).
+    await store.upsert_user(make_invited("fresh@example.test"))
+    mock_github(
+        provider_mock, GitHubIdentity(subject="4242", emails=[("fresh@example.test", True)])
+    )
+    assert (await sign_in(client)).status_code == 303
     page = await client.get("/accounts")
     assert f'<option value="{MB}">Mangrove Bay</option>' in page.text
 

@@ -11,6 +11,9 @@
    PageUp/PageDown on the days). The native input stays in the form and carries the value;
    without script it is the only date control.
 
+   Also with script: under Connect a course, only the chosen course's facts (release cycle,
+   where to create a login) are shown; without it every connectable course's line shows.
+
    Also with script: every button answers a click at once. A submitted form's buttons are
    disabled and the clicked one shows a spinner; a button-styled link shows it while the next
    page loads (see onSubmit / onButtonLinkClick). */
@@ -349,10 +352,33 @@
   document.addEventListener("click", onButtonLinkClick);
   window.addEventListener("pageshow", clearBusy);
 
+  // ---- connect a course: show only the chosen course's facts --------------------------------
+
+  // Without script every connectable course's line (release cycle + where to create a login)
+  // shows under the Connect form; with it, only the course picked in the dropdown.
+  function connectFacts(select) {
+    var section = select.closest("section");
+    if (!section) {
+      return;
+    }
+    var items = section.querySelectorAll(".course-facts li[data-course]");
+    function refresh() {
+      for (var i = 0; i < items.length; i += 1) {
+        items[i].hidden = items[i].getAttribute("data-course") !== select.value;
+      }
+    }
+    select.addEventListener("change", refresh);
+    refresh();
+  }
+
   function init() {
     var forms = document.querySelectorAll("form.ranked");
     for (var i = 0; i < forms.length; i += 1) {
       enhance(forms[i]);
+    }
+    var selects = document.querySelectorAll("select.connect-course");
+    for (var k = 0; k < selects.length; k += 1) {
+      connectFacts(selects[k]);
     }
     var dates = document.querySelectorAll("input.datepick");
     for (var j = 0; j < dates.length; j += 1) {

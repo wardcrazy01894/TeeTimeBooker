@@ -24,6 +24,10 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
      `"foreup.twin_brooks": TwinBrooksAdapter,`
   3. Add a `[[courses]]` entry in your TOML config and add `"foreup:twin_brooks"`
      to `course_preferences` in the desired priority position.
+  4. For the web: one line each in `courses/names.py`'s `COURSE_DISPLAY_NAMES` (what a person
+     reads) and `COURSE_SIGNUP_URLS` (the course's own booking page, linked from Connect a course
+     as where to create the login). Its release cycle on the pages comes from the adapter's
+     `release_policy` automatically (`web/course_info.py`).
 
   No other code needs to change. Adding a course to `[[courses]]` without
   adding it to `course_preferences` is safe — it won't change the RequestId
