@@ -7,7 +7,9 @@ sink from the environment, per-user routing, and the job-level exit code (§4.5)
 from __future__ import annotations
 
 import base64
+import inspect
 import json
+import logging
 import os
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
@@ -399,3 +401,31 @@ async def test_without_an_operator_address_nothing_extra_is_sent() -> None:
     sender = FakeEmailSender()
     await StoreUserNotifier(store, sender).send(_booked(user.id))
     assert [m.to for m in sender.sent] == [user.email]
+
+
+async def test_operator_copy_survives_a_user_notifier_that_raises(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review #301: the user mail and the operator copy must not share a failure path."""
+
+    class Exploding:
+        def __init__(self, *a: object, **k: object) -> None: ...
+
+        async def send(self, event: UserEvent) -> None:
+            raise RuntimeError("render bug")
+
+    monkeypatch.setattr("teetime.tenant.booking_job.EmailUserNotifier", Exploding)
+    store = _store()
+    user, _ = await _seed(store, n=1)
+    sender = FakeEmailSender()
+    notifier = StoreUserNotifier(store, sender, operator_to="ops@example.test")
+    with caplog.at_level(logging.WARNING):
+        await notifier.send(_booked(user.id))  # must not raise
+    assert [m.to for m in sender.sent] == ["ops@example.test"]
+    assert "raised RuntimeError" in caplog.text
+
+
+def test_the_booker_builds_its_notifier_without_the_operator_copy() -> None:
+    """The run summary already lists every booking: a copy per row would double the 06:00 mail.
+    Pinned at the source, since `run_booking_job` needs the whole environment to run."""
+    assert "operator_to" not in inspect.getsource(run_booking_job)

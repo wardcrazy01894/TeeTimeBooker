@@ -46,8 +46,7 @@ from .notify import (
     EmailSendResult,
     EmailUserNotifier,
     UserEvent,
-    _safe_send,
-    render_operator_booking_notice,
+    deliver_operator_booking_notice,
 )
 from .runner import (
     EventPlan,
@@ -210,10 +209,11 @@ class StoreUserNotifier:
     mails them through an ``EmailUserNotifier`` bound to that ONE user. An unknown or disabled
     user is skipped with a log line (ids only).
 
-    With ``operator_to`` set (the watcher and the web, from ``OPERATOR_NOTIFY_EMAIL``), every
+    With ``operator_to`` set (the watcher, from ``OPERATOR_NOTIFY_EMAIL``), every
     ``OPERATOR_COPY_KINDS`` event (a booking or an upgrade) ALSO sends the operator one short
-    notice (operator request 2026-10-01), even when the user could not be mailed. The booker
-    leaves it unset: its run summary already lists every booking."""
+    notice (operator request 2026-10-01), even when the user could not be mailed or the user's
+    send raised. The booker leaves it unset: its run summary already lists every booking. The
+    web shares the wiring but never books (and its env names the address differently)."""
 
     def __init__(
         self,
@@ -241,30 +241,28 @@ class StoreUserNotifier:
                 event.kind.value,
             )
         else:
-            notifier = EmailUserNotifier(self._sender, user=user, course_labels=self._labels)
-            await notifier.send(event)
+            try:
+                notifier = EmailUserNotifier(self._sender, user=user, course_labels=self._labels)
+                await notifier.send(event)
+            except Exception as exc:
+                # The operator copy below must still go out (review #301 finding 1).
+                log.warning(
+                    "user notification %s for row %s raised %s",
+                    event.kind.value,
+                    event.row_id,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
         if self.operator_to and event.kind in OPERATOR_COPY_KINDS:
-            await self._copy_operator(event, user)
-
-    async def _copy_operator(self, event: UserEvent, user: User | None) -> None:
-        label = self._labels.get(event.course_id) if event.course_id is not None else None
-        rendered = render_operator_booking_notice(
-            event,
-            user_name=user.display_name if user is not None else None,
-            course_label=label,
-            environment=self.environment,
-        )
-        result = await _safe_send(
-            self._sender,
-            EmailMessage(to=self.operator_to or "", subject=rendered.subject, body=rendered.body),
-        )
-        if not result.ok:
-            log.warning(
-                "operator copy of %s for row %s not delivered (status=%s error=%s)",
-                event.kind.value,
-                event.row_id,
-                result.status,
-                result.error,
+            await deliver_operator_booking_notice(
+                self._sender,
+                to=self.operator_to,
+                event=event,
+                user_name=user.display_name if user is not None else None,
+                course_label=(
+                    self._labels.get(event.course_id) if event.course_id is not None else None
+                ),
+                environment=self.environment,
             )
 
 

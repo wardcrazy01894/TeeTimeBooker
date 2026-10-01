@@ -41,6 +41,7 @@ from teetime.tenant.notify import (
     UserEvent,
     UserEventKind,
     UserNotifier,
+    deliver_operator_booking_notice,
     deliver_operator_summary,
     first_name,
     render_invitation,
@@ -653,6 +654,34 @@ def test_operator_booking_notice_for_an_upgrade_says_so_and_tolerates_no_name() 
     )
     assert mail.subject.startswith("[TeeTimeBooker] Upgraded: user 11111111 ·")
     assert "moved to a better tee time" in mail.body
+
+
+def test_operator_booking_notice_for_an_event_with_no_user_says_someone() -> None:
+    mail = render_operator_booking_notice(
+        _event(UserEventKind.BOOKED, user_id=None),
+        user_name=None,
+        course_label="MB",
+        environment=None,
+    )
+    assert mail.subject.startswith("[TeeTimeBooker] Booked: Someone ·")
+
+
+async def test_deliver_operator_booking_notice_never_raises() -> None:
+    bad = _event(UserEventKind.CANCELLED)  # not a booking: the renderer refuses it
+    result = await deliver_operator_booking_notice(
+        FakeEmailSender(), to=OPS, event=bad, user_name=None, course_label=None, environment=None
+    )
+    assert result.ok is False and result.error == "ValueError"
+    sender = FakeEmailSender()
+    ok = await deliver_operator_booking_notice(
+        sender,
+        to=OPS,
+        event=_event(UserEventKind.BOOKED),
+        user_name="Turk",
+        course_label="MB",
+        environment="prod",
+    )
+    assert ok.ok and [m.to for m in sender.sent] == [OPS]
 
 
 def test_operator_booking_notice_refuses_a_non_booking_kind() -> None:

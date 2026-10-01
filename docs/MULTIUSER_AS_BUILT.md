@@ -329,8 +329,12 @@ the 7-day window). `notify.OPERATOR_COPY_KINDS` (BOOKED, UPGRADED) and
 tee time, how, tagged `[TeeTimeBooker · PROD]`); `StoreUserNotifier(operator_to=…, environment=…)`
 sends it after the user's own mail, and still sends it when the user cannot be mailed.
 `wiring.user_notifier_from_env` reads `OPERATOR_NOTIFY_EMAIL` + `TEETIME_ENV` (the watch job already
-had both from `compute.bicep`), so `tenant-watch` and `web` get the copy; the booker constructs its
-notifier without it because its run summary lists every booking. (2) The user's cancel email
+had both from `compute.bicep`), so `tenant-watch` gets the copy (the web shares the wiring but never
+books, and its env names the operator `TEETIME_OPERATOR_EMAIL`, so there it is a no-op); the booker
+constructs its notifier without it because its run summary lists every booking (pinned at the
+source by `test_the_booker_builds_its_notifier_without_the_operator_copy`). `notify.
+deliver_operator_booking_notice` is the never-raising render + send, and a user send that raises
+still lets the copy go out. (2) The user's cancel email
 "took minutes" while the course's came at once. Prod logs for 2026-09-28 … 10-01 put the ForeUP
 DELETE and the ACS `202 Accepted` within one second of each other every time, and ACS's
 `Succeeded` 2-6 s later, so the lag is downstream of ACS (the Azure-managed sending pool); what

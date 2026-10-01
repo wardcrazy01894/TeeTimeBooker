@@ -302,7 +302,7 @@ def render_operator_booking_notice(
     outside ``OPERATOR_COPY_KINDS``."""
     if event.kind not in OPERATOR_COPY_KINDS:
         raise ValueError(f"{event.kind} is not a booking; only {sorted(OPERATOR_COPY_KINDS)}")
-    who = _who(event.user_id, user_name)
+    who = _who(event.user_id, user_name) if (user_name or event.user_id) else "Someone"
     course = _course(event, course_label)
     tag = "TeeTimeBooker" + (f" · {environment.upper()}" if environment else "")
     verb = "Booked" if event.kind is UserEventKind.BOOKED else "Upgraded"
@@ -709,6 +709,38 @@ async def deliver_operator_summary(
         result.error,
     )
     return exit_code or EXIT_OPERATOR_NOTIFY_FAILED
+
+
+async def deliver_operator_booking_notice(
+    sender: EmailSender,
+    *,
+    to: str,
+    event: UserEvent,
+    user_name: str | None,
+    course_label: str | None,
+    environment: str | None,
+) -> EmailSendResult:
+    """Render + send one operator booking notice. NEVER raises (a render bug or a sender raise is
+    an ``ok=False`` result, logged), so the caller's own outcome and the user's email stand."""
+    try:
+        rendered = render_operator_booking_notice(
+            event, user_name=user_name, course_label=course_label, environment=environment
+        )
+    except Exception as exc:
+        log.warning("operator booking notice not rendered (%s)", type(exc).__name__, exc_info=True)
+        return EmailSendResult(ok=False, status="error", error=type(exc).__name__)
+    result = await _safe_send(
+        sender, EmailMessage(to=to, subject=rendered.subject, body=rendered.body)
+    )
+    if not result.ok:
+        log.warning(
+            "operator copy of %s for row %s not delivered (status=%s error=%s)",
+            event.kind.value,
+            event.row_id,
+            result.status,
+            result.error,
+        )
+    return result
 
 
 class EmailUserNotifier:

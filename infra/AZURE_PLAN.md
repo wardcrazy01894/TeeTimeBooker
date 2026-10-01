@@ -454,7 +454,7 @@ them to exist:**
 |---|---|---|
 | `TENANT-CREDS-KEYRING` | JSON keyring for AES-GCM account-password decryption (`tenant/crypto.py`) | Bot env var `TENANT_CREDS_KEYRING` |
 | `ACS-EMAIL-CONNECTION` | ACS Communication Service connection string — written by `email.bicep`'s `listKeys()` at deploy time, never an operator-typed value | Bot env var `ACS_EMAIL_CONNECTION` |
-| `OPERATOR-NOTIFY-EMAIL` | Operator's summary-notification recipient address | Bot env var `OPERATOR_NOTIFY_EMAIL` |
+| `OPERATOR-NOTIFY-EMAIL` | Operator's address: the booker's run summary and the watcher's per-booking copy (2026-10-01) | Bot env var `OPERATOR_NOTIFY_EMAIL` |
 | `GITHUB-ISSUES-TOKEN` | Fine-grained GitHub token, Issues read+write on `wardcrazy01894/TeeTimeBooker` only (created by the operator in PROD's vault, 2026-09-29) | Web env var `GITHUB_ISSUES_TOKEN`, only where `githubIssuesRepo` is set (prod): site reports become anonymized issues |
 
 **Web-app-only secrets (MU-15a) — referenced by `webapp.bicep` ONLY when `deployWebApp=true`
