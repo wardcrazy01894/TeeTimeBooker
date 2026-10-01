@@ -454,7 +454,7 @@ them to exist:**
 |---|---|---|
 | `TENANT-CREDS-KEYRING` | JSON keyring for AES-GCM account-password decryption (`tenant/crypto.py`) | Bot env var `TENANT_CREDS_KEYRING` |
 | `ACS-EMAIL-CONNECTION` | ACS Communication Service connection string — written by `email.bicep`'s `listKeys()` at deploy time, never an operator-typed value | Bot env var `ACS_EMAIL_CONNECTION` |
-| `OPERATOR-NOTIFY-EMAIL` | Operator's summary-notification recipient address | Bot env var `OPERATOR_NOTIFY_EMAIL` |
+| `OPERATOR-NOTIFY-EMAIL` | Operator's address: the booker's run summary and the watcher's per-booking copy (2026-10-01) | Bot env var `OPERATOR_NOTIFY_EMAIL` |
 | `GITHUB-ISSUES-TOKEN` | Fine-grained GitHub token, Issues read+write on `wardcrazy01894/TeeTimeBooker` only (created by the operator in PROD's vault, 2026-09-29) | Web env var `GITHUB_ISSUES_TOKEN`, only where `githubIssuesRepo` is set (prod): site reports become anonymized issues |
 
 **Web-app-only secrets (MU-15a) — referenced by `webapp.bicep` ONLY when `deployWebApp=true`
@@ -602,7 +602,7 @@ as above. Nothing here exists in the default `toml` mode.
 | `TENANT_CREDS_KEYRING` | secret `TENANT-CREDS-KEYRING` | yes | no | yes |
 | `ACS_EMAIL_CONNECTION` | secret `ACS-EMAIL-CONNECTION` | yes | no | yes |
 | `ACS_EMAIL_SENDER` | plain (`acsEmailSender`) | yes | no | yes |
-| `OPERATOR_NOTIFY_EMAIL` | secret `OPERATOR-NOTIFY-EMAIL` | yes | no | no |
+| `OPERATOR_NOTIFY_EMAIL` | secret `OPERATOR-NOTIFY-EMAIL` | yes (the booker's run summary; the watcher's per-booking operator copy, 2026-10-01) | no | no |
 | `GITHUB_ISSUES_TOKEN` / `GITHUB_ISSUES_REPO` | secret `GITHUB-ISSUES-TOKEN` / plain (`githubIssuesRepo`) | no | no | only where `githubIssuesRepo` is set (prod) |
 | `TWOCAPTCHA_API_KEY` | secret `TWOCAPTCHA-API-KEY` | yes (shared with toml) | no | no |
 

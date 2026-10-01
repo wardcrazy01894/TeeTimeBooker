@@ -437,6 +437,7 @@ def _register_account_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
                 cache=ctx.refresh_cache,
                 notifier=ctx.notifier,
                 limits=ctx.probe_limits,
+                jobs=ctx.jobs,
             )
             return f"{back}?notice=cancelled"
 

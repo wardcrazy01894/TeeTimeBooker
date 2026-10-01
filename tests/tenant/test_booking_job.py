@@ -6,9 +6,13 @@ sink from the environment, per-user routing, and the job-level exit code (§4.5)
 
 from __future__ import annotations
 
+import ast
 import base64
+import inspect
 import json
+import logging
 import os
+import textwrap
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from uuid import uuid4
@@ -30,6 +34,7 @@ from teetime.tenant.booking_job import (
     HostedPoolFactory,
     StoreUserNotifier,
     UnconfiguredEmailSender,
+    booker_user_notifier,
     event_for,
     operator_sink_from_env,
     plan_booking_event,
@@ -333,3 +338,109 @@ async def test_tenant_plan_with_the_real_mb_adapter_makes_no_http_request() -> N
     assert not set(first.allowlist_times) & set(second.allowlist_times)
     text = "\n".join(plan.render())
     assert a.username not in text and b.username not in text
+
+
+# --- operator copy of every booking (operator request 2026-10-01) -------------------------------
+
+
+def _booked(user_id: UserId, kind: UserEventKind = UserEventKind.BOOKED) -> UserEvent:
+    return UserEvent(
+        kind=kind,
+        user_id=user_id,
+        row_id=None,
+        course_id=MB,
+        target_date=NOW.date(),
+        tee_time=NOW,
+        confirmation=None,
+        detail="watcher",
+        at=NOW,
+    )
+
+
+async def test_store_user_notifier_copies_the_operator_on_a_booking() -> None:
+    """The watcher's bookings used to reach the operator only through the user's own inbox. With
+    ``operator_to`` set, a BOOKED / UPGRADED event mails the user AND one notice to the operator,
+    named and tagged with the environment; any other kind still mails only the user."""
+    store = _store()
+    user, _ = await _seed(store, n=1)
+    sender = FakeEmailSender()
+    notifier = StoreUserNotifier(store, sender, operator_to="ops@example.test", environment="dev")
+
+    await notifier.send(_booked(user.id))
+    await notifier.send(_booked(user.id, UserEventKind.UPGRADED))
+    await notifier.send(_event(user.id))  # MISSED_DROP: the user only
+
+    assert [m.to for m in sender.sent] == [
+        user.email,
+        "ops@example.test",
+        user.email,
+        "ops@example.test",
+        user.email,
+    ]
+    booked, upgraded = sender.sent[1], sender.sent[3]
+    assert booked.subject.startswith("[TeeTimeBooker · DEV] Booked: ")
+    assert user.display_name in booked.subject
+    assert "Mangrove Bay" in booked.subject
+    assert upgraded.subject.startswith("[TeeTimeBooker · DEV] Upgraded: ")
+
+
+async def test_operator_copy_goes_out_even_when_the_user_cannot_be_mailed() -> None:
+    """An unknown user is skipped for the user mail (ids only in the log) but the operator still
+    hears about the booking: that is the whole point of the copy."""
+    store = _store()
+    sender = FakeEmailSender()
+    notifier = StoreUserNotifier(store, sender, operator_to="ops@example.test")
+
+    await notifier.send(_booked(UserId(uuid4())))
+
+    (message,) = sender.sent
+    assert message.to == "ops@example.test"
+    assert "Booked: user " in message.subject
+
+
+async def test_without_an_operator_address_nothing_extra_is_sent() -> None:
+    store = _store()
+    user, _ = await _seed(store, n=1)
+    sender = FakeEmailSender()
+    await StoreUserNotifier(store, sender).send(_booked(user.id))
+    assert [m.to for m in sender.sent] == [user.email]
+
+
+async def test_operator_copy_survives_a_user_notifier_that_raises(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review #301: the user mail and the operator copy must not share a failure path."""
+
+    class Exploding:
+        def __init__(self, *a: object, **k: object) -> None: ...
+
+        async def send(self, event: UserEvent) -> None:
+            raise RuntimeError("render bug")
+
+    monkeypatch.setattr("teetime.tenant.booking_job.EmailUserNotifier", Exploding)
+    store = _store()
+    user, _ = await _seed(store, n=1)
+    sender = FakeEmailSender()
+    notifier = StoreUserNotifier(store, sender, operator_to="ops@example.test")
+    with caplog.at_level(logging.WARNING):
+        await notifier.send(_booked(user.id))  # must not raise
+    assert [m.to for m in sender.sent] == ["ops@example.test"]
+    assert "raised RuntimeError" in caplog.text
+
+
+def test_the_booker_builds_its_notifier_without_the_operator_copy() -> None:
+    """The run summary already lists every booking: a copy per row would double the 06:00 mail.
+    The helper is the one place the booker builds its notifier, and ``run_booking_job`` must go
+    through it (an AST walk, so a comment cannot fool it and a direct construction or the
+    env-reading ``user_notifier_from_env`` cannot sneak the copy back in)."""
+    notifier = booker_user_notifier(_store(), FakeEmailSender())
+    assert notifier.operator_to is None and notifier.environment is None
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(run_booking_job)))
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert "booker_user_notifier" in called
+    assert called.isdisjoint({"StoreUserNotifier", "user_notifier_from_env"})

@@ -265,7 +265,8 @@ class AcsEmailClient:
     async def _poll(
         self, client: httpx.AsyncClient, op_url: str, op_id: str | None
     ) -> EmailSendResult:
-        deadline = self._clock.now_utc().timestamp() + self._poll_timeout
+        started = self._clock.now_utc().timestamp()
+        deadline = started + self._poll_timeout
         while True:
             response = await self._request(client, "GET", op_url, body=b"")
             if response.status_code != httpx.codes.OK:
@@ -282,7 +283,14 @@ class AcsEmailClient:
                 str(data["id"]) if isinstance(data, dict) and data.get("id") else None
             )
             if status == _TERMINAL_OK:
-                log.info("ACS email delivered to the service: operation=%s", op_id)
+                # The send-to-Succeeded time: how long ACS held the request before queuing it
+                # (operator report 2026-10-01: a user's mail arrived minutes after the course's;
+                # our side hands it over in ~1 s, so this line is what shows where the time went).
+                log.info(
+                    "ACS email delivered to the service: operation=%s in %.1f s",
+                    op_id,
+                    self._clock.now_utc().timestamp() - started,
+                )
                 return EmailSendResult(ok=True, status=status, operation_id=op_id)
             if status in _TERMINAL_FAIL:
                 return EmailSendResult(

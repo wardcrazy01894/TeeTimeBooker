@@ -39,7 +39,15 @@ from ..courses.names import COURSE_DISPLAY_NAMES
 from .acs_email import AcsConfigError, AcsEmailClient, load_acs_settings
 from .crypto import KEYRING_ENV_VAR, Keyring, KeyringError, load_keyring_from_env
 from .models import CourseAccount, User, UserId, UserStatus
-from .notify import EmailMessage, EmailSender, EmailSendResult, EmailUserNotifier, UserEvent
+from .notify import (
+    OPERATOR_COPY_KINDS,
+    EmailMessage,
+    EmailSender,
+    EmailSendResult,
+    EmailUserNotifier,
+    UserEvent,
+    deliver_operator_booking_notice,
+)
 from .runner import (
     EventPlan,
     OperatorSink,
@@ -199,7 +207,13 @@ class _UserDirectory(Protocol):
 class StoreUserNotifier:
     """The runner's ``UserNotifier``: looks each event's user up (a post-race system read) and
     mails them through an ``EmailUserNotifier`` bound to that ONE user. An unknown or disabled
-    user is skipped with a log line (ids only)."""
+    user is skipped with a log line (ids only).
+
+    With ``operator_to`` set (the watcher, from ``OPERATOR_NOTIFY_EMAIL``), every
+    ``OPERATOR_COPY_KINDS`` event (a booking or an upgrade) ALSO sends the operator one short
+    notice (operator request 2026-10-01), even when the user could not be mailed or the user's
+    send raised. The booker leaves it unset: its run summary already lists every booking. The
+    web shares the wiring but never books (and its env names the address differently)."""
 
     def __init__(
         self,
@@ -207,11 +221,15 @@ class StoreUserNotifier:
         sender: EmailSender,
         *,
         course_labels: Mapping[CourseId, str] | None = None,
+        operator_to: str | None = None,
+        environment: str | None = None,
     ) -> None:
         self._directory = directory
         self._sender = sender
         # Emails name the course (``courses.names``), never its id; an override wins.
         self._labels = dict(COURSE_DISPLAY_NAMES if course_labels is None else course_labels)
+        self.operator_to = operator_to
+        self.environment = environment
 
     async def send(self, event: UserEvent) -> None:
         user = await self._directory.get_user_unscoped(event.user_id) if event.user_id else None
@@ -222,9 +240,37 @@ class StoreUserNotifier:
                 event.user_id,
                 event.kind.value,
             )
-            return
-        notifier = EmailUserNotifier(self._sender, user=user, course_labels=self._labels)
-        await notifier.send(event)
+        else:
+            try:
+                notifier = EmailUserNotifier(self._sender, user=user, course_labels=self._labels)
+                await notifier.send(event)
+            except Exception as exc:
+                # The operator copy below must still go out (review #301 finding 1).
+                log.warning(
+                    "user notification %s for row %s raised %s",
+                    event.kind.value,
+                    event.row_id,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+        if self.operator_to and event.kind in OPERATOR_COPY_KINDS:
+            await deliver_operator_booking_notice(
+                self._sender,
+                to=self.operator_to,
+                event=event,
+                user_name=user.display_name if user is not None else None,
+                course_label=(
+                    self._labels.get(event.course_id) if event.course_id is not None else None
+                ),
+                environment=self.environment,
+            )
+
+
+def booker_user_notifier(store: _UserDirectory, sender: EmailSender) -> StoreUserNotifier:
+    """The booker's user notifier: deliberately WITHOUT the per-booking operator copy. Its run
+    summary already lists every booking, so a copy per row would double the 06:00 mail. The only
+    ``StoreUserNotifier`` the booker builds goes through here (pinned by an AST test)."""
+    return StoreUserNotifier(store, sender)
 
 
 async def run_booking_job(
@@ -255,7 +301,7 @@ async def run_booking_job(
     sink = operator or operator_sink_from_env(source)
     # The deploy sets TEETIME_ENV (dev/prod) so the operator can tell the two summaries apart.
     environment = source.get(TEETIME_ENV_VAR, "").strip() or None
-    notifier = StoreUserNotifier(store, sink.sender)
+    notifier = booker_user_notifier(store, sink.sender)
     failure, keyring, api_key = _load_config(source, dry_run=dry_run)
     if failure is not None or keyring is None:
         report = RunReport(

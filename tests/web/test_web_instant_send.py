@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -22,7 +23,9 @@ from teetime.tenant.notify import EmailMessage, EmailSendResult, FakeEmailSender
 from teetime.web.app import WebSettings, create_app
 from teetime.web.background import BackgroundJobs
 
+from .account_builders import KEYRING, ProbeAdapter, ProbeFactory, reservation, stored_account
 from .conftest import GitHubIdentity, make_invited, mock_github, sign_in
+from .test_web_accounts_pages import POLICY, RAW, TEE, _booked_row, _sign_in
 from .test_web_admin_csrf import _csrf, _sign_in_operator
 
 FRIEND = "pal@example.test"
@@ -309,3 +312,59 @@ async def test_app_shutdown_drains_pending_jobs(app: FastAPI) -> None:
         assert done == []
     assert done == [1]  # shutdown waited for it
     assert app.state.background_jobs.pending == 0
+
+
+# --- cancel ------------------------------------------------------------------------------------
+
+
+class HangingNotifier:
+    """A ``UserNotifier`` whose send never finishes (ACS polling that never turns Succeeded)."""
+
+    def __init__(self) -> None:
+        self.started = 0
+
+    async def send(self, event: object) -> None:
+        self.started += 1
+        await asyncio.Event().wait()
+
+
+async def test_a_hanging_notifier_does_not_delay_the_cancel(
+    settings: WebSettings,
+    store: InMemoryTenantStore,
+    clock: FakeClock,
+    provider_mock: respx.MockRouter,
+) -> None:
+    """Operator report 2026-10-01: the cancel page waited for the ACS send-status poll (2-6 s in
+    prod) before redirecting. The cancel is committed at the course and in the store first; the
+    email is a background job, so the 303 comes back at once and the send finishes after it."""
+    adapter = ProbeAdapter()
+    adapter.set_existing_reservations([reservation(RAW, TEE)])
+    notifier = HangingNotifier()
+    app = create_app(
+        replace(settings, dry_run=False),
+        store=store,
+        clock=clock,
+        keyring=KEYRING,
+        adapter_factory=ProbeFactory(adapter=adapter),
+        policies={"foreup:mangrove_bay": POLICY},
+        notifier=notifier,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://testserver"
+    ) as client:
+        user = await _sign_in(client, store, provider_mock)
+        account = stored_account(user.id)
+        await store.upsert_account(account)
+        row = await _booked_row(store, account)
+        token = _csrf(await client.get("/dates"))
+        r = await asyncio.wait_for(
+            client.post(f"/rows/{row.id}/cancel", data={"csrf_token": token}), timeout=2
+        )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/dates?notice=cancelled"
+    assert adapter.cancel_call_count == 1
+    jobs = _jobs(app)
+    assert jobs.pending == 1  # the email, still in flight after the response
+    await asyncio.sleep(0)
+    assert notifier.started == 1
+    await jobs.drain(timeout_s=0.05)
