@@ -301,6 +301,25 @@ Deviations: it takes the durable row lease itself around the engine instead of `
 MU-9b); the orphan report covers watched dates only. Tests:
 `tests/tenant/test_watch_runner{,_snapshots}.py`, `tests/tenant/test_tenant_watch_cli.py`.
 
+## Connected Courses after the first new user (2026-10-01)
+
+Three operator requests from watching the first new user connect Mangrove Bay. (1) After
+connecting, the Connect form still showed the same course with blank username and password boxes,
+which read as "do it again?": `pages.accounts` now passes `connectable` (the hosted courses minus
+the user's connected ones) and the form lists only those; with every course connected the form is
+replaced by "Every course this site supports is connected … use **Re-verify**". (2) He wondered
+whether connecting created an account: the form now opens with "Use the login you already have at
+the course. This doesn't create an account anywhere …" and links each connectable course's own
+booking site (`courses/names.py::COURSE_SIGNUP_URLS`, `course_signup_url`; `create_app(
+course_signup_urls=…)` overrides it for tests) as where to create one first. (3) When to book:
+every course states its release cycle, from `web/course_info.py::release_cycle(policy,
+cutoff_text=…)` over the adapter's `ReleasePolicy` and the configured cutoff ("Tee times open 7
+days ahead, at 6:00 AM Eastern. For first pick of the tee sheet, book a date 7 or more days out …
+keeps watching for cancellations until 4 PM the day before"), on the course's card, under the
+Connect form (`course_facts` macro; `app.js` shows only the dropdown's course) and above both
+booking forms. Template filters `release_cycle` and `course_signup_url` join `course_name`.
+Tests: `tests/web/test_web_course_info.py`.
+
 ## MU-11: Notifications (buffering, rendering, ACS Email REST)
 
 (`tenant/notify.py` + `tenant/acs_email.py`; nothing calls them until the MU-9a/MU-10b runners):

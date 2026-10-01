@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, error_block, players_picker, ranked_form, windows %}
+{% from "_macros.html" import hhmm, error_block, players_picker, ranked_form, windows, course_facts %}
 {% block title %}Weekly bookings · TeeTimeBooker{% endblock %}
 
 {% macro rule_fields(weekday, earliest, latest, party) %}
@@ -58,6 +58,7 @@
   <h2>New weekly booking</h2>
   {% if accounts %}
   <p class="hint">One weekly booking per day per course. The bot books each matching date when it opens.</p>
+  {{ course_facts(accounts | map(attribute="course_id")) }}
   {{ ranked_form(csrf_token, accounts, "/bookings/weekly", option_slots, weekdays, true) }}
   {% else %}
   <p class="placeholder">Connect a course first. <a href="/accounts">Go to Connected Courses</a>.</p>

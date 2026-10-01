@@ -784,7 +784,13 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   same-origin `web/static/app.js`, progressive enhancement over plain forms (the ranked form's
   rows 2-6 live in a `<details>` the server parses whether or not JS ran). Every course name shown
   to a person, on pages, in messages and in emails, comes from
-  `courses/names.py::course_display_name`; add a new course there. Every form is a CSRF-guarded POST
+  `courses/names.py::course_display_name`; add a new course there, with its
+  `COURSE_SIGNUP_URLS` entry (the course's own booking site, linked from Connect a course as
+  where to create the login; no entry = no link). Every release-cycle sentence a page shows
+  ("Tee times open 7 days ahead, at 6:00 AM Eastern.") is `web/course_info.py::release_cycle`
+  over the course's `ReleasePolicy` + the configured cutoff, never typed into a template, so a
+  page cannot state a rule the bot does not run (2026-10-01). The Connect dropdown lists only
+  courses the user has NOT connected (`connectable` in `pages.accounts`). Every form is a CSRF-guarded POST
   and every id is resolved through user-scoped reads (a foreign id is the uniform 404). Pinned by
   `tests/web/test_web_ui_polish.py` and the web security tests.
 - **Static assets are linked through `static_url(name)`, never a bare `/static/...` path.** It

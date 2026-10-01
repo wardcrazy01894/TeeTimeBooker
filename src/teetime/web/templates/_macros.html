@@ -146,3 +146,15 @@
   </div>
 </form>
 {% endmacro %}
+
+{# Each course's release cycle (web/course_info.py), one line per course: when its tee sheet opens
+   and when to book for first pick. With `with_signup`, a link to the course's own booking site,
+   where a person creates (or checks) the login the bot will use. `data-course` lets app.js show
+   only the course chosen in the Connect dropdown. #}
+{% macro course_facts(course_ids, with_signup=false) %}
+<ul class="course-facts">
+  {% for c in course_ids %}{% set cycle = c | release_cycle %}
+  <li data-course="{{ c }}"><strong>{{ c | course_name }}:</strong>{% if cycle %} {{ cycle.opens }} {{ cycle.tip }}{% endif %}{% if with_signup and (c | course_signup_url) %} <a href="{{ c | course_signup_url }}" target="_blank" rel="noopener">Create or check your {{ c | course_name }} login</a>.{% endif %}</li>
+  {% endfor %}
+</ul>
+{% endmacro %}

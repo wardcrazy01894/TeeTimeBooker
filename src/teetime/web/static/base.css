@@ -347,6 +347,14 @@ legend { font-weight: 600; padding: 0 0.35rem; font-size: 0.92rem; }
 .card-actions { display: flex; flex-wrap: wrap; gap: 0.75rem 1.5rem; align-items: flex-end; border-top: 1px solid var(--border); padding-top: 1rem; }
 .card-actions form { margin: 0; }
 .card-actions label { margin: 0; }
+.release-cycle { margin: -0.5rem 0 1rem; color: var(--muted); font-size: 0.92rem; }
+.course-facts { margin: 0.5rem 0 1rem; padding-left: 1.1rem; color: var(--muted); font-size: 0.92rem; }
+.course-facts li + li { margin-top: 0.35rem; }
+.course-facts strong { color: var(--text); }
+.callout { background: var(--info-soft); color: var(--info-text); padding: 0.75rem 1rem; border-radius: var(--radius); margin: 0.75rem 0 1rem; }
+.callout p { margin: 0 0 0.5rem; }
+.callout p:last-child, .callout .course-facts { margin-bottom: 0; }
+.callout .course-facts, .callout strong, .callout a { color: inherit; }
 .section-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
 .section-head h2 { margin: 0; }
 
