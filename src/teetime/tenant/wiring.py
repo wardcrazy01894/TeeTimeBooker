@@ -15,8 +15,9 @@
 
 ``user_notifier_from_env`` is the users' mail path for the watcher and the web: ACS when
 ``ACS_EMAIL_CONNECTION`` + ``ACS_EMAIL_SENDER`` are set, else a logging stand-in (kind + row id
-only). The booker keeps its own SF6 rule (``booking_job.operator_sink_from_env``: an unconfigured
-mail path fails every send so misses can never hide).
+only); with ``OPERATOR_NOTIFY_EMAIL`` it also copies the operator on every booking the watcher
+makes (2026-10-01). The booker keeps its own SF6 rule (``booking_job.operator_sink_from_env``:
+an unconfigured mail path fails every send so misses can never hide).
 """
 
 from __future__ import annotations
@@ -31,7 +32,12 @@ from ..core.config import BookingCutoffConfig
 from ..core.models import CourseId
 from ..core.release_policy import ReleasePolicy
 from .acs_email import AcsConfigError, AcsEmailClient, load_acs_settings
-from .booking_job import HOSTED_COURSES, StoreUserNotifier
+from .booking_job import (
+    HOSTED_COURSES,
+    OPERATOR_NOTIFY_EMAIL_ENV,
+    TEETIME_ENV_VAR,
+    StoreUserNotifier,
+)
 from .cosmos.store import CosmosSettings, cosmos_tenant_store
 from .in_memory_store import InMemoryTenantStore
 from .notify import UserEvent, UserNotifier
@@ -187,8 +193,14 @@ def user_notifier_from_env(
     command: str,
 ) -> UserNotifier:
     """ACS-backed ``StoreUserNotifier`` when ACS is configured, else ``LoggingUserNotifier``
-    (events are logged; ``email_sender_from_env`` has already warned)."""
+    (events are logged; ``email_sender_from_env`` has already warned). ``OPERATOR_NOTIFY_EMAIL``
+    (+ ``TEETIME_ENV`` for the tag) adds the operator copy of every booking."""
     client = email_sender_from_env(env, command=command)
     if client is None:
         return LoggingUserNotifier()
-    return StoreUserNotifier(directory, client)
+    source: Mapping[str, str] = os.environ if env is None else env
+    # The same two values compute.bicep hands the booker: with them every watcher booking also
+    # mails the operator one notice (operator request 2026-10-01). Unset = the user only.
+    operator_to = source.get(OPERATOR_NOTIFY_EMAIL_ENV, "").strip() or None
+    environment = source.get(TEETIME_ENV_VAR, "").strip() or None
+    return StoreUserNotifier(directory, client, operator_to=operator_to, environment=environment)

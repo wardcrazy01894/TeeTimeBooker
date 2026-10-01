@@ -99,6 +99,7 @@ from ..tenant.store import (
     UniquenessConflictError,
     VersionConflictError,
 )
+from .background import BackgroundJobs
 
 log = logging.getLogger(__name__)
 
@@ -1362,10 +1363,13 @@ async def _after_commit(
     owned: bool,
     cache: RefreshCache | None,
     notifier: UserNotifier | None,
+    jobs: BackgroundJobs | None,
     now: datetime,
 ) -> None:
     """§8.5 steps 5b-6, all AFTER the batch committed and each best-effort: a failure is logged
-    at ERROR and never undoes the cancel."""
+    at ERROR and never undoes the cancel. With ``jobs`` the email is a background job (the page
+    used to wait 2-6 s on the ACS send-status poll, operator report 2026-10-01); without it (tests,
+    callers with no job runner) it is awaited here."""
     try:
         await store.save_snapshot(snapshot)
     except Exception as exc:
@@ -1382,24 +1386,28 @@ async def _after_commit(
     )
     if notifier is None:
         return
+    event = UserEvent(
+        kind=UserEventKind.CANCELLED,
+        user_id=user_id,
+        row_id=row.id,
+        course_id=row.course_id,
+        target_date=row.target_date,
+        tee_time=row_local_tee_time(row),
+        confirmation=row.booked_confirmation,
+        detail=(
+            "cancelled from the site" if reason == "user" else "it was already gone at the course"
+        ),
+        at=now,
+    )
+    if jobs is not None:
+        jobs.spawn(_send_cancel_email(notifier, event), name="cancel_email")
+    else:
+        await _send_cancel_email(notifier, event)
+
+
+async def _send_cancel_email(notifier: UserNotifier, event: UserEvent) -> None:
     try:
-        await notifier.send(
-            UserEvent(
-                kind=UserEventKind.CANCELLED,
-                user_id=user_id,
-                row_id=row.id,
-                course_id=row.course_id,
-                target_date=row.target_date,
-                tee_time=row_local_tee_time(row),
-                confirmation=row.booked_confirmation,
-                detail=(
-                    "cancelled from the site"
-                    if reason == "user"
-                    else "it was already gone at the course"
-                ),
-                at=now,
-            )
-        )
+        await notifier.send(event)
     except Exception as exc:
         log.error("web: cancel email not sent (%s)", type(exc).__name__)
 
@@ -1417,6 +1425,7 @@ async def cancel_row(
     cache: RefreshCache | None = None,
     notifier: UserNotifier | None = None,
     limits: ProbeLimits | None = None,
+    jobs: BackgroundJobs | None = None,
 ) -> RequestRow:
     """The managed-cancel path (§8.5): dry-run refusal (§7.8) -> row lease (60 s, through
     ``LeasedBookingStore`` with the fingerprint just read, M5) -> decrypt -> authenticate (must
@@ -1476,6 +1485,7 @@ async def cancel_row(
                 clock=clock,
                 cache=cache,
                 notifier=notifier,
+                jobs=jobs,
             )
     except ConcurrentRunError as exc:
         raise CancelRefusedError(
@@ -1497,6 +1507,7 @@ async def _cancel_under_lease(
     clock: Clock,
     cache: RefreshCache | None,
     notifier: UserNotifier | None,
+    jobs: BackgroundJobs | None,
 ) -> RequestRow:
     password = _decrypt_for_request(account, keyring)
     try:
@@ -1559,6 +1570,7 @@ async def _cancel_under_lease(
         owned=entry is not None,
         cache=cache,
         notifier=notifier,
+        jobs=jobs,
         now=now,
     )
     cancelled = await store.get_row(row.id, user_id=account.user_id)

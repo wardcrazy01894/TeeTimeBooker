@@ -69,6 +69,14 @@ USER_FACING_KINDS: frozenset[UserEventKind] = frozenset(
     }
 )
 
+# Kinds that ALSO mail the operator one short notice per event (operator request 2026-10-01: "I
+# want an email every time someone gets a tee time", not only the 06:00 run's summary). The
+# watcher's ``StoreUserNotifier`` sends it; the booker does not (its run summary already lists
+# every booking).
+OPERATOR_COPY_KINDS: frozenset[UserEventKind] = frozenset(
+    {UserEventKind.BOOKED, UserEventKind.UPGRADED}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class UserEvent:
@@ -273,6 +281,43 @@ def render_user_event(
         lines += ["", f"Details: {event.detail}"]
     lines += ["", "— TeeTimeBooker"]
     return _redacted(f"[TeeTimeBooker] {subject_t.format(**fields)}", "\n".join(lines))
+
+
+_OPERATOR_NOTICE_LEAD: Mapping[UserEventKind, str] = {
+    UserEventKind.BOOKED: "{who} got a tee time at {course}.",
+    UserEventKind.UPGRADED: "{who}'s tee time at {course} was moved to a better tee time.",
+}
+
+
+def render_operator_booking_notice(
+    event: UserEvent,
+    *,
+    user_name: str | None,
+    course_label: str | None,
+    environment: str | None,
+) -> RenderedEmail:
+    """One short operator email for a booking made OUTSIDE the release run (the watcher found a
+    free time, or upgraded one): who (display name, else a short user id), course, date, tee time
+    and how (``event.detail``). Tagged with the environment like the run summary. Refuses any kind
+    outside ``OPERATOR_COPY_KINDS``."""
+    if event.kind not in OPERATOR_COPY_KINDS:
+        raise ValueError(f"{event.kind} is not a booking; only {sorted(OPERATOR_COPY_KINDS)}")
+    who = _who(event.user_id, user_name) if (user_name or event.user_id) else "Someone"
+    course = _course(event, course_label)
+    tag = "TeeTimeBooker" + (f" · {environment.upper()}" if environment else "")
+    verb = "Booked" if event.kind is UserEventKind.BOOKED else "Upgraded"
+    subject = f"[{tag}] {verb}: {who} · {course} {_when(event)}"
+    lines = [
+        _OPERATOR_NOTICE_LEAD[event.kind].format(who=who, course=course),
+        "",
+        *_booking_card(event, course),
+    ]
+    if event.detail:
+        lines.append(f"  How:       {event.detail}")
+    if event.confirmation:
+        lines.append(f"  Id:        {event.confirmation.removeprefix('TTB:')}")
+    lines += ["", f"Sent {event.at:%a %b} {event.at.day}, {_time(event.at)} {event.at:%Z}".rstrip()]
+    return _redacted(subject, "\n".join(lines))
 
 
 # --- invitation (operator request 2026-09-29; wording approved by the operator) ---------------
@@ -664,6 +709,38 @@ async def deliver_operator_summary(
         result.error,
     )
     return exit_code or EXIT_OPERATOR_NOTIFY_FAILED
+
+
+async def deliver_operator_booking_notice(
+    sender: EmailSender,
+    *,
+    to: str,
+    event: UserEvent,
+    user_name: str | None,
+    course_label: str | None,
+    environment: str | None,
+) -> EmailSendResult:
+    """Render + send one operator booking notice. NEVER raises (a render bug or a sender raise is
+    an ``ok=False`` result, logged), so the caller's own outcome and the user's email stand."""
+    try:
+        rendered = render_operator_booking_notice(
+            event, user_name=user_name, course_label=course_label, environment=environment
+        )
+    except Exception as exc:
+        log.warning("operator booking notice not rendered (%s)", type(exc).__name__, exc_info=True)
+        return EmailSendResult(ok=False, status="error", error=type(exc).__name__)
+    result = await _safe_send(
+        sender, EmailMessage(to=to, subject=rendered.subject, body=rendered.body)
+    )
+    if not result.ok:
+        log.warning(
+            "operator copy of %s for row %s not delivered (status=%s error=%s)",
+            event.kind.value,
+            event.row_id,
+            result.status,
+            result.error,
+        )
+    return result
 
 
 class EmailUserNotifier:

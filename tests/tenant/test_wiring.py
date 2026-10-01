@@ -198,3 +198,17 @@ async def test_open_tenant_store_quiets_the_azure_sdk_request_logging(
         async with open_tenant_store(env, command="test"):
             pass
         assert logging.getLogger("azure").getEffectiveLevel() >= logging.WARNING
+
+
+def test_user_notifier_copies_the_operator_when_the_address_is_configured() -> None:
+    """The watch job gets ``OPERATOR_NOTIFY_EMAIL`` + ``TEETIME_ENV`` from compute.bicep (the same
+    env as the booker): with them set every watcher booking also mails the operator."""
+    store = InMemoryTenantStore(course_timezones={}, cutoff=wiring.BookingCutoffConfig())
+    env = {**ACS_ENV, "OPERATOR_NOTIFY_EMAIL": "ops@example.test", "TEETIME_ENV": "prod"}
+    notifier = user_notifier_from_env(store, env, command="tenant-watch")
+    assert isinstance(notifier, StoreUserNotifier)
+    assert notifier.operator_to == "ops@example.test"
+    assert notifier.environment == "prod"
+    plain = user_notifier_from_env(store, ACS_ENV, command="tenant-watch")
+    assert isinstance(plain, StoreUserNotifier)
+    assert plain.operator_to is None
