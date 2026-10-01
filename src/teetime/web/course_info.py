@@ -51,10 +51,9 @@ def release_cycle(policy: ReleasePolicy, *, cutoff_text: str) -> ReleaseCycle:
     if n == 0:
         return ReleaseCycle(
             opens=f"Tee times open the same day, {when}.",
-            tip=(
-                "The bot checks every few minutes, books what is free and keeps watching for "
-                f"cancellations until {cutoff_text}."
-            ),
+            # No cutoff clause: a same-day release cannot also freeze "the day before".
+            tip="The bot checks every few minutes, books what is free and keeps watching for "
+            "cancellations.",
         )
     days = "1 day" if n == 1 else f"{n} days"
     return ReleaseCycle(

@@ -79,6 +79,7 @@ def test_release_cycle_same_day_has_no_days_out_advice() -> None:
     )
     assert cycle.opens == "Tee times open the same day, at 7:00 AM Eastern."
     assert "days out" not in cycle.tip
+    assert "the day before" not in cycle.tip  # a same-day release has no day-before cutoff
 
 
 def test_zone_labels_name_us_zones_and_fall_back_to_the_city() -> None:

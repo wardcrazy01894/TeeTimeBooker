@@ -165,20 +165,22 @@ class _Pages:
     ) -> Response:
         ctx = self.ctx
         context = self.base_context(request, user)
-        context["views"] = await services.account_views(
+        views = await services.account_views(
             ctx.store, user_id=user.id, clock=ctx.clock, policies=ctx.policies
         )
-        context["courses"] = sorted(ctx.policies)
+        courses = sorted(ctx.policies)
         # A course already connected leaves the Connect form (2026-10-01: blank username and
         # password boxes under a connected course read as "do it again?").
-        connected = {str(v.account.course_id) for v in context["views"]}  # type: ignore[attr-defined]
-        context["connectable"] = [c for c in context["courses"] if c not in connected]  # type: ignore[attr-defined]
+        connected = {str(v.account.course_id) for v in views}
+        context["views"] = views
+        context["courses"] = courses
+        context["connectable"] = [c for c in courses if c not in connected]
         context["adoptions"] = (
             {
                 str(v.account.id): await adopt.preview(
                     ctx.store, user_id=user.id, account=v.account, clock=ctx.clock
                 )
-                for v in context["views"]  # type: ignore[attr-defined]
+                for v in views
             }
             if context["is_operator"]
             else {}
