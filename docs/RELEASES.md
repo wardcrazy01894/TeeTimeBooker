@@ -46,6 +46,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.9.0` | 2026-10-02 | `68c4b8c` | unchanged (email, web) | The miss email, Course username hint, operator page per person, Your account (own name), sign-in note for non-Gmail addresses (#307, #309–#314) |
 | `infra/v3.8.0` | 2026-10-02 | `f38f481` | **changed** (race timing) | Blind burst 3 → 2, ladder `-400/0`; time pickers bounded to each course's tee-sheet hours (#305, #306) |
 | `infra/v3.7.0` | 2026-10-02 | `b1610f8` | unchanged (watcher email, web) | Operator email per watcher booking, cancel email off the request path, Connected Courses UX after the first new user (#301, #302) |
 | `infra/v3.6.0` | 2026-09-30 | `69abc3a` | **changed** (race timing) | Blind-POST ladder -400/-250/0 + `too_early` reason, ranking explainer, full-repo-scan fix batch, prod deploys only code on main (#292–#299) |
@@ -73,6 +74,33 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.9.0: 2026-10-02 (`main`@`68c4b8c`)
+
+**Booking behaviour unchanged.** The afternoon's operator requests, all web and email.
+
+- **The miss email** (#307). When the 06:00 run cannot book the release-day date the person now
+  gets "No tee time yet": why it usually happens (the course blocked the morning for an event or
+  an outing), what the watcher will do until the real cutoff ("before 4 PM on Friday, October 9"),
+  honest odds, a consoling one-liner, signed "— Spicy's helper". A booking-service failure says
+  "This one was on our side". No more `Details: no_inventory` in user mail.
+- **"Course username" explained** on the Connect form (#309): your login at the course, not
+  necessarily the email you use here.
+- **An operator page per person** (#310, #312): the email in `/admin/users` links to
+  `/admin/users/{id}`: sign-in, Connected Courses (status, login, snapshot age, default price),
+  weekly bookings, and the next 21 days with what they asked for, status and the booked tee time.
+  Read-only, never a course login.
+- **Your account** (#311, #314): your name next to Sign out opens `/me`, where you set your own
+  name (the invite's or the sign-in's name is only the default); it is how the emails greet you and
+  how the operator sees you.
+- **Sign-in page note for non-Gmail addresses** (#313): make a Google account on the invited
+  address ("Use my current email address instead"), then Continue with Google.
+
+**Deploy:** tag pushed 13:27 ET, approved by Claude on the operator's request ("ok go ahead and
+cut v3.9.0 to prod"); pass 1 skipped, pass 2 + migrations green, done 13:34 ET. **Verified:** both
+booking jobs, the watch job and `teetime-web-prod` (revision `--0000017`) run `teetime:68c4b8c…`;
+`/healthz` 200 on https://spicyteetimebooker.com; the first watch run on the new image (13:40 ET, `-29849380`) Succeeded. **First exercise of the
+miss email:** the next release-day miss (a `MISSED_DROP` from the 05:50 run).
 
 ## infra/v3.8.0: 2026-10-02 (`main`@`f38f481`)
 
