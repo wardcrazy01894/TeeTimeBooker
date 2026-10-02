@@ -136,6 +136,23 @@ async def newcomer(
     return Newcomer(user=user)
 
 
+async def test_course_username_box_explains_what_goes_in_it(
+    client: httpx.AsyncClient, newcomer: Newcomer
+) -> None:
+    """Operator request 2026-10-02: people were unsure what "Course username" meant. The box
+    says it is whatever you sign in to the COURSE with, which need not be your email here."""
+    section = _connect_section((await client.get("/accounts")).text)
+    m = re.search(r'<input type="text" name="username"[^>]*>', section)
+    assert m, "no username box"
+    assert 'aria-describedby="course-username-hint"' in m.group(0)
+    assert 'placeholder="' in m.group(0)
+    hint = re.search(r'<small id="course-username-hint"[^>]*>(.*?)</small>', section, re.S)
+    assert hint, "no hint under the username box"
+    text = _text(hint.group(1))
+    assert "sign in to the course" in text and "doesn't have to be" in text
+    assert "email you use here" in text
+
+
 async def test_connect_says_it_is_your_existing_course_login_and_links_to_sign_up(
     client: httpx.AsyncClient, newcomer: Newcomer
 ) -> None:

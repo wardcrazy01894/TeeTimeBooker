@@ -36,7 +36,7 @@ Apps Jobs, and the golf course sends booking confirmations directly.
 ## Status
 
 > **Prod is live** (`dryRun=false`) on the multi-user tenant path at the
-> latest infra tag `infra/v3.7.0` (2026-10-02; the site is https://spicyteetimebooker.com; the tenant path since MU-18 stage B, `infra/v3.0.0`): tenant booker and watcher over Cosmos, the invite-only
+> latest infra tag `infra/v3.8.0` (2026-10-02; the site is https://spicyteetimebooker.com; the tenant path since MU-18 stage B, `infra/v3.0.0`): tenant booker and watcher over Cosmos, the invite-only
 > web app, and ACS email. Release history: [docs/RELEASES.md](./docs/RELEASES.md).
 >
 > **Dev** runs the same tenant path in dry-run (since MU-17). The single-user TOML path (`teetime

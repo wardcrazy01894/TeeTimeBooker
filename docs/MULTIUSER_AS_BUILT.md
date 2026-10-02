@@ -322,6 +322,24 @@ Tests: `tests/web/test_web_course_info.py`.
 
 ## MU-11: Notifications (buffering, rendering, ACS Email REST)
 
+### The miss email (2026-10-02)
+
+Operator request: when the 06:00 run cannot book the release-day date (the one that should win),
+tell the person plainly. `MISSED_DROP` is that email (the booker is its only sender, so no new
+trigger): subject `No tee time yet: <course> <day>`; "Unfortunately we couldn't get you a tee time
+at … when the tee sheet opened this morning."; a card (course, date, "You asked: 8:45 AM to
+10:00 AM, 4 players (+N more options)"); why it usually happens (the course blocked the morning
+for an event or an outing, or the sheet sold out first; a CAPTCHA/booking-service failure says
+"This one was on our side … The operator has been notified" and names no exception class); the
+honest promise (the watcher keeps looking until the real cutoff, rendered as "before 4 PM on
+Friday, October 9" from the row's `cutoff_at` in the course timezone; possible, not to count on,
+make other plans); a consolation one-liner from `golf_quips.MISS_QUIPS` (disjoint from the booked
+email's `GOLF_QUIPS`); signed "— Spicy's helper". The raw `Details: no_inventory` line is gone
+from user mail (the operator summary keeps the engine detail). `UserEvent` gained optional
+`window` / `party_size` / `extra_options` / `cutoff_local`, filled only by the booker's
+`_row_events`. Pinned by `tests/tenant/test_notify.py` ("the miss email") and
+`test_runner_missed_drop_emails_user_and_exits_zero`.
+
 (`tenant/notify.py` + `tenant/acs_email.py`; nothing calls them until the MU-9a/MU-10b runners):
 `BufferingNotifier` is the engine-`Notifier`-shaped in-race collector (no I/O; `flush()` hands the
 results over after WRITE #2); `render_user_event` / `render_operator_summary` produce PII-minimal
