@@ -69,7 +69,7 @@ from .oauth import (
     OAuthProviderSettings,
     ProviderIdentity,
 )
-from .pages import register_page_routes
+from .pages import STATUS_LABELS, register_page_routes
 from .ranking_explainer import cutoff_text, ranking_example
 from .security import CookiePolicy, security_headers, verify_csrf_token
 from .services import DISPLAY_NAME_MAX_LEN, ProbeLimits, RefreshCache
@@ -630,6 +630,7 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
                 "user": operator,
                 "is_operator": True,
                 "notice": notice,
+                "status_labels": STATUS_LABELS,
                 "users": users,
                 "attempts": attempts,
             },

@@ -74,7 +74,7 @@ _NOTICES = {
         "hello@spicyteetimebooker.com."
     ),
 }
-_STATUS_LABELS = {
+STATUS_LABELS = {
     ("cancelled", "external"): "cancelled at the course",
     ("cancelled", "user"): "cancelled by you",
     ("cancelled", "already_gone"): "cancelled (already gone at the course)",
@@ -98,7 +98,7 @@ class _Pages:
             "dry_run": self.ctx.settings.dry_run,
             "notice": _NOTICES.get(request.query_params.get("notice", "")),
             "weekdays": WEEKDAY_NAMES,
-            "status_labels": _STATUS_LABELS,
+            "status_labels": STATUS_LABELS,
             "option_slots": range(1, MAX_OPTIONS + 1),
         }
 

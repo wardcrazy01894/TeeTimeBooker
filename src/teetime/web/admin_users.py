@@ -2,22 +2,25 @@
 
 One row per user in any status: whether the invite has been used (INVITED = never signed in),
 the sign-in provider, the connected courses, active weekly bookings and the next 21 days' dated
-rows by status. Read-only and NEVER logs in to a course. The route is operator-gated; this is the
-only place the web lists users at all (``TenantStore.list_users``).
+rows by status, plus (operator request 2026-10-02) the dates themselves under a disclosure: what
+was asked for, the status and the booked tee time, from the same ``services.dashboard`` read the
+person's own dashboard uses. Read-only and NEVER logs in to a course. The route is
+operator-gated; this is the only place the web lists users at all (``TenantStore.list_users``).
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ..core.clock import Clock
 from ..core.models import CourseId
-from ..tenant.materialize import MIN_HORIZON_DAYS
 from ..tenant.models import RejectedSignin, RowStatus, User
 from ..tenant.store import TenantStore
+from . import services
+from .services import DashboardRow
 
 # The statuses counted in the "next 21 days" column, in display order.
 _COUNTED = (RowStatus.BOOKED, RowStatus.PENDING)
@@ -29,6 +32,9 @@ class UserOverview:
     course_ids: tuple[CourseId, ...]
     weekly_rules: int  # active standing rules
     upcoming: tuple[tuple[str, int], ...]  # ("booked", 2), ("pending", 1): non-zero only
+    # The next 21 days' rows as the person's own dashboard shows them (date, options, status,
+    # booked tee time); empty for someone who never signed in.
+    dates: tuple[DashboardRow, ...] = ()
 
     @property
     def signed_in(self) -> bool:
@@ -38,7 +44,6 @@ class UserOverview:
 async def user_overviews(store: TenantStore, *, clock: Clock) -> list[UserOverview]:
     """Every user (``list_users`` order: by email) with what they have set up. A user who never
     signed in has no accounts, so their reads are skipped."""
-    today = clock.now_utc().date()
     out: list[UserOverview] = []
     for user in await store.list_users():
         if user.oauth_subject is None:
@@ -46,16 +51,18 @@ async def user_overviews(store: TenantStore, *, clock: Clock) -> list[UserOvervi
             continue
         accounts = await store.list_accounts_for_user(user.id)
         rules = await store.list_rules_for_user(user.id)
-        rows = await store.list_rows_for_user(
-            user.id, from_date=today, to_date=today + timedelta(days=MIN_HORIZON_DAYS)
-        )
-        counts = Counter(r.status for r in rows)
+        # ONE rows read per person: the dashboard's (its 21-day window in each course's local
+        # date); the status counts come from the same rows, so the column and the disclosure
+        # can never disagree.
+        dates = tuple(await services.dashboard(store, user_id=user.id, clock=clock))
+        counts = Counter(d.row.status for d in dates)
         out.append(
             UserOverview(
                 user=user,
                 course_ids=tuple(a.course_id for a in accounts),
                 weekly_rules=sum(1 for r in rules if r.active),
                 upcoming=tuple((s.value, counts[s]) for s in _COUNTED if counts[s]),
+                dates=dates,
             )
         )
     return out
