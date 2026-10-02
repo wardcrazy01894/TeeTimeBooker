@@ -155,6 +155,20 @@ class _Pages:
         context["error"], context["one_off"] = error, one_off
         return ctx.page(request, "rules.html", context, status_code=status_code)
 
+    async def account(
+        self,
+        request: Request,
+        user: User,
+        *,
+        status_code: int = 200,
+        error: str | None = None,
+        one_off: OneOffPrefill | None = None,
+    ) -> Response:
+        """ "Your account" (2026-10-02): who you are signed in as and your own name."""
+        context = self.base_context(request, user)
+        context["error"], context["one_off"] = error, one_off
+        return self.ctx.page(request, "me.html", context, status_code=status_code)
+
     async def accounts(
         self,
         request: Request,
@@ -244,15 +258,19 @@ def _register_read_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
     async def list_rules(request: Request, user: CurrentUser) -> Response:
         return await pages.rules(request, user)
 
+    @app.get("/me", response_class=HTMLResponse)
+    async def account_page(request: Request, user: CurrentUser) -> Response:
+        return await pages.account(request, user)
+
     @app.post("/me/name")
     async def set_display_name(request: Request, user: CurrentUser) -> Response:
         async def action(form: dict[str, str]) -> str:
             await services.set_display_name(
                 pages.ctx.store, user_id=user.id, raw=form.get("display_name", "")
             )
-            return "/?notice=name_saved"
+            return "/me?notice=name_saved"
 
-        return await pages.act(request, user, action, on_error=pages.dashboard)
+        return await pages.act(request, user, action, on_error=pages.account)
 
 
 def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependency) -> None:

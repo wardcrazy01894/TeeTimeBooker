@@ -667,8 +667,9 @@ dev-only `tenant-ci` / `global-ci` containers. Deploy and data-plane role runboo
 ### Your own name (2026-10-02)
 
 Operator request: a person can set their own name when the one their invite (the email's local
-part) or their sign-in provider gave us is not it. A "Your name" form on the dashboard posts to
-`/me/name` (`services.set_display_name`: one line, whitespace collapsed, 1–60 characters, nothing
+part) or their sign-in provider gave us is not it. Your name next to Sign out links to **Your
+account** (`/me`; a first cut put the form on the dashboard and the operator called it clunky),
+whose "Your name" form posts to `/me/name` (`services.set_display_name`: one line, whitespace collapsed, 1–60 characters, nothing
 else about the user changes; `TenantStore.upsert_user`). The name is what the top bar shows, what
 every email opens with (`notify.first_name`) and what `/admin/users` lists. Pinned by
 `tests/web/test_web_display_name.py`.

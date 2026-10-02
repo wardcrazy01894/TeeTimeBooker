@@ -5,13 +5,6 @@
 <div class="page-head">
   <h1>Your tee times</h1>
   <p class="muted">Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider | provider_name }}</p>
-  {# Operator request 2026-10-02: your own name, if the one your sign-in gave us isn't it. #}
-  <form method="post" action="/me/name" class="name-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>Your name <input type="text" name="display_name" value="{{ user.display_name }}" maxlength="{{ display_name_max_len }}" autocomplete="name" required aria-describedby="name-hint"></label>
-    <button type="submit" class="small">Save</button>
-    <small id="name-hint" class="hint field-hint">How our emails greet you and how the operator sees you.</small>
-  </form>
 </div>
 {{ error_block(error, one_off, csrf_token) }}
 
