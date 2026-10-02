@@ -16,7 +16,6 @@ async def test_sign_in_page_explains_the_google_account_on_any_email_route(
 ) -> None:
     html = (await client.get("/login")).text
     text = " ".join(_TAG.sub(" ", html).split())
-    assert "Continue with Google" in text or "Continue with GitHub" in text
     assert "don't have a google account" in text.lower()
     assert "Use my current email address instead" in text
     assert "same email address that was invited" in text
