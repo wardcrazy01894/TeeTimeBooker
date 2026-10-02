@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.7.0: 2026-10-02 (`main`@`b1610f8`)](#infrav370-2026-10-02-mainb1610f8)
 - [infra/v3.6.0: 2026-09-30 (`main`@`69abc3a`)](#infrav360-2026-09-30-main69abc3a)
 - [infra/v3.5.0: 2026-09-29 (`main`@`8466ad1`)](#infrav350-2026-09-29-main8466ad1)
 - [infra/v3.4.0: 2026-09-29 (`main`@`f149142`)](#infrav340-2026-09-29-mainf149142)
@@ -45,6 +46,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.7.0` | 2026-10-02 | `b1610f8` | unchanged (watcher email, web) | Operator email per watcher booking, cancel email off the request path, Connected Courses UX after the first new user (#301, #302) |
 | `infra/v3.6.0` | 2026-09-30 | `69abc3a` | **changed** (race timing) | Blind-POST ladder -400/-250/0 + `too_early` reason, ranking explainer, full-repo-scan fix batch, prod deploys only code on main (#292–#299) |
 | `infra/v3.5.0` | 2026-09-29 | `8466ad1` | unchanged (web) | Invite + feedback respond at once, every button shows a click, operator Uninvite (#288, #289) |
 | `infra/v3.4.0` | 2026-09-29 | `f149142` | unchanged (web, email, CI) | Mail from hello@spicyteetimebooker.com, Report a bug + Request a course (also filed as anonymized GitHub issues), migrate-start retry (#279–#285) |
@@ -70,6 +72,37 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.7.0: 2026-10-02 (`main`@`b1610f8`)
+
+**Booking behaviour unchanged.** Everything here came from watching the first new user connect
+Mangrove Bay, book a date inside the 7-day window and cancel it (2026-10-01).
+
+- **The operator hears about every booking** (#301). The 06:00 run's summary already listed its
+  bookings, but a tee time the WATCHER booked in the afternoon reached only the user. `tenant-watch`
+  now sends one short operator email per booking or upgrade (`[TeeTimeBooker · PROD] Booked:
+  <name> · Mangrove Bay Sat Oct 4 at 9:07 AM`), after the user's own mail and even when the user
+  cannot be mailed; the booker stays copy-free (pinned by an AST test).
+- **The cancel email no longer holds the page** (#301). Prod logs for 9/28–10/01 put the ForeUP
+  `DELETE` and the ACS `202 Accepted` within one second on every cancel and ACS `Succeeded` 2–6 s
+  later, so the "minutes" the user saw are downstream of ACS; the page used to wait for that poll
+  before redirecting and now spawns the send as a background job. Every ACS success line logs its
+  send-to-Succeeded duration.
+- **Connected Courses** (#302): a connected course leaves the Connect dropdown (with every course
+  connected the form gives way to a pointer to Re-verify); the form says it uses the login you
+  ALREADY have at the course (it creates no account) and links the course's own booking site to
+  create one first; every course states its release cycle, derived from its `ReleasePolicy` and
+  the configured cutoff ("Tee times open 7 days ahead, at 6:00 AM Eastern. For first pick of the
+  tee sheet, book a date 7 or more days out …"), on its card, under the Connect form and above
+  both booking forms.
+
+**Deploy:** tag pushed 00:05 ET, approved by Claude on the operator's request ("please merge to
+prod yes"); pass 1 skipped, pass 2 + migrations green, done 00:10 ET. **Verified:** both booking
+jobs, the watch job and `teetime-web-prod` (revision `--0000015`) run `teetime:b1610f8…`;
+`/healthz` 200 on https://spicyteetimebooker.com; the first watch run on the new image (00:20 ET,
+`-29848580`) Succeeded (`dry_run=False`, Cosmos `prod`, 3 rows, 2 searches, no errors). **First
+exercise of the operator copy:** the next time the watcher books between runs (the 06:00 run keeps
+its summary).
 
 ## infra/v3.6.0: 2026-09-30 (`main`@`69abc3a`)
 
