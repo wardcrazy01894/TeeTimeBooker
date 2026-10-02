@@ -61,8 +61,9 @@
     </label>
     <label>Course username
       <input type="text" name="username" autocomplete="username" required placeholder="Your login at the course" aria-describedby="course-username-hint">
-      <small id="course-username-hint" class="hint">Whatever you sign in to the course's own booking site with (at Mangrove Bay that's usually an email). It doesn't have to be the email you use here.</small>
     </label>
+    {# Outside the label: inside it the text would join the box's accessible name and be read twice. #}
+    <small id="course-username-hint" class="hint field-hint">Whatever you sign in to the course's own booking site with (usually an email address). It doesn't have to be the email you use here.</small>
     <label>Course password <input type="password" name="password" autocomplete="current-password" required></label>
     <button type="submit" class="primary">Connect</button>
   </form>
