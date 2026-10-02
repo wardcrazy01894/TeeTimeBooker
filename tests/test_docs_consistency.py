@@ -465,9 +465,10 @@ _LADDER_SWEEP = (
 _RETIRED_LADDERS = ((-500, -250, 0), (-400, -250, 0))
 # Phrases that mark a line as history. Deliberately not a bare "was " or a bare date: ordinary
 # prose and any dated line would slip a stale claim through.
+# A ladder's own "since <date>" is NOT a marker: that is exactly how a current-state line read
+# while the ladder shipped, so it would pass a stale claim through (review of #305).
 _HISTORY_MARKERS = (
     "until 2026-09-30",
-    "since 2026-09-30",
     "until 2026-10-02",
     "was `",
     "was -500",
