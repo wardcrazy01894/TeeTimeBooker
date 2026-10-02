@@ -205,7 +205,7 @@ with script each option row's lists follow the course chosen on that row; withou
 span all your courses and the server refuses a window outside the chosen course's hours, naming
 the course and its hours (2026-10-02).
 The operator also gets **Adopt existing bookings** on `/accounts`, used once at the prod cutover to
-record the old bot's live reservations as the bot's own (MU-16b). Sign-in is Google OAuth in every deployed env (GitHub is supported
+record the old bot's live reservations as the bot's own (MU-16b). Sign-in is Google OAuth in every deployed env; a person on a non-Gmail address (comcast.net, say) creates a Google account on that address first (the sign-in page says how) (GitHub is supported
 in code but unwired in infra); only an email the operator invited can sign in. Without
 `TENANT_CREDS_KEYRING`, connect/refresh/cancel answer "not available".
 

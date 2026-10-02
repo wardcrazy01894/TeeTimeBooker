@@ -10,5 +10,10 @@
     <li><a class="button primary" href="/login/{{ provider }}">Continue with {{ "GitHub" if provider == "github" else provider | capitalize }}</a></li>
     {% endfor %}
   </ul>
+  {# 2026-10-02: a comcast.net (or any non-Gmail) address has no sign-in service of its own; a
+     Google account can be created on it, and then "Continue with Google" works like everyone's. #}
+  {% if "google" in providers %}
+  <p class="hint">Don't have a Google account? You can make one on the email address you already use (Comcast, Yahoo, work mail): on <a href="https://accounts.google.com/signup" rel="noopener">Google's sign-up page</a> choose <strong>Use my current email address instead</strong> and enter the same email address that was invited. Then come back here and choose <strong>Continue with Google</strong>.</p>
+  {% endif %}
 </section>
 {% endblock %}
