@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% from "_macros.html" import error_block %}
+{% block title %}Your account · TeeTimeBooker{% endblock %}
+{% block content %}
+{# "Your account" (operator request 2026-10-02): reached by clicking your name next to Sign out. #}
+<div class="page-head">
+  <h1>Your account</h1>
+  <p class="muted">Signed in as <strong>{{ user.email }}</strong> via {{ user.oauth_provider | provider_name }}</p>
+</div>
+{{ error_block(error, one_off, csrf_token) }}
+
+<section>
+  <h2>Your name</h2>
+  <p class="hint">The name your invite or your sign-in gave us is only a starting point. What you save here is how our emails greet you and how the operator sees you.</p>
+  <form method="post" action="/me/name" class="form-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Name <input type="text" name="display_name" value="{{ user.display_name }}" maxlength="{{ display_name_max_len }}" autocomplete="name" required></label>
+    <button type="submit" class="primary">Save</button>
+  </form>
+</section>
+
+<section>
+  <h2>Your courses</h2>
+  <p class="hint">Course logins, prices and refreshes live on <a href="/accounts">Connected Courses</a>.</p>
+</section>
+{% endblock %}

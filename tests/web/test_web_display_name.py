@@ -1,7 +1,7 @@
 """A person can set their own name (operator request 2026-10-02): the name the invite or the
-sign-in gave us is the default, and a "Your name" form on the dashboard replaces it. The name
-is what the top bar shows, what the emails open with ("Hi Alex,") and what the operator's user
-list shows. End-to-end over ASGI.
+sign-in gave us is the default, and the "Your account" page (``/me``, reached by clicking your
+name next to Sign out) replaces it. The name is what the top bar shows, what the emails open
+with ("Hi Alex,") and what the operator's user list shows. End-to-end over ASGI.
 """
 
 from __future__ import annotations
@@ -62,16 +62,21 @@ def _name_box(html: str) -> str:
     return m.group(0)
 
 
-async def test_dashboard_offers_the_name_prefilled_with_the_providers_name(
+async def test_your_name_in_the_top_bar_opens_the_account_page_with_the_name_prefilled(
     client: httpx.AsyncClient, member: User
 ) -> None:
-    html = (await client.get("/")).text
+    dashboard = (await client.get("/")).text
+    assert 'name="display_name"' not in dashboard  # not a form on the dashboard any more
+    assert re.search(r'<a class="who" href="/me"[^>]*>\s*turk\s*</a>', dashboard)
+    html = (await client.get("/me")).text
+    assert "Your account" in html
     # An invited person keeps the invite's name (the email's local part) at first sign-in.
     assert member.display_name == "turk"
     assert f'value="{member.display_name}"' in _name_box(html)
     assert f'maxlength="{DISPLAY_NAME_MAX_LEN}"' in _name_box(html)
     assert 'action="/me/name"' in html
     assert "emails" in html.lower()  # says where the name is used
+    assert "turk@example.test" in html and "GitHub" in html  # signed in as, via
 
 
 async def test_saving_a_name_changes_the_top_bar_the_emails_and_the_operator_list(
@@ -81,10 +86,10 @@ async def test_saving_a_name_changes_the_top_bar_the_emails_and_the_operator_lis
     provider_mock: respx.MockRouter,
 ) -> None:
     r = await _post(client, "/me/name", {"display_name": "  Turk   Golfer "})
-    assert r.status_code == 303 and r.headers["location"] == "/?notice=name_saved"
+    assert r.status_code == 303 and r.headers["location"] == "/me?notice=name_saved"
     html = (await client.get(r.headers["location"])).text
     assert "Name saved." in html
-    assert re.search(r'class="who">\s*Turk Golfer\s*<', html)  # whitespace collapsed
+    assert re.search(r'class="who"[^>]*>\s*Turk Golfer\s*<', html)  # whitespace collapsed
     saved = await store.get_user_unscoped(member.id)
     assert saved is not None and saved.display_name == "Turk Golfer"
     assert first_name(saved.display_name) == "Turk"  # "Hi Turk," in every email

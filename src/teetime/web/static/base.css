@@ -117,6 +117,7 @@ header.site nav a {
 header.site nav a:hover { background: var(--surface-2); color: var(--text); }
 header.site nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-strong); }
 header.site .who { color: var(--muted); font-size: 0.9rem; margin: 0 0.25rem 0 0.75rem; }
+header.site a.who:hover { color: var(--text); }
 
 /* ---- layout ---------------------------------------------------------------------------- */
 
@@ -140,9 +141,6 @@ section.inactive { opacity: 0.75; }
 
 .hint, .placeholder, .muted { color: var(--muted); font-size: 0.92rem; }
 .field-hint { display: block; font-weight: 400; margin: -0.5rem 0 0.9rem; max-width: 22rem; }
-.name-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem 0.75rem; margin-top: 0.5rem; }
-.name-form > label { margin: 0; }
-.name-form > .field-hint { flex-basis: 100%; margin: 0; }
 .placeholder { padding: 1rem; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); }
 .reason { font-weight: 600; }
 
@@ -464,7 +462,7 @@ input.datepick.enhanced { position: absolute; opacity: 0; width: 1px; height: 1p
 /* ---- small screens --------------------------------------------------------------------- */
 
 @media (max-width: 40rem) {
-  header.site .who { display: none; }
+  header.site .who { margin-left: 0; }
   section, .card { padding: 1rem; }
   .table-wrap { margin: 0 -1rem; padding: 0 1rem; }
   .option { grid-template-columns: 1fr 1fr; }
