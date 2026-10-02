@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -87,15 +88,21 @@ async def test_saving_a_name_changes_the_top_bar_the_emails_and_the_operator_lis
     saved = await store.get_user_unscoped(member.id)
     assert saved is not None and saved.display_name == "Turk Golfer"
     assert first_name(saved.display_name) == "Turk"  # "Hi Turk," in every email
-    assert (saved.oauth_subject, saved.email, saved.role, saved.status) == (
-        member.oauth_subject,
-        member.email,
-        member.role,
-        member.status,
-    )  # nothing else about the user changed
+    assert replace(saved, display_name=member.display_name) == member  # nothing else changed
     client.cookies.clear()
     await _sign_in_operator(client, provider_mock)
     assert "Turk Golfer" in (await client.get("/admin/users")).text
+
+
+async def test_control_and_format_characters_are_dropped_from_a_name(
+    client: httpx.AsyncClient, member: User, store: InMemoryTenantStore
+) -> None:
+    """A bidi override or a zero-width joiner could make a name read as another in the
+    operator's list; they are dropped (the visible letters stay)."""
+    r = await _post(client, "/me/name", {"display_name": "Turk\u202e Golfer\u200d\x07"})
+    assert r.status_code == 303
+    saved = await store.get_user_unscoped(member.id)
+    assert saved is not None and saved.display_name == "Turk Golfer"
 
 
 @pytest.mark.parametrize("bad", ["", "   ", "x" * (DISPLAY_NAME_MAX_LEN + 1), "two\nlines"])
