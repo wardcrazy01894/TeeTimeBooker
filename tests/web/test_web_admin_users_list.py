@@ -92,42 +92,60 @@ async def test_operator_sees_every_user_and_what_they_set_up(
     assert "Mangrove Bay" in turk and str(MB) not in turk  # a course NAME, never an id
     assert "1 weekly" in turk
     assert "1 pending" in turk
-    # The dates themselves (operator request 2026-10-02): a pending row, no tee time yet.
-    times = _tee_times(page, "turk@example.test")
-    assert "Oct 3" in times and "pending" in times.lower() and "09:30" not in times
-    assert "1 date, every status" in times
 
     me = _row(page, "operator@example.test")
     assert "Operator" in me
 
 
-def _tee_times(html: str, email: str) -> str:
-    """The visible text of the per-person tee-times disclosure that follows ``email``'s row."""
-    for attrs, body in re.findall(r"<details\b([^>]*)>(.*?)</details>", html, re.S):
-        if "tee-times" in attrs and f'data-user="{email}"' in attrs:
-            return _text(body)
-    raise AssertionError(f"no tee-times block for {email}")
+def _person_link(html: str, email: str) -> str | None:
+    """The href of the person's own page from their row in the list, if the row links one."""
+    for tr in re.findall(r"<tr\b.*?</tr>", html, re.DOTALL):
+        if email in tr:
+            m = re.search(r'href="(/admin/users/[^"]+)"', tr)
+            return m.group(1) if m else None
+    raise AssertionError(f"no row for {email}")
 
 
-async def test_operator_sees_each_persons_upcoming_tee_times(
+async def test_clicking_a_person_opens_their_own_page(
     client: httpx.AsyncClient, store: InMemoryTenantStore, provider_mock: respx.MockRouter
 ) -> None:
-    """Operator request 2026-10-02: not just counts; the dates themselves, with what was asked
-    for, the status and the booked tee time. Read-only, never a course login."""
+    """Operator request 2026-10-02: a page per person (not a dropdown in the list) with their
+    courses, weekly bookings and upcoming dates with tee times. Read-only, never a course login."""
     turk = await _member_with_a_weekly_booking(client, store, provider_mock)
     (row,) = await store.list_rows_for_user(turk.id, from_date=OCT3, to_date=OCT3)
     await _book(store, row)  # pending -> booked at 09:30 through the runner's path
     await store.upsert_user(make_invited("pending.pal@example.test"))
     await _sign_in_operator(client, provider_mock)
     page = (await client.get("/admin/users")).text
+    assert "tee-times" not in page  # the dropdown is gone; the row links a page instead
+    assert _person_link(page, "pending.pal@example.test") is None  # never signed in: no page
+    link = _person_link(page, "turk@example.test")
+    assert link == f"/admin/users/{turk.id}"
 
-    times = _tee_times(page, "turk@example.test")
-    assert "Oct 3" in times and "Mangrove Bay" in times and str(MB) not in times
-    assert "booked" in times.lower() and "09:30" in times and "option 1" in times
-    assert "08:00–10:00" in times and "2 players" in times  # noqa: RUF001 — the windows macro's en dash
-    assert "1 booked" in _row(page, "turk@example.test")  # the count column still agrees
-    with pytest.raises(AssertionError):
-        _tee_times(page, "pending.pal@example.test")  # never signed in: nothing to show
+    text = _text((await client.get(link)).text)
+    assert "turk@example.test" in text and "GitHub" in text and "Member" in text
+    # Connected courses: name, status and the login they connected with.
+    assert "Mangrove Bay" in text and str(MB) not in text
+    assert "turk@golf.example" in text  # the course login (stored_account's username)
+    # Weekly bookings: the day, the window and the party.
+    assert "Saturday" in text and "08:00–10:00" in text and "2 players" in text  # noqa: RUF001
+    # Upcoming dates: the date, status, tee time and which option it was.
+    assert "Oct 3" in text and "booked" in text.lower() and "09:30" in text and "option 1" in text
+    assert "1 booked" in _row(page, "turk@example.test")  # the list's count still agrees
+
+
+async def test_a_persons_page_is_operator_only_and_a_bad_id_is_a_404(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, provider_mock: respx.MockRouter
+) -> None:
+    turk = await _member_with_a_weekly_booking(client, store, provider_mock)
+    mock_github(provider_mock, GitHubIdentity(subject="42", emails=[("turk@example.test", True)]))
+    assert (await sign_in(client)).status_code == 303
+    assert (await client.get(f"/admin/users/{turk.id}")).status_code == 403  # a member
+    client.cookies.clear()
+    await _sign_in_operator(client, provider_mock)
+    assert (await client.get(f"/admin/users/{turk.id}")).status_code == 200
+    assert (await client.get(f"/admin/users/{uuid4()}")).status_code == 404
+    assert (await client.get("/admin/users/not-a-uuid")).status_code == 404
 
 
 async def test_row_buttons_disable_and_enable_by_the_bound_identity(

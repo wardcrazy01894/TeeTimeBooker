@@ -68,4 +68,6 @@ ROUTES: tuple[RouteSpec, ...] = (
     # uninvited sign-in attempts, Resend invite and Uninvite.
     RouteSpec("GET", "/admin/users", "admin_users", AuthLevel.OPERATOR, False, "MU-12"),
     RouteSpec("POST", "/admin/users", "admin_users_action", AuthLevel.OPERATOR, True, "MU-12"),
+    # 2026-10-02: a page per person (courses, weekly bookings, upcoming dates with tee times).
+    RouteSpec("GET", "/admin/users/{id}", "admin_user", AuthLevel.OPERATOR, False, "OPS"),
 )
