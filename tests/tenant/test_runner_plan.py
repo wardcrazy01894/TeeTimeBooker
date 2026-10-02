@@ -100,7 +100,7 @@ async def test_tenant_plan_makes_no_foreup_call() -> None:
     assert set(by_row) == {a.row.id, b.row.id}
     first, second = (by_row[r] for r in plan.orders[MB])
     assert first.allowlist_times[0] == "08:15"  # rank-0 goes to the week's first pick
-    assert len(first.allowlist_times) == len(second.allowlist_times) == 3
+    assert len(first.allowlist_times) == len(second.allowlist_times) == 2  # burst 2
     assert not set(first.allowlist_times) & set(second.allowlist_times)  # disjoint (§5.4)
     assert (first.options, first.party_size, first.search_only) == (
         (RankedWindow(1, *WINDOW),),
@@ -161,7 +161,7 @@ async def test_runner_accepts_an_async_pool_factory_called_after_the_claim() -> 
     assert course == MB
     assert names_before == ["load_event_rows", "claim_rows"]
     assert at < T0 - timedelta(seconds=121)
-    assert provider.calls == 5
+    assert provider.calls == 4  # burst 2 + reserve 2
 
 
 # --- MU-R2 group floor (§16.3) -------------------------------------------------------------

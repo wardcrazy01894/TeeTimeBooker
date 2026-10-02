@@ -63,19 +63,19 @@ KEYRING = Keyring(active_kid="k1", keys={"k1": os.urandom(32)})
 
 
 def scheduler(*, lead_s: int = 30) -> SchedulerConfig:
-    """The shipped race knobs (stagger (-400,-250,0), burst 3, reserve 2) with a short lead
+    """The shipped race knobs (stagger (-400,0), burst 2, reserve 2) with a short lead
     and poll so VirtualClock runs stay small. timezone/fire_time are deliberately WRONG: the
     runner must derive them from the event."""
     return SchedulerConfig(
         timezone="UTC",
         fire_time=time(23, 0),
         early_arrival_ms=400,
-        blind_post_stagger_ms=(-400, -250, 0),
+        blind_post_stagger_ms=(-400, 0),
         poll_interval_ms=10,
         max_poll_seconds=1,
         captcha_prefetch_lead_s=lead_s,
         captcha_prefetch_count=3,
-        blind_post_max_count=3,
+        blind_post_max_count=2,
         blind_post_fallback_token_reserve=2,
     )
 

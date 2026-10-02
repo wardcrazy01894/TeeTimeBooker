@@ -36,7 +36,7 @@ ROW_A = RowId(UUID("00000000-0000-0000-0000-00000000000a"))
 ROW_B = RowId(UUID("00000000-0000-0000-0000-00000000000b"))
 ROW_C = RowId(UUID("00000000-0000-0000-0000-00000000000c"))
 
-BURST = 3  # blind_post_max_count in every shipped config (untouched by MU-3)
+BURST = 2  # blind_post_max_count in every shipped config (2 since 2026-10-02, was 3)
 
 
 def _request(window: TimeWindow = OPERATOR_WINDOW) -> BookingRequest:
@@ -157,9 +157,9 @@ def test_allocation_disjoint() -> None:
 
 def test_allocation_distinct_rank0_when_grid_ge_n() -> None:
     """§5.4 guarantee (b): each account's first pick is its best STILL-AVAILABLE slot, so two
-    accounts sharing a window get DISTINCT rank-0s. Snake draft over A,B: round 0 A=09:22,
-    B=09:15; round 1 (reversed) B=09:30, A=09:37; round 2 A=09:07, B=09:00. Pushed through the
-    E2 hook, each burst fires in that account's rank order with its allocated rank-0 FIRST."""
+    accounts sharing a window get DISTINCT rank-0s. Snake draft over A,B (burst 2): round 0
+    A=09:22, B=09:15; round 1 (reversed) B=09:30, A=09:37. Pushed through the E2 hook, each
+    burst fires in that account's rank order with its allocated rank-0 FIRST."""
     adapter = MangroveBayAdapter()
     ranked = {
         ROW_A: _candidates(adapter, OPERATOR_WINDOW),
@@ -168,14 +168,14 @@ def test_allocation_distinct_rank0_when_grid_ge_n() -> None:
     alloc = allocate_blind_slots(ranked, order=(ROW_A, ROW_B), burst_size=BURST, max_blind_rows=8)
     burst_a = _burst(adapter, OPERATOR_WINDOW, alloc.allowlists[ROW_A])
     burst_b = _burst(adapter, OPERATOR_WINDOW, alloc.allowlists[ROW_B])
-    assert burst_a == ["09:22", "09:37", "09:07"]
-    assert burst_b == ["09:15", "09:30", "09:00"]
+    assert burst_a == ["09:22", "09:37"]
+    assert burst_b == ["09:15", "09:30"]
     assert burst_a[0] != burst_b[0]
 
 
 def test_allocation_disjoint_windows_unaffected() -> None:
     """§5.4 guarantee (c): the operator (08:45-10:00) and an early golfer (07:00-08:30) do not
-    overlap, so each receives EXACTLY its own unallocated top-3 — today's burst, untouched."""
+    overlap, so each receives EXACTLY its own unallocated top-2 — today's burst, untouched."""
     adapter = MangroveBayAdapter()
     ranked = {
         ROW_A: _candidates(adapter, OPERATOR_WINDOW),
@@ -185,8 +185,8 @@ def test_allocation_disjoint_windows_unaffected() -> None:
     assert alloc.allowlists[ROW_A] == frozenset(s.slot_id for s in ranked[ROW_A][:BURST])
     assert alloc.allowlists[ROW_B] == frozenset(s.slot_id for s in ranked[ROW_B][:BURST])
     # And through the hook: byte-for-byte the unallocated burst.
-    assert _burst(adapter, OPERATOR_WINDOW, alloc.allowlists[ROW_A]) == ["09:22", "09:15", "09:30"]
-    assert _burst(adapter, EARLY_WINDOW, alloc.allowlists[ROW_B]) == ["07:45", "07:52", "07:37"]
+    assert _burst(adapter, OPERATOR_WINDOW, alloc.allowlists[ROW_A]) == ["09:22", "09:15"]
+    assert _burst(adapter, EARLY_WINDOW, alloc.allowlists[ROW_B]) == ["07:45", "07:52"]
 
 
 def test_allocation_over_cap_rows_are_search_only() -> None:

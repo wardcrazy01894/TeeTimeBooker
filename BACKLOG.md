@@ -62,7 +62,7 @@ delete it here when it ships.
 
 - **Retry burst across a WIDER post-T0 window**, conditional on the stagger diagnostic
   confirming the pre-open/flip-jitter hypothesis (STAGGER_PLAN §4). Today's stagger spans
-  400 ms before T0 to T0 (`-400/-250/0`); if the release flip turns out to jitter by seconds, the answer is repeated POSTs
+  400 ms before T0 to T0 (`-400/0` since 2026-10-02, was `-400/-250/0`); if the release flip turns out to jitter by seconds, the answer is repeated POSTs
   at T0+0.5 s / +1 s / +2 s. That needs a bigger CAPTCHA pool — each `book()` pops a
   single-use token — so it carries its own cost and rate-limit analysis. **Measure first:**
   the hypothesis currently rests on two 0/3 drops, one of which (2026-08-01) is fully

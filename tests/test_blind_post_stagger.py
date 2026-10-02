@@ -106,6 +106,9 @@ def _build(
         fire_time=time(6, 0, 0),
         early_arrival_ms=early_arrival_ms,
         blind_post_stagger_ms=stagger,
+        # These tests exercise a 3-rung ladder (the design as shipped in STAGGER_PLAN) so the
+        # offset<->rank pairing is visible; the shipped burst has been 2 since 2026-10-02.
+        blind_post_max_count=3,
     )
     orch = Orchestrator(
         adapters={cid: fa},

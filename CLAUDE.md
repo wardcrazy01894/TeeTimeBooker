@@ -63,7 +63,7 @@ Two paths exist side by side:
 
 | | |
 |---|---|
-| Latest infra tag | latest infra tag `infra/v3.7.0` (2026-10-02: an operator email per watcher booking, the cancel email off the request path, Connected Courses UX after the first new user: connected courses leave Connect, "your existing login" + sign-up link, release cycle per course; before that v3.6.0: blind-POST ladder -400/-250/0 + the `too_early` rejection reason, "How the bot picks your tee time" panel, the full-repo-scan fix batch, prod deploys only code on main; prod on https://spicyteetimebooker.com since `infra/v3.1.0`; the tenant path since `infra/v3.0.0`, MU-18 stage B); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Latest infra tag | latest infra tag `infra/v3.7.0` (2026-10-02: an operator email per watcher booking, the cancel email off the request path, Connected Courses UX after the first new user: connected courses leave Connect, "your existing login" + sign-up link, release cycle per course; before that v3.6.0: blind-POST ladder -400/-250/0 (until 2026-10-02) + the `too_early` rejection reason, "How the bot picks your tee time" panel, the full-repo-scan fix batch, prod deploys only code on main; prod on https://spicyteetimebooker.com since `infra/v3.1.0`; the tenant path since `infra/v3.0.0`, MU-18 stage B); history in [docs/RELEASES.md](./docs/RELEASES.md) |
 | Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
 | Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout; `tenant-run --event mb0600et --wait` since MU-18 stage B (was `run --wait`) |
 | Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout; `tenant-watch` since MU-18 stage B |
@@ -71,8 +71,8 @@ Two paths exist side by side:
 
 What is live: multi-day Sat+Sun booking with per-day windows, the 16:00-day-before booking cutoff,
 Portal-editable skip-days, within-window upgrade, the race pre-warm bundle (login pre-warm,
-multi-token CAPTCHA pool, search-sleep trim), the Mangrove Bay blind-POST burst (3 POSTs staggered
-`-400/-250/0` ms across T0 since 2026-09-30, was `-500/-250/0`, keep best, cancel extras, re-guard then fresh-search fallback), the
+multi-token CAPTCHA pool, search-sleep trim), the Mangrove Bay blind-POST burst (2 POSTs staggered
+`-400/0` ms across T0 since 2026-10-02, was `-400/-250/0` since 2026-09-30 and `-500/-250/0` before; keep best, cancel extras, re-guard then fresh-search fallback), the
 watcher's duplicate-reservation crash-net, blind-POST rejection reason tagging, log redaction on
 every handler, and email-OTP challenge detection.
 
@@ -575,8 +575,9 @@ pre-fetch.
     `SystemExit` escape the `await`, SIGTERM kills the process, and the parent's own cancellation
     bypasses the results.
 - **The burst is STAGGERED across the release boundary** (STAGGER_PLAN).
-  `scheduler.blind_post_stagger_ms` (default `(-400, -250, 0)`, with `early_arrival_ms = 400`,
-  since 2026-09-30; see the `too_early` reason below) gives each POST its own offset
+  `scheduler.blind_post_stagger_ms` (default `(-400, 0)` with `blind_post_max_count = 2` since
+  2026-10-02, was `(-400, -250, 0)` since 2026-09-30; `early_arrival_ms = 400`; see the
+  `too_early` reason below) gives each POST its own offset
   from T0, paired positionally with the RANKED slots; `_fire_blind_post` sleeps to `T0 + offset`
   (a non-positive delay fires immediately, so a late cron never waits). Why: every drop in the log
   window came back 3/3 or 0/3, which a real slot race cannot produce; a simultaneous burst
@@ -612,9 +613,10 @@ pre-fetch.
     release; the slot was never contested. First seen 2026-09-29/30 on the -500 ms POST (a server
     `Date` of 09:59:59): ForeUP's clock had run ~0.5 s fast until then, so -500 used to arrive at
     06:00:00 by its clock and often booked. That wasted the rank-0 slot two days running, so the
-    ladder moved to `-400/-250/0` (operator, 2026-09-30: watch it, and move again if -400 is
-    still `too_early`). The operator summary email says "too early (before the booking window
-    opened)".
+    ladder moved to `-400/-250/0` until 2026-10-02 (operator, 2026-09-30: watch it, and move
+    again if -400 is still `too_early`). The -400 POST then won consistently, so on 2026-10-02 the operator
+    dropped the middle rung: the ladder is `-400/0` (one POST early, one at T0; burst 2). The
+    operator summary email says "too early (before the booking window opened)".
   - `conflict` (409) and `unknown` (fail-soft default, so other adapters and unobserved wordings
     are never misfiled).
   It is **diagnostic only**: every reason routes identically (`SlotGoneError` → next slot). It

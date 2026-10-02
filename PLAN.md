@@ -361,8 +361,8 @@ path. So the watcher, local-demo, dry-run, a fallback course, a non-MB course, a
 **Blind net (`_blind_post_course`)** — see `docs/plans/RESEARCH_FALLBACK_PLAN.md` for the ratified
 fallback design: fire the top-`N` ranked in-window synthesized POSTs concurrently but
 STAGGERED ACROSS T0 — each POST sleeps to its own `scheduler.blind_post_stagger_ms` offset
-before going out (default `(-400, -250, 0)` ms relative to T0 since 2026-09-30, was `(-500, -250, 0)`;
-docs/plans/STAGGER_PLAN.md)
+before going out (default `(-400, 0)` ms relative to T0 since 2026-10-02; was `(-400, -250, 0)` until 2026-10-02,
+and `(-500, -250, 0)` until 2026-09-30; docs/plans/STAGGER_PLAN.md)
 (`N = min(len(synthesize_blind_slots(...)), captcha_pool_size())` — token-bounded). There is
 **NO concurrent hedge search** (the original hedge was dropped — RESEARCH_FALLBACK_PLAN §2 Q1).
 Then:
@@ -388,11 +388,12 @@ blind-capable primary pre-solves `min(blind_post_max_count, len(synthesize_blind
 + scheduler.blind_post_fallback_token_reserve` tokens — the burst portion gives each blind POST a
 pooled token at T0 and the reserve (default 2) tokens REMAIN pooled so the 0-booked fresh-search
 fallback books with a pooled token, not a ~75 s inline solve. Everything else uses the fixed
-`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (default 3, matching the
-shipped configs — the top-3 nearest-midpoint slots fire concurrently to hedge the T0 slot-race;
-ForeUP's 1/day rule 400-rejects the surplus once the first lands, but cancel-extras keeps only the
-best, so the extra POSTs are the accepted cost of the hedge; 2026-07-18 revert of the 2026-07-15
-burst-of-one; ge=0, 0 disables blind fan-out) is decoupled from `captcha_prefetch_count` and lives
+`scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (default 2 since 2026-10-02,
+matching the shipped configs — the top-2 nearest-midpoint slots fire, one 400 ms early and one at
+T0, to hedge the T0 slot-race; ForeUP's 1/day rule 400-rejects the surplus once the first lands, but
+cancel-extras keeps only the best, so the extra POST is the accepted cost of the hedge; was 3 from
+the 2026-07-18 revert of the 2026-07-15 burst-of-one; ge=0, 0 disables blind fan-out) is decoupled
+from `captcha_prefetch_count` and lives
 in `SchedulerConfig`.
 
 State-machine note (§9.1): each blind POST is an independent entry into the POST/result phase.
@@ -661,14 +662,14 @@ What we still DO NOT:
 **Blind-POST burst at T0 (Mangrove Bay; docs/plans/BLIND_POST_PLAN.md).** The one deliberate
 departure from the 250 ms spacing rule is the 06:00:00 drop on the race path. To beat
 the search→book round-trip on the most contested slots of the week, the booking
-`Orchestrator` fires up to `scheduler.blind_post_max_count` (default **3**, matching the shipped
-configs — the top-3 nearest-midpoint slots go out **staggered across T0** to hedge the slot-race
-AND to make a miss diagnosable (docs/plans/STAGGER_PLAN.md);
-2026-07-18 revert of the 2026-07-15 burst-of-one, whose single in-flight POST lost the slot-race
-with nothing else in flight and caused the 2026-07-18 miss. ForeUP's "1 online reservation per
-day" rule 400-rejects the surplus POSTs once the first lands, observed live 2026-06-27/28 +
-2026-07-11, but cancel-extras keeps only the best, so the extra POSTs are the accepted cost of the
-hedge) book POSTs for the
+`Orchestrator` fires up to `scheduler.blind_post_max_count` (default **2** since 2026-10-02,
+matching the shipped configs — the top-2 nearest-midpoint slots go out **staggered across T0**,
+one 400 ms early and one at T0, to hedge the slot-race AND to make a miss diagnosable
+(docs/plans/STAGGER_PLAN.md); was 3 from the 2026-07-18 revert of the 2026-07-15 burst-of-one,
+whose single in-flight POST lost the slot-race with nothing else in flight and caused the
+2026-07-18 miss. ForeUP's "1 online reservation per day" rule 400-rejects the surplus POST once
+the first lands, observed live 2026-06-27/28 + 2026-07-11, but cancel-extras keeps only the best,
+so the extra POST is the accepted cost of the hedge) book POSTs for the
 in-window morning grid synthesized from a frozen template (no search dependency), each at its
 own T0 offset. If zero POSTs book, a single FRESH search runs as the
 grid-drift fallback — STRICTLY AFTER the re-guard, not concurrently (the original hedge was

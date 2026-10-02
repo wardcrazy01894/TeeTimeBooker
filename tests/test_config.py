@@ -175,14 +175,15 @@ def test_scheduler_default_fallback_token_reserve() -> None:
 
 
 def test_scheduler_default_blind_post_max_count_matches_shipped() -> None:
-    """The in-code default must MATCH the shipped configs (3 — operator directive 2026-07-18,
-    reverting the 2026-07-15 burst-of-one). The top-3 nearest-midpoint POSTs fire concurrently
-    to hedge the T0 slot-race; ForeUP's "1 online reservation per day" rule 400-rejects the
-    surplus once the first lands, but cancel-extras handles that cleanly (live 2026-07-11).
-    Burst-of-one instead bet everything on the single most-contested midpoint slot and a lost
-    race left nothing in flight (the 2026-07-18 miss). (History: default 12 → 3 in #157/
-    full-repo-scan 2026-07-09 → 1 on 2026-07-15 → 3 again here.)"""
-    assert SchedulerConfig().blind_post_max_count == 3
+    """The in-code default must MATCH the shipped configs (2 — operator directive 2026-10-02:
+    one POST 400 ms early and one at T0; the -400 ms POST was winning consistently, so a second
+    early POST bought nothing). Two POSTs still hedge the T0 slot-race: burst-of-one bet
+    everything on the single most-contested midpoint slot and a lost race left nothing in flight
+    (the 2026-07-18 miss). ForeUP's "1 online reservation per day" rule 400-rejects the surplus
+    once the first lands, but cancel-extras handles that cleanly (live 2026-07-11). (History:
+    default 12 → 3 in #157/full-repo-scan 2026-07-09 → 1 on 2026-07-15 → 3 on 2026-07-18 →
+    2 here.)"""
+    assert SchedulerConfig().blind_post_max_count == 2
 
 
 def test_fallback_token_reserve_rejects_negative() -> None:

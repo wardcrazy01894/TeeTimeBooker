@@ -139,10 +139,9 @@ async def test_runner_books_one_account_and_writes_its_row() -> None:
     by_raw = {e.raw_reservation_id: e for e in ledger}
     assert by_raw["FAKE-s-0815"].state is BookingState.HELD
     assert by_raw["FAKE-s-0815"].source is BookingSource.BLIND
-    # The burst's two surplus bookings were cancelled in-run: ledgered cancelled_extra.
+    # The burst's one surplus booking was cancelled in-run: ledgered cancelled_extra.
     assert {k for k, e in by_raw.items() if e.state is BookingState.CANCELLED_EXTRA} == {
         "FAKE-s-0800",
-        "FAKE-s-0830",
     }
     # The factory saw the account, no pool (none configured) and no lease key.
     (call,) = factory.calls
@@ -279,7 +278,7 @@ async def test_runner_uses_unmodified_orchestrator_per_account(
 
 
 async def test_runner_two_accounts_each_get_stagger_and_rank0_first() -> None:
-    """Two accounts wanting the SAME window: each fires its OWN burst at exactly -400/-250/0 ms
+    """Two accounts wanting the SAME window: each fires its OWN burst at exactly -400/0 ms
     (VirtualClock), its rank-0 first, over DISJOINT allowlisted slots from the snake draft —
     the first drafter holds the 08:15 midpoint slot, the second the next best (08:00)."""
     store = new_store()
@@ -295,12 +294,12 @@ async def test_runner_two_accounts_each_get_stagger_and_rank0_first() -> None:
     await _run(store, clock, ScriptedFactory(adapters=dict(adapters)))
 
     one, two = adapters[first.account.id], adapters[second.account.id]
-    assert one.send_offsets_ms() == [-400, -250, 0]
-    assert two.send_offsets_ms() == [-400, -250, 0]
+    assert one.send_offsets_ms() == [-400, 0]
+    assert two.send_offsets_ms() == [-400, 0]
     # Snake draft over (first, second): round 0 -> 08:15, 08:00; round 1 (reversed) -> 08:30,
-    # 07:45; round 2 -> 08:45, 07:30. Each burst POSTs its own picks in rank order.
-    assert one.book_slot_ids == ["s-0815", "s-0745", "s-0845"]
-    assert two.book_slot_ids == ["s-0800", "s-0830", "s-0730"]
+    # 07:45. Each burst POSTs its own picks in rank order.
+    assert one.book_slot_ids == ["s-0815", "s-0745"]
+    assert two.book_slot_ids == ["s-0800", "s-0830"]
     assert not set(one.book_slot_ids) & set(two.book_slot_ids)
     assert (await _row(store, first)).booked_raw_id == "FAKE-s-0815"
     assert (await _row(store, second)).booked_raw_id == "FAKE-s-0800"
@@ -317,15 +316,15 @@ async def test_runner_computes_candidates_with_allowlist_cleared() -> None:
 
     await _run(store, clock, ScriptedFactory(adapters={a.account.id: adapter}))
 
-    assert adapter.book_slot_ids == ["s-0815", "s-0800", "s-0830"]
-    assert adapter.blind_allowlist == frozenset({"s-0815", "s-0800", "s-0830"})
+    assert adapter.book_slot_ids == ["s-0815", "s-0800"]
+    assert adapter.blind_allowlist == frozenset({"s-0815", "s-0800"})
 
 
 # --- overflow / over-cap (§5.3) ---------------------------------------------------------------
 
 
 async def test_runner_overflow_account_runs_search_path() -> None:
-    """With C = 3 and burst 3 only ONE account per course gets a blind burst; the other runs the
+    """With C = 3 and burst 2 (3 // 2 = 1) only ONE account per course gets a blind burst; the other runs the
     search race path (blind_post_max_count=0: zero blind POSTs, a search at T0)."""
     store = new_store()
     a = await seed_account(store, n=1)
@@ -345,7 +344,7 @@ async def test_runner_overflow_account_runs_search_path() -> None:
     )
 
     blind, overflow = factory.built[first.account.id], factory.built[second.account.id]
-    assert blind.search_call_count == 0 and blind.send_offsets_ms() == [-400, -250, 0]
+    assert blind.search_call_count == 0 and blind.send_offsets_ms() == [-400, 0]
     assert overflow.synthesize_blind_slots_call_count <= 1  # allocation input only
     assert overflow.search_call_count >= 1
     assert overflow.book_slot_ids == [f"fake-slot-{TARGET.isoformat()}"]  # the searched slot
@@ -381,14 +380,14 @@ async def test_runner_overcap_account_registered_k0_solves_nothing() -> None:
     assert report is not None
     blind_key = factory.built[first.account.id].key
     over_key = factory.built[second.account.id].key
-    assert report.granted == {blind_key: 3}
+    assert report.granted == {blind_key: 2}
     assert over_key not in report.granted
-    assert report.demanded == 5
+    assert report.demanded == 4
     over = factory.built[second.account.id]
     assert over.prepare_book_call_count == 1
     assert over.prefetch_errors == []  # joined the coordinated fill (an unregistered key raises)
-    # 3 lease + 2 reserve, and the over-cap account's fallback book used a reserve token.
-    assert provider.calls == 5
+    # 2 lease + 2 reserve, and the over-cap account's fallback book used a reserve token.
+    assert provider.calls == 4
     assert over.tokens_used and all(t.startswith("tok-") for t in over.tokens_used)
 
 
@@ -437,7 +436,7 @@ async def test_runner_one_account_uncertain_does_not_cancel_siblings() -> None:
     assert (row.status, row.needs_reconcile, row.lease_owner) == (RowStatus.PENDING, True, None)
     assert flaky.cancel_call_count == 0
     assert _outcome(report, sibling).outcome is BookingOutcome.BOOKED
-    assert ok.cancel_call_count == 2  # its own two surplus bookings, nothing else
+    assert ok.cancel_call_count == 1  # its own one surplus booking, nothing else
     assert (await _row(store, sibling)).status is RowStatus.BOOKED
 
 
@@ -455,7 +454,7 @@ async def test_runner_records_cancel_extras_failure_as_held_extra() -> None:
 
     out = _outcome(report, a)
     assert out.outcome is BookingOutcome.BOOKED
-    assert set(out.held_extra_raw_ids) == {"FAKE-s-0800", "FAKE-s-0830"}
+    assert set(out.held_extra_raw_ids) == {"FAKE-s-0800"}
     states = {
         e.raw_reservation_id: e.state
         for e in await store.list_owned_bookings(a.account.id, target_date=TARGET)
@@ -463,7 +462,6 @@ async def test_runner_records_cancel_extras_failure_as_held_extra() -> None:
     assert states == {
         "FAKE-s-0815": BookingState.HELD,
         "FAKE-s-0800": BookingState.HELD_EXTRA,
-        "FAKE-s-0830": BookingState.HELD_EXTRA,
     }
     assert (await _row(store, a)).booked_raw_id == "FAKE-s-0815"
 
