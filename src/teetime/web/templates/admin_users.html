@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "_macros.html" import nice_date, status, windows %}
 {% block title %}Users · TeeTimeBooker{% endblock %}
 {% block content %}
 <h1>Users</h1>
@@ -33,7 +32,8 @@
         {% for o in users %}
         {% set u = o.user %}
         <tr>
-          <td>{{ u.email }}</td>
+          {# A signed-in person links to their own page (operator request 2026-10-02). #}
+          <td>{% if o.signed_in %}<a href="/admin/users/{{ u.id }}">{{ u.email }}</a>{% else %}{{ u.email }}{% endif %}</td>
           <td>{{ u.display_name if o.signed_in else "—" }}</td>
           <td>{{ u.role.value | capitalize }}</td>
           <td>
@@ -76,30 +76,6 @@
             {% endif %}
           </td>
         </tr>
-        {% if o.dates %}
-        {# Operator request 2026-10-02: the dates themselves, not just the counts. Read-only. #}
-        <tr class="detail">
-          <td colspan="9">
-            <details class="tee-times" data-user="{{ u.email }}">
-              <summary>Tee times, next 21 days ({{ o.dates | length }} date{% if o.dates | length != 1 %}s{% endif %}, every status)</summary>
-              <table class="nested">
-                <thead><tr><th>Date</th><th>Course</th><th>Asked for</th><th>Status</th><th>Tee time</th></tr></thead>
-                <tbody>
-                  {% for r in o.dates %}
-                  <tr>
-                    <td class="date">{{ nice_date(r.row.target_date) }}</td>
-                    <td>{{ r.row.course_id | course_name }}</td>
-                    <td class="tabular">{{ windows(r.row.options) }} · {{ r.row.party_size }} player{% if r.row.party_size != 1 %}s{% endif %}</td>
-                    <td><span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>{% if r.mismatch %} <span class="hint">{{ r.mismatch | replace("_", " ") }}</span>{% endif %}</td>
-                    <td class="tabular">{% if r.booked_tee_time_local %}{{ r.booked_tee_time_local }}{% if r.booked_rank %} <span class="hint">option {{ r.booked_rank }}</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
-                  </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </details>
-          </td>
-        </tr>
-        {% endif %}
         {% endfor %}
       </tbody>
     </table>

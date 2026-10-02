@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -83,6 +84,7 @@ from ..tenant.models import (
     SnapshotEntry,
     StandingRule,
     TransitionRefusedError,
+    User,
     UserId,
     derive_account_id,
     row_is_frozen,
@@ -261,6 +263,41 @@ def _window(form: Mapping[str, str]) -> tuple[time, time]:
     if earliest >= latest:
         raise InvalidInputError("the window's earliest time must be before its latest time")
     return earliest, latest
+
+
+# A person's own display name (operator request 2026-10-02): one line, whitespace collapsed.
+DISPLAY_NAME_MAX_LEN = 60
+
+
+def parse_display_name(raw: str) -> str:
+    if "\n" in raw or "\r" in raw:
+        raise InvalidInputError("Your name must be one line")
+    # Control and format characters (bidi overrides, zero-width joiners) could make a name
+    # read as something else in the operator's list; they are dropped, not refused.
+    cleaned = "".join(ch for ch in raw if unicodedata.category(ch) not in ("Cc", "Cf"))
+    name = " ".join(cleaned.split())
+    if not name:
+        raise InvalidInputError("Enter a name")
+    if len(name) > DISPLAY_NAME_MAX_LEN:
+        raise InvalidInputError(f"Your name must be {DISPLAY_NAME_MAX_LEN} characters or fewer")
+    return name
+
+
+async def set_display_name(store: TenantStore, *, user_id: UserId, raw: str) -> User:
+    """Replace the name the sign-in provider gave us with the person's own. It is what the top
+    bar shows, what the emails open with (``first_name``) and what the operator's list shows;
+    nothing else about the user changes."""
+    name = parse_display_name(raw)
+    user = await store.get_user_unscoped(user_id)
+    if user is None:
+        raise WebNotFoundError
+    # Accepted: a read-replace-write with no IfMatch (upsert_user has none). An operator
+    # Disable landing in the few ms between this read and the write would be overwritten;
+    # the operator sees the list and can disable again, and a disabled person cannot reach
+    # this form at all (the status gate runs before every page).
+    updated = replace(user, display_name=name)
+    await store.upsert_user(updated)
+    return updated
 
 
 def parse_party_size(form: Mapping[str, str]) -> int:

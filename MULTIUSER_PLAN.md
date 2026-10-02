@@ -1097,6 +1097,7 @@ account.
 | POST | `/accounts/{id}/reverify` | user | yes | re-probe after `auth_failed` |
 | POST | `/accounts/{id}/refresh` | user | yes | live refresh (TTL + rate limit, §8.6) |
 | POST | `/accounts/{id}/price` | user | yes | the account's default price cap (MU-R3) |
+| POST | `/me/name` | user | yes | the person's own display name (emails, top bar, operator list; 2026-10-02) |
 | POST | `/accounts/{id}/adopt` | operator | yes | adopt existing bookings as owned, re-planned and confirmed (MU-16b, `web/adopt.py`) |
 | POST | `/bookings/date`, `/bookings/weekly` | user | yes | the ranked booking form: one date, or a weekly rule (MU-R3) |
 | GET/POST | `/rules`, `/rules/{id}` | user | yes | create/edit/deactivate standing rules (materializes synchronously) |
@@ -1106,6 +1107,7 @@ account.
 | POST | `/rows/{id}/withdraw` | user | yes | delete an explicit pending row |
 | POST | `/rows/{id}/cancel` | user | yes | managed cancel (§8.5) |
 | GET/POST | `/feedback` | user | POST | Report a bug / Request a course: one form that emails the operator and, in prod, files an anonymized public GitHub issue (2026-09-29; `web/feedback.py`, `web/github_issues.py`) |
+| GET | `/admin/users/{id}` | operator | – | one person's page: sign-in, connected courses (status, login, snapshot age), weekly bookings, the next 21 days' dates with status + booked tee time; read-only, never a course login (2026-10-02) |
 | GET/POST | `/admin/users` | operator | yes | invite (emails an invitation, best-effort; Resend and Uninvite for still-invited users) / disable users (allowlist); lists every user (`TenantStore.list_users`) and the uninvited sign-in attempts with an Invite button (`list_rejected_signins`), 2026-09-29 |
 
 Every data query is scoped by the session's `user_id`. There is an IDOR test per route

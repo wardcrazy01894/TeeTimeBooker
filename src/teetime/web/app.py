@@ -72,7 +72,7 @@ from .oauth import (
 from .pages import STATUS_LABELS, register_page_routes
 from .ranking_explainer import cutoff_text, ranking_example
 from .security import CookiePolicy, security_headers, verify_csrf_token
-from .services import ProbeLimits, RefreshCache
+from .services import DISPLAY_NAME_MAX_LEN, ProbeLimits, RefreshCache
 from .time_options import check_window, time_label, time_options, union_hours, with_values
 
 log = logging.getLogger(__name__)
@@ -636,6 +636,28 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
             },
         )
 
+    @app.get("/admin/users/{id}", response_class=HTMLResponse)
+    async def admin_user(request: Request, operator: Operator, id: str) -> Response:
+        try:
+            user_id = UserId(UUID(id))
+        except ValueError as e:
+            raise HTTPException(status_code=404) from e
+        detail = await admin_users_view.user_detail(
+            ctx.store, user_id=user_id, clock=ctx.clock, policies=ctx.policies
+        )
+        if detail is None:
+            raise HTTPException(status_code=404)
+        return ctx.page(
+            request,
+            "admin_user.html",
+            {
+                "user": operator,
+                "is_operator": True,
+                "person": detail,
+                "status_labels": STATUS_LABELS,
+            },
+        )
+
     @app.post("/admin/users")
     async def admin_users_action(request: Request, operator: Operator) -> Response:
         form = await request.form()
@@ -915,6 +937,7 @@ def create_app(
     templates.env.globals["tee_hours"] = ctx.hours_of
     templates.env.globals["static_url"] = _static_url_for(static_asset_versions(STATIC_DIR))
     templates.env.globals["ranking_example"] = ranking_example()
+    templates.env.globals["display_name_max_len"] = DISPLAY_NAME_MAX_LEN
     templates.env.globals["booking_cutoff_text"] = cutoff_text(
         ctx.cutoff.days_before, ctx.cutoff.time_of_day
     )

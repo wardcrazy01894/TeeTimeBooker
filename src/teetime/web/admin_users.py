@@ -2,25 +2,28 @@
 
 One row per user in any status: whether the invite has been used (INVITED = never signed in),
 the sign-in provider, the connected courses, active weekly bookings and the next 21 days' dated
-rows by status, plus (operator request 2026-10-02) the dates themselves under a disclosure: what
-was asked for, the status and the booked tee time, from the same ``services.dashboard`` read the
-person's own dashboard uses. Read-only and NEVER logs in to a course. The route is
+rows by status (counted from the same ``services.dashboard`` read the person's own dashboard
+uses). Each signed-in person links to their own page, ``/admin/users/{id}`` (``user_detail``,
+operator request 2026-10-02): sign-in, connected courses, weekly bookings and the next 21 days'
+dates with status and booked tee time. Read-only and NEVER logs in to a course. The routes are
 operator-gated; this is the only place the web lists users at all (``TenantStore.list_users``).
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ..core.clock import Clock
 from ..core.models import CourseId
-from ..tenant.models import RejectedSignin, RowStatus, User
+from ..core.release_policy import ReleasePolicy
+from ..tenant.models import RejectedSignin, RowStatus, User, UserId
 from ..tenant.store import TenantStore
 from . import services
-from .services import DashboardRow
+from .services import AccountView, DashboardRow, RuleView
 
 # The statuses counted in the "next 21 days" column, in display order.
 _COUNTED = (RowStatus.BOOKED, RowStatus.PENDING)
@@ -39,6 +42,41 @@ class UserOverview:
     @property
     def signed_in(self) -> bool:
         return self.user.oauth_subject is not None
+
+
+@dataclass(frozen=True, slots=True)
+class UserDetail:
+    """One person's page: what they connected, what they asked for, what they got."""
+
+    user: User
+    accounts: tuple[AccountView, ...]
+    rules: tuple[RuleView, ...]
+    dates: tuple[DashboardRow, ...]
+
+
+async def user_detail(
+    store: TenantStore,
+    *,
+    user_id: UserId,
+    clock: Clock,
+    policies: Mapping[str, ReleasePolicy],
+) -> UserDetail | None:
+    """The person's page, or None for an unknown id. The same user-scoped reads the person's own
+    pages make (``account_views``, ``list_rules``, ``dashboard``): nothing an operator sees here
+    is hidden from the person, and nothing logs in to a course."""
+    user = await store.get_user_unscoped(user_id)
+    if user is None:
+        return None
+    if user.oauth_subject is None:  # never signed in: no accounts, no rows
+        return UserDetail(user=user, accounts=(), rules=(), dates=())
+    return UserDetail(
+        user=user,
+        accounts=tuple(
+            await services.account_views(store, user_id=user.id, policies=policies, clock=clock)
+        ),
+        rules=tuple(await services.list_rules(store, user_id=user.id)),
+        dates=tuple(await services.dashboard(store, user_id=user.id, clock=clock)),
+    )
 
 
 async def user_overviews(store: TenantStore, *, clock: Clock) -> list[UserOverview]:
