@@ -11,6 +11,11 @@
    PageUp/PageDown on the days). The native input stays in the form and carries the value;
    without script it is the only date control.
 
+   Also with script: each option row's From/To lists (quarter hours, server-rendered as the union
+   of your courses' tee-sheet hours) narrow to the chosen course's own hours (data-first /
+   data-last on its <option>); a pick that falls outside snaps to the nearest bound. Without
+   script the union shows and the server still refuses a window outside the course's hours.
+
    Also with script: under Connect a course, only the chosen course's facts (release cycle,
    where to create a login) are shown; without it every connectable course's line shows.
 
@@ -73,6 +78,45 @@
       refresh();
     });
     refresh();
+  }
+
+
+  // ---- time: each row's From/To follow the chosen course's tee-sheet hours ------------
+
+  function boundTimes(row) {
+    var course = row.querySelector("select[name$='_account']");
+    var picks = row.querySelectorAll("select.timepick");
+    if (!course || !picks.length) {
+      return;
+    }
+    function apply() {
+      var chosen = course.options[course.selectedIndex];
+      var first = chosen ? chosen.getAttribute("data-first") : null;
+      var last = chosen ? chosen.getAttribute("data-last") : null;
+      for (var i = 0; i < picks.length; i += 1) {
+        var pick = picks[i];
+        var lowest = null;
+        var highest = null;
+        for (var j = 0; j < pick.options.length; j += 1) {
+          var o = pick.options[j];
+          var out = !!first && !!last && (o.value < first || o.value > last);
+          o.disabled = out;
+          o.hidden = out;
+          if (!out) {
+            if (lowest === null) {
+              lowest = o;
+            }
+            highest = o;
+          }
+        }
+        var current = pick.options[pick.selectedIndex];
+        if (current && current.disabled && lowest && highest) {
+          pick.value = (current.value < first ? lowest : highest).value;
+        }
+      }
+    }
+    course.addEventListener("change", apply);
+    apply();
   }
 
 
@@ -375,6 +419,10 @@
     var forms = document.querySelectorAll("form.ranked");
     for (var i = 0; i < forms.length; i += 1) {
       enhance(forms[i]);
+      var rows = forms[i].querySelectorAll(".option");
+      for (var r = 0; r < rows.length; r += 1) {
+        boundTimes(rows[r]);
+      }
     }
     var selects = document.querySelectorAll("select.connect-course");
     for (var k = 0; k < selects.length; k += 1) {

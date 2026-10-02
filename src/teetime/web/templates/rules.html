@@ -1,16 +1,18 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, error_block, players_picker, ranked_form, windows, course_facts %}
+{% from "_macros.html" import hhmm, error_block, players_picker, ranked_form, windows, course_facts, time_select %}
 {% block title %}Weekly bookings · TeeTimeBooker{% endblock %}
 
-{% macro rule_fields(weekday, earliest, latest, party) %}
+{% macro rule_fields(weekday, earliest, latest, party, course_id) %}
+{# This rule's course only; its saved window stays selectable even off the quarter-hour grid. #}
+{% set times = time_choices([course_id], [earliest, latest]) %}
 <div class="form-row">
   <label>Day
     <select name="weekday">
       {% for name in weekdays %}<option value="{{ loop.index0 }}"{% if loop.index0 == weekday %} selected{% endif %}>{{ name }}</option>{% endfor %}
     </select>
   </label>
-  <label>From <input type="time" name="window_earliest" value="{{ earliest }}" required></label>
-  <label>To <input type="time" name="window_latest" value="{{ latest }}" required></label>
+  <label>From {{ time_select("window_earliest", hhmm(earliest), times, "Earliest time") }}</label>
+  <label>To {{ time_select("window_latest", hhmm(latest), times, "Latest time") }}</label>
   {{ players_picker(party) }}
   <button type="submit">Save</button>
 </div>
@@ -35,7 +37,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="version" value="{{ v.rule.version }}">
     <input type="hidden" name="action" value="save">
-    {{ rule_fields(v.rule.weekday, hhmm(v.rule.options[0].earliest), hhmm(v.rule.options[0].latest), v.rule.party_size) }}
+    {{ rule_fields(v.rule.weekday, v.rule.options[0].earliest, v.rule.options[0].latest, v.rule.party_size, v.account.course_id) }}
   </form>
   {% endif %}
   <div class="card-actions">

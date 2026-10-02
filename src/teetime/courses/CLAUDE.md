@@ -25,9 +25,11 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
   3. Add a `[[courses]]` entry in your TOML config and add `"foreup:twin_brooks"`
      to `course_preferences` in the desired priority position.
   4. For the web: one line each in `courses/names.py`'s `COURSE_DISPLAY_NAMES` (what a person
-     reads) and `COURSE_SIGNUP_URLS` (the course's own booking page, linked from Connect a course
-     as where to create the login). Its release cycle on the pages comes from the adapter's
-     `release_policy` automatically (`web/course_info.py`).
+     reads), `COURSE_SIGNUP_URLS` (the course's own booking page, linked from Connect a course
+     as where to create the login) and `COURSE_TEE_SHEET_HOURS` (first tee to last, generous and
+     year-round: the booking forms' time pickers list only those hours and the server refuses a
+     window outside them; no entry = the whole day, so nothing is refused). Its release cycle on
+     the pages comes from the adapter's `release_policy` automatically (`web/course_info.py`).
 
   No other code needs to change. Adding a course to `[[courses]]` without
   adding it to `course_preferences` is safe — it won't change the RequestId
@@ -42,6 +44,8 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
      `"teeitup.diversity_golf": DiversityGolfAdapter,`
   3. Add a `[[courses]]` entry in your TOML config with `*_env` keys for all card
      credentials, and add the course id to `course_preferences`.
+  4. For the web: the same three `courses/names.py` lines as a ForeUP course (name, sign-up
+     URL, tee-sheet hours).
 
   No other code needs to change.
 

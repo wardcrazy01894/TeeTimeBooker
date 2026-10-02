@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Protocol, runtime_checkable
@@ -599,13 +599,19 @@ async def edit_rule(
     policies: Mapping[str, ReleasePolicy],
     cutoff: BookingCutoffConfig,
     clock: Clock,
+    check_window: Callable[[CourseId, time, time], None] | None = None,
 ) -> MaterializeReport:
     """Window / party / weekday edit via ``apply_rule_edit`` (synchronous materialize).
     ``version`` is the one the form was rendered from: a stale page is
-    ``VersionConflictError`` -> 409."""
+    ``VersionConflictError`` -> 409. ``check_window`` (the web's tee-sheet-hours rule,
+    ``web/time_options.py``) sees the rule's course and the new window before anything is
+    written; None skips it."""
     old = await _own_rule(store, user_id=user_id, rule_id=rule_id)
     if old.group_id is not None or len(old.options) > 1:
         raise ActionRefusedError(RANKED_RULE_EDIT_HINT)
+    if check_window is not None:
+        account = await _own_account(store, user_id=user_id, account_id=old.course_account_id)
+        check_window(account.course_id, rule_input.window_earliest, rule_input.window_latest)
     new = replace(
         old,
         weekday=rule_input.weekday,

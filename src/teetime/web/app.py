@@ -23,10 +23,10 @@ import hashlib
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit
@@ -43,7 +43,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from ..core.clock import Clock
 from ..core.config import BookingCutoffConfig
 from ..core.release_policy import ReleasePolicy
-from ..courses.names import COURSE_DISPLAY_NAMES, COURSE_SIGNUP_URLS, course_display_name
+from ..courses.names import (
+    COURSE_DISPLAY_NAMES,
+    COURSE_SIGNUP_URLS,
+    COURSE_TEE_SHEET_HOURS,
+    TeeSheetHours,
+    course_display_name,
+    tee_sheet_hours,
+)
 from ..tenant.crypto import Keyring
 from ..tenant.models import User, UserId, UserRole, UserStatus
 from ..tenant.notify import EmailMessage, EmailSender, UserNotifier, render_invitation
@@ -66,6 +73,7 @@ from .pages import register_page_routes
 from .ranking_explainer import cutoff_text, ranking_example
 from .security import CookiePolicy, security_headers, verify_csrf_token
 from .services import ProbeLimits, RefreshCache
+from .time_options import check_window, time_label, time_options, union_hours, with_values
 
 log = logging.getLogger(__name__)
 
@@ -394,12 +402,28 @@ class _Ctx:
     # ``str(course_id)`` -> the course's own booking site (default ``courses.names``), linked
     # from Connect a course as where to create the login the bot will use.
     course_signup_urls: Mapping[str, str] = field(default_factory=dict)
+    # ``str(course_id)`` -> the course's tee-sheet span (default ``courses.names``): the time
+    # pickers list only those hours and ``check_window`` refuses a window outside them.
+    tee_sheet_hours: Mapping[str, TeeSheetHours] = field(default_factory=dict)
     # Sends that run AFTER the response (invite, resend, feedback); drained on shutdown.
     jobs: BackgroundJobs = field(default_factory=BackgroundJobs)
     rejection_audits: RejectionAuditThrottle = field(default_factory=RejectionAuditThrottle)
 
     def course_name(self, course_id: object) -> str:
         return course_display_name(str(course_id), self.course_names)
+
+    def hours_of(self, course_id: object) -> TeeSheetHours:
+        return tee_sheet_hours(str(course_id), self.tee_sheet_hours)
+
+    def time_choices(self, course_ids: Sequence[object], values: Sequence[time] = ()) -> list[time]:
+        """The picker's choices for a form over ``course_ids`` (their union: the ranked form has
+        a course dropdown per row, and with script off the list cannot follow it), plus
+        ``values`` already saved (an off-grid window stays selectable on its edit form)."""
+        hours = union_hours(self.hours_of(c) for c in course_ids)
+        return with_values(time_options(hours), *values)
+
+    def check_window(self, course_id: object, earliest: time, latest: time) -> None:
+        check_window(self.course_name(course_id), self.hours_of(course_id), earliest, latest)
 
     def release_cycle(self, course_id: object) -> ReleaseCycle | None:
         """The course's release cycle in words (``web/course_info.py``), None for a course with
@@ -827,6 +851,7 @@ def create_app(
     adapter_factory: AdapterFactory | None = None,
     course_names: Mapping[str, str] | None = None,
     course_signup_urls: Mapping[str, str] | None = None,
+    tee_sheet_hours: Mapping[str, TeeSheetHours] | None = None,
 ) -> FastAPI:
     """Build the ASGI app. MU-14 (connect, refresh, cancel) needs ``keyring`` (decrypt /
     encrypt the course passwords) and ``adapter_factory`` (one throwaway ForeUP adapter per
@@ -839,7 +864,10 @@ def create_app(
     (``str(course_id)`` -> display name, default ``courses.names.COURSE_DISPLAY_NAMES``) is what
     every page shows instead of a course id; an unknown id falls back to itself.
     ``course_signup_urls`` (default ``courses.names.COURSE_SIGNUP_URLS``) is where Connect a
-    course sends a person to create the course login; a course without one gets no link."""
+    course sends a person to create the course login; a course without one gets no link.
+    ``tee_sheet_hours`` (default ``courses.names.COURSE_TEE_SHEET_HOURS``) bounds the booking
+    forms' time pickers per course and the server's window check; a course without an entry
+    gets the whole day."""
     templates = Jinja2Templates(directory=str(_HERE / "templates"))
     ctx = _Ctx(
         settings=settings,
@@ -871,11 +899,19 @@ def create_app(
             if course_signup_urls is None
             else dict(course_signup_urls)
         ),
+        tee_sheet_hours=(
+            {str(cid): h for cid, h in COURSE_TEE_SHEET_HOURS.items()}
+            if tee_sheet_hours is None
+            else dict(tee_sheet_hours)
+        ),
     )
     templates.env.filters["course_name"] = ctx.course_name
     templates.env.filters["course_signup_url"] = lambda cid: ctx.course_signup_urls.get(str(cid))
     templates.env.filters["release_cycle"] = ctx.release_cycle
     templates.env.filters["provider_name"] = provider_display_name
+    templates.env.filters["time_label"] = time_label
+    templates.env.globals["time_choices"] = ctx.time_choices
+    templates.env.globals["tee_hours"] = ctx.hours_of
     templates.env.globals["static_url"] = _static_url_for(static_asset_versions(STATIC_DIR))
     templates.env.globals["ranking_example"] = ranking_example()
     templates.env.globals["booking_cutoff_text"] = cutoff_text(
