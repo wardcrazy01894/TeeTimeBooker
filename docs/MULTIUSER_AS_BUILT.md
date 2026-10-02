@@ -659,8 +659,12 @@ course's `data-first`/`data-last`, snapping an out-of-range pick to the nearest 
 form is bounded to its own course and keeps a saved off-grid window (`with_values`) selectable. The
 guarantee is server-side: `_Ctx.check_window` runs on every create/edit path (`/bookings/date`,
 `/bookings/weekly`, `/rules`, `/rules/{id}` save via `services.edit_rule(check_window=…)`, `/rows`)
-and refuses a window outside the course's hours with a 400 naming the course and its hours.
-`create_app(tee_sheet_hours=…)` overrides the table for tests. Pinned by
+and refuses a window outside the course's hours with a 400 naming the course, its hours and the
+picked times (never "option N": ranks are renumbered 1..N, so a number could differ from the row
+typed; options are checked in rank order). Decision: a rule saved before this change with a window
+outside its course's hours still shows, but its edit form re-posts the window, so a party or
+weekday edit must move the window inside the hours too (the message says which). `create_app(
+tee_sheet_hours=…)` overrides the table for tests. Pinned by
 `tests/web/test_time_options.py` and `tests/web/test_web_time_picker.py` (which also fails on any
 template that still uses `<input type="time">`).
 

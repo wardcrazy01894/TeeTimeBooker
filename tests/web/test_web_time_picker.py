@@ -28,7 +28,7 @@ from teetime.web.app import STATIC_DIR, WebSettings, create_app
 from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE
 from .conftest import GitHubIdentity, make_invited, mock_github, sign_in
 from .test_web_pages import _rule_form
-from .test_web_ranked_pages import MEMBER, POLICY, SAT, Member, _account, _post, _ranked
+from .test_web_ranked_pages import MEMBER, OCT3, POLICY, SAT, Member, _account, _post, _ranked
 
 NAMES = {str(MB): "Mangrove Bay", str(OTHER_COURSE): "Twin Brooks"}
 HOURS = {
@@ -149,9 +149,47 @@ async def test_ranked_window_outside_the_courses_hours_is_refused_with_the_hours
     r = await _post(client, "/bookings/weekly", {"weekday": str(SAT), **form})
     assert r.status_code == 400
     assert "Twin Brooks" in r.text and "7:00 AM" in r.text and "6:00 PM" in r.text
-    assert "option 2" in r.text
+    assert "6:30 AM to 8:00 AM" in r.text
     ok = await _post(client, "/bookings/weekly", {"weekday": str(SAT), **_ranked(member)})
     assert ok.status_code == 303
+
+
+async def test_refusal_is_worded_by_course_and_times_whatever_the_row_number(
+    client: httpx.AsyncClient, member: Member
+) -> None:
+    """Row 3 ranked 1 (ranks are renumbered 1..N): the message must not say "option 1" or
+    "option 3", only the course and the times, which the person recognises either way."""
+    form = _ranked(member) | {
+        "opt3_rank": "1",
+        "opt1_rank": "2",
+        "opt2_rank": "3",
+        "opt3_earliest": "05:00",
+        "opt3_latest": "08:00",  # A (Mangrove Bay) opens 06:30
+    }
+    r = await _post(client, "/bookings/date", {"target_date": OCT3.isoformat(), **form})
+    assert r.status_code == 400
+    alert = re.search(r'<div class="error" role="alert">\s*<p>(.*?)</p>', r.text, re.S)
+    assert alert, "no error block"
+    assert "Mangrove Bay" in alert.group(1) and "5:00 AM to 8:00 AM" in alert.group(1)
+    assert "option" not in alert.group(1)
+
+
+async def test_one_off_re_request_outside_hours_is_refused(
+    client: httpx.AsyncClient, member: Member
+) -> None:
+    """The hidden-input forms (re-request, the add-as-one-off follow-up) post to /rows."""
+    r = await _post(
+        client,
+        "/rows",
+        {
+            "account_id": str(member.b.id),
+            "target_date": OCT3.isoformat(),
+            "window_earliest": "18:30",
+            "window_latest": "19:30",  # Twin Brooks closes 18:00
+            "party_size": "2",
+        },
+    )
+    assert r.status_code == 400 and "Twin Brooks" in r.text and "6:00 PM" in r.text
 
 
 async def test_single_rule_create_and_edit_outside_hours_are_refused(

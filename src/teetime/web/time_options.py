@@ -10,7 +10,8 @@ scrolls past 4 AM or 9 PM. Pure functions:
 - ``with_values(options, *times)``: a window saved before the picker (or typed on another form)
   stays selectable on its edit form.
 - ``check_window(...)``: the server-side rule. The browser list is a convenience; this is the
-  guarantee, and it names the course and its hours so the person knows what to pick.
+  guarantee, and it names the course, its hours and the offending times (never an option
+  number: ranks are renumbered 1..N, so a number could differ from the row the person typed).
 """
 
 from __future__ import annotations
@@ -55,15 +56,13 @@ def time_label(t: time) -> str:
     return f"{t:%I:%M %p}".lstrip("0")
 
 
-def check_window(
-    course_name: str, hours: TeeSheetHours, earliest: time, latest: time, *, label: str
-) -> None:
-    """Refuse a window that leaves the course's tee-sheet hours. ``label`` names the field the
-    person filled in ("option 2", "the time window")."""
+def check_window(course_name: str, hours: TeeSheetHours, earliest: time, latest: time) -> None:
+    """Refuse a window that leaves the course's tee-sheet hours, naming the course, its hours and
+    the times the person picked."""
     if hours.first <= earliest and latest <= hours.last:
         return
     raise InvalidInputError(
         f"{course_name} has tee times from {time_label(hours.first)} to "
-        f"{time_label(hours.last)}; {label} ({time_label(earliest)} to {time_label(latest)}) "
-        "is outside those hours."
+        f"{time_label(hours.last)}; {time_label(earliest)} to {time_label(latest)} is outside "
+        "those hours."
     )

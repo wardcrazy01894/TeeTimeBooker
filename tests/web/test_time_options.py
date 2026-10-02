@@ -102,15 +102,18 @@ def test_time_label_reads_like_a_clock() -> None:
 # --- the server-side check --------------------------------------------------------------------
 
 
-def test_check_window_names_the_course_and_its_hours() -> None:
+def test_check_window_names_the_course_its_hours_and_the_picked_times() -> None:
+    """By course and times, never "option N": ranks are renumbered 1..N, so a number could
+    differ from the row the person typed (review of #306)."""
     with pytest.raises(InvalidInputError) as e:
-        check_window("Mangrove Bay", MB_HOURS, time(5, 0), time(8, 0), label="option 2")
+        check_window("Mangrove Bay", MB_HOURS, time(5, 0), time(8, 0))
     msg = str(e.value)
-    assert "Mangrove Bay" in msg and "6:30 AM" in msg and "7:00 PM" in msg and "option 2" in msg
+    assert "Mangrove Bay" in msg and "6:30 AM" in msg and "7:00 PM" in msg
+    assert "5:00 AM to 8:00 AM" in msg and "option" not in msg
 
 
 def test_check_window_accepts_the_bounds_themselves_and_all_day() -> None:
-    check_window("Mangrove Bay", MB_HOURS, time(6, 30), time(19, 0), label="option 1")
-    check_window("Nowhere", ALL_DAY, time(0, 0), time(23, 45), label="option 1")
+    check_window("Mangrove Bay", MB_HOURS, time(6, 30), time(19, 0))
+    check_window("Nowhere", ALL_DAY, time(0, 0), time(23, 45))
     with pytest.raises(InvalidInputError):
-        check_window("Mangrove Bay", MB_HOURS, time(18, 0), time(19, 15), label="option 1")
+        check_window("Mangrove Bay", MB_HOURS, time(18, 0), time(19, 15))

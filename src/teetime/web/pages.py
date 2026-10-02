@@ -254,9 +254,7 @@ def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
             rule_input = services.parse_rule_form(form)
             account_id = CourseAccountId(services.parse_id(form.get("account_id", "")))
             if (course := (await _courses_of(ctx, user)).get(account_id)) is not None:
-                ctx.check_window(
-                    course, rule_input.window_earliest, rule_input.window_latest, label="the window"
-                )
+                ctx.check_window(course, rule_input.window_earliest, rule_input.window_latest)
             await services.create_rule(
                 ctx.store,
                 user_id=user.id,
@@ -289,7 +287,7 @@ def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
                     policies=ctx.policies,
                     cutoff=ctx.cutoff,
                     clock=ctx.clock,
-                    check_window=lambda c, lo, hi: ctx.check_window(c, lo, hi, label="the window"),
+                    check_window=ctx.check_window,
                 )
                 return "/rules?notice=rule_updated"
             await services.set_rule_active(
@@ -316,9 +314,7 @@ def _register_row_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependen
         async def action(form: dict[str, str]) -> str:
             one_off = services.parse_one_off_form(form)
             if (course := (await _courses_of(ctx, user)).get(one_off.account_id)) is not None:
-                ctx.check_window(
-                    course, one_off.window_earliest, one_off.window_latest, label="the window"
-                )
+                ctx.check_window(course, one_off.window_earliest, one_off.window_latest)
             await services.create_one_off(
                 ctx.store, user_id=user.id, one_off=one_off, clock=ctx.clock
             )
@@ -466,10 +462,13 @@ def _check_choice(
     ctx: _Ctx, choice: RankedChoice, courses: dict[CourseAccountId, CourseId]
 ) -> None:
     """Every option's window must lie inside its course's tee-sheet hours (the picker lists
-    only those; this is the guarantee with script off, where the list is the union)."""
-    for account_id, windows in choice.per_account.items():
-        for w in windows:
-            ctx.check_window(courses[account_id], w.earliest, w.latest, label=f"option {w.rank}")
+    only those; this is the guarantee with script off, where the list is the union). Checked
+    in rank order, so the first refusal is the person's best-ranked bad option."""
+    ranked = sorted(
+        ((w.rank, account_id, w) for account_id, ws in choice.per_account.items() for w in ws)
+    )
+    for _, account_id, w in ranked:
+        ctx.check_window(courses[account_id], w.earliest, w.latest)
 
 
 def _partial(

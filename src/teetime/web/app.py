@@ -422,10 +422,8 @@ class _Ctx:
         hours = union_hours(self.hours_of(c) for c in course_ids)
         return with_values(time_options(hours), *values)
 
-    def check_window(self, course_id: object, earliest: time, latest: time, *, label: str) -> None:
-        check_window(
-            self.course_name(course_id), self.hours_of(course_id), earliest, latest, label=label
-        )
+    def check_window(self, course_id: object, earliest: time, latest: time) -> None:
+        check_window(self.course_name(course_id), self.hours_of(course_id), earliest, latest)
 
     def release_cycle(self, course_id: object) -> ReleaseCycle | None:
         """The course's release cycle in words (``web/course_info.py``), None for a course with
