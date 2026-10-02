@@ -12,12 +12,11 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ..core.clock import Clock
 from ..core.models import CourseId
-from ..tenant.materialize import MIN_HORIZON_DAYS
 from ..tenant.models import RejectedSignin, RowStatus, User
 from ..tenant.store import TenantStore
 from . import services
@@ -45,7 +44,6 @@ class UserOverview:
 async def user_overviews(store: TenantStore, *, clock: Clock) -> list[UserOverview]:
     """Every user (``list_users`` order: by email) with what they have set up. A user who never
     signed in has no accounts, so their reads are skipped."""
-    today = clock.now_utc().date()
     out: list[UserOverview] = []
     for user in await store.list_users():
         if user.oauth_subject is None:
@@ -53,17 +51,18 @@ async def user_overviews(store: TenantStore, *, clock: Clock) -> list[UserOvervi
             continue
         accounts = await store.list_accounts_for_user(user.id)
         rules = await store.list_rules_for_user(user.id)
-        rows = await store.list_rows_for_user(
-            user.id, from_date=today, to_date=today + timedelta(days=MIN_HORIZON_DAYS)
-        )
-        counts = Counter(r.status for r in rows)
+        # ONE rows read per person: the dashboard's (its 21-day window in each course's local
+        # date); the status counts come from the same rows, so the column and the disclosure
+        # can never disagree.
+        dates = tuple(await services.dashboard(store, user_id=user.id, clock=clock))
+        counts = Counter(d.row.status for d in dates)
         out.append(
             UserOverview(
                 user=user,
                 course_ids=tuple(a.course_id for a in accounts),
                 weekly_rules=sum(1 for r in rules if r.active),
                 upcoming=tuple((s.value, counts[s]) for s in _COUNTED if counts[s]),
-                dates=tuple(await services.dashboard(store, user_id=user.id, clock=clock)),
+                dates=dates,
             )
         )
     return out

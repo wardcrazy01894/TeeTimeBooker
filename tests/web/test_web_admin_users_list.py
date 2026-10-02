@@ -92,6 +92,10 @@ async def test_operator_sees_every_user_and_what_they_set_up(
     assert "Mangrove Bay" in turk and str(MB) not in turk  # a course NAME, never an id
     assert "1 weekly" in turk
     assert "1 pending" in turk
+    # The dates themselves (operator request 2026-10-02): a pending row, no tee time yet.
+    times = _tee_times(page, "turk@example.test")
+    assert "Oct 3" in times and "pending" in times.lower() and "09:30" not in times
+    assert "1 date, every status" in times
 
     me = _row(page, "operator@example.test")
     assert "Operator" in me
@@ -99,11 +103,8 @@ async def test_operator_sees_every_user_and_what_they_set_up(
 
 def _tee_times(html: str, email: str) -> str:
     """The visible text of the per-person tee-times disclosure that follows ``email``'s row."""
-    blocks = re.findall(
-        r'<details class="tee-times" data-user="([^"]+)">(.*?)</details>', html, re.S
-    )
-    for who, body in blocks:
-        if who == email:
+    for attrs, body in re.findall(r"<details\b([^>]*)>(.*?)</details>", html, re.S):
+        if "tee-times" in attrs and f'data-user="{email}"' in attrs:
             return _text(body)
     raise AssertionError(f"no tee-times block for {email}")
 
