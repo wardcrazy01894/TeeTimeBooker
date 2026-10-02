@@ -274,6 +274,9 @@ td.actions { white-space: nowrap; }
 td.actions form, td.actions .inline { margin-right: 0.35rem; }
 td.actions label.check { white-space: normal; max-width: 16rem; font-size: 0.85rem; }
 details.cancel { margin-top: 0.3rem; font-weight: 400; }
+tr.detail > td { padding-top: 0; border-top: 0; }
+details.tee-times > summary { cursor: pointer; font-size: 0.92rem; color: var(--muted); }
+table.nested { margin: 0.4rem 0 0.6rem; font-size: 0.92rem; }
 details.cancel > form { display: grid; gap: 0.4rem; margin-top: 0.4rem; justify-items: start; }
 
 /* ---- status pills ---------------------------------------------------------------------- */

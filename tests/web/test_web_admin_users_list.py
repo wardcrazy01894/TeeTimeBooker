@@ -23,6 +23,7 @@ from ..tenant.conformance import MB
 from .account_builders import stored_account
 from .conftest import T0, GitHubIdentity, make_invited, mock_github, sign_in
 from .test_web_admin_csrf import _csrf, _sign_in_operator
+from .test_web_pages import _book
 
 OCT3 = date(2026, 10, 3)  # a Saturday inside the 21-day window from T0
 _TAG = re.compile(r"<[^>]+>")
@@ -94,6 +95,38 @@ async def test_operator_sees_every_user_and_what_they_set_up(
 
     me = _row(page, "operator@example.test")
     assert "Operator" in me
+
+
+def _tee_times(html: str, email: str) -> str:
+    """The visible text of the per-person tee-times disclosure that follows ``email``'s row."""
+    blocks = re.findall(
+        r'<details class="tee-times" data-user="([^"]+)">(.*?)</details>', html, re.S
+    )
+    for who, body in blocks:
+        if who == email:
+            return _text(body)
+    raise AssertionError(f"no tee-times block for {email}")
+
+
+async def test_operator_sees_each_persons_upcoming_tee_times(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, provider_mock: respx.MockRouter
+) -> None:
+    """Operator request 2026-10-02: not just counts; the dates themselves, with what was asked
+    for, the status and the booked tee time. Read-only, never a course login."""
+    turk = await _member_with_a_weekly_booking(client, store, provider_mock)
+    (row,) = await store.list_rows_for_user(turk.id, from_date=OCT3, to_date=OCT3)
+    await _book(store, row)  # pending -> booked at 09:30 through the runner's path
+    await store.upsert_user(make_invited("pending.pal@example.test"))
+    await _sign_in_operator(client, provider_mock)
+    page = (await client.get("/admin/users")).text
+
+    times = _tee_times(page, "turk@example.test")
+    assert "Oct 3" in times and "Mangrove Bay" in times and str(MB) not in times
+    assert "booked" in times.lower() and "09:30" in times and "option 1" in times
+    assert "08:00–10:00" in times and "2 players" in times  # noqa: RUF001 — the windows macro's en dash
+    assert "1 booked" in _row(page, "turk@example.test")  # the count column still agrees
+    with pytest.raises(AssertionError):
+        _tee_times(page, "pending.pal@example.test")  # never signed in: nothing to show
 
 
 async def test_row_buttons_disable_and_enable_by_the_bound_identity(

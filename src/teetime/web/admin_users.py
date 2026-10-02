@@ -2,8 +2,10 @@
 
 One row per user in any status: whether the invite has been used (INVITED = never signed in),
 the sign-in provider, the connected courses, active weekly bookings and the next 21 days' dated
-rows by status. Read-only and NEVER logs in to a course. The route is operator-gated; this is the
-only place the web lists users at all (``TenantStore.list_users``).
+rows by status, plus (operator request 2026-10-02) the dates themselves under a disclosure: what
+was asked for, the status and the booked tee time, from the same ``services.dashboard`` read the
+person's own dashboard uses. Read-only and NEVER logs in to a course. The route is
+operator-gated; this is the only place the web lists users at all (``TenantStore.list_users``).
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ from ..core.models import CourseId
 from ..tenant.materialize import MIN_HORIZON_DAYS
 from ..tenant.models import RejectedSignin, RowStatus, User
 from ..tenant.store import TenantStore
+from . import services
+from .services import DashboardRow
 
 # The statuses counted in the "next 21 days" column, in display order.
 _COUNTED = (RowStatus.BOOKED, RowStatus.PENDING)
@@ -29,6 +33,9 @@ class UserOverview:
     course_ids: tuple[CourseId, ...]
     weekly_rules: int  # active standing rules
     upcoming: tuple[tuple[str, int], ...]  # ("booked", 2), ("pending", 1): non-zero only
+    # The next 21 days' rows as the person's own dashboard shows them (date, options, status,
+    # booked tee time); empty for someone who never signed in.
+    dates: tuple[DashboardRow, ...] = ()
 
     @property
     def signed_in(self) -> bool:
@@ -56,6 +63,7 @@ async def user_overviews(store: TenantStore, *, clock: Clock) -> list[UserOvervi
                 course_ids=tuple(a.course_id for a in accounts),
                 weekly_rules=sum(1 for r in rules if r.active),
                 upcoming=tuple((s.value, counts[s]) for s in _COUNTED if counts[s]),
+                dates=tuple(await services.dashboard(store, user_id=user.id, clock=clock)),
             )
         )
     return out
