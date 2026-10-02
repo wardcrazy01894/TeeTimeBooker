@@ -7,7 +7,7 @@
    user-scoped reads the person's own pages make; never a course login. #}
 <p class="hint"><a href="/admin/users">← All users</a></p>
 <div class="page-head">
-  <h1>{{ u.display_name if u.oauth_subject else u.email }}</h1>
+  <h1>{{ (u.display_name if u.oauth_subject else "") or u.email }}</h1>
   <p class="muted">
     {{ u.email }} · {{ u.role.value | capitalize }} ·
     {% if u.status.value == "invited" %}<span class="status status-pending">Invited</span> <span class="hint">hasn't signed in yet</span>
