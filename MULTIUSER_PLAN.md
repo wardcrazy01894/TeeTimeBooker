@@ -1097,6 +1097,7 @@ account.
 | POST | `/accounts/{id}/reverify` | user | yes | re-probe after `auth_failed` |
 | POST | `/accounts/{id}/refresh` | user | yes | live refresh (TTL + rate limit, §8.6) |
 | POST | `/accounts/{id}/price` | user | yes | the account's default price cap (MU-R3) |
+| POST | `/me/name` | user | yes | the person's own display name (emails, top bar, operator list; 2026-10-02) |
 | POST | `/accounts/{id}/adopt` | operator | yes | adopt existing bookings as owned, re-planned and confirmed (MU-16b, `web/adopt.py`) |
 | POST | `/bookings/date`, `/bookings/weekly` | user | yes | the ranked booking form: one date, or a weekly rule (MU-R3) |
 | GET/POST | `/rules`, `/rules/{id}` | user | yes | create/edit/deactivate standing rules (materializes synchronously) |

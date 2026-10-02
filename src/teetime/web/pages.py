@@ -57,6 +57,7 @@ _NOTICES = {
     "rule_deactivated": "Rule deactivated. Its pending dates were withdrawn; booked ones are kept.",
     "rule_activated": "Rule reactivated and its dates added back.",
     "one_off_added": "Date added.",
+    "name_saved": "Name saved.",
     "skipped": "Date skipped: the bot will not book it.",
     "unskipped": "Date back on: the bot will try to book it.",
     "withdrawn": "Date withdrawn.",
@@ -242,6 +243,16 @@ def _register_read_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
     @app.get("/rules", response_class=HTMLResponse)
     async def list_rules(request: Request, user: CurrentUser) -> Response:
         return await pages.rules(request, user)
+
+    @app.post("/me/name")
+    async def set_display_name(request: Request, user: CurrentUser) -> Response:
+        async def action(form: dict[str, str]) -> str:
+            await services.set_display_name(
+                pages.ctx.store, user_id=user.id, raw=form.get("display_name", "")
+            )
+            return "/?notice=name_saved"
+
+        return await pages.act(request, user, action, on_error=pages.dashboard)
 
 
 def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependency) -> None:

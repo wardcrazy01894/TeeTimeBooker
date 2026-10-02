@@ -62,6 +62,7 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("POST", "/rows/{id}/cancel", "cancel_row", AuthLevel.USER, True, "MU-14"),
     # 2026-09-29: Report a bug / Request a course (web/feedback.py): emails the operator and, in
     # prod, files an anonymized GitHub issue.
+    RouteSpec("POST", "/me/name", "set_display_name", AuthLevel.USER, True, "OPS"),
     RouteSpec("GET", "/feedback", "feedback_page", AuthLevel.USER, False, "OPS"),
     RouteSpec("POST", "/feedback", "send_feedback", AuthLevel.USER, True, "OPS"),
     # MU-12: invite by email + disable/enable by (provider, subject); 2026-09-29: the user list,
