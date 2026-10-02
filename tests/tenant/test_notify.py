@@ -271,6 +271,16 @@ def test_miss_email_owns_a_service_error() -> None:
 def test_miss_email_lists_the_best_option_and_counts_the_rest() -> None:
     body = render_user_event(_miss(extra_options=2, party_size=1), first_name="Alex").body
     assert "  You asked:  8:45 AM to 10:00 AM, 1 player (+2 more options)" in body
+    body = render_user_event(_miss(extra_options=1), first_name="Alex").body
+    assert "4 players (+1 more option)" in body
+
+
+def test_miss_email_never_renders_the_engine_detail() -> None:
+    """The detail is engine jargon and may carry a secret or a stray address (test_email_has_no_
+    secret passes trivially for this kind now); the miss email must not render it at all."""
+    leaky = f"no_inventory pw={PASSWORD} cc {OTHER_USER_EMAIL}"
+    body = render_user_event(_miss(leaky), first_name="Alex").body
+    assert PASSWORD not in body and OTHER_USER_EMAIL not in body and "no_inventory" not in body
 
 
 def test_miss_email_without_row_facts_still_reads_well() -> None:

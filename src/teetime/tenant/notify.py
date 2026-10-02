@@ -270,7 +270,8 @@ def _miss_card(event: UserEvent, course: str) -> list[str]:
     if event.window is not None and event.party_size is not None:
         lo, hi = event.window
         players = "1 player" if event.party_size == 1 else f"{event.party_size} players"
-        more = f" (+{event.extra_options} more options)" if event.extra_options else ""
+        n = event.extra_options
+        more = f" (+{n} more option{'s' if n != 1 else ''})" if n else ""
         card.append(f"  You asked:  {_clock(lo)} to {_clock(hi)}, {players}{more}")
     return card
 
