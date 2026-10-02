@@ -334,7 +334,7 @@ async def test_tenant_plan_with_the_real_mb_adapter_makes_no_http_request() -> N
     assert len(plan.rows) == 2
     assert not respx.calls
     first, second = plan.rows
-    assert len(first.allowlist_times) == len(second.allowlist_times) == 3
+    assert len(first.allowlist_times) == len(second.allowlist_times) == 2  # burst 2
     assert not set(first.allowlist_times) & set(second.allowlist_times)
     text = "\n".join(plan.render())
     assert a.username not in text and b.username not in text

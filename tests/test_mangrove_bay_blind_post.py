@@ -232,9 +232,9 @@ def test_widened_grid_emits_identical_slots_for_0845_1000_window() -> None:
         hhmm = s.tee_time.strftime("%H:%M")
         assert s.raw["time"] == f"2026-05-16 {hhmm}"
         assert s.raw["start_front"] == int(s.slot_id)
-    # The shipped prod burst is blind_post_max_count=3 (untouched by MU-3): identical top-3.
-    top3 = adapter.synthesize_blind_slots(_request(), SAT, max_count=3)
-    assert [s.slot_id for s in top3] == ["202604160922", "202604160915", "202604160930"]
+    # The shipped prod burst is blind_post_max_count=2 (since 2026-10-02): identical top-2.
+    top2 = adapter.synthesize_blind_slots(_request(), SAT, max_count=2)
+    assert [s.slot_id for s in top2] == ["202604160922", "202604160915"]
 
 
 def test_grid_widened_to_full_morning() -> None:

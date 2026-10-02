@@ -88,22 +88,22 @@ async def test_first_drop_emits_section_11_2_log_lines(caplog: pytest.LogCapture
 
     # 1. the claim
     assert f"tenant-run: claimed 1/1 row(s) for mb0600et target={TARGET.isoformat()}" in text
-    # 2. allocation of one account is the identity: its own top 3 by midpoint distance
+    # 2. allocation of one account is the identity: its own top 2 by midpoint distance
     assert (
-        f"tenant-run: allocation order=[{row}] allowlist[{row}]=[08:15,08:00,08:30] search_only=[]"
+        f"tenant-run: allocation order=[{row}] allowlist[{row}]=[08:15,08:00] search_only=[]"
         in text
     )
-    # 3. the one coordinated fill: 3 burst tokens for the one lease + the shared reserve of 2
+    # 3. the one coordinated fill: 2 burst tokens for the one lease + the shared reserve of 2
     assert (
-        f"pool: coordinated fill demanded=5 (burst=3, reserve=2) solved=5 granted={{{row}: 3}} "
+        f"pool: coordinated fill demanded=4 (burst=2, reserve=2) solved=4 granted={{{row}: 2}} "
         "reserve=2" in text
     )
     # 5. the unchanged staggered burst, measured offsets == planned (VirtualClock is exact)
-    for planned in ("-400", "-250", "+0"):
+    for planned in ("-400", "+0"):
         assert f"blind-POST sent {planned}ms (planned {planned}ms)" in text, planned
     # 6. the outcome, then the write after T0 + 10 s
     outcome_line = (
-        f"tenant-run: outcome row={row} outcome=BOOKED held=1 cancelled_extra=2 held_extra=0"
+        f"tenant-run: outcome row={row} outcome=BOOKED held=1 cancelled_extra=1 held_extra=0"
     )
     assert outcome_line in text
     assert "tenant-run: wrote 1/1 outcome(s)" in text
@@ -128,21 +128,22 @@ async def test_runner_emits_first_drop_checklist_lines(caplog: pytest.LogCapture
 
 def test_tenant_scheduler_matches_the_shipped_toml_scheduler() -> None:
     """The tenant job's race knobs ARE today's booking job's: ``config/container.toml``'s
-    [scheduler] (burst 3, reserve 2, stagger (-400, -250, 0), early arrival 400 ms, lead 120 s)."""
+    [scheduler] (burst 2, reserve 2, stagger (-400, 0), early arrival 400 ms, lead 120 s)."""
     shipped = tomllib.loads((_REPO / "config" / "container.toml").read_text())["scheduler"]
     assert tenant_scheduler() == SchedulerConfig(**shipped)
-    assert tenant_scheduler().blind_post_max_count == 3
+    assert tenant_scheduler().blind_post_max_count == 2
     assert tenant_scheduler().blind_post_fallback_token_reserve == 2
     # Operator 2026-09-30: -500 landed before ForeUP's release on 9/29 + 9/30 (its clock had
-    # stopped running ~0.5 s fast), wasting the rank-0 slot; -250 landed after it every day.
-    assert tenant_scheduler().blind_post_stagger_ms == (-400, -250, 0)
+    # stopped running ~0.5 s fast), wasting the rank-0 slot. Operator 2026-10-02: the -400 POST
+    # was winning consistently, so the -250 middle POST was dropped (one early, one at T0).
+    assert tenant_scheduler().blind_post_stagger_ms == (-400, 0)
     assert tenant_scheduler().early_arrival_ms == 400
 
 
 async def test_single_account_run_matches_todays_burst() -> None:
     """One account through the tenant runner fires EXACTLY the single-user TOML ``run --wait``
-    burst: the same three slots, in the same order, at the same measured offsets from T0, with
-    the same token budget (burst 3 + reserve 2 = 5: one lease of 3 plus the shared reserve)."""
+    burst: the same two slots, in the same order, at the same measured offsets from T0, with
+    the same token budget (burst 2 + reserve 2 = 4: one lease of 2 plus the shared reserve)."""
     scheduler = tenant_scheduler()
 
     # Today's path: one Orchestrator(prefetch_book=True) over the shipped scheduler.
@@ -189,12 +190,12 @@ async def test_single_account_run_matches_todays_burst() -> None:
     tenant_adapter = factory.built[a.account.id]
 
     assert [s for s, _ in tenant_adapter.sends] == [s for s, _ in toml_adapter.sends]
-    assert tenant_adapter.send_offsets_ms() == toml_adapter.send_offsets_ms() == [-400, -250, 0]
-    assert toml_adapter.last_prepare_count == 5  # min(3, grid) + reserve 2, single-user
+    assert tenant_adapter.send_offsets_ms() == toml_adapter.send_offsets_ms() == [-400, 0]
+    assert toml_adapter.last_prepare_count == 4  # min(2, grid) + reserve 2, single-user
     fill = tenant_adapter.pool.report()
     assert fill is not None
-    assert (fill.demanded, fill.granted) == (5, {tenant_adapter.key: 3})
-    assert provider.calls == 5
+    assert (fill.demanded, fill.granted) == (4, {tenant_adapter.key: 2})
+    assert provider.calls == 4
     assert all(at <= T0 for _, at in tenant_adapter.sends)
     assert clock.now_utc() >= T0 + timedelta(seconds=10)  # the write ran after the quiet window
 

@@ -114,17 +114,19 @@ captcha_prefetch_lead_s = 120                  # race path (--wait): start the C
 captcha_prefetch_count  = 3                    # race path: pre-solve this many tokens concurrently
                                                # so the first N ranked candidates each fire instantly
                                                # (RACE_PREWARM_PLAN §4.4)
-blind_post_max_count    = 3                    # blind-POST fan-out cap (docs/plans/BLIND_POST_PLAN.md §5):
+blind_post_max_count    = 2                    # blind-POST fan-out cap (docs/plans/BLIND_POST_PLAN.md §5):
                                                # a blind-capable PRIMARY (Mangrove Bay) fires up to
                                                # this many concurrent book POSTs at T0, keeps the
                                                # best, cancels the rest; CAPTCHA prefetch scales to it.
                                                # 0 disables blind fan-out (single-POST race path).
-                                               # 3 (2026-07-18, reverting 2026-07-15's burst-of-one;
-                                               # earlier: 12): the top-3 concurrent POSTs hedge the T0
-                                               # slot-race. Surplus POSTs past the first success bounce
-                                               # on ForeUP's "1 reservation/day" rule (cancel-extras
-                                               # handles it, live 2026-07-11); accepted cost for the
-                                               # hedge. A total miss falls to the sequential fallback.
+                                               # 2 (2026-10-02: one POST 400 ms early, one at T0;
+                                               # was 3 since 2026-07-18, 1 on 2026-07-15, 12 before):
+                                               # the -400 ms POST wins consistently, so a second early
+                                               # POST bought nothing. The surplus POST past the first
+                                               # success bounces on ForeUP's "1 reservation/day" rule
+                                               # (cancel-extras handles it, live 2026-07-11); accepted
+                                               # cost for the hedge. A total miss falls to the
+                                               # sequential fallback.
 blind_post_fallback_token_reserve = 2          # blind-POST 0-booked fallback reserve
                                                # (docs/plans/RESEARCH_FALLBACK_PLAN.md §2 Q3): EXTRA CAPTCHA
                                                # tokens pre-solved beyond the blind burst so the
@@ -132,7 +134,7 @@ blind_post_fallback_token_reserve = 2          # blind-POST 0-booked fallback re
                                                # token, not a ~75s inline solve. The blind POSTs pop
                                                # their tokens; these REMAIN pooled for the fallback.
                                                # Paid pre-T0 every drop (incl. happy path). 0 = off.
-blind_post_stagger_ms   = [-400, -250, 0]      # blind-POST T0 stagger (docs/plans/STAGGER_PLAN.md): per-POST
+blind_post_stagger_ms   = [-400, 0]            # blind-POST T0 stagger (docs/plans/STAGGER_PLAN.md): per-POST
                                                # fire offsets in MILLISECONDS relative to T0, paired
                                                # positionally with the RANKED blind slots, so the
                                                # burst SPANS ForeUP's release boundary instead of
@@ -145,7 +147,9 @@ blind_post_stagger_ms   = [-400, -250, 0]      # blind-POST T0 stagger (docs/pla
                                                # rank so the "1 reservation/day" rule can only reject
                                                # a WORSE sibling. Surplus slots reuse the last offset.
                                                # [] = legacy simultaneous firing. Offsets earlier
-                                               # than -early_arrival_ms are clamped + logged.
+                                               # than -early_arrival_ms are clamped + logged. Two
+                                               # rungs since 2026-10-02 (was [-400, -250, 0]): -400
+                                               # wins consistently, so the middle rung was dropped.
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from

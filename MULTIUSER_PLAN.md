@@ -144,7 +144,7 @@ the TOML / CLI / `InMemoryStore` / `ConsoleNotifier` **shell** is replaced by `t
 |---|--------|--------------------------|----|
 | E1 | `ForeUpAdapter(captcha_pool=...)` optional injected `SharedCaptchaPool`; the private deque becomes a private pool | Yes: `None` builds a private pool with byte-identical semantics; `tests/test_captcha_pool.py` must pass unmodified | MU-2 |
 | E2 | `MangroveBayAdapter.set_blind_allowlist(frozenset[SlotId] \| None)`, filtering `synthesize_blind_slots` | Yes: default `None` means no filter | MU-3 |
-| E3 | MB `BLIND_POST_MORNING_GRID` widened to the full morning (§6.5) | Yes for the operator: synthesize intersects with the request window, so the 08:45–10:00 burst emits the identical 3 slots | MU-3 |
+| E3 | MB `BLIND_POST_MORNING_GRID` widened to the full morning (§6.5) | Yes for the operator: synthesize intersects with the request window, so the 08:45–10:00 window synthesizes the identical ranked slots (the burst fires the top `blind_post_max_count` of them: 2 since 2026-10-02, was 3) | MU-3 |
 | E4 | `release_policy: ClassVar[ReleasePolicy]` on MB + Sydney Marovitz (not on the Protocol) | Yes: nothing reads it yet | MU-1 |
 | E5 | `WatchOrchestrator(..., reconcile_eligible: Callable[[ExistingReservation], bool] \| None = None)` | Yes: `None` makes every match eligible (today) | MU-4 |
 | E6 | `ReservationSnapshotHealth` capability: ForeUP reports whether the last login produced a trustworthy reservation cache (§7.5). Untrusted when: the login soft-failed, the 200 body was non-JSON, **or** a JSON success body's `reservations` is missing or not a list (`base.py:494-496` leaves the cache empty in all three cases) | Yes: a new opt-in Protocol, read only by tenant code | MU-4 |
@@ -470,13 +470,13 @@ finishes).
 | ~05:51 | close the Cosmos client (no idle connection across the wait; the credential and its cached token are kept) | – | – | – |
 | ~05:51 | decrypt each account's password (AES-GCM, µs) and `register_secret_literals`; a per-row decrypt failure skips that row (§4.5) | – | – | – |
 | ~05:51 | site-key pre-flight GET **once per course** (the existing `_resolve_site_keys`) | – | 1 GET | – |
-| ~05:51 | build adapters (shared pool), each wrapped in the in-memory **recording decorator** (§4.6); **allocation** (pure): `synthesize_blind_slots` per account, `allocate_blind_slots` over a rotating draft order, `set_blind_allowlist` per account (§5.4); register pool demand k_i per account **including over-cap accounts with k_i = 0** (so their `prepare_book(count=3)` joins the coordinated fill and receives nothing, instead of solving 3 tokens outside the C bound), plus shared reserve R | – | – | – |
+| ~05:51 | build adapters (shared pool), each wrapped in the in-memory **recording decorator** (§4.6); **allocation** (pure): `synthesize_blind_slots` per account, `allocate_blind_slots` over a rotating draft order, `set_blind_allowlist` per account (§5.4); register pool demand k_i per account **including over-cap accounts with k_i = 0** (so their `prepare_book(count=2)` joins the coordinated fill and receives nothing, instead of solving 2 tokens outside the C bound), plus shared reserve R | – | – | – |
 | ~05:51 | build N `Orchestrator(prefetch_book=True, scheduler=S′)` where `S′ = scheduler` with `blind_post_fallback_token_reserve=0` (the pool holds R); overflow accounts get `blind_post_max_count=0` (§5.5) | – | – | – |
 | ~05:51 | `asyncio.gather(*(run_account(i) ...), return_exceptions=True)`. Each `run_account` is `try: await orch.run(req) finally: pool.release(key)` | – | – | – |
 | T0−120.5 s | every orchestrator's **unchanged** two-phase busy-wait reaches `prefetch_at`; `_prewarm_primary` gathers `_prewarm_login` ‖ `_prefetch_captcha_for` | – | N × (warm GET + login POST) | – |
 | T0−120.5 s | the first `prepare_book` → `pool.prefetch(key, count)` starts **the one coordinated fill** (§5.3); the rest await it. The count argument is ignored in coordinated mode (demand was registered) | – | – | D = Σk_i + R solves, ≤ C concurrent |
 | ~T0−45…T0−10 | fill ends at the deadline T0−10 s; leases granted round-robin (§5.2); prefetch returns | – | – | – |
-| T0−0.4 s … T0 | per account: the **unchanged** staggered burst `(-400,-250,0)` (`(-500,-250,0)` until 2026-09-30), each POST popping from the account's lease | – | ≤ 3N POSTs | – |
+| T0−0.4 s … T0 | per account: the **unchanged** staggered burst `(-400,0)` since 2026-10-02 (`(-400,-250,0)` until 2026-10-02, `(-500,-250,0)` until 2026-09-30), each POST popping from the account's lease | – | ≤ 2N POSTs | – |
 | T0+… | per account, unchanged: keep-best + cancel-extras, **or** re-guard (`refresh_reservations`), then fresh search, then sequential book (lease → shared reserve → semaphore-bounded inline) | – | per account as today | only inline fallbacks |
 | as each account returns | build its `AccountOutcome` from the returned `BookingResult` / captured exception **plus its recording decorator's log** (§4.6), and queue it | – | – | – |
 | from T0 + `post_burst_quiet_s` (10 s) | **WRITE #2, streamed and per row (SF5, M4)**: a writer task starts at T0+10 s (when every blind burst plus the immediate `_cancel_extras` is long done) and writes each queued outcome in **its own transaction**: status, ledger entries, `last_outcome`, lease release, `needs_reconcile`. A refused transition (e.g. the row moved; impossible after the M4 lease guard, but defended anyway) still writes the ledger rows keyed by (account, target_date) and sets `needs_reconcile` on whichever row is active for that date. It **never rolls back other accounts**. Each write retries for up to 60 s; on final failure: CRITICAL + that outcome's JSON on stdout + non-zero exit (the watcher reconciles from live) | 1 txn per row | – | – |
@@ -671,10 +671,11 @@ concurrent solves per drop.
   token landing a moment later cannot be handed to that in-flight solve, so it is wasted (~$0.003).
   `pop()` always checks the reserve before starting an inline solve, which keeps this rare.
 - **Cap:** `N_blind = floor(C / burst_size)`. With **C = 12** (the live-proven default) and
-  `burst_size = blind_post_max_count = 3`, that gives **4 accounts per release event per course**
-  that get a blind burst. After Spike S-M1 confirms C = 18, it becomes 6.
-- **Cost:** (3N + R) × ~$0.003. N = 4 costs ~$0.04 per drop and ~$0.40/mo.
-- **N = 1 is today's number exactly:** 3 burst + 2 reserve = 5.
+  `burst_size = blind_post_max_count = 2` (since 2026-10-02; was 3, which gave 4 accounts), that
+  gives **6 accounts per release event per course** that get a blind burst. After Spike S-M1
+  confirms C = 18, it becomes 9.
+- **Cost:** (2N + R) × ~$0.003. N = 6 costs ~$0.04 per drop and ~$0.40/mo.
+- **N = 1 is today's number exactly:** 2 burst + 2 reserve = 4 (3 + 2 = 5 until 2026-10-02).
 
 **Account N_blind+1 onward** (for that drop, per the rotating draft order, §5.4) runs the **search
 race path**: `blind_post_max_count=0` in its `Orchestrator`, so the five-part gate fails. It is
@@ -705,7 +706,7 @@ books B's rank-0, A cancels it seconds later but B's POST has already been rejec
 - **Guarantees:** (a) disjoint across accounts; (b) each account's first pick is its best
   **available** slot. Two accounts get distinct rank-0 slots whenever the in-window grid has ≥ N
   slots; if not, later accounts in the order get fewer or zero slots and run search-only;
-  (c) accounts with **disjoint windows are unaffected** (each gets its own top-3). Operator
+  (c) accounts with **disjoint windows are unaffected** (each gets its own top-N, N = `blind_post_max_count`, 2 since 2026-10-02). Operator
   08:45–10:00 versus Turk's earlier window means both get exactly today's burst.
 - **What each adapter receives:** `MangroveBayAdapter.set_blind_allowlist(allowlist[row])` before
   T0. Its `synthesize_blind_slots` then returns the ranked candidates ∩ allowlist, truncated to
@@ -1540,20 +1541,21 @@ prod. A plain dev dry-run **cannot** exercise the blind path: `_should_blind_pos
 
 **The first prod tenant drops contain exactly one account: the operator's.** Turk is not invited
 (§11 step 11) until **≥ 2 prod tenant drops** have completed as expected. With one account, the
-tenant run is the single-user race plus exactly one new element: one lease (k = 3) in the shared
-pool. It uses the same grid slots (allocation of one account = its own top 3), the same stagger
-`(-400, -250, 0)` (`(-500, -250, 0)` until 2026-09-30), the same reserve of 2, and the same
-unmodified `Orchestrator`.
+tenant run is the single-user race plus exactly one new element: one lease (k = 2) in the shared
+pool. It uses the same grid slots (allocation of one account = its own top 2), the same stagger
+`(-400, 0)` (`(-400, -250, 0)` until 2026-10-02, `(-500, -250, 0)` until 2026-09-30, when the
+lease was k = 3), the same reserve of 2, and the same unmodified `Orchestrator`.
 
 **Log lines that verify the first drop** (all must appear; grep them in Log Analytics):
 1. `tenant-run: claimed 1/1 row(s) for mb0600et target=<Sat>`
-2. `tenant-run: allocation order=[<row>] allowlist[<row>]=[<t0>,<t1>,<t2>] search_only=[]`. The
-   three times must equal the adapter's own `MB blind-POST: … firing 3 … times=[…]` line, which
+2. `tenant-run: allocation order=[<row>] allowlist[<row>]=[<t0>,<t1>] search_only=[]`. The
+   two times must equal the adapter's own `MB blind-POST: … firing 2 … times=[…]` line, which
    is unchanged: allocation of one account is the identity.
-3. `pool: coordinated fill demanded=5 (burst=3, reserve=2) solved=5 granted={<row>: 3} reserve=2`
-4. `ForeUP: using pooled CAPTCHA token (lease <row>: 2 left) …`, then `… 1 left`, then `… 0 left`,
+3. `pool: coordinated fill demanded=4 (burst=2, reserve=2) solved=4 granted={<row>: 2} reserve=2`
+   (`demanded=5 (burst=3, …) granted={<row>: 3}` until 2026-10-02).
+4. `ForeUP: using pooled CAPTCHA token (lease <row>: 1 left) …`, then `… 0 left`,
    one per blind POST, so the lease served every burst POST.
-5. Three unchanged lines `course foreup:mangrove_bay: blind-POST sent <m>ms (planned -400/-250/0ms; -500 until 2026-09-30)
+5. Two unchanged lines `course foreup:mangrove_bay: blind-POST sent <m>ms (planned -400/0ms; -400/-250/0 until 2026-10-02, -500 until 2026-09-30)
    slot … → …`, with measured offsets within ±50 ms of planned.
 6. `tenant-run: outcome row=<row> outcome=BOOKED held=1 cancelled_extra=<n> held_extra=0` (or the
    expected miss shape), then `tenant-run: wrote 1/1 outcome(s)` after T0+10 s.
@@ -1705,7 +1707,7 @@ immediately after MU-0: MU-1, MU-2, MU-3, MU-4, MU-5, MU-7.
 |------|-----------|-------|
 | **M1** runner blind to extras, cancel failures, uncertain POSTs; ALREADY_BOOKED ambiguity | fixed: in-memory `RecordingAdapter` (no I/O, no `orchestrator.py` change) with per-capability concrete classes; ownership table (held_extra stays owned, so the crash-net still collapses it; pre-T0 ALREADY_BOOKED is unowned; post-UNCERTAIN reguard match is owned by exact slot) | §4.6, §3.1 ledger states, §4.4 proof 5, `tenant/recording.py` |
 | **M2** cancel-OK/rebook-failed undetectable | fixed: observed via the recorder, not the store terminal; `upgrade_started_at` intent marker set under the lease before the engine runs; vanish inference excludes the marker, ledgered cancels, and same-date replacements (adopted) | §3.4, §7.1 steps 4–5, §7.5, `models.RequestRow.upgrade_started_at`, `store.set_upgrade_marker` |
-| **M3** dev rehearsal can't exercise the blind path | fixed per operator decision: no harness; the first prod tenant drops contain only the operator's account (one lease, k=3, same slots and stagger); 7 verification log lines + rollback; the table of what dev can and cannot exercise | §11.2, §11 steps 4/7/11 |
+| **M3** dev rehearsal can't exercise the blind path | fixed per operator decision: no harness; the first prod tenant drops contain only the operator's account (one lease, k = `blind_post_max_count`: 2 since 2026-10-02, was 3; same slots and stagger); 7 verification log lines + rollback; the table of what dev can and cannot exercise | §11.2, §11 steps 4/7/11 |
 | **M4** supersede ignores lease; all-or-nothing WRITE #2 | fixed: every web transition requires the row unleased; WRITE #2 is streamed, one batch per row, ledger keyed by (account, date) too, a refused row never rolls back others | §3.4, §4.2, `store.RowOutcome`, `store.record_outcomes` |
 | **M5** lease acquire doesn't re-check row state | fixed: `RowFingerprint` (status, version, booked_raw_id) compared in the same ETag-conditional acquire; a mismatch → `ConcurrentRunError` → the engine defers | §3.5, `models.RowFingerprint`, `store.acquire_row_lease(expected=…)`, `LeasedBookingStore` |
 | SF1 `__getattr__` breaks `runtime_checkable` on ≥ 3.12 | fixed: per-capability concrete proxy classes (snapshot proxy and recorder) | §4.6, §7.1, `watcher.make_search_snapshot_adapter`, `recording.make_recording_adapter` |

@@ -1,11 +1,11 @@
 # BLIND_POST_PLAN.md — per-course blind-POST booking at the 06:00 ET race
 
-> **Status:** Shipped (PRs #125–#130, `infra/v2.5.0`). Burst timing superseded by [STAGGER_PLAN.md](./STAGGER_PLAN.md); hedge search superseded by [RESEARCH_FALLBACK_PLAN.md](./RESEARCH_FALLBACK_PLAN.md); deployed burst cap is 3. Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
+> **Status:** Shipped (PRs #125–#130, `infra/v2.5.0`). Burst timing superseded by [STAGGER_PLAN.md](./STAGGER_PLAN.md); hedge search superseded by [RESEARCH_FALLBACK_PLAN.md](./RESEARCH_FALLBACK_PLAN.md); deployed burst cap is 2 since 2026-10-02 (was 3). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
 
 > **BURST TIMING SUPERSEDED (`docs/plans/STAGGER_PLAN.md`, PR #199):** this doc describes the burst as
 > N POSTs fired **CONCURRENTLY at one instant** (`T0 − early_arrival_ms`). They are now
 > **STAGGERED ACROSS T0** — each POST sleeps to its own offset from
-> `scheduler.blind_post_stagger_ms` (default `(-400, -250, 0)` ms since 2026-09-30, was `(-500, -250, 0)`), paired positionally with
+> `scheduler.blind_post_stagger_ms` (default `(-400, 0)` ms since 2026-10-02; was `(-400, -250, 0)` since 2026-09-30 and `(-500, -250, 0)` before), paired positionally with
 > the ranked slots. Motivation: every drop came back 3/3 or 0/3, never mixed, which a genuine
 > slot race cannot produce; a simultaneous burst point-samples ForeUP's release flip and, when
 > it lands pre-open, gets the same `400 "Time not available."` a claimed slot returns. The

@@ -171,7 +171,8 @@ class SchedulerConfig(BaseModel):
     # 400 since 2026-09-30 (was 500): ForeUP's clock stopped running ~0.5 s fast on 9/29, and the
     # -500 ms POST then landed before the release ("starts at 6:00am" → gone[too_early]) on
     # 9/29 + 9/30, wasting the rank-0 slot; -250 landed after it every day. Operator: try -400,
-    # watch the per-POST line, and move again if -400 is still too early.
+    # watch the per-POST line, and move again if -400 is still too early. 2026-10-02: -400 has
+    # been winning consistently, so it stays and the ladder shrank to (-400, 0).
     early_arrival_ms: int = 400
     poll_interval_ms: int = 250
     max_poll_seconds: int = 30
@@ -193,17 +194,19 @@ class SchedulerConfig(BaseModel):
     # and cancels the rest. DECOUPLED from captcha_prefetch_count (the single-POST race
     # prefetch depth): the CAPTCHA prefetch SCALES to min(blind_post_max_count, in-window
     # grid count) when the primary is blind-capable. The actual burst N is further bounded by
-    # the pooled-token count. `0` DISABLES blind fan-out (single-POST race path). Default 3
-    # (operator directive 2026-07-18, reverting the 2026-07-15 burst-of-one): the top-3 nearest-
-    # midpoint grid slots fire CONCURRENTLY to hedge the T0 slot-race. ForeUP's "1 online
-    # reservation per day" rule 400-rejects the surplus POSTs once the first lands, but
+    # the pooled-token count. `0` DISABLES blind fan-out (single-POST race path). Default 2
+    # (operator directive 2026-10-02): the top-2 nearest-midpoint grid slots, one POST 400 ms
+    # before T0 and one at T0, hedge the T0 slot-race. The -400 ms POST had been winning
+    # consistently since the 2026-09-30 ladder change, so a second early POST (the old -250)
+    # bought nothing and only cost a surplus reservation to cancel. ForeUP's "1 online
+    # reservation per day" rule 400-rejects the surplus POST once the first lands, but
     # cancel-extras handles that cleanly (live 2026-07-11); burst-of-one instead bet everything on
     # the single most-contested midpoint slot and a lost race left nothing in flight (the
     # 2026-07-18 miss). A total miss still falls through to the sequential center-out fallback
     # (which books with pooled reserve tokens). (History: 12 all-in-window → 3 in #157/
-    # full-repo-scan 2026-07-09 → 1 on 2026-07-15 → 3 again here.)
+    # full-repo-scan 2026-07-09 → 1 on 2026-07-15 → 3 on 2026-07-18 → 2 here.)
     # Ignored off the race path and for non-capable or non-primary courses.
-    blind_post_max_count: int = Field(default=3, ge=0)
+    blind_post_max_count: int = Field(default=2, ge=0)
     # Blind-POST 0-booked fallback reserve (RESEARCH_FALLBACK_PLAN §2 Q3). EXTRA CAPTCHA
     # tokens to pre-solve BEYOND the blind burst so the post-reguard FRESH search's book()
     # pops a fresh POOLED token instead of a ~75s inline solve. The burst size is unchanged
@@ -230,7 +233,9 @@ class SchedulerConfig(BaseModel):
     # The FIRST entry is -early_arrival_ms, so the rank-0 (best, nearest-midpoint) slot
     # keeps TODAY'S EXACT fire instant and a drop we currently win is unchanged
     # (STAGGER_PLAN §2.1). Offsets ascend with rank, so ForeUP's "1 online reservation per
-    # day" rule can only ever reject a WORSE sibling (§2.2).
+    # day" rule can only ever reject a WORSE sibling (§2.2). Two rungs since 2026-10-02
+    # (was (-400, -250, 0), and (-500, -250, 0) until 2026-09-30): the -400 POST wins
+    # consistently, so the middle rung was dropped; the T0 rung stays as the post-open hedge.
     #
     # Surplus slots beyond the list reuse the LAST offset (a widened blind_post_max_count
     # degrades to simultaneous for the tail rather than silently dropping POSTs).
@@ -243,7 +248,7 @@ class SchedulerConfig(BaseModel):
     # (Validating it here instead would couple this field to `early_arrival_ms` across
     # every config and test helper for no behavioural gain — the fire path already
     # self-clamps by computing a non-positive, no-sleep delay.)
-    blind_post_stagger_ms: tuple[int, ...] = (-400, -250, 0)
+    blind_post_stagger_ms: tuple[int, ...] = (-400, 0)
 
     @field_validator("blind_post_stagger_ms")
     @classmethod

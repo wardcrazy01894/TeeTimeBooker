@@ -1,10 +1,12 @@
 # STAGGER_PLAN.md — stagger the T0 blind-POST burst across the open boundary
 
 > **Status:** Shipped (PR #199, `infra/v2.14.0`). Historical design record. Current behaviour: [CLAUDE.md](../../CLAUDE.md).
-> **2026-09-30:** the default ladder is now `(-400, -250, 0)` (`early_arrival_ms = 400`). ForeUP's
+> **2026-09-30:** the default ladder moved to `(-400, -250, 0)` (`early_arrival_ms = 400`). ForeUP's
 > clock stopped running ~0.5 s fast on 2026-09-29, after which the -500 ms POST was refused
 > before the release (`gone[too_early]`, "Booking for … starts at … 6:00am") two days running.
-> The `-500` figures below are the design as shipped.
+> **2026-10-02:** the ladder is `(-400, 0)` with `blind_post_max_count = 2`: the -400 POST won
+> consistently, so the middle rung was dropped (one POST early, one at T0).
+> The `-500` and three-rung figures below are the design as shipped.
 
 **Status:** LIVE IN PROD — `infra/v2.14.0`, deployed 2026-08-15 (`main`@`e6a8abb`,
 `dryRun=false`, all three jobs verified on the new image with crons/timeouts unchanged).

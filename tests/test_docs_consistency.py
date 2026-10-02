@@ -460,17 +460,24 @@ _LADDER_SWEEP = (
     "config/container.toml",
     "config/example.toml",
 )
-_RETIRED_LADDER = (-500, -250, 0)
+# Every ladder that has shipped and been retired. Newest last: (-400, -250, 0) was retired on
+# 2026-10-02 (operator: the -400 POST was winning consistently, so the middle POST was dropped).
+_RETIRED_LADDERS = ((-500, -250, 0), (-400, -250, 0))
 # Phrases that mark a line as history. Deliberately not a bare "was " or a bare date: ordinary
 # prose and any dated line would slip a stale claim through.
+# A ladder's own "since <date>" is NOT a marker: that is exactly how a current-state line read
+# while the ladder shipped, so it would pass a stale claim through (review of #305).
 _HISTORY_MARKERS = (
     "until 2026-09-30",
-    "since 2026-09-30",
+    "until 2026-10-02",
     "was `",
     "was -500",
     "was [-500",
     "was (-500",
     "was 500",
+    "was -400",
+    "was [-400",
+    "was (-400",
     "2026-09-29/30",
 )
 
@@ -478,8 +485,8 @@ _HISTORY_MARKERS = (
 def test_no_current_state_doc_describes_the_retired_ladder_as_current() -> None:
     """Review of the 2026-09-30 sweep: one correct mention per doc is not enough; a stale
     "fired at T0-0.5" (with a Unicode minus) or "(-500, -250, 0)" elsewhere in the same doc still misleads. Any line
-    naming the retired ladder must mark itself as history."""
-    stale_forms = _ladder_forms(_RETIRED_LADDER) | {
+    naming a retired ladder (every entry of ``_RETIRED_LADDERS``) must mark itself as history."""
+    stale_forms = set().union(*(_ladder_forms(r) for r in _RETIRED_LADDERS)) | {
         "T0\u22120.5",
         "T0-0.5",
         "~500 ms",
