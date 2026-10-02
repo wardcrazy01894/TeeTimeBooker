@@ -67,6 +67,30 @@ def test_latest_infra_tag_claims_agree_across_docs() -> None:
     )
 
 
+# Sibling guard (2026-10-02, review of the v3.7.0 docs PR): PLAN.md's M6.T3 row kept the PREVIOUS
+# release's date next to the new tag ("`infra/v3.7.0`, 2026-09-30"); the tag check above passed.
+_TAG_DATE_RE = re.compile(
+    r"latest (?:prod )?infra tag\s*`?infra/v\d+\.\d+\.\d+`?[,;]?\s*\(?\s*(\d{4}-\d{2}-\d{2})"
+)
+
+
+def test_latest_infra_tag_dates_agree_across_docs() -> None:
+    """Every 'latest infra tag' claim that states a date states the SAME date (a bump that renames
+    the tag but leaves the old date behind reads as a release that never happened)."""
+    dates_by_doc: dict[str, set[str]] = {}
+    for doc in _TAG_CLAIM_DOCS:
+        text = (REPO_ROOT / doc).read_text(encoding="utf-8")
+        found = set(_TAG_DATE_RE.findall(text))
+        if found:
+            dates_by_doc[doc] = found
+    assert dates_by_doc, "no dated 'latest infra tag' claim found — update _TAG_DATE_RE"
+    distinct = set().union(*dates_by_doc.values())
+    assert len(distinct) == 1, (
+        "The 'latest infra tag' dates disagree across docs — a prod-tag bump left an old date "
+        f"behind. Per-doc dates: {dates_by_doc}."
+    )
+
+
 # --- pyproject dependency-comment drift -------------------------------------------------
 #
 # 2026-08-24: Dependabot #204 bumped the `idna` floor 3.18 -> 3.19 but left the comment
