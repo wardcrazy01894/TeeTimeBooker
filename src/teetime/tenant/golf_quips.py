@@ -1,5 +1,6 @@
-"""Good-luck one-liners for the booked / upgraded email: one is picked at random per email
-(``notify.render_user_event``). Plain ASCII-friendly text, one line each, no names."""
+"""One-liners for the user emails, one picked at random per email (``notify.render_user_event``):
+``GOLF_QUIPS`` wish the golfer luck on a booked / upgraded tee time; ``MISS_QUIPS`` console them
+when the morning run could not get one. Plain ASCII-friendly text, one line each, no names."""
 
 from __future__ import annotations
 
@@ -56,4 +57,20 @@ GOLF_QUIPS: tuple[str, ...] = (
     "Hit 'em long and hit 'em straight. Or just hit 'em.",
     "Go get that birdie.",
     "See you on the first tee.",
+)
+
+
+MISS_QUIPS: tuple[str, ...] = (
+    "Even the pros miss a cut now and then.",
+    "The course will still be there next week, and so will we.",
+    "Call it a rain check from the golf gods.",
+    "Some days the tee sheet wins. We'll get the next one.",
+    "Think of it as extra time on the practice green.",
+    "No tee time, no three-putts. Small mercies.",
+    "The driving range never sells out.",
+    "You can't win them all, but you can always book the next one.",
+    "A missed tee time is just a mulligan on the calendar.",
+    "Keep your grips dry and your hopes up.",
+    "Every great round starts with a week you didn't play.",
+    "Chin up: the 19th hole is open every day.",
 )

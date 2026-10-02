@@ -46,6 +46,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.8.0` | 2026-10-02 | `f38f481` | **changed** (race timing) | Blind burst 3 → 2, ladder `-400/0`; time pickers bounded to each course's tee-sheet hours (#305, #306) |
 | `infra/v3.7.0` | 2026-10-02 | `b1610f8` | unchanged (watcher email, web) | Operator email per watcher booking, cancel email off the request path, Connected Courses UX after the first new user (#301, #302) |
 | `infra/v3.6.0` | 2026-09-30 | `69abc3a` | **changed** (race timing) | Blind-POST ladder -400/-250/0 + `too_early` reason, ranking explainer, full-repo-scan fix batch, prod deploys only code on main (#292–#299) |
 | `infra/v3.5.0` | 2026-09-29 | `8466ad1` | unchanged (web) | Invite + feedback respond at once, every button shows a click, operator Uninvite (#288, #289) |
@@ -72,6 +73,37 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.8.0: 2026-10-02 (`main`@`f38f481`)
+
+**Booking behaviour CHANGED: the T0 blind burst is two POSTs.** Since the 2026-09-30 ladder change
+the -400 ms POST (the rank-0, best slot) won consistently, so the second early POST at -250 ms
+bought nothing and only produced a surplus reservation to cancel. Operator directive 2026-10-02:
+"one 400 ms early and one right at the time window."
+
+- **Burst 3 → 2, ladder `-400/-250/0` → `-400/0`** (#305). `blind_post_max_count = 2` and
+  `blind_post_stagger_ms = [-400, 0]` in the code defaults (the tenant booker reads these) and both
+  shipped configs; `early_arrival_ms` stays 400. A one-account drop now pre-solves 4 CAPTCHA tokens
+  (burst 2 + reserve 2, was 5) and the per-course blind-account cap `C // burst` rises (C = 6 → 3
+  accounts, was 2). Trade-off: the hedge is two slots, not three, and if ForeUP's clock drifts and
+  -400 goes `too_early` again the T0 POST is the only hedge, so watch the per-POST line on the first
+  drops. The docs-consistency sweep now treats `-400/-250/0` as a retired ladder.
+- **Time pickers list only the course's tee-sheet hours** (#306; operator: "no reason to show 4 AM
+  or 9 PM; per course"). Every From/To bound on the booking forms is a list of quarter hours inside
+  `courses/names.py::COURSE_TEE_SHEET_HOURS` (Mangrove Bay 6:30 AM–7:00 PM from a live look at the
+  October sheet plus summer headroom; Sydney Marovitz 6:00 AM–7:00 PM, an unobserved assumption; no
+  entry = the whole day). With script each option row follows the course chosen on that row; without
+  it the list spans the person's courses and the server refuses a window outside the chosen course's
+  hours with a 400 naming the course, its hours and the picked times (every create/edit path,
+  checked before any write).
+- Also in: ruff 0.16.9 (#304).
+
+**Deploy:** tag pushed 11:45 ET, approved by Claude on the operator's request ("ok yes, it's ready
+to go to prod"); pass 1 skipped, pass 2 + migrations green, done 11:53 ET. **Verified:** both booking
+jobs, the watch job and `teetime-web-prod` (revision `--0000016`) run `teetime:f38f481…`;
+`/healthz` 200 on https://spicyteetimebooker.com; the first watch run on the new image (12:00 ET, `-29849280`) Succeeded; the 11:50 ET run (`-29849270`) was the last on `b1610f8`. **First exercise of the
+two-POST burst:** the next release drop (Sat 2026-10-03 05:50 ET job for 10/10); look for exactly
+two `blind-POST sent` lines (`-400` and `+0`) and no `gone[too_early]` on the -400 POST.
 
 ## infra/v3.7.0: 2026-10-02 (`main`@`b1610f8`)
 

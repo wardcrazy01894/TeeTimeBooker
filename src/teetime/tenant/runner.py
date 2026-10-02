@@ -1823,6 +1823,11 @@ def _row_events(
             confirmation=result.confirmation_code if with_slot and result is not None else None,
             detail=detail,
             at=at,
+            # For the miss email's card + cutoff sentence (notify._miss_lines).
+            window=(row.options[0].earliest, row.options[0].latest) if row.options else None,
+            party_size=row.party_size,
+            extra_options=max(0, len(row.options) - 1),
+            cutoff_local=row.cutoff_at.astimezone(ZoneInfo(row.timezone)),
         )
 
     if out.decrypt_failed:

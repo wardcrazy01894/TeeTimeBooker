@@ -44,6 +44,8 @@ from .runner_builders import (
     POLICIES,
     T0,
     TARGET,
+    TZ,
+    WINDOW,
     FakeAdapterNonBlind,
     NullUserNotifier,
     ScriptedFactory,
@@ -173,6 +175,12 @@ async def test_runner_missed_drop_emails_user_and_exits_zero() -> None:
     event = _one(notifier)
     assert (event.kind, event.user_id) == (UserEventKind.MISSED_DROP, a.user.id)
     assert "no_inventory" in event.detail
+    # The miss email's card and cutoff sentence come from the row (operator request 2026-10-02):
+    # the best option's window, the party, how many more options, the cutoff in the COURSE tz.
+    assert (event.window, event.party_size, event.extra_options) == (WINDOW, 2, 0)
+    assert event.cutoff_local is not None
+    assert event.cutoff_local == a.row.cutoff_at
+    assert event.cutoff_local.tzinfo is not None and str(event.cutoff_local.tzinfo) == TZ
     (summary,) = sender.sent
     assert summary.to == _OPERATOR
     assert "⚠ 1 problem" in summary.subject  # a miss is a problem, even on exit 0

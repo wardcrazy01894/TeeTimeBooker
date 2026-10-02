@@ -32,7 +32,7 @@ from typing import Protocol, runtime_checkable
 from ..core.models import BookingResult, CourseId
 from ..core.redaction import redact_text
 from ..courses.names import course_display_name
-from .golf_quips import GOLF_QUIPS
+from .golf_quips import GOLF_QUIPS, MISS_QUIPS
 from .models import RowId, User, UserId
 
 log = logging.getLogger(__name__)
@@ -89,6 +89,14 @@ class UserEvent:
     confirmation: str | None
     detail: str
     at: datetime
+    # What the person asked for, for the miss email's card (operator request 2026-10-02): the
+    # best-ranked option's window, the party, how many more options the row had, and the
+    # booking cutoff as an aware instant in the COURSE timezone ("before 4 PM on Friday …").
+    # All optional: only the booker fills them, and the email reads fine without them.
+    window: tuple[time, time] | None = None
+    party_size: int | None = None
+    extra_options: int = 0
+    cutoff_local: datetime | None = None
 
 
 @runtime_checkable
@@ -185,9 +193,9 @@ _USER_TEMPLATES: Mapping[UserEventKind, tuple[str, str]] = {
         "We moved your booking at {course} to a better tee time: {when}.",
     ),
     UserEventKind.MISSED_DROP: (
-        "Missed the drop: {course} {day}",
-        "We didn't get a tee time at {course} for {day} when the tee sheet opened. "
-        "We're watching for cancellations and will book one if it opens before the cutoff.",
+        "No tee time yet: {course} {day}",
+        "Unfortunately we couldn't get you a tee time at {course} for {long_day} when the tee "
+        "sheet opened this morning.",
     ),
     UserEventKind.LOST: (
         "No tee time: {course} {day}",
@@ -236,6 +244,65 @@ def _course(event: UserEvent, course_label: str | None) -> str:
     return str(event.course_id) if event.course_id is not None else "your course"
 
 
+def _clock(t: time) -> str:
+    return f"{t:%I:%M %p}".lstrip("0")
+
+
+# The booker's MISSED_DROP detail for a CAPTCHA / OTP / booking-service failure starts with this
+# (runner._row_events); everything else is "the course had nothing".
+_SERVICE_ERROR_DETAIL = "booking service error"
+
+_MISS_CAUSE_COURSE = (
+    "When this happens it is almost always because the course has blocked the morning for an "
+    "event or an outing, so there was nothing to book. Now and then the sheet simply sold out "
+    "faster than we could get in."
+)
+_MISS_CAUSE_OURS = (
+    "This one was on our side: a problem with our booking service, not the course. The operator "
+    "has been notified."
+)
+
+
+def _miss_card(event: UserEvent, course: str) -> list[str]:
+    card = [f"  Course:     {course}"]
+    if event.target_date is not None:
+        card.append(f"  Date:       {event.target_date:%A, %B} {event.target_date.day}")
+    if event.window is not None and event.party_size is not None:
+        lo, hi = event.window
+        players = "1 player" if event.party_size == 1 else f"{event.party_size} players"
+        n = event.extra_options
+        more = f" (+{n} more option{'s' if n != 1 else ''})" if n else ""
+        card.append(f"  You asked:  {_clock(lo)} to {_clock(hi)}, {players}{more}")
+    return card
+
+
+def _miss_lines(event: UserEvent, course: str, rng: random.Random | None) -> list[str]:
+    """The miss email after the lead sentence (operator request 2026-10-02): the card, why it
+    usually happens, what the watcher will do until the cutoff, honest odds, a consolation."""
+    cause = (
+        _MISS_CAUSE_OURS if event.detail.startswith(_SERVICE_ERROR_DETAIL) else _MISS_CAUSE_COURSE
+    )
+    if event.cutoff_local is not None:
+        c = event.cutoff_local
+        deadline = f"{_clock(c.time()).replace(':00 ', ' ')} on {c:%A, %B} {c.day}"
+    else:
+        deadline = "the booking cutoff"
+    return [
+        "",
+        *_miss_card(event, course),
+        "",
+        cause,
+        "",
+        "We'll keep watching for a cancellation and will book one for you if a time opens up "
+        f"before {deadline}. That does happen, but it's not something to count on, so you may "
+        "want to make other plans for that morning.",
+        "",
+        (rng or random).choice(MISS_QUIPS),
+        "",
+        "— Spicy's helper",
+    ]
+
+
 def _redacted(subject: str, body: str) -> RenderedEmail:
     return RenderedEmail(subject=redact_text(subject), body=redact_text(body))
 
@@ -269,7 +336,12 @@ def render_user_event(
     subject_t, lead_t = _USER_TEMPLATES[event.kind]
     fields = {"course": _course(event, course_label), "when": _when(event)}
     fields["day"] = _day(event.target_date)
+    d = event.target_date
+    fields["long_day"] = f"{d:%A, %B} {d.day}" if d is not None else "an upcoming date"
     lines = [f"Hi {first_name},", "", lead_t.format(**fields)]
+    if event.kind is UserEventKind.MISSED_DROP:
+        lines += _miss_lines(event, fields["course"], rng)
+        return _redacted(f"[TeeTimeBooker] {subject_t.format(**fields)}", "\n".join(lines))
     if event.kind in _BOOKING_KINDS:
         # The golfer's view only: no confirmation id (ours, and ForeUP's internal teetime id,
         # never shown to them by the course) and no engine detail ("watcher").
