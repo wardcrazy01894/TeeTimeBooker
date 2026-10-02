@@ -18,6 +18,7 @@ def _macro(name: str):  # type: ignore[no-untyped-def]
     env.filters["course_name"] = str
     env.filters["course_signup_url"] = lambda _c: None
     env.filters["release_cycle"] = lambda _c: None
+    env.filters["time_label"] = str
     return getattr(env.get_template("_macros.html").module, name)
 
 

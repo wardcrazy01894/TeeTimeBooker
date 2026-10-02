@@ -30,7 +30,7 @@ from ..tenant.crypto import Keyring
 from ..tenant.models import CourseAccountId, RowId, RuleId, User
 from ..tenant.runner import AdapterFactory
 from . import adopt, auth, feedback, group_services, services
-from .booking_form import MAX_OPTIONS, parse_ranked_form
+from .booking_form import MAX_OPTIONS, RankedChoice, parse_ranked_form
 from .services import (
     RULE_EDIT_HINT,
     WEEKDAY_NAMES,
@@ -252,10 +252,15 @@ def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
     async def create_rule(request: Request, user: CurrentUser) -> Response:
         async def action(form: dict[str, str]) -> str:
             rule_input = services.parse_rule_form(form)
+            account_id = CourseAccountId(services.parse_id(form.get("account_id", "")))
+            if (course := (await _courses_of(ctx, user)).get(account_id)) is not None:
+                ctx.check_window(
+                    course, rule_input.window_earliest, rule_input.window_latest, label="the window"
+                )
             await services.create_rule(
                 ctx.store,
                 user_id=user.id,
-                account_id=CourseAccountId(services.parse_id(form.get("account_id", ""))),
+                account_id=account_id,
                 rule_input=rule_input,
                 policies=ctx.policies,
                 cutoff=ctx.cutoff,
@@ -284,6 +289,7 @@ def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
                     policies=ctx.policies,
                     cutoff=ctx.cutoff,
                     clock=ctx.clock,
+                    check_window=lambda c, lo, hi: ctx.check_window(c, lo, hi, label="the window"),
                 )
                 return "/rules?notice=rule_updated"
             await services.set_rule_active(
@@ -309,6 +315,10 @@ def _register_row_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependen
     async def create_explicit_row(request: Request, user: CurrentUser) -> Response:
         async def action(form: dict[str, str]) -> str:
             one_off = services.parse_one_off_form(form)
+            if (course := (await _courses_of(ctx, user)).get(one_off.account_id)) is not None:
+                ctx.check_window(
+                    course, one_off.window_earliest, one_off.window_latest, label="the window"
+                )
             await services.create_one_off(
                 ctx.store, user_id=user.id, one_off=one_off, clock=ctx.clock
             )
@@ -447,6 +457,21 @@ def _register_account_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
         return await pages.act(request, user, action, on_error=on_error)
 
 
+async def _courses_of(ctx: _Ctx, user: User) -> dict[CourseAccountId, CourseId]:
+    accounts = await services.list_accounts(ctx.store, user_id=user.id)
+    return {a.id: a.course_id for a in accounts}
+
+
+def _check_choice(
+    ctx: _Ctx, choice: RankedChoice, courses: dict[CourseAccountId, CourseId]
+) -> None:
+    """Every option's window must lie inside its course's tee-sheet hours (the picker lists
+    only those; this is the guarantee with script off, where the list is the union)."""
+    for account_id, windows in choice.per_account.items():
+        for w in windows:
+            ctx.check_window(courses[account_id], w.earliest, w.latest, label=f"option {w.rank}")
+
+
 def _partial(
     failures: tuple[group_services.GroupFailure, ...],
     saved: int,
@@ -470,15 +495,12 @@ def _register_booking_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
     CurrentUser = Annotated[User, Depends(current_user)]  # noqa: N806 — type alias
     ctx = pages.ctx
 
-    async def own_courses(user: User) -> dict[CourseAccountId, CourseId]:
-        accounts = await services.list_accounts(ctx.store, user_id=user.id)
-        return {a.id: a.course_id for a in accounts}
-
     @app.post("/bookings/date")
     async def book_date(request: Request, user: CurrentUser) -> Response:
         async def action(form: dict[str, str]) -> str:
-            courses = await own_courses(user)
+            courses = await _courses_of(ctx, user)
             choice = parse_ranked_form(form, own_accounts=courses)
+            _check_choice(ctx, choice, courses)
             report = await group_services.create_group_one_off(
                 ctx.store,
                 user_id=user.id,
@@ -495,8 +517,9 @@ def _register_booking_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
     @app.post("/bookings/weekly")
     async def book_weekly(request: Request, user: CurrentUser) -> Response:
         async def action(form: dict[str, str]) -> str:
-            courses = await own_courses(user)
+            courses = await _courses_of(ctx, user)
             choice = parse_ranked_form(form, own_accounts=courses)
+            _check_choice(ctx, choice, courses)
             report = await group_services.create_group_rule(
                 ctx.store,
                 user_id=user.id,

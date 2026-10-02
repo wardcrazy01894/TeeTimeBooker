@@ -788,7 +788,15 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   to a person, on pages, in messages and in emails, comes from
   `courses/names.py::course_display_name`; add a new course there, with its
   `COURSE_SIGNUP_URLS` entry (the course's own booking site, linked from Connect a course as
-  where to create the login; no entry = no link). Every release-cycle sentence a page shows
+  where to create the login; no entry = no link) and its `COURSE_TEE_SHEET_HOURS` entry (first
+  tee to last, a generous year-round span; no entry = the whole day). **Every time bound on a
+  booking form is a `<select>` of quarter hours inside those hours, never `<input type="time">`**
+  (operator, 2026-10-02): `web/time_options.py` builds the list (the union of the person's
+  courses on the ranked form, where the course is chosen per row; the rule's own course on its
+  edit form, with a saved off-grid window kept selectable), `app.js` narrows each row to its
+  chosen course's `data-first`/`data-last`, and `_Ctx.check_window` is the guarantee: every
+  create/edit path refuses a window outside the course's hours with a 400 that names the course
+  and its hours. Pinned by `tests/web/test_web_time_picker.py`. Every release-cycle sentence a page shows
   ("Tee times open 7 days ahead, at 6:00 AM Eastern.") is `web/course_info.py::release_cycle`
   over the course's `ReleasePolicy` + the configured cutoff, never typed into a template, so a
   page cannot state a rule the bot does not run (2026-10-01). The Connect dropdown lists only

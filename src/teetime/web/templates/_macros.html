@@ -3,6 +3,12 @@
 
 {% macro hhmm(t) %}{{ t.strftime('%H:%M') }}{% endmacro %}
 
+{# A time bound as a <select> of the course's tee-sheet hours (web/time_options.py: quarter hours,
+   first tee to last), never a free-text time box that offers 4 AM. `value` is "HH:MM". #}
+{% macro time_select(name, value, times, label) -%}
+<select name="{{ name }}" class="timepick" aria-label="{{ label }}" required>{% for t in times %}<option value="{{ t.strftime('%H:%M') }}"{% if t.strftime('%H:%M') == value %} selected{% endif %}>{{ t | time_label }}</option>{% endfor %}</select>
+{%- endmacro %}
+
 {# A date as a reader wants it ("Sat Oct 3"); the ISO date stays machine-readable. #}
 {% macro nice_date(d) %}<time datetime="{{ d.isoformat() }}"><span class="dow">{{ d.strftime('%a') }}</span>{{ d.strftime('%b') }} {{ d.day }}</time>{% endmacro %}
 
@@ -50,17 +56,18 @@
 
 {# One (course, time window) option of the ranked form. Option 1 always has a course; the others
    start blank ("(none)"), and a blank row is ignored by the server. #}
-{% macro option_row(i, accounts, first) %}
+{% macro option_row(i, accounts, first, times) %}
 <div class="option{% if not first %} extra{% endif %}" data-option="{{ i }}">
   <label>Rank <input type="number" name="opt{{ i }}_rank" min="1" max="99" value="{{ i }}" aria-label="Rank of option {{ i }}"></label>
   <label class="course">Course
+    {# data-first/data-last: the course's tee-sheet hours; app.js narrows the row's time lists to them. #}
     <select name="opt{{ i }}_account" aria-label="Course of option {{ i }}">
       {% if not first %}<option value="">(none)</option>{% endif %}
-      {% for a in accounts %}<option value="{{ a.id }}">{{ a.course_id | course_name }}</option>{% endfor %}
+      {% for a in accounts %}{% set h = tee_hours(a.course_id) %}<option value="{{ a.id }}" data-first="{{ h.first.strftime('%H:%M') }}" data-last="{{ h.last.strftime('%H:%M') }}">{{ a.course_id | course_name }}</option>{% endfor %}
     </select>
   </label>
-  <label>From <input type="time" name="opt{{ i }}_earliest" value="08:00" aria-label="Earliest time of option {{ i }}"></label>
-  <label>To <input type="time" name="opt{{ i }}_latest" value="10:00" aria-label="Latest time of option {{ i }}"></label>
+  <label>From {{ time_select("opt" ~ i ~ "_earliest", "08:00", times, "Earliest time of option " ~ i) }}</label>
+  <label>To {{ time_select("opt" ~ i ~ "_latest", "10:00", times, "Latest time of option " ~ i) }}</label>
   {% if first %}<span></span>{% else %}<button type="button" class="small link remove" hidden aria-label="Remove option {{ i }}">Remove</button>{% endif %}
 </div>
 {% endmacro %}
@@ -124,10 +131,12 @@
   <div class="options">
     <h3>Time slots, best first</h3>
     {{ how_picked(ranking_example) }}
-    {% for i in option_slots %}{% if loop.first %}{{ option_row(i, accounts, true) }}{% endif %}{% endfor %}
+    {# Script off: the union of the person's courses' hours; script on: each row follows its course. #}
+    {% set times = time_choices(accounts | map(attribute="course_id") | list) %}
+    {% for i in option_slots %}{% if loop.first %}{{ option_row(i, accounts, true, times) }}{% endif %}{% endfor %}
     <details class="more-options">
       <summary>Add another time slot</summary>
-      {% for i in option_slots %}{% if not loop.first %}{{ option_row(i, accounts, false) }}{% endif %}{% endfor %}
+      {% for i in option_slots %}{% if not loop.first %}{{ option_row(i, accounts, false, times) }}{% endif %}{% endfor %}
     </details>
     <button type="button" class="small add-option" hidden>+ Add another time slot</button>
   </div>

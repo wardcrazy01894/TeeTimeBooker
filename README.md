@@ -199,6 +199,11 @@ others still are, and the page says which. Skip, withdraw and deactivate act on 
 Plain HTML forms; the one script (`/static/app.js`, same-origin) only adds conveniences such as
 "Add another time slot", and every page works without it. Courses are shown by name ("Mangrove
 Bay", from `courses/names.py`), never by course id; one stylesheet with light and dark themes.
+Every From/To time is a list of quarter hours bounded by the course's tee-sheet hours (one line per
+course in `courses/names.py`, Mangrove Bay 6:30 AM-7:00 PM), never a free time box offering 4 AM:
+with script each option row's lists follow the course chosen on that row; without it the lists
+span all your courses and the server refuses a window outside the chosen course's hours, naming
+the course and its hours (2026-10-02).
 The operator also gets **Adopt existing bookings** on `/accounts`, used once at the prod cutover to
 record the old bot's live reservations as the bot's own (MU-16b). Sign-in is Google OAuth in every deployed env (GitHub is supported
 in code but unwired in infra); only an email the operator invited can sign in. Without
