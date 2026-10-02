@@ -786,8 +786,11 @@ Operator request. `/admin/users` lists every user (`TenantStore.list_users`: any
 by email; in memory a scan, in Cosmos one cross-partition `type = 'user'` query on the indexed
 `/type` path; pinned by `TenantStoreConformance.test_list_users_returns_every_user_by_email`).
 `web/admin_users.py::user_overviews` adds, per signed-in user, the connected courses (by name),
-active weekly rules and the next 21 days' rows by status; an INVITED user (never signed in) has
-no accounts, so its reads are skipped. Each signed-in user other than the viewer gets a
+active weekly rules and the next 21 days' rows by status, and (operator request 2026-10-02) the
+dates themselves under a per-person "Tee times, next 21 days" `<details>`: date, course, options
++ party, status (with the dashboard's snapshot-mismatch note), booked tee time and option rank,
+from the same `services.dashboard` read the person's dashboard uses; an INVITED user (never
+signed in) has no accounts, so its reads are skipped. Each signed-in user other than the viewer gets a
 Disable/Enable button that posts the existing provider + subject form. Operator-gated like the
 rest of the page; the only unscoped listing the web makes. Tests:
 `tests/web/test_web_admin_users_list.py`.
