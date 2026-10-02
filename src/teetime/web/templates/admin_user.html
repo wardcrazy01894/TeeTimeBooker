@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% from "_macros.html" import nice_date, status, windows %}
+{% set u = person.user %}
+{% block title %}{{ u.display_name or u.email }} · Users · TeeTimeBooker{% endblock %}
+{% block content %}
+{# Operator request 2026-10-02: one page per person, reached from the list. Read-only: the same
+   user-scoped reads the person's own pages make; never a course login. #}
+<p class="hint"><a href="/admin/users">← All users</a></p>
+<div class="page-head">
+  <h1>{{ (u.display_name if u.oauth_subject else "") or u.email }}</h1>
+  <p class="muted">
+    {{ u.email }} · {{ u.role.value | capitalize }} ·
+    {% if u.status.value == "invited" %}<span class="status status-pending">Invited</span> <span class="hint">hasn't signed in yet</span>
+    {% elif u.status.value == "disabled" %}<span class="status status-cancelled">Disabled</span>
+    {% else %}<span class="status status-booked">Active</span>{% endif %}
+    {% if u.oauth_subject %} · signs in with {{ u.oauth_provider | provider_name }} <span class="hint">ID {{ u.oauth_subject }}</span>{% endif %}
+  </p>
+</div>
+
+<section>
+  <h2>Connected Courses</h2>
+  {% if person.accounts %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Course</th><th>Status</th><th>Login</th><th>Verified</th><th>Course snapshot</th><th>Default max price</th></tr></thead>
+      <tbody>
+        {% for v in person.accounts %}
+        <tr>
+          <td>{{ v.account.course_id | course_name }}</td>
+          <td><span class="status status-{{ v.account.status.value }}">{{ v.account.status.value.replace("_", " ") }}</span></td>
+          <td>{{ v.account.username }}</td>
+          <td>{% if v.account.verified_at %}{{ v.account.verified_at.strftime('%Y-%m-%d') }}{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td>{{ v.snapshot_label }}</td>
+          <td class="num">${{ v.account.default_max_price }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="placeholder">No course connected.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Weekly bookings</h2>
+  {% if person.rules %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Day</th><th>Course</th><th>Time slots</th><th>Players</th><th>Max price</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for v in person.rules %}
+        <tr{% if not v.rule.active %} class="inactive"{% endif %}>
+          <td>{{ v.weekday_name }}s</td>
+          <td>{{ v.account.course_id | course_name }}</td>
+          <td class="tabular">{{ windows(v.rule.options) }}</td>
+          <td class="num">{{ v.rule.party_size }}</td>
+          <td class="num">{% if v.rule.max_price is not none %}${{ v.rule.max_price }}{% else %}<span class="muted">default</span>{% endif %}</td>
+          <td><span class="status status-{{ 'active' if v.rule.active else 'disabled' }}">{{ "active" if v.rule.active else "inactive" }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="placeholder">No weekly bookings.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Next 21 days</h2>
+  {% if person.dates %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Course</th><th>Asked for</th><th>Status</th><th>Tee time</th></tr></thead>
+      <tbody>
+        {% for r in person.dates %}
+        <tr>
+          <td class="date">{{ nice_date(r.row.target_date) }}</td>
+          <td>{{ r.row.course_id | course_name }}</td>
+          <td class="tabular">{{ windows(r.row.options) }} · {{ r.row.party_size }} player{% if r.row.party_size != 1 %}s{% endif %}</td>
+          <td><span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>{% if r.mismatch %} <span class="hint">{{ r.mismatch | replace("_", " ") }}</span>{% endif %}</td>
+          <td class="tabular">{% if r.booked_tee_time_local %}{{ r.booked_tee_time_local }}{% if r.booked_rank %} <span class="hint">option {{ r.booked_rank }}</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="placeholder">No dates in the next 21 days.</p>
+  {% endif %}
+  <p class="hint">Everything here comes from the site's records, as the person sees it on their own pages; this page never logs in to a course.</p>
+</section>
+{% endblock %}
