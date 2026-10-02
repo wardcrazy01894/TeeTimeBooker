@@ -140,6 +140,9 @@ section.inactive { opacity: 0.75; }
 
 .hint, .placeholder, .muted { color: var(--muted); font-size: 0.92rem; }
 .field-hint { display: block; font-weight: 400; margin: -0.5rem 0 0.9rem; max-width: 22rem; }
+.name-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem 0.75rem; margin-top: 0.5rem; }
+.name-form > label { margin: 0; }
+.name-form > .field-hint { flex-basis: 100%; margin: 0; }
 .placeholder { padding: 1rem; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); }
 .reason { font-weight: 600; }
 
