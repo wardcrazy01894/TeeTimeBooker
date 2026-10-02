@@ -24,7 +24,7 @@ from teetime.core.redaction import register_secret_literals
 from teetime.courses.foreup.mangrove_bay import MANGROVE_BAY_COURSE_ID
 from teetime.notifications.notifier import Notifier
 from teetime.tenant import notify
-from teetime.tenant.golf_quips import GOLF_QUIPS
+from teetime.tenant.golf_quips import GOLF_QUIPS, MISS_QUIPS
 from teetime.tenant.models import RowId, User, UserId, UserRole, UserStatus
 from teetime.tenant.notify import (
     OPERATOR_COPY_KINDS,
@@ -203,6 +203,92 @@ def test_only_a_booking_gets_a_quip() -> None:
     for kind in USER_FACING_KINDS - {UserEventKind.BOOKED, UserEventKind.UPGRADED}:
         body = render_user_event(_event(kind), first_name="Turk", rng=random.Random(0)).body
         assert not any(q in body for q in GOLF_QUIPS), kind
+
+
+# --- the miss email (operator request 2026-10-02) ------------------------------------------
+
+CUTOFF_LOCAL = datetime(2026, 10, 9, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+
+
+def _miss(detail: str = "no_inventory", **kw: object) -> UserEvent:
+    base = {
+        "window": (time(8, 45), time(10, 0)),
+        "party_size": 4,
+        "extra_options": 0,
+        "cutoff_local": CUTOFF_LOCAL,
+    }
+    base.update(kw)
+    return replace(_event(UserEventKind.MISSED_DROP, detail=detail), tee_time=None, **base)  # type: ignore[arg-type]
+
+
+def test_miss_email_reads_like_a_person_wrote_it() -> None:
+    """The 06:00 run could not book the release-day date. Say so plainly, say why it usually
+    happens (an event blocks the sheet), promise only what the watcher does (tries until the
+    cutoff), and set expectations: possible, unlikely. No engine words."""
+    email = render_user_event(
+        _miss(), first_name="Alex", course_label="Mangrove Bay", rng=random.Random(1)
+    )
+    assert email.subject == "[TeeTimeBooker] No tee time yet: Mangrove Bay Sat Oct 10"
+    body = email.body
+    assert body.startswith("Hi Alex,\n\n")
+    assert (
+        "Unfortunately we couldn't get you a tee time at Mangrove Bay for Saturday, October 10 "
+        "when the tee sheet opened this morning." in body
+    )
+    assert "  Course:     Mangrove Bay" in body
+    assert "  Date:       Saturday, October 10" in body
+    assert "  You asked:  8:45 AM to 10:00 AM, 4 players" in body
+    assert "blocked the morning for an event or an outing" in body
+    assert "before 4 PM on Friday, October 9" in body
+    assert "not something to count on" in body and "make other plans" in body
+    assert "no_inventory" not in body and "Details" not in body
+    lines = body.splitlines()
+    assert lines[-1] == "— Spicy's helper"
+    assert lines[-3] in MISS_QUIPS
+
+
+def test_miss_email_quip_is_random_and_consoling() -> None:
+    seen = {
+        render_user_event(_miss(), first_name="Alex", rng=random.Random(s)).body.splitlines()[-3]
+        for s in range(40)
+    }
+    assert seen <= set(MISS_QUIPS) and len(seen) > 6
+    assert not set(MISS_QUIPS) & set(GOLF_QUIPS)  # a miss never gets a "shoot 'em low"
+
+
+def test_miss_email_owns_a_service_error() -> None:
+    """A CAPTCHA / booking-service failure is our fault, not the course's: say so, name no
+    exception class, and still promise the watcher."""
+    body = render_user_event(
+        _miss("booking service error (CaptchaError)"), first_name="Alex", course_label="MB"
+    ).body
+    assert "This one was on our side" in body and "The operator has been notified" in body
+    assert "event or an outing" not in body
+    assert "CaptchaError" not in body
+    assert "keep watching for a cancellation" in body
+
+
+def test_miss_email_lists_the_best_option_and_counts_the_rest() -> None:
+    body = render_user_event(_miss(extra_options=2, party_size=1), first_name="Alex").body
+    assert "  You asked:  8:45 AM to 10:00 AM, 1 player (+2 more options)" in body
+    body = render_user_event(_miss(extra_options=1), first_name="Alex").body
+    assert "4 players (+1 more option)" in body
+
+
+def test_miss_email_never_renders_the_engine_detail() -> None:
+    """The detail is engine jargon and may carry a secret or a stray address (test_email_has_no_
+    secret passes trivially for this kind now); the miss email must not render it at all."""
+    leaky = f"no_inventory pw={PASSWORD} cc {OTHER_USER_EMAIL}"
+    body = render_user_event(_miss(leaky), first_name="Alex").body
+    assert PASSWORD not in body and OTHER_USER_EMAIL not in body and "no_inventory" not in body
+
+
+def test_miss_email_without_row_facts_still_reads_well() -> None:
+    body = render_user_event(
+        _miss(window=None, party_size=None, cutoff_local=None), first_name="Alex"
+    ).body
+    assert "You asked" not in body
+    assert "before the booking cutoff" in body
 
 
 def test_render_falls_back_to_course_id_without_label() -> None:

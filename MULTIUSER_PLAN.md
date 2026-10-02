@@ -526,7 +526,7 @@ the soft-login-skip gate (per account `_prewarmed_course_ids`).
 |-----------|-----------|--------|------|
 | no pending rows | – | – | 0 |
 | outcome BOOKED / ALREADY_BOOKED / DRY_RUN | booked (DRY_RUN: unchanged, logged) | user | 0 |
-| NO_INVENTORY / RATE_LIMITED (all courses skipped) | stays pending (watcher keeps trying until cutoff) | user ("missed the drop; watching for cancellations") | **0**, a deliberate change from today's `ClickException` (see below) |
+| NO_INVENTORY / RATE_LIMITED (all courses skipped) | stays pending (watcher keeps trying until cutoff) | user (the miss email: "No tee time yet", why it usually happens, watching until the cutoff; `docs/MULTIUSER_AS_BUILT.md` MU-11) | **0**, a deliberate change from today's `ClickException` (see below) |
 | `AuthError` (per account) | stays pending; account `auth_failed` (no further logins until the user re-verifies, per PLAN §12 "don't hammer login") | user + operator | 0 |
 | `CredentialDecryptError` (one row) | stays pending | operator | **non-zero** (operator bug) |
 | keyring missing/invalid, DB read or claim failure | none | – | **non-zero**, before T0 |
