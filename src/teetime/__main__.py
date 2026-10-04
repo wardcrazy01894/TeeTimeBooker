@@ -845,7 +845,7 @@ async def _web_main(
             store=store,
             clock=RealClock(),
             keyring=keyring,
-            notifier=user_notifier_from_env(store, command="web"),
+            notifier=user_notifier_from_env(store, command="web", dry_run=settings.dry_run),
             email_sender=email_sender_from_env(command="web"),
             github_issues=(
                 GitHubIssues(settings.github_issues_repo, settings.github_issues_token)
@@ -993,7 +993,7 @@ async def _tenant_watch_main(
             cutoff=cutoff,
             keyring=keyring,
             adapter_factory=HostedAdapterFactory(api_key=api_key),
-            notifier=user_notifier_from_env(store, command="tenant-watch"),
+            notifier=user_notifier_from_env(store, command="tenant-watch", dry_run=dry_run),
             dry_run=dry_run,
         )
 

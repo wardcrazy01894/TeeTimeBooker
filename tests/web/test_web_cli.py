@@ -223,6 +223,7 @@ def test_web_uses_the_cosmos_store_and_acs_when_configured(
     assert app_kwargs["store"] is sentinel
     assert len(opened) == 1
     assert isinstance(app_kwargs["notifier"], StoreUserNotifier)
+    assert app_kwargs["notifier"].dry_run is True  # TEETIME_WEB_DRY_RUN defaults to true
     assert isinstance(app_kwargs["email_sender"], AcsEmailClient)  # invitations
 
 

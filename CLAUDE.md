@@ -728,7 +728,16 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   (`seeded_terminal`) and hands the upgrade policy only to such rows, and passes
   `reconcile_eligible` = owned. A manual reservation is never upgraded or cancelled by the bot.
 - **Dry-run environments never mutate reservations** (§7.8): no upgrade, no reconcile-cancel, no
-  `cancelled(external)` write, and the web refuses cancel.
+  `cancelled(external)` write, and the web refuses cancel. **And never mail a person** (2026-10-03):
+  a dry run cannot book, so every user-facing outcome it would report is fiction (dev's watcher
+  emailed a real inbox "No tee time ... before the booking cutoff" at the Oct 4 cutoff, from the
+  Azure-managed sender). `StoreUserNotifier(dry_run=True)` sends the rendered user email to
+  `operator_to` instead, via `notify.redirect_for_dry_run` (tagged `[TeeTimeBooker · DEV · dry
+  run]`, first line names the would-be recipient; it IS the operator's copy, so no booking notice
+  on top), or logs it when there is no operator address (the booker, the web). Every command
+  passes its own dry-run flag through `user_notifier_from_env(dry_run=…)` /
+  `booker_user_notifier(dry_run=…)`; pinned by `test_dry_run_store_user_notifier_*` and the CLI
+  wiring tests.
 - **The operator hears about EVERY booking** (2026-10-01). The booker's run summary covers the
   release run; for a tee time the watcher books or upgrades between runs, `StoreUserNotifier`
   (with `operator_to` from `OPERATOR_NOTIFY_EMAIL`, tag from `TEETIME_ENV`) sends one

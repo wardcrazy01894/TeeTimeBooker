@@ -1056,9 +1056,15 @@ Dev logs in with (possibly) the same real MB account as prod (§13 Q11). In any 
   §7.1 decision;
 - it never writes `booked → cancelled(external)` (a dry-run vanish is logged only);
 - **the web refuses cancel** (`TEETIME_DRY_RUN=true` → `CancelRefusedError("dry-run environment")`).
-  Refresh (a read-only login) and every DB-only action stay enabled.
+  Refresh (a read-only login) and every DB-only action stay enabled;
+- **no user-facing email reaches a person** (2026-10-03): the watcher, booker and web pass their
+  dry-run flag to `StoreUserNotifier`, which re-addresses the rendered user email to the operator
+  (`notify.redirect_for_dry_run`, tagged `· dry run`, led by the would-be recipient) or logs it
+  when no operator address is configured. Dev had mailed a real inbox "No tee time ... before the
+  booking cutoff" when its (unbookable) Oct 4 row hit the cutoff.
 
-Pinned by `test_dry_run_watcher_never_cancels` and `test_dry_run_web_refuses_cancel`.
+Pinned by `test_dry_run_watcher_never_cancels`, `test_dry_run_web_refuses_cancel` and
+`test_dry_run_store_user_notifier_mails_the_operator_instead_of_the_user`.
 
 ### 7.9 Watcher exit contract
 
