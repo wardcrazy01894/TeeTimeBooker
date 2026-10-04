@@ -51,6 +51,13 @@ def client(draining_client: httpx.AsyncClient) -> httpx.AsyncClient:
 
 
 @pytest.fixture
+def settings(settings: WebSettings) -> WebSettings:
+    """Feedback mail is live-site behaviour: a dry-run site (dev) logs a report instead of
+    emailing it (operator, 2026-10-04), so these tests run the form on a live site."""
+    return replace(settings, dry_run=False)
+
+
+@pytest.fixture
 def app(
     settings: WebSettings, store: InMemoryTenantStore, clock: FakeClock, sender: FakeEmailSender
 ) -> FastAPI:

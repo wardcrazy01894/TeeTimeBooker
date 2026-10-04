@@ -1057,15 +1057,20 @@ Dev logs in with (possibly) the same real MB account as prod (§13 Q11). In any 
 - it never writes `booked → cancelled(external)` (a dry-run vanish is logged only);
 - **the web refuses cancel** (`TEETIME_DRY_RUN=true` → `CancelRefusedError("dry-run environment")`).
   Refresh (a read-only login) and every DB-only action stay enabled;
-- **no user-facing email reaches a person** (2026-10-03): the watcher, booker and web pass their
-  dry-run flag to `StoreUserNotifier`, which re-addresses the rendered user email to the operator
-  (`notify.redirect_for_dry_run`, tagged `· dry run`, led by the would-be recipient) or logs it
-  when no operator address is configured. Dev had mailed a real inbox "No tee time ... before the
-  booking cutoff" when its (unbookable) Oct 4 row hit the cutoff. The one deliberate exception is
-  the invitation email, which an invitee needs in order to sign in to dev at all.
+- **no email leaves unless the booker fails** (2026-10-04): the watcher, booker and web pass their
+  dry-run flag to `StoreUserNotifier`, which logs each user event (kind + row id) and sends
+  nothing, to the person or the operator; the booker's operator summary is sent only on a
+  non-zero exit (the only failure email; a failing dev watcher is a non-zero exit in Azure, it
+  has no summary); a feedback report on a dry-run site files its
+  issue but logs the email. Dev had mailed a real inbox "No tee time ... before the booking
+  cutoff" when its (unbookable) Oct 4 row hit the cutoff (2026-10-03); re-addressing that mail to
+  the operator lasted a day before the operator asked for none at all. The one deliberate
+  exception is the invitation email, which an invitee needs in order to sign in to dev at all.
 
-Pinned by `test_dry_run_watcher_never_cancels`, `test_dry_run_web_refuses_cancel` and
-`test_dry_run_store_user_notifier_mails_the_operator_instead_of_the_user`.
+Pinned by `test_dry_run_watcher_never_cancels`, `test_dry_run_web_refuses_cancel`,
+`test_dry_run_store_user_notifier_never_mails_anyone`,
+`test_dry_run_operator_summary_goes_out_only_on_a_systemic_failure` and
+`test_a_dry_run_site_logs_a_report_instead_of_emailing_it`.
 
 ### 7.9 Watcher exit contract
 

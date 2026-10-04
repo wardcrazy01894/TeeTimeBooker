@@ -196,8 +196,8 @@ def user_notifier_from_env(
     """ACS-backed ``StoreUserNotifier`` when ACS is configured, else ``LoggingUserNotifier``
     (events are logged; ``email_sender_from_env`` has already warned). ``OPERATOR_NOTIFY_EMAIL``
     (+ ``TEETIME_ENV`` for the tag) adds the operator copy of every booking. ``dry_run`` (the
-    command's own flag) sends the person's mail to that operator address instead of the person
-    (§7.8; logged only without one): a dry run never books, so its outcomes are not news."""
+    command's own flag) turns every send into a log line (§7.8): a dry run never books, so its
+    outcomes are not news, and the operator wants no mail from dev (2026-10-04)."""
     client = email_sender_from_env(env, command=command)
     if client is None:
         return LoggingUserNotifier()

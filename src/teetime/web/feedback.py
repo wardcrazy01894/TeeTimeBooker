@@ -5,7 +5,8 @@ a course is chosen both open ``GET /feedback?kind=…&from=<page>``: one small f
 operator (``WebSettings.operator_email``) through the same ``EmailSender`` as invitations. The
 handler validates, rate-limits and responds at once; the issue, the diagnostics and the email run
 AFTER the response as a background job (``web/background.py``), best-effort and bounded. The user
-is always thanked; a failure is logged and recorded in the ``feedback`` audit entry.
+is always thanked; a failure is logged and recorded in the ``feedback`` audit entry. A dry-run
+site (dev) files the issue but logs the email instead of sending it (operator, 2026-10-04).
 The email carries the user's name and address (so the operator can reply), the page, and the
 message; the subject is stripped of line breaks so a display name cannot inject a header.
 """
@@ -176,7 +177,7 @@ async def _deliver(
     if private_diag is not None:
         mail = EmailMessage(to=mail.to, subject=mail.subject, body=f"{mail.body}\n\n{private_diag}")
     sent = await _send(ctx, mail)
-    if not sent and issue_url is None:
+    if not sent and issue_url is None and not ctx.settings.dry_run:
         # The user was already thanked (delivery runs after the response): at least be loud.
         log.error(
             "feedback NOT delivered (neither emailed nor filed): kind=%s length=%d user=%s",
@@ -379,6 +380,10 @@ async def _store_diagnostics(ctx: _Ctx, *, user: User, now: datetime) -> list[st
 
 async def _send(ctx: _Ctx, mail: EmailMessage) -> bool:
     to = ctx.settings.operator_email
+    if ctx.settings.dry_run:
+        # The operator wants no mail from dev (2026-10-04); the issue, if configured, still files.
+        log.info("dry run: feedback not emailed (subject length %d)", len(mail.subject))
+        return False
     if ctx.email_sender is None or not to:
         log.warning("feedback not emailed: email or the operator address is not configured")
         return False
