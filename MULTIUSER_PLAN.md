@@ -476,7 +476,7 @@ finishes).
 | T0−120.5 s | every orchestrator's **unchanged** two-phase busy-wait reaches `prefetch_at`; `_prewarm_primary` gathers `_prewarm_login` ‖ `_prefetch_captcha_for` | – | N × (warm GET + login POST) | – |
 | T0−120.5 s | the first `prepare_book` → `pool.prefetch(key, count)` starts **the one coordinated fill** (§5.3); the rest await it. The count argument is ignored in coordinated mode (demand was registered) | – | – | D = Σk_i + R solves, ≤ C concurrent |
 | ~T0−45…T0−10 | fill ends at the deadline T0−10 s; leases granted round-robin (§5.2); prefetch returns | – | – | – |
-| T0−0.4 s … T0 | per account: the **unchanged** staggered burst `(-400,0)` since 2026-10-02 (`(-400,-250,0)` until 2026-10-02, `(-500,-250,0)` until 2026-09-30), each POST popping from the account's lease | – | ≤ 2N POSTs | – |
+| T0−0.369 s … T0 | per account: the **unchanged** staggered burst `(-369,0)` since 2026-10-04 (`(-400,0)` until 2026-10-04, `(-400,-250,0)` until 2026-10-02, `(-500,-250,0)` until 2026-09-30), each POST popping from the account's lease | – | ≤ 2N POSTs | – |
 | T0+… | per account, unchanged: keep-best + cancel-extras, **or** re-guard (`refresh_reservations`), then fresh search, then sequential book (lease → shared reserve → semaphore-bounded inline) | – | per account as today | only inline fallbacks |
 | as each account returns | build its `AccountOutcome` from the returned `BookingResult` / captured exception **plus its recording decorator's log** (§4.6), and queue it | – | – | – |
 | from T0 + `post_burst_quiet_s` (10 s) | **WRITE #2, streamed and per row (SF5, M4)**: a writer task starts at T0+10 s (when every blind burst plus the immediate `_cancel_extras` is long done) and writes each queued outcome in **its own transaction**: status, ledger entries, `last_outcome`, lease release, `needs_reconcile`. A refused transition (e.g. the row moved; impossible after the M4 lease guard, but defended anyway) still writes the ledger rows keyed by (account, target_date) and sets `needs_reconcile` on whichever row is active for that date. It **never rolls back other accounts**. Each write retries for up to 60 s; on final failure: CRITICAL + that outcome's JSON on stdout + non-zero exit (the watcher reconciles from live) | 1 txn per row | – | – |
@@ -1557,7 +1557,7 @@ prod. A plain dev dry-run **cannot** exercise the blind path: `_should_blind_pos
 (§11 step 11) until **≥ 2 prod tenant drops** have completed as expected. With one account, the
 tenant run is the single-user race plus exactly one new element: one lease (k = 2) in the shared
 pool. It uses the same grid slots (allocation of one account = its own top 2), the same stagger
-`(-400, 0)` (`(-400, -250, 0)` until 2026-10-02, `(-500, -250, 0)` until 2026-09-30, when the
+`(-369, 0)` (`(-400, 0)` until 2026-10-04, `(-400, -250, 0)` until 2026-10-02, `(-500, -250, 0)` until 2026-09-30, when the
 lease was k = 3), the same reserve of 2, and the same unmodified `Orchestrator`.
 
 **Log lines that verify the first drop** (all must appear; grep them in Log Analytics):
@@ -1569,7 +1569,7 @@ lease was k = 3), the same reserve of 2, and the same unmodified `Orchestrator`.
    (`demanded=5 (burst=3, …) granted={<row>: 3}` until 2026-10-02).
 4. `ForeUP: using pooled CAPTCHA token (lease <row>: 1 left) …`, then `… 0 left`,
    one per blind POST, so the lease served every burst POST.
-5. Two unchanged lines `course foreup:mangrove_bay: blind-POST sent <m>ms (planned -400/0ms; -400/-250/0 until 2026-10-02, -500 until 2026-09-30)
+5. Two unchanged lines `course foreup:mangrove_bay: blind-POST sent <m>ms (planned -369/0ms; -400/0 until 2026-10-04, -400/-250/0 until 2026-10-02, -500 until 2026-09-30)
    slot … → …`, with measured offsets within ±50 ms of planned.
 6. `tenant-run: outcome row=<row> outcome=BOOKED held=1 cancelled_extra=<n> held_extra=0` (or the
    expected miss shape), then `tenant-run: wrote 1/1 outcome(s)` after T0+10 s.

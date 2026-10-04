@@ -5,7 +5,7 @@
 > **BURST TIMING SUPERSEDED (`docs/plans/STAGGER_PLAN.md`, PR #199):** this doc describes the burst as
 > N POSTs fired **CONCURRENTLY at one instant** (`T0 − early_arrival_ms`). They are now
 > **STAGGERED ACROSS T0** — each POST sleeps to its own offset from
-> `scheduler.blind_post_stagger_ms` (default `(-400, 0)` ms since 2026-10-02; was `(-400, -250, 0)` since 2026-09-30 and `(-500, -250, 0)` before), paired positionally with
+> `scheduler.blind_post_stagger_ms` (default `(-369, 0)` ms since 2026-10-04; was `(-400, 0)` until 2026-10-04, `(-400, -250, 0)` since 2026-09-30 and `(-500, -250, 0)` before), paired positionally with
 > the ranked slots. Motivation: every drop came back 3/3 or 0/3, never mixed, which a genuine
 > slot race cannot produce; a simultaneous burst point-samples ForeUP's release flip and, when
 > it lands pre-open, gets the same `400 "Time not available."` a claimed slot returns. The

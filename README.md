@@ -77,7 +77,7 @@ Apps Jobs, and the golf course sends booking confirmations directly.
 2. On a wanted day the bot logs in and pre-solves CAPTCHAs during the wait, then busy-waits to T0.
 3. At T0 Mangrove Bay **blind-POSTs** the top slots nearest the window midpoint without waiting
    for a search: up to `scheduler.blind_post_max_count` (default 2) POSTs, staggered
-   `-400 / 0` ms across the open (one early, one at T0). It keeps the best booking and cancels
+   `-369 / 0` ms across the open (one early, one at T0). It keeps the best booking and cancels
    any extra. ForeUP's one-reservation-per-day rule rejects the surplus POST once one lands; that
    is the accepted cost of the hedge.
 4. Only if no blind POST books does it re-check for an existing booking and run one fresh search,
@@ -121,7 +121,7 @@ Variable names are listed in `.env.example` and match the `*_env` defaults in
 | `request.booking_cutoff` | Default `{ days_before = 1, time_of_day = 16:00:00 }`: after 16:00 the day before, no new booking and no upgrade for that date |
 | `request.skip_dates_env` | Names an env var (default `TEETIME_SKIP_DATES`) holding ISO dates to skip, e.g. `"2026-06-14, 2026-06-21"`. Unset, empty or malformed means no skips; it never crashes the bot. Hosted: a Key Vault secret you edit in the Portal with no redeploy |
 | `scheduler.blind_post_max_count` | Blind-POST burst size at T0, Mangrove Bay only (default `2` since 2026-10-02, was `3`; `0` disables it and uses plain search-then-book). Capped by the pre-solved CAPTCHA pool; primary course, `--wait` path only |
-| `scheduler.blind_post_stagger_ms` | Per-POST offsets from T0 (default `[-400, 0]` since 2026-10-02; was `[-400, -250, 0]` since 2026-09-30 and `[-500, -250, 0]` before), paired with the ranked slots. The first equals `-early_arrival_ms`, so the best slot fires at the busy-wait wake |
+| `scheduler.blind_post_stagger_ms` | Per-POST offsets from T0 (default `[-369, 0]` since 2026-10-04; was `[-400, 0]` until 2026-10-04, `[-400, -250, 0]` since 2026-09-30 and `[-500, -250, 0]` before), paired with the ranked slots. The first equals `-early_arrival_ms`, so the best slot fires at the busy-wait wake |
 | `scheduler.blind_post_fallback_token_reserve` | Spare pre-solved CAPTCHA tokens kept for the fallback search (default `2`) |
 
 Why the burst is staggered: every drop in the log window came back 3/3 or 0/3, never mixed, which
@@ -401,5 +401,5 @@ Engine milestones in detail: [PLAN.md §16](./PLAN.md) and §20. Multi-user mile
   invite-only.
 - Anti-bot etiquette: honest User-Agent, ≥250 ms between requests, automatic 429 backoff. The one
   exception is the Mangrove Bay T0 blind-POST burst: a handful of book POSTs staggered across a
-  ~400 ms window, no slot POSTed twice, all but the best cancelled at once, still one booking per
+  ~369 ms window, no slot POSTed twice, all but the best cancelled at once, still one booking per
   request. See [PLAN.md §12](./PLAN.md).

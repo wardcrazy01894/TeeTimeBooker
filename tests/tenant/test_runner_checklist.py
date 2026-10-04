@@ -99,7 +99,7 @@ async def test_first_drop_emits_section_11_2_log_lines(caplog: pytest.LogCapture
         "reserve=2" in text
     )
     # 5. the unchanged staggered burst, measured offsets == planned (VirtualClock is exact)
-    for planned in ("-400", "+0"):
+    for planned in ("-369", "+0"):
         assert f"blind-POST sent {planned}ms (planned {planned}ms)" in text, planned
     # 6. the outcome, then the write after T0 + 10 s
     outcome_line = (
@@ -128,7 +128,7 @@ async def test_runner_emits_first_drop_checklist_lines(caplog: pytest.LogCapture
 
 def test_tenant_scheduler_matches_the_shipped_toml_scheduler() -> None:
     """The tenant job's race knobs ARE today's booking job's: ``config/container.toml``'s
-    [scheduler] (burst 2, reserve 2, stagger (-400, 0), early arrival 400 ms, lead 120 s)."""
+    [scheduler] (burst 2, reserve 2, stagger (-369, 0), early arrival 369 ms, lead 120 s)."""
     shipped = tomllib.loads((_REPO / "config" / "container.toml").read_text())["scheduler"]
     assert tenant_scheduler() == SchedulerConfig(**shipped)
     assert tenant_scheduler().blind_post_max_count == 2
@@ -136,8 +136,10 @@ def test_tenant_scheduler_matches_the_shipped_toml_scheduler() -> None:
     # Operator 2026-09-30: -500 landed before ForeUP's release on 9/29 + 9/30 (its clock had
     # stopped running ~0.5 s fast), wasting the rank-0 slot. Operator 2026-10-02: the -400 POST
     # was winning consistently, so the -250 middle POST was dropped (one early, one at T0).
-    assert tenant_scheduler().blind_post_stagger_ms == (-400, 0)
-    assert tenant_scheduler().early_arrival_ms == 400
+    # Operator 2026-10-04: ForeUP's lead had shrunk to ~395 ms (a -396 POST was too_early, a -395
+    # one 1 ms later booked), so the first rung moved to -369 (the operator's pick).
+    assert tenant_scheduler().blind_post_stagger_ms == (-369, 0)
+    assert tenant_scheduler().early_arrival_ms == 369
 
 
 async def test_single_account_run_matches_todays_burst() -> None:
@@ -190,7 +192,7 @@ async def test_single_account_run_matches_todays_burst() -> None:
     tenant_adapter = factory.built[a.account.id]
 
     assert [s for s, _ in tenant_adapter.sends] == [s for s, _ in toml_adapter.sends]
-    assert tenant_adapter.send_offsets_ms() == toml_adapter.send_offsets_ms() == [-400, 0]
+    assert tenant_adapter.send_offsets_ms() == toml_adapter.send_offsets_ms() == [-369, 0]
     assert toml_adapter.last_prepare_count == 4  # min(2, grid) + reserve 2, single-user
     fill = tenant_adapter.pool.report()
     assert fill is not None

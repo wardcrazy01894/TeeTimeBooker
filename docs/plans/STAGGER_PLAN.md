@@ -4,8 +4,10 @@
 > **2026-09-30:** the default ladder moved to `(-400, -250, 0)` (`early_arrival_ms = 400`). ForeUP's
 > clock stopped running ~0.5 s fast on 2026-09-29, after which the -500 ms POST was refused
 > before the release (`gone[too_early]`, "Booking for … starts at … 6:00am") two days running.
-> **2026-10-02:** the ladder is `(-400, 0)` with `blind_post_max_count = 2`: the -400 POST won
+> **2026-10-02:** the ladder was `(-400, 0)` until 2026-10-04 with `blind_post_max_count = 2`: the -400 POST won
 > consistently, so the middle rung was dropped (one POST early, one at T0).
+> **2026-10-04:** the ladder is `(-369, 0)` (`early_arrival_ms = 369`): ForeUP's lead had shrunk to
+> ~395 ms and a -396 POST landed `too_early` while its sibling 1 ms later booked.
 > The `-500` and three-rung figures below are the design as shipped.
 
 **Status:** LIVE IN PROD — `infra/v2.14.0`, deployed 2026-08-15 (`main`@`e6a8abb`,

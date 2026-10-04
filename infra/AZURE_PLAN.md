@@ -284,7 +284,7 @@ the bot only needs ~1 minute of slack (not 15) for the cron trigger to land
 the container, leaving ~9 minutes of busy-wait headroom before T0.
 
 **Bottom line:** the busy-wait pattern from PLAN.md §6.1 (`busy_wait_until(T0 -
-early_arrival_ms)`, 400 ms since 2026-09-30) carries over unchanged. The ACA jitter is a tighter bound than GH
+early_arrival_ms)`, 369 ms since 2026-10-04, 400 from 2026-09-30) carries over unchanged. The ACA jitter is a tighter bound than GH
 Actions, not a wider one.
 
 No ACA-specific SLA document commits to sub-minute scheduling for the

@@ -176,7 +176,7 @@ def test_scheduler_default_fallback_token_reserve() -> None:
 
 def test_scheduler_default_blind_post_max_count_matches_shipped() -> None:
     """The in-code default must MATCH the shipped configs (2 — operator directive 2026-10-02:
-    one POST 400 ms early and one at T0; the -400 ms POST was winning consistently, so a second
+    one POST early (369 ms since 2026-10-04, 400 before) and one at T0; the early POST was winning, so a second
     early POST bought nothing). Two POSTs still hedge the T0 slot-race: burst-of-one bet
     everything on the single most-contested midpoint slot and a lost race left nothing in flight
     (the 2026-07-18 miss). ForeUP's "1 online reservation per day" rule 400-rejects the surplus

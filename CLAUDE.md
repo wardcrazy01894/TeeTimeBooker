@@ -72,7 +72,7 @@ Two paths exist side by side:
 What is live: multi-day Sat+Sun booking with per-day windows, the 16:00-day-before booking cutoff,
 Portal-editable skip-days, within-window upgrade, the race pre-warm bundle (login pre-warm,
 multi-token CAPTCHA pool, search-sleep trim), the Mangrove Bay blind-POST burst (2 POSTs staggered
-`-400/0` ms across T0 since 2026-10-02, was `-400/-250/0` since 2026-09-30 and `-500/-250/0` before; keep best, cancel extras, re-guard then fresh-search fallback), the
+`-369/0` ms across T0 since 2026-10-04, was `-400/0` until 2026-10-04, `-400/-250/0` since 2026-09-30 and `-500/-250/0` before; keep best, cancel extras, re-guard then fresh-search fallback), the
 watcher's duplicate-reservation crash-net, blind-POST rejection reason tagging, log redaction on
 every handler, and email-OTP challenge detection.
 
@@ -575,8 +575,8 @@ pre-fetch.
     `SystemExit` escape the `await`, SIGTERM kills the process, and the parent's own cancellation
     bypasses the results.
 - **The burst is STAGGERED across the release boundary** (STAGGER_PLAN).
-  `scheduler.blind_post_stagger_ms` (default `(-400, 0)` with `blind_post_max_count = 2` since
-  2026-10-02, was `(-400, -250, 0)` since 2026-09-30; `early_arrival_ms = 400`; see the
+  `scheduler.blind_post_stagger_ms` (default `(-369, 0)` since 2026-10-04 with `blind_post_max_count = 2`
+  since 2026-10-02; was `(-400, 0)` until 2026-10-04 and `(-400, -250, 0)` since 2026-09-30; `early_arrival_ms = 369`; see the
   `too_early` reason below) gives each POST its own offset
   from T0, paired positionally with the RANKED slots; `_fire_blind_post` sleeps to `T0 + offset`
   (a non-positive delay fires immediately, so a late cron never waits). Why: every drop in the log
@@ -586,7 +586,7 @@ pre-fetch.
   1 s resolution). Staggering orders outcomes by offset (clean cutoff = pre-open rejection,
   unordered = real race) and guarantees one POST is SENT no earlier than T0 (tail offset `0`).
   - **`stagger[0] == -early_arrival_ms`**, so the rank-0 slot fires at the busy-wait wake instant
-    (T0 − 400 ms since 2026-09-30; it kept the pre-stagger T0 − 500 ms until then);
+    (T0 − 369 ms since 2026-10-04; T0 − 400 ms from 2026-09-30, the pre-stagger T0 − 500 ms before);
     **nothing is ever scheduled earlier than `stagger[0]`** (operator directive 2026-08-15). Both pinned by `tests/test_container_config_parity.py`.
   - **The burst RE-RANKS with `rank_slots_for_request` before pairing offsets.** Offsets ascend
     with position, so the best slot must POST first or the 1-per-day rule could reject it in
@@ -615,7 +615,9 @@ pre-fetch.
     06:00:00 by its clock and often booked. That wasted the rank-0 slot two days running, so the
     ladder moved to `-400/-250/0` until 2026-10-02 (operator, 2026-09-30: watch it, and move
     again if -400 is still `too_early`). The -400 POST then won consistently, so on 2026-10-02 the operator
-    dropped the middle rung: the ladder is `-400/0` (one POST early, one at T0; burst 2). The
+    dropped the middle rung: the ladder was `-400/0` until 2026-10-04 (one POST early, one at T0; burst 2).
+    On 2026-10-04 ForeUP's lead had shrunk to ~395 ms: a -396 POST was `too_early` (Date 09:59:59)
+    while its sibling 1 ms later booked, so the first rung is `-369` (operator's pick): `-369/0`. The
     operator summary email says "too early (before the booking window opened)".
   - `conflict` (409) and `unknown` (fail-soft default, so other adapters and unobserved wordings
     are never misfiled).

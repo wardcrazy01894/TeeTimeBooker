@@ -461,8 +461,9 @@ _LADDER_SWEEP = (
     "config/example.toml",
 )
 # Every ladder that has shipped and been retired. Newest last: (-400, -250, 0) was retired on
-# 2026-10-02 (operator: the -400 POST was winning consistently, so the middle POST was dropped).
-_RETIRED_LADDERS = ((-500, -250, 0), (-400, -250, 0))
+# 2026-10-02 (operator: the -400 POST was winning consistently, so the middle POST was dropped);
+# (-400, 0) on 2026-10-04 (ForeUP's lead had shrunk to ~395 ms and a -396 POST was too_early).
+_RETIRED_LADDERS = ((-500, -250, 0), (-400, -250, 0), (-400, 0))
 # Phrases that mark a line as history. Deliberately not a bare "was " or a bare date: ordinary
 # prose and any dated line would slip a stale claim through.
 # A ladder's own "since <date>" is NOT a marker: that is exactly how a current-state line read
@@ -470,6 +471,7 @@ _RETIRED_LADDERS = ((-500, -250, 0), (-400, -250, 0))
 _HISTORY_MARKERS = (
     "until 2026-09-30",
     "until 2026-10-02",
+    "until 2026-10-04",
     "was `",
     "was -500",
     "was [-500",
