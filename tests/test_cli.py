@@ -518,7 +518,7 @@ def test_run_wait_uses_real_scheduler(spy_run: SimpleNamespace, gate_spy: Simple
     assert spy_run.demo_calls == []  # real cfg.scheduler, NOT the demo
     sched = spy_run.kwargs()["scheduler"]
     assert sched.fire_time == _dt.time(6, 0, 0)
-    assert sched.early_arrival_ms == 400  # verbatim from example.toml
+    assert sched.early_arrival_ms == 369  # verbatim from example.toml
     assert spy_run.ntp_calls == []  # fake adapter suppresses the NTP probe
 
 

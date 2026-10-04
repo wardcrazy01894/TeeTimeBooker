@@ -270,7 +270,7 @@ Bot:
     2. Load config; in-process idempotency check on (RequestId, resolved_date); build
        adapter; PRE-AUTH (login NOW so the race window is just GET /times +
        POST /reservations).
-    3. busy_wait_until(T0 - early_arrival_ms; 400 ms since 2026-09-30, was 500): coarse asyncio.sleep down to ~2s, then a
+    3. busy_wait_until(T0 - early_arrival_ms; 369 ms since 2026-10-04, 400 from 2026-09-30, was 500): coarse asyncio.sleep down to ~2s, then a
        1ms-cadence fine loop with explicit OS yield (see core/clock.py).
        Sub-second accuracy without CPU starvation.
        RACE PATH ONLY (Orchestrator prefetch_book=True, set by `--wait`): this is a
@@ -361,7 +361,7 @@ path. So the watcher, local-demo, dry-run, a fallback course, a non-MB course, a
 **Blind net (`_blind_post_course`)** — see `docs/plans/RESEARCH_FALLBACK_PLAN.md` for the ratified
 fallback design: fire the top-`N` ranked in-window synthesized POSTs concurrently but
 STAGGERED ACROSS T0 — each POST sleeps to its own `scheduler.blind_post_stagger_ms` offset
-before going out (default `(-400, 0)` ms relative to T0 since 2026-10-02; was `(-400, -250, 0)` until 2026-10-02,
+before going out (default `(-369, 0)` ms relative to T0 since 2026-10-04; was `(-400, 0)` until 2026-10-04, `(-400, -250, 0)` until 2026-10-02,
 and `(-500, -250, 0)` until 2026-09-30; docs/plans/STAGGER_PLAN.md)
 (`N = min(len(synthesize_blind_slots(...)), captcha_pool_size())` — token-bounded). There is
 **NO concurrent hedge search** (the original hedge was dropped — RESEARCH_FALLBACK_PLAN §2 Q1).
@@ -389,7 +389,7 @@ blind-capable primary pre-solves `min(blind_post_max_count, len(synthesize_blind
 pooled token at T0 and the reserve (default 2) tokens REMAIN pooled so the 0-booked fresh-search
 fallback books with a pooled token, not a ~75 s inline solve. Everything else uses the fixed
 `scheduler.captcha_prefetch_count` (default 3). `blind_post_max_count` (default 2 since 2026-10-02,
-matching the shipped configs — the top-2 nearest-midpoint slots fire, one 400 ms early and one at
+matching the shipped configs — the top-2 nearest-midpoint slots fire, one early (369 ms since 2026-10-04) and one at
 T0, to hedge the T0 slot-race; ForeUP's 1/day rule 400-rejects the surplus once the first lands, but
 cancel-extras keeps only the best, so the extra POST is the accepted cost of the hedge; was 3 from
 the 2026-07-18 revert of the 2026-07-15 burst-of-one; ge=0, 0 disables blind fan-out) is decoupled
@@ -664,7 +664,7 @@ departure from the 250 ms spacing rule is the 06:00:00 drop on the race path. To
 the search→book round-trip on the most contested slots of the week, the booking
 `Orchestrator` fires up to `scheduler.blind_post_max_count` (default **2** since 2026-10-02,
 matching the shipped configs — the top-2 nearest-midpoint slots go out **staggered across T0**,
-one 400 ms early and one at T0, to hedge the slot-race AND to make a miss diagnosable
+one early (369 ms since 2026-10-04) and one at T0, to hedge the slot-race AND to make a miss diagnosable
 (docs/plans/STAGGER_PLAN.md); was 3 from the 2026-07-18 revert of the 2026-07-15 burst-of-one,
 whose single in-flight POST lost the slot-race with nothing else in flight and caused the
 2026-07-18 miss. ForeUP's "1 online reservation per day" rule 400-rejects the surplus POST once
@@ -677,7 +677,7 @@ dropped; docs/plans/RESEARCH_FALLBACK_PLAN.md §2 Q1).
 The burst is bounded three ways — it is gated to the `--wait` race path, only the PRIMARY
 blind-capable course, and `min(blind_post_max_count, captcha_pool_size())` (each POST needs
 a pre-solved CAPTCHA token) — so it is a one-time fan-out of a handful of requests spread
-over a ~400 ms window (`blind_post_stagger_ms`, docs/plans/STAGGER_PLAN.md), not sustained hammering.
+over a ~369 ms window (`blind_post_stagger_ms`, docs/plans/STAGGER_PLAN.md), not sustained hammering.
 The spread does not widen the footprint: it is the SAME handful of POSTs, deliberately
 de-synchronised rather than repeated, and no slot is ever POSTed twice. Critically, **one booking per request still
 holds**: the orchestrator keeps the best-ranked reservation and cancels every other one it

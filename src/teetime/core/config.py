@@ -172,8 +172,10 @@ class SchedulerConfig(BaseModel):
     # -500 ms POST then landed before the release ("starts at 6:00am" → gone[too_early]) on
     # 9/29 + 9/30, wasting the rank-0 slot; -250 landed after it every day. Operator: try -400,
     # watch the per-POST line, and move again if -400 is still too early. 2026-10-02: -400 has
-    # been winning consistently, so it stays and the ladder shrank to (-400, 0).
-    early_arrival_ms: int = 400
+    # been winning consistently, so it stays and the ladder shrank to (-400, 0). 2026-10-04:
+    # ForeUP's lead had shrunk to ~395 ms (a -396 POST was too_early at 09:59:59 by its Date; a
+    # -395 one 1 ms later booked), so the first rung moved to 369 (the operator's pick).
+    early_arrival_ms: int = 369
     poll_interval_ms: int = 250
     max_poll_seconds: int = 30
     # Seconds before T0 to start pre-fetching the CAPTCHA token on the race path
@@ -195,8 +197,8 @@ class SchedulerConfig(BaseModel):
     # prefetch depth): the CAPTCHA prefetch SCALES to min(blind_post_max_count, in-window
     # grid count) when the primary is blind-capable. The actual burst N is further bounded by
     # the pooled-token count. `0` DISABLES blind fan-out (single-POST race path). Default 2
-    # (operator directive 2026-10-02): the top-2 nearest-midpoint grid slots, one POST 400 ms
-    # before T0 and one at T0, hedge the T0 slot-race. The -400 ms POST had been winning
+    # (operator directive 2026-10-02): the top-2 nearest-midpoint grid slots, one POST early
+    # (-early_arrival_ms) and one at T0, hedge the T0 slot-race. The -400 ms POST had been winning
     # consistently since the 2026-09-30 ladder change, so a second early POST (the old -250)
     # bought nothing and only cost a surplus reservation to cancel. ForeUP's "1 online
     # reservation per day" rule 400-rejects the surplus POST once the first lands, but
@@ -234,8 +236,10 @@ class SchedulerConfig(BaseModel):
     # keeps TODAY'S EXACT fire instant and a drop we currently win is unchanged
     # (STAGGER_PLAN §2.1). Offsets ascend with rank, so ForeUP's "1 online reservation per
     # day" rule can only ever reject a WORSE sibling (§2.2). Two rungs since 2026-10-02
-    # (was (-400, -250, 0), and (-500, -250, 0) until 2026-09-30): the -400 POST wins
+    # (was (-400, -250, 0), and (-500, -250, 0) until 2026-09-30): the -400 POST won
     # consistently, so the middle rung was dropped; the T0 rung stays as the post-open hedge.
+    # First rung -369 since 2026-10-04 (was (-400, 0) until 2026-10-04): ForeUP's lead had
+    # shrunk to ~395 ms and a -396 POST landed too_early.
     #
     # Surplus slots beyond the list reuse the LAST offset (a widened blind_post_max_count
     # degrades to simultaneous for the tail rather than silently dropping POSTs).
@@ -248,7 +252,7 @@ class SchedulerConfig(BaseModel):
     # (Validating it here instead would couple this field to `early_arrival_ms` across
     # every config and test helper for no behavioural gain — the fire path already
     # self-clamps by computing a non-positive, no-sleep delay.)
-    blind_post_stagger_ms: tuple[int, ...] = (-400, 0)
+    blind_post_stagger_ms: tuple[int, ...] = (-369, 0)
 
     @field_validator("blind_post_stagger_ms")
     @classmethod

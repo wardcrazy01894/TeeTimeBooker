@@ -70,7 +70,7 @@ latest   = 10:00:00
 [scheduler]
 timezone         = "America/New_York"
 fire_time        = 06:00:00
-early_arrival_ms = 400
+early_arrival_ms = 369
 poll_interval_ms = 250
 max_poll_seconds = 30
 # Race path (--wait): start the CAPTCHA solve this many seconds before T0 (explicit
@@ -83,7 +83,7 @@ captcha_prefetch_count = 3
 # to this many concurrent book POSTs for the top-N ranked in-window grid slots at T0, keeps the
 # best, cancels the rest. The CAPTCHA prefetch scales to min(this, in-window grid count). 0 disables
 # blind fan-out (single-POST race path). Bounded further by the pooled-token count at fire time.
-# Set to 2 (operator directive 2026-10-02: one POST 400 ms early, one at T0; the -400 ms POST had been
+# Set to 2 (operator directive 2026-10-02: one POST early, one at T0; the -400 ms POST had been
 # winning consistently, so the second early POST bought nothing. History: 12 = the full grid → 3 →
 # 1 on 2026-07-15 → 3 on 2026-07-18 → 2). ForeUP's "1 online reservation per day" rule 400-rejects the
 # surplus POST once the first lands — cancel-extras handles that cleanly (live 2026-07-11) — but a
@@ -105,12 +105,14 @@ blind_post_fallback_token_reserve = 2
 # the same 400 "Time not available." for both, and the server Date header's 1-second resolution
 # cannot separate them (since 2026-09-29 a pre-open POST gets its own "starts at 6:00am" 400,
 # gone[too_early]). First entry = -early_arrival_ms, so the rank-0 (best) slot fires at the
-# busy-wait wake (-400 since 2026-09-30, was -500). Offsets ascend with rank, so the
+# busy-wait wake (-369 since 2026-10-04; -400 from 2026-09-30, -500 before). Offsets ascend with rank, so the
 # "1 reservation/day" rule can only reject a WORSE sibling. Surplus slots reuse the last offset;
 # [] = legacy simultaneous firing. Offsets earlier than -early_arrival_ms are clamped + logged.
-# Two rungs since 2026-10-02 (was [-400, -250, 0]): the -400 POST wins consistently, so the middle
-# rung was dropped; the 0 rung stays as the guaranteed post-open hedge.
-blind_post_stagger_ms = [-400, 0]
+# Two rungs since 2026-10-02 (was [-400, -250, 0]): the -400 POST won consistently, so the middle
+# rung was dropped; the 0 rung stays as the guaranteed post-open hedge. First rung -369 since
+# 2026-10-04 (was [-400, 0] until 2026-10-04): ForeUP's lead had shrunk to ~395 ms and a -396 POST
+# landed too_early (its sibling 1 ms later booked).
+blind_post_stagger_ms = [-369, 0]
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from

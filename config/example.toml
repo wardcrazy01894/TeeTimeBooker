@@ -105,7 +105,7 @@ latest   = 10:00:00
 [scheduler]
 timezone               = "America/New_York"   # Mangrove Bay is in ET
 fire_time              = 06:00:00              # local wall-clock; DST handled by zoneinfo
-early_arrival_ms       = 400                   # land 0.4 s before T0 (500 until 2026-09-30)
+early_arrival_ms       = 369                   # land 0.369 s before T0 (400 until 2026-10-04, 500 until 2026-09-30)
 poll_interval_ms       = 250
 max_poll_seconds       = 30                    # give up polling after this
 captcha_prefetch_lead_s = 120                  # race path (--wait): start the CAPTCHA solve
@@ -119,7 +119,7 @@ blind_post_max_count    = 2                    # blind-POST fan-out cap (docs/pl
                                                # this many concurrent book POSTs at T0, keeps the
                                                # best, cancels the rest; CAPTCHA prefetch scales to it.
                                                # 0 disables blind fan-out (single-POST race path).
-                                               # 2 (2026-10-02: one POST 400 ms early, one at T0;
+                                               # 2 (2026-10-02: one POST early, one at T0;
                                                # was 3 since 2026-07-18, 1 on 2026-07-15, 12 before):
                                                # the -400 ms POST wins consistently, so a second early
                                                # POST bought nothing. The surplus POST past the first
@@ -134,7 +134,7 @@ blind_post_fallback_token_reserve = 2          # blind-POST 0-booked fallback re
                                                # token, not a ~75s inline solve. The blind POSTs pop
                                                # their tokens; these REMAIN pooled for the fallback.
                                                # Paid pre-T0 every drop (incl. happy path). 0 = off.
-blind_post_stagger_ms   = [-400, 0]            # blind-POST T0 stagger (docs/plans/STAGGER_PLAN.md): per-POST
+blind_post_stagger_ms   = [-369, 0]            # blind-POST T0 stagger (docs/plans/STAGGER_PLAN.md): per-POST
                                                # fire offsets in MILLISECONDS relative to T0, paired
                                                # positionally with the RANKED blind slots, so the
                                                # burst SPANS ForeUP's release boundary instead of
@@ -149,7 +149,9 @@ blind_post_stagger_ms   = [-400, 0]            # blind-POST T0 stagger (docs/pla
                                                # [] = legacy simultaneous firing. Offsets earlier
                                                # than -early_arrival_ms are clamped + logged. Two
                                                # rungs since 2026-10-02 (was [-400, -250, 0]): -400
-                                               # wins consistently, so the middle rung was dropped.
+                                               # won consistently, so the middle rung was dropped.
+                                               # First rung -369 since 2026-10-04 (was [-400, 0] until
+                                               # 2026-10-04): ForeUP's lead shrank to ~395 ms.
 
 [notifier]
 # Console only. The bot does not send email — booking confirmations come from
