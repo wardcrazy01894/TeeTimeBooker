@@ -121,7 +121,7 @@ blind_post_max_count    = 2                    # blind-POST fan-out cap (docs/pl
                                                # 0 disables blind fan-out (single-POST race path).
                                                # 2 (2026-10-02: one POST early, one at T0;
                                                # was 3 since 2026-07-18, 1 on 2026-07-15, 12 before):
-                                               # the -400 ms POST wins consistently, so a second early
+                                               # the early POST won consistently, so a second early
                                                # POST bought nothing. The surplus POST past the first
                                                # success bounces on ForeUP's "1 reservation/day" rule
                                                # (cancel-extras handles it, live 2026-07-11); accepted

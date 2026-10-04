@@ -866,8 +866,8 @@ class ForeUpAdapter(CourseAdapter):
         # Early-arrival diagnostic (2026-07-18 miss). The booking job fires
         # early_arrival_ms (369 ms since 2026-10-04; 400 from 2026-09-30, 500 before) BEFORE T0
         # to offset network latency so the POST should LAND right as the 06:00 ET window opens. If
-        # it instead
-        # ARRIVES pre-open, ForeUP rejects with 400 — since 2026-09-29 with its own wording
+        # it instead ARRIVES pre-open, ForeUP rejects with 400 — since 2026-09-29 with its own
+        # wording
         # ("Booking for … starts at …", gone[too_early]); before, a pre-open 400 read "Time not
         # available.", byte-identical to a genuine slot-race loss. ForeUP's Date response
         # header is its own server clock at the moment it processed this POST: a 400
