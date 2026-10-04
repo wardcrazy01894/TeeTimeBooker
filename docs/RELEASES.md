@@ -12,6 +12,9 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.10.0: 2026-10-04 (`main`@`08c6fe8`)](#infrav3100-2026-10-04-main08c6fe8)
+- [infra/v3.9.0: 2026-10-02 (`main`@`68c4b8c`)](#infrav390-2026-10-02-main68c4b8c)
+- [infra/v3.8.0: 2026-10-02 (`main`@`f38f481`)](#infrav380-2026-10-02-mainf38f481)
 - [infra/v3.7.0: 2026-10-02 (`main`@`b1610f8`)](#infrav370-2026-10-02-mainb1610f8)
 - [infra/v3.6.0: 2026-09-30 (`main`@`69abc3a`)](#infrav360-2026-09-30-main69abc3a)
 - [infra/v3.5.0: 2026-09-29 (`main`@`8466ad1`)](#infrav350-2026-09-29-main8466ad1)
@@ -46,6 +49,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.10.0` | 2026-10-04 | `08c6fe8` | **changed** (race timing) | Blind-POST first rung `-400` → `-369` ms, per-POST round trip logged, dev sends no email unless its booker fails (#317–#319) |
 | `infra/v3.9.0` | 2026-10-02 | `68c4b8c` | unchanged (email, web) | The miss email, Course username hint, operator page per person, Your account (own name), sign-in note for non-Gmail addresses (#307, #309–#314) |
 | `infra/v3.8.0` | 2026-10-02 | `f38f481` | **changed** (race timing) | Blind burst 3 → 2, ladder `-400/0`; time pickers bounded to each course's tee-sheet hours (#305, #306) |
 | `infra/v3.7.0` | 2026-10-02 | `b1610f8` | unchanged (watcher email, web) | Operator email per watcher booking, cancel email off the request path, Connected Courses UX after the first new user (#301, #302) |
@@ -74,6 +78,44 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.10.0: 2026-10-04 (`main`@`08c6fe8`)
+
+**Booking behaviour CHANGED: the early blind POST fires at -369 ms.** ForeUP's clock lead has
+been shrinking: a -500 ms POST was accepted until about 2026-09-28, -400 was accepted Oct 1–3, and
+on Oct 4 two POSTs 1 ms apart straddled the flip: -396 → `gone[too_early]` (server `Date`
+09:59:59), -395 → BOOKED (10:00:00). That `too_early` cost one row (window 07:00–08:00, Sun Oct 11)
+its rank-0 slot; its T0 POST then found 07:37 "Time not available." and the fallback search saw
+nothing before 08:30 four seconds after open, while a week earlier an 08:07 was still free 27 s
+after open. The early block was most likely not online at all (the Oct 3 Flamingo Swing Classic
+morning showed the same shape: nothing before 14:00 at open), so the better rung would probably not
+have saved that row, but the clock problem is real and recurs. Operator: -369.
+
+- **First rung `-400` → `-369`** (#318). `early_arrival_ms = 369`, `blind_post_stagger_ms =
+  [-369, 0]` in the code defaults (the tenant booker reads these) and both shipped configs; burst
+  stays 2. The docs-consistency sweep now treats `-400/0` as a retired ladder. The lead has been
+  moving ~100 ms a week; if -369 logs `gone[too_early]`, move it later again, or build the pre-T0
+  clock probe (BACKLOG).
+- **Per-POST round trip logged** (#319). The diagnostic line ends with `(answered in <n>ms)`:
+  whether the T0 rung could ever be skipped once the early rung has booked, without waiting,
+  depends on ForeUP answering inside the stagger gap, and nothing measured that (a laptop GET
+  sees ~0.6–0.9 s to first byte). Over the last 60 days 7 of 17 drops booked two or three and
+  cancelled the extras, which the operator wants to avoid without giving up the hedge's latency;
+  the next drops decide.
+- **Dev sends no email unless its booker fails** (#317). A dry-run environment logs every user
+  event (kind + row id) and mails no one, operator included; the booker's summary goes out only on
+  a non-zero exit; a feedback report on a dry-run site files its issue but logs the email. The
+  invitation email is the one exception. Replaces the one-day redirect-to-operator from the
+  2026-10-03 fix.
+
+**Deploy:** tag pushed 14:08 ET; approved by Claude at 14:50 ET on the operator's "you can approve
+it" (the first approval attempt was blocked by the permission layer and handed to the operator);
+pass 1 skipped, pass 2 + migrations green, done 14:57 ET. **Verified:** both booking jobs and the
+watch job run `teetime:08c6fe8…`; `/healthz` 200 on https://spicyteetimebooker.com;
+`teetime-web-prod` revision `--0000018` on the same image; the first watch run on the new image
+(15:00 ET, `-29852340`) Succeeded. **First exercise:** Monday's 05:50 run (for Mon Oct 12) shows the -369 rung
+and the round trip on the per-POST lines; the first contested morning is Saturday Oct 10 (for
+Sat Oct 17).
 
 ## infra/v3.9.0: 2026-10-02 (`main`@`68c4b8c`)
 
