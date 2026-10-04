@@ -1057,10 +1057,11 @@ Dev logs in with (possibly) the same real MB account as prod (§13 Q11). In any 
 - it never writes `booked → cancelled(external)` (a dry-run vanish is logged only);
 - **the web refuses cancel** (`TEETIME_DRY_RUN=true` → `CancelRefusedError("dry-run environment")`).
   Refresh (a read-only login) and every DB-only action stay enabled;
-- **no email leaves unless the run fails** (2026-10-04): the watcher, booker and web pass their
+- **no email leaves unless the booker fails** (2026-10-04): the watcher, booker and web pass their
   dry-run flag to `StoreUserNotifier`, which logs each user event (kind + row id) and sends
   nothing, to the person or the operator; the booker's operator summary is sent only on a
-  non-zero exit (the systemic-failure channel); a feedback report on a dry-run site files its
+  non-zero exit (the only failure email; a failing dev watcher is a non-zero exit in Azure, it
+  has no summary); a feedback report on a dry-run site files its
   issue but logs the email. Dev had mailed a real inbox "No tee time ... before the booking
   cutoff" when its (unbookable) Oct 4 row hit the cutoff (2026-10-03); re-addressing that mail to
   the operator lasted a day before the operator asked for none at all. The one deliberate

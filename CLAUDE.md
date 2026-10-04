@@ -728,14 +728,15 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   (`seeded_terminal`) and hands the upgrade policy only to such rows, and passes
   `reconcile_eligible` = owned. A manual reservation is never upgraded or cancelled by the bot.
 - **Dry-run environments never mutate reservations** (§7.8): no upgrade, no reconcile-cancel, no
-  `cancelled(external)` write, and the web refuses cancel. **And send NO email unless the run
+  `cancelled(external)` write, and the web refuses cancel. **And send NO email unless the BOOKER
   fails** (operator, 2026-10-04; the day before, dev's watcher had emailed a real inbox "No tee
   time ... before the booking cutoff" at the Oct 4 cutoff, from the Azure-managed sender, and the
   first fix re-addressed such mail to the operator, who then wanted none). A dry run cannot book,
   so every outcome it would report is fiction: `StoreUserNotifier(dry_run=True)` logs each user
   event (kind + row id, never an address) and sends nothing, to the person or the operator, and
   no operator booking notice; `deliver_operator_summary` skips a dry-run summary whose exit code
-  is 0 and still sends it on a non-zero exit (the systemic-failure channel, §4.5 SF6); the web's
+  is 0 and still sends it on a non-zero exit (the systemic-failure channel, §4.5 SF6; the
+  watcher has no summary, so a failing dev watcher is a non-zero exit in Azure only); the web's
   feedback form on a dry-run site files the GitHub issue but logs the email. Every command passes
   its own dry-run flag through `user_notifier_from_env(dry_run=…)` /
   `booker_user_notifier(dry_run=…)` and the booker's `RunSummary.dry_run`; pinned by

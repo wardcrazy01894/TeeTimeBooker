@@ -487,20 +487,6 @@ async def test_dry_run_store_user_notifier_never_mails_anyone(
     assert user.email not in caplog.text and "ops@example.test" not in caplog.text
 
 
-async def test_dry_run_store_user_notifier_without_an_operator_address_only_logs(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """The booker builds its notifier without an operator address (its summary lists every row),
-    and a dry-run web has none either: then a dry-run user event is logged, not mailed."""
-    store = _store()
-    user, _ = await _seed(store, n=1)
-    sender = FakeEmailSender()
-    with caplog.at_level(logging.INFO):
-        await StoreUserNotifier(store, sender, dry_run=True).send(_event(user.id))
-    assert sender.sent == []
-    assert "dry run" in caplog.text and "missed_drop" in caplog.text
-
-
 def test_dry_run_reaches_the_booker_notifier() -> None:
     assert booker_user_notifier(_store(), FakeEmailSender(), dry_run=True).dry_run is True
     assert booker_user_notifier(_store(), FakeEmailSender(), dry_run=False).dry_run is False

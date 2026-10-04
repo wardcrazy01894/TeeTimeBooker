@@ -383,7 +383,8 @@ at all, failures excepted. `redirect_for_dry_run` is gone. In dry run `StoreUser
 logs the event (kind + row id, never an address) and returns before any send, operator copy
 included; `deliver_operator_summary` skips a dry-run summary with exit code 0 and still sends it
 on a non-zero exit, so a systemic failure in dev (store, keyring, CAPTCHA, a failed outcome
-write) is still one email; the web's feedback `_send` logs on a dry-run site (the GitHub issue
+write) is still one email, while the watcher, which has no summary, fails as a non-zero exit
+only; the web's feedback `_send` logs on a dry-run site (the GitHub issue
 still files) and the "reached no one" error is not raised there. The invitation email is still
 the one exception. Pinned by `test_dry_run_store_user_notifier_never_mails_anyone`,
 `test_dry_run_operator_summary_goes_out_only_on_a_systemic_failure` and
