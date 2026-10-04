@@ -240,6 +240,15 @@ class StoreUserNotifier:
         self.dry_run = dry_run
 
     async def send(self, event: UserEvent) -> None:
+        if self.dry_run:
+            # Before the user lookup: whoever the row belongs to (even nobody), a dry run sends
+            # nothing, the operator booking notice included (review of #320).
+            log.info(
+                "dry run: user notification %s for row %s not sent (nothing real to report)",
+                event.kind.value,
+                event.row_id,
+            )
+            return
         user = await self._directory.get_user_unscoped(event.user_id) if event.user_id else None
         if user is None or user.status is UserStatus.DISABLED:
             log.warning(
@@ -248,13 +257,6 @@ class StoreUserNotifier:
                 event.user_id,
                 event.kind.value,
             )
-        elif self.dry_run:
-            log.info(
-                "dry run: user notification %s for row %s not sent (nothing real to report)",
-                event.kind.value,
-                event.row_id,
-            )
-            return
         else:
             try:
                 notifier = EmailUserNotifier(self._sender, user=user, course_labels=self._labels)
