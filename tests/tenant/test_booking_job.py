@@ -494,14 +494,17 @@ async def test_dry_run_store_user_notifier_is_silent_for_an_unknown_user_too(
     for a missing or disabled user still fell through to the operator booking notice. Dry run
     means no mail at all, whoever the row belongs to."""
     store = _store()
+    disabled, _ = await _seed(store, n=1)
+    await store.upsert_user(replace(disabled, status=UserStatus.DISABLED))
     sender = FakeEmailSender()
     notifier = StoreUserNotifier(
         store, sender, operator_to="ops@example.test", environment="dev", dry_run=True
     )
     with caplog.at_level(logging.INFO):
         await notifier.send(_booked(UserId(uuid4())))  # no such user
+        await notifier.send(_booked(disabled.id))  # a disabled one
     assert sender.sent == []
-    assert "dry run" in caplog.text
+    assert caplog.text.count("dry run") == 2
 
 
 def test_dry_run_reaches_the_booker_notifier() -> None:
