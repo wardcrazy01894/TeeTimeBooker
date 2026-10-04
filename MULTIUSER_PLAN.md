@@ -1570,7 +1570,7 @@ lease was k = 3), the same reserve of 2, and the same unmodified `Orchestrator`.
 4. `ForeUP: using pooled CAPTCHA token (lease <row>: 1 left) …`, then `… 0 left`,
    one per blind POST, so the lease served every burst POST.
 5. Two unchanged lines `course foreup:mangrove_bay: blind-POST sent <m>ms (planned -369/0ms; -400/0 until 2026-10-04, -400/-250/0 until 2026-10-02, -500 until 2026-09-30)
-   slot … → …`, with measured offsets within ±50 ms of planned.
+   slot … → … (answered in <n>ms)`, with measured offsets within ±50 ms of planned.
 6. `tenant-run: outcome row=<row> outcome=BOOKED held=1 cancelled_extra=<n> held_extra=0` (or the
    expected miss shape), then `tenant-run: wrote 1/1 outcome(s)` after T0+10 s.
 7. `tenant-run: no store/credential call inside race window [T0-121s, T0+10s]` (the runtime

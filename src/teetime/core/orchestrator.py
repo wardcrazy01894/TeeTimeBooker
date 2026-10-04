@@ -448,6 +448,11 @@ class Orchestrator:
         # MEASURED offsets, never the planned ones (see _fire_blind_post's docstring — on a
         # late-landing run every POST goes out at once and the planned ladder is a lie).
         sent_offsets_ms: list[int | None] = [None] * len(fire)
+        # Filled in when each POST's answer (a result OR a rejection) arrives: the measured
+        # round trip. Whether the T0 rung could ever be skipped once the early rung has booked
+        # depends on ForeUP answering inside the stagger gap, and only this measures that
+        # (operator question 2026-10-04; the log has whole-second stamps).
+        round_trips_ms: list[int | None] = [None] * len(fire)
         blind_tasks = [
             asyncio.create_task(
                 self._fire_blind_post(
@@ -457,6 +462,7 @@ class Orchestrator:
                     offset_ms=off,
                     t0=t0,
                     sent_offsets_ms=sent_offsets_ms,
+                    round_trips_ms=round_trips_ms,
                     index=i,
                 )
             )
@@ -490,7 +496,9 @@ class Orchestrator:
         pending_base_exc: BaseException | None = None
         # blind_results is in the same order as `fire` (gather preserves task order),
         # so each result pairs with the slot whose POST produced it.
-        for slot, off, sent, r in zip(fire, offsets, sent_offsets_ms, blind_results, strict=True):
+        for slot, off, sent, trip, r in zip(
+            fire, offsets, sent_offsets_ms, round_trips_ms, blind_results, strict=True
+        ):
             # THE diagnostic line (STAGGER_PLAN §3.3). Pairing each POST's T0 offset with
             # its outcome is what distinguishes a pre-open rejection (a CLEAN CUTOFF —
             # everything at or before some offset gone, everything after booked) from a
@@ -502,13 +510,16 @@ class Orchestrator:
             # its send (an exception raised in the sleep itself) — then say so rather than
             # substitute the planned value, which would assert a send that never happened.
             # `planned` is carried alongside so sleep jitter and late starts are both visible.
+            # The round trip (send → answer, rejections included) is "NEVER" only when the
+            # POST was never sent.
             log.info(
-                "course %s: blind-POST sent %s (planned %+dms) slot %s → %s",
+                "course %s: blind-POST sent %s (planned %+dms) slot %s → %s (answered in %s)",
                 course_id,
                 f"{sent:+d}ms" if sent is not None else "NEVER",
                 off,
                 slot.slot_id,
                 _blind_outcome_label(r),
+                f"{trip}ms" if trip is not None else "NEVER",
             )
             if isinstance(r, BookingResult) and r.outcome == BookingOutcome.BOOKED:
                 booked.append(r)
@@ -958,6 +969,7 @@ class Orchestrator:
         offset_ms: int,
         t0: datetime,
         sent_offsets_ms: list[int | None] | None = None,
+        round_trips_ms: list[int | None] | None = None,
         index: int = 0,
     ) -> BookingResult:
         """Sleep until `t0 + offset_ms`, then issue this slot's blind book POST.
@@ -977,16 +989,25 @@ class Orchestrator:
            wrong call, with the next week's fix aimed at the wrong thing.
         2. It absorbs `Clock.sleep` scheduling jitter, so any blurring of the ladder is
            self-documenting rather than assumed absent.
+
+        Also records the POST's ROUND TRIP (send instant → answer, whether the answer is a
+        result or a raised rejection) into ``round_trips_ms[index]``: the one number that says
+        whether a later rung could ever learn the earlier rung's fate before its own send.
         """
         delay = ((t0 + timedelta(milliseconds=offset_ms)) - self._clock.now_utc()).total_seconds()
         if delay > 0:
             await self._clock.sleep(delay)
+        # Measured at the send instant, AFTER any sleep. Distinct indices, single-threaded
+        # event loop → no interleaving hazard between the concurrent burst tasks.
+        send_instant = self._clock.now_utc()
         if sent_offsets_ms is not None:
-            # Measured at the send instant, AFTER any sleep. Distinct indices, single-threaded
-            # event loop → no interleaving hazard between the concurrent burst tasks.
-            sent = (self._clock.now_utc() - t0).total_seconds() * 1000.0
-            sent_offsets_ms[index] = round(sent)
-        return await adapter.book(slot, request)
+            sent_offsets_ms[index] = round((send_instant - t0).total_seconds() * 1000.0)
+        try:
+            return await adapter.book(slot, request)
+        finally:
+            if round_trips_ms is not None:
+                elapsed = self._clock.now_utc() - send_instant
+                round_trips_ms[index] = round(elapsed.total_seconds() * 1000.0)
 
     # --- search loop ---------------------------------------------------
 

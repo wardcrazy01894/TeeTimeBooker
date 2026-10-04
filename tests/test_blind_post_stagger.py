@@ -26,11 +26,13 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from teetime.core.adapter import SlotGoneError
 from teetime.core.clock import Clock, FakeClock
 from teetime.core.config import SchedulerConfig
 from teetime.core.models import (
     BookingOutcome,
     BookingRequest,
+    BookingResult,
     CourseCredentials,
     CourseId,
     Player,
@@ -375,3 +377,53 @@ async def test_burst_diagnostic_reports_the_measured_send_offset(
     assert "sent -250ms" not in caplog.text
     # The planned ladder is still reported alongside, so the late start is diagnosable.
     assert "(planned -500ms)" in caplog.text
+
+
+class RoundTripClock(BurstRecordingClock):
+    """``BurstRecordingClock`` whose time an adapter can ADVANCE while a POST is "in flight",
+    so a test can give each blind POST its own round trip without real waiting."""
+
+    def advance_ms(self, ms: int) -> None:
+        self._now = self._now + timedelta(milliseconds=ms)
+
+
+class SlowBookAdapter(FakeAdapter):
+    """``FakeAdapter`` whose ``book()`` takes a scripted number of clock-milliseconds per call."""
+
+    def __init__(self, *, course_id: CourseId, clock: RoundTripClock, trips_ms: list[int]) -> None:
+        super().__init__(course_id=course_id, supports_blind_post=True)
+        self._rt_clock = clock
+        self._trips_ms = list(trips_ms)
+
+    async def book(self, slot: TeeTimeSlot, request: BookingRequest) -> BookingResult:
+        self._rt_clock.advance_ms(self._trips_ms.pop(0))
+        return await super().book(slot, request)
+
+
+async def test_burst_diagnostic_reports_each_posts_round_trip(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Operator question 2026-10-04: could the T0 POST be skipped once the early POST has
+    booked? Only if ForeUP answers within the stagger gap, and nothing measured that: the log
+    had whole-second stamps and the recorder only the SEND instant. The per-POST line now
+    carries the measured round trip, for a BOOKED answer and for a rejection alike, so the
+    next drops answer the question with data."""
+    t0 = datetime(2026, 5, 13, 10, 0, 0, tzinfo=UTC)
+    clock = RoundTripClock(start=t0 - timedelta(milliseconds=500))
+    cid = CourseId("fake:mb")
+    fa = SlowBookAdapter(course_id=cid, clock=clock, trips_ms=[612, 87, 450])
+    fa.set_book_side_effects(
+        [BookingOutcome.BOOKED, SlotGoneError("Time not available.", reason="unavailable")]
+    )
+    orch, _, _ = _build(clock=clock)
+    orch._adapters[cid] = fa  # the burst must go through the slow adapter
+    fa.set_blind_slots([_slot(cid, 8, 0), _slot(cid, 8, 15), _slot(cid, 8, 30)])
+
+    with caplog.at_level(logging.INFO):
+        await orch._blind_post_course(fa, cid, _request(course_ids=(cid,)))
+
+    lines = [ln for ln in caplog.text.splitlines() if "blind-POST sent" in ln]
+    assert len(lines) == 3
+    assert "slot s-0815 → BOOKED (answered in 612ms)" in lines[0]
+    assert "slot s-0800 → gone[unavailable] (answered in 87ms)" in lines[1]
+    assert "slot s-0830 → BOOKED (answered in 450ms)" in lines[2]

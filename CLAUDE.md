@@ -593,10 +593,13 @@ pre-fetch.
     favour of a worse sibling. A `field_validator` rejects a descending offset list.
   - Offsets earlier than `-early_arrival_ms` are clamped and logged, not rejected. `()` means
     legacy simultaneous firing; `_local_demo_scheduler` uses it.
-  - The per-POST INFO line `blind-POST sent %s (planned %+dms) slot %s → %s` reports the MEASURED
-    send offset (a late run fires everything at once, and logging the plan would show a ladder
-    that never happened). With `_blind_outcome_label` it is the whole point of the feature:
-    **don't drop it when touching the burst loop.**
+  - The per-POST INFO line `blind-POST sent %s (planned %+dms) slot %s → %s (answered in %s)`
+    reports the MEASURED send offset (a late run fires everything at once, and logging the plan
+    would show a ladder that never happened) and the measured ROUND TRIP to the answer, result or
+    rejection (2026-10-04: whether the T0 rung could ever be skipped once the early rung has
+    booked depends on ForeUP answering inside the stagger gap, and nothing else measures that).
+    With `_blind_outcome_label` it is the whole point of the feature: **don't drop it when
+    touching the burst loop.**
 - **A blind-POST rejection is tagged with WHY (`SlotGoneError.reason`).** ForeUP returns HTTP 400
   for rejections with opposite meaning and no machine-readable discriminator, so
   `ForeUpAdapter._classify_book_rejection` tags by the `msg` prose (first match wins, in the
