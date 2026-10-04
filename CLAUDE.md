@@ -734,10 +734,13 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   Azure-managed sender). `StoreUserNotifier(dry_run=True)` sends the rendered user email to
   `operator_to` instead, via `notify.redirect_for_dry_run` (tagged `[TeeTimeBooker · DEV · dry
   run]`, first line names the would-be recipient; it IS the operator's copy, so no booking notice
-  on top), or logs it when there is no operator address (the booker, the web). Every command
-  passes its own dry-run flag through `user_notifier_from_env(dry_run=…)` /
-  `booker_user_notifier(dry_run=…)`; pinned by `test_dry_run_store_user_notifier_*` and the CLI
-  wiring tests.
+  on top), or logs it when there is no operator address (the booker, whose summary lists every
+  row; the web, whose only user-facing notifier send is the cancel email, unreachable in dry run
+  because cancel is refused). Every command passes its own dry-run flag through
+  `user_notifier_from_env(dry_run=…)` / `booker_user_notifier(dry_run=…)`; pinned by
+  `test_dry_run_store_user_notifier_*`, the watch + web CLI wiring tests and the booker's AST
+  test. **Deliberate exception: the invitation email** (`web/app.py::_send_invitation`) goes to
+  the invitee in every environment, since it is how a person signs in to dev at all.
 - **The operator hears about EVERY booking** (2026-10-01). The booker's run summary covers the
   release run; for a tee time the watcher books or upgrades between runs, `StoreUserNotifier`
   (with `operator_to` from `OPERATOR_NOTIFY_EMAIL`, tag from `TEETIME_ENV`) sends one

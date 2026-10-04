@@ -445,6 +445,18 @@ def test_the_booker_builds_its_notifier_without_the_operator_copy() -> None:
     }
     assert "booker_user_notifier" in called
     assert called.isdisjoint({"StoreUserNotifier", "user_notifier_from_env"})
+    # And that call passes the run's own dry-run flag (review #316): a dry-run booker's user
+    # events are logged, never mailed to the person.
+    (call,) = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "booker_user_notifier"
+    ]
+    assert [kw.arg for kw in call.keywords] == ["dry_run"]
+    assert isinstance(call.keywords[0].value, ast.Name)
+    assert call.keywords[0].value.id == "dry_run"
 
 
 # --- dry run: no user-facing mail ever leaves a dry-run environment (2026-10-03) ----------------

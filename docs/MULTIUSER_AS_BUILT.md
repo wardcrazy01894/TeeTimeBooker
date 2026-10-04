@@ -369,9 +369,13 @@ rendered user email is re-addressed to `operator_to` by `notify.redirect_for_dry
 tag `[TeeTimeBooker · DEV · dry run]` replacing the bare `[TeeTimeBooker]`, a first line naming
 who it would have gone to; that is the operator's copy, so no separate booking notice), and
 logged when there is no operator address: the booker (`booker_user_notifier(dry_run=…)`, whose
-summary lists every row anyway) and the web (its env names the operator differently). The flag
-is each command's own: `tenant-watch --dry-run`, `tenant-run --dry-run`, `WebSettings.dry_run`,
-through `wiring.user_notifier_from_env(dry_run=…)`; the CLI wiring tests pin that it arrives.
+summary lists every row anyway) and the web (its only user-facing notifier send is the cancel
+email, unreachable in dry run because cancel is refused, so wiring `WebSettings.operator_email`
+in would redirect nothing). The flag is each command's own: `tenant-watch --dry-run`,
+`tenant-run --dry-run`, `WebSettings.dry_run`, through `wiring.user_notifier_from_env(dry_run=…)`;
+the watch + web CLI wiring tests and the booker's AST test pin that it arrives. The invitation
+email (`web/app.py::_send_invitation`) is the deliberate exception: it goes to the invitee in
+every environment, because it is how a person signs in to dev at all.
 Cheaper alternatives rejected: deleting the dev rule (dev exists to exercise rules, so the next
 test rule would do it again) and a `[dev]` subject prefix alone (still a real miss in a real
 inbox).

@@ -225,6 +225,9 @@ def test_web_uses_the_cosmos_store_and_acs_when_configured(
     assert isinstance(app_kwargs["notifier"], StoreUserNotifier)
     assert app_kwargs["notifier"].dry_run is True  # TEETIME_WEB_DRY_RUN defaults to true
     assert isinstance(app_kwargs["email_sender"], AcsEmailClient)  # invitations
+    result = CliRunner().invoke(entry.cli, ["web"], env={**env, "TEETIME_WEB_DRY_RUN": "false"})
+    assert result.exit_code == 0, result.output
+    assert app_kwargs["notifier"].dry_run is False  # prod: the person is mailed
 
 
 def test_web_files_github_issues_when_configured(

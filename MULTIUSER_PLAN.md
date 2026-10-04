@@ -1061,7 +1061,8 @@ Dev logs in with (possibly) the same real MB account as prod (§13 Q11). In any 
   dry-run flag to `StoreUserNotifier`, which re-addresses the rendered user email to the operator
   (`notify.redirect_for_dry_run`, tagged `· dry run`, led by the would-be recipient) or logs it
   when no operator address is configured. Dev had mailed a real inbox "No tee time ... before the
-  booking cutoff" when its (unbookable) Oct 4 row hit the cutoff.
+  booking cutoff" when its (unbookable) Oct 4 row hit the cutoff. The one deliberate exception is
+  the invitation email, which an invitee needs in order to sign in to dev at all.
 
 Pinned by `test_dry_run_watcher_never_cancels`, `test_dry_run_web_refuses_cancel` and
 `test_dry_run_store_user_notifier_mails_the_operator_instead_of_the_user`.
