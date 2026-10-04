@@ -5,7 +5,9 @@ target is **Mangrove Bay Golf Course** (St. Petersburg, FL), which releases tee 
 06:00 ET, 7 days ahead; the bot books **Saturday and Sunday** mornings (configurable: wanted days
 are derived from the per-day `[[request.time_windows]]`). It speaks the **ForeUP** and **TeeItUp**
 platforms (e.g. Sydney R. Marovitz, Chicago Park District), runs unattended as Azure Container
-Apps Jobs, and the golf course sends booking confirmations directly.
+Apps Jobs, and the golf course sends booking confirmations directly. The invite-only multi-user
+site is **[spicyteetimebooker.com](https://spicyteetimebooker.com)**: sign in, connect your
+course login, pick the days and times you want to play.
 
 <!-- toc -->
 ## Contents
