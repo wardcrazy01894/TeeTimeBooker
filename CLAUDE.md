@@ -728,19 +728,22 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   (`seeded_terminal`) and hands the upgrade policy only to such rows, and passes
   `reconcile_eligible` = owned. A manual reservation is never upgraded or cancelled by the bot.
 - **Dry-run environments never mutate reservations** (§7.8): no upgrade, no reconcile-cancel, no
-  `cancelled(external)` write, and the web refuses cancel. **And never mail a person** (2026-10-03):
-  a dry run cannot book, so every user-facing outcome it would report is fiction (dev's watcher
-  emailed a real inbox "No tee time ... before the booking cutoff" at the Oct 4 cutoff, from the
-  Azure-managed sender). `StoreUserNotifier(dry_run=True)` sends the rendered user email to
-  `operator_to` instead, via `notify.redirect_for_dry_run` (tagged `[TeeTimeBooker · DEV · dry
-  run]`, first line names the would-be recipient; it IS the operator's copy, so no booking notice
-  on top), or logs it when there is no operator address (the booker, whose summary lists every
-  row; the web, whose only user-facing notifier send is the cancel email, unreachable in dry run
-  because cancel is refused). Every command passes its own dry-run flag through
-  `user_notifier_from_env(dry_run=…)` / `booker_user_notifier(dry_run=…)`; pinned by
-  `test_dry_run_store_user_notifier_*`, the watch + web CLI wiring tests and the booker's AST
-  test. **Deliberate exception: the invitation email** (`web/app.py::_send_invitation`) goes to
-  the invitee in every environment, since it is how a person signs in to dev at all.
+  `cancelled(external)` write, and the web refuses cancel. **And send NO email unless the run
+  fails** (operator, 2026-10-04; the day before, dev's watcher had emailed a real inbox "No tee
+  time ... before the booking cutoff" at the Oct 4 cutoff, from the Azure-managed sender, and the
+  first fix re-addressed such mail to the operator, who then wanted none). A dry run cannot book,
+  so every outcome it would report is fiction: `StoreUserNotifier(dry_run=True)` logs each user
+  event (kind + row id, never an address) and sends nothing, to the person or the operator, and
+  no operator booking notice; `deliver_operator_summary` skips a dry-run summary whose exit code
+  is 0 and still sends it on a non-zero exit (the systemic-failure channel, §4.5 SF6); the web's
+  feedback form on a dry-run site files the GitHub issue but logs the email. Every command passes
+  its own dry-run flag through `user_notifier_from_env(dry_run=…)` /
+  `booker_user_notifier(dry_run=…)` and the booker's `RunSummary.dry_run`; pinned by
+  `test_dry_run_store_user_notifier_*`, `test_dry_run_operator_summary_goes_out_only_on_a_systemic_failure`,
+  `test_a_dry_run_site_logs_a_report_instead_of_emailing_it`, the watch + web CLI wiring tests
+  and the booker's AST test. **Deliberate exception: the invitation email**
+  (`web/app.py::_send_invitation`) goes to the invitee in every environment, since it is how a
+  person signs in to dev at all. Azure's own budget/killswitch alerts are outside this rule.
 - **The operator hears about EVERY booking** (2026-10-01). The booker's run summary covers the
   release run; for a tee time the watcher books or upgrades between runs, `StoreUserNotifier`
   (with `operator_to` from `OPERATOR_NOTIFY_EMAIL`, tag from `TEETIME_ENV`) sends one

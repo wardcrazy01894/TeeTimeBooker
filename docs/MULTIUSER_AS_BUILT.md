@@ -376,6 +376,19 @@ in would redirect nothing). The flag is each command's own: `tenant-watch --dry-
 the watch + web CLI wiring tests and the booker's AST test pin that it arrives. The invitation
 email (`web/app.py::_send_invitation`) is the deliberate exception: it goes to the invitee in
 every environment, because it is how a person signs in to dev at all.
+
+**Follow-up, 2026-10-04: dev sends nothing unless it fails.** One day of re-addressed copies
+(plus the daily "Checked N requests" summary) was enough: the operator asked for no mail from dev
+at all, failures excepted. `redirect_for_dry_run` is gone. In dry run `StoreUserNotifier.send`
+logs the event (kind + row id, never an address) and returns before any send, operator copy
+included; `deliver_operator_summary` skips a dry-run summary with exit code 0 and still sends it
+on a non-zero exit, so a systemic failure in dev (store, keyring, CAPTCHA, a failed outcome
+write) is still one email; the web's feedback `_send` logs on a dry-run site (the GitHub issue
+still files) and the "reached no one" error is not raised there. The invitation email is still
+the one exception. Pinned by `test_dry_run_store_user_notifier_never_mails_anyone`,
+`test_dry_run_operator_summary_goes_out_only_on_a_systemic_failure` and
+`test_a_dry_run_site_logs_a_report_instead_of_emailing_it`; the feedback test modules override
+the `settings` fixture to a live site, since the form's mail is live-site behaviour.
 Cheaper alternatives rejected: deleting the dev rule (dev exists to exercise rules, so the next
 test rule would do it again) and a `[dev]` subject prefix alone (still a real miss in a real
 inbox).

@@ -24,7 +24,15 @@ from teetime.web.app import WebSettings, create_app
 
 from ..tenant.conformance import MB
 from .account_builders import stored_account
-from .conftest import OPERATOR_EMAIL, T0, GitHubIdentity, make_invited, mock_github, sign_in
+from .conftest import (
+    OPERATOR_EMAIL,
+    T0,
+    GitHubIdentity,
+    drain_jobs,
+    make_invited,
+    mock_github,
+    sign_in,
+)
 from .test_web_admin_csrf import _csrf
 
 TEMPLATES = Path(__file__).resolve().parents[2] / "src" / "teetime" / "web" / "templates"
@@ -40,6 +48,13 @@ def sender() -> FakeEmailSender:
 def client(draining_client: httpx.AsyncClient) -> httpx.AsyncClient:
     """Sends run after the response; wait for them before asserting what was sent."""
     return draining_client
+
+
+@pytest.fixture
+def settings(settings: WebSettings) -> WebSettings:
+    """Feedback mail is live-site behaviour: a dry-run site (dev) logs a report instead of
+    emailing it (operator, 2026-10-04), so these tests run the form on a live site."""
+    return replace(settings, dry_run=False)
 
 
 @pytest.fixture
@@ -332,3 +347,47 @@ async def test_a_report_that_reached_no_one_is_logged_as_an_error(
         await app.state.background_jobs.drain(5)
     assert "feedback NOT delivered" in caplog.text
     assert "kind=bug" in caplog.text
+
+
+async def test_a_dry_run_site_logs_a_report_instead_of_emailing_it(
+    settings: WebSettings,
+    store: InMemoryTenantStore,
+    clock: FakeClock,
+    sender: FakeEmailSender,
+    provider_mock: respx.MockRouter,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The operator wants no mail from dev (2026-10-04). On a dry-run site the form still thanks
+    the person and audits the report, but the email is logged, not sent."""
+    app = create_app(replace(settings, dry_run=True), store=store, clock=clock, email_sender=sender)
+
+    async def settle(_: httpx.Response) -> None:
+        await drain_jobs(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="https://testserver",
+        event_hooks={"response": [settle]},
+    ) as client:
+        await store.upsert_user(make_invited(MEMBER))
+        mock_github(
+            provider_mock, GitHubIdentity(subject="42", name="Turk", emails=[(MEMBER, True)])
+        )
+        assert (await sign_in(client)).status_code == 303
+        form_page = await client.get("/feedback?kind=bug&from=/dates")
+        with caplog.at_level(logging.INFO):
+            r = await client.post(
+                "/feedback",
+                data={
+                    "csrf_token": _csrf(form_page),
+                    "kind": "bug",
+                    "from": "/dates",
+                    "message": "Just testing the form on dev.",
+                },
+            )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/?notice=feedback_sent"
+    assert sender.sent == []
+    assert "dry run" in caplog.text and "feedback" in caplog.text
+    assert store.audit_log[-1].action == "feedback"
+    assert store.audit_log[-1].detail["sent"] is False

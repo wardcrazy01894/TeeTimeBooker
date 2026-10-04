@@ -39,8 +39,9 @@ Apps Jobs, and the golf course sends booking confirmations directly.
 > latest infra tag `infra/v3.9.0` (2026-10-02; the site is https://spicyteetimebooker.com; the tenant path since MU-18 stage B, `infra/v3.0.0`): tenant booker and watcher over Cosmos, the invite-only
 > web app, and ACS email. Release history: [docs/RELEASES.md](./docs/RELEASES.md).
 >
-> **Dev** runs the same tenant path in dry-run (since MU-17). The single-user TOML path (`teetime
-> run` / `watch`) is kept for local course testing and as prod's rollback.
+> **Dev** runs the same tenant path in dry-run (since MU-17) and sends no email unless a run
+> fails (invitations excepted). The single-user TOML path (`teetime run` / `watch`) is kept for
+> local course testing and as prod's rollback.
 
 - ForeUP adapter: live bookings at Mangrove Bay since M6. TeeItUp adapter: live booking + cancel
   confirmed against Sydney Marovitz (2026-05-29).

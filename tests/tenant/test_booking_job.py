@@ -462,14 +462,15 @@ def test_the_booker_builds_its_notifier_without_the_operator_copy() -> None:
 # --- dry run: no user-facing mail ever leaves a dry-run environment (2026-10-03) ----------------
 
 
-async def test_dry_run_store_user_notifier_mails_the_operator_instead_of_the_user(
+async def test_dry_run_store_user_notifier_never_mails_anyone(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Dev (permanent dry run) emailed the operator's own user "No tee time ... before the
-    booking cutoff" at the Oct 4 cutoff: a dry-run watcher never books, so every row it holds
-    expires unbooked, and the lost email read as a real miss from an Azure address. In dry run a
-    user-facing event goes ONLY to the operator, re-addressed and tagged, never to the person;
-    and it is the operator's copy, so no separate booking notice is added on top."""
+    booking cutoff" at the Oct 4 cutoff (2026-10-03). The first fix re-addressed every such email
+    to the operator, who then asked for NO mail from dev at all (2026-10-04). A dry-run watcher
+    never books, so every user-facing outcome it holds is fiction: in dry run a user event is
+    logged (kind + row id, never an address) and NOTHING is sent: not to the person, not to the
+    operator, and no operator booking notice either."""
     store = _store()
     user, _ = await _seed(store, n=1)
     sender = FakeEmailSender()
@@ -481,14 +482,9 @@ async def test_dry_run_store_user_notifier_mails_the_operator_instead_of_the_use
         await notifier.send(replace(_event(user.id), kind=UserEventKind.LOST))
         await notifier.send(_booked(user.id))  # a booking would get an operator notice when live
 
-    assert [m.to for m in sender.sent] == ["ops@example.test"] * 3
-    assert all(user.email not in m.to for m in sender.sent)
-    missed, lost, booked = sender.sent
-    assert missed.subject.startswith("[TeeTimeBooker · DEV · dry run] No tee time yet: ")
-    assert lost.subject.startswith("[TeeTimeBooker · DEV · dry run] No tee time: ")
-    assert booked.subject.startswith("[TeeTimeBooker · DEV · dry run] Booked: ")
-    assert all(user.email in m.body.partition("\n")[0] for m in sender.sent)
-    assert "dry run" in caplog.text and user.email not in caplog.text
+    assert sender.sent == []
+    assert "dry run" in caplog.text and "missed_drop" in caplog.text and "booked" in caplog.text
+    assert user.email not in caplog.text and "ops@example.test" not in caplog.text
 
 
 async def test_dry_run_store_user_notifier_without_an_operator_address_only_logs(

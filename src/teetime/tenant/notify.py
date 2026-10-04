@@ -766,8 +766,19 @@ async def deliver_operator_summary(
     """Send the operator summary when there was anything to report (rows, events, or a non-zero
     exit) and return the run's FINAL exit code: a failed send turns a clean exit into
     ``EXIT_OPERATOR_NOTIFY_FAILED`` (§4.5 SF6 — otherwise a broken ACS setup would make every
-    miss invisible, since misses exit 0). An already non-zero code is kept."""
+    miss invisible, since misses exit 0). An already non-zero code is kept.
+
+    A DRY RUN (dev, permanently) reports only a systemic failure: a clean dry run cannot have
+    booked or missed anything real, and the operator wants no mail from dev unless something is
+    broken (2026-10-04). Its non-zero exit still sends the summary: that IS the failure channel."""
     if not summary.rows and not summary.events and exit_code == 0:
+        return 0
+    if summary.dry_run and exit_code == 0:
+        log.info(
+            "dry run: operator summary not sent (clean exit; %d row(s), %d event(s))",
+            len(summary.rows),
+            len(summary.events),
+        )
         return 0
     rendered = render_operator_summary(summary, exit_code=exit_code, at=at)
     result = await _safe_send(
@@ -781,24 +792,6 @@ async def deliver_operator_summary(
         result.error,
     )
     return exit_code or EXIT_OPERATOR_NOTIFY_FAILED
-
-
-def redirect_for_dry_run(
-    rendered: RenderedEmail, *, user_email: str, environment: str | None
-) -> RenderedEmail:
-    """Re-address a rendered user email to the operator for a DRY-RUN environment: the subject
-    gets the summary's tag (``[TeeTimeBooker · DEV · dry run]``) and the body a first line naming
-    who it would have gone to. A dry run never books, so every user-facing outcome it reports is
-    fiction; dev mailed a real person "No tee time ... before the booking cutoff" on 2026-10-03.
-    The user's email appears in the BODY only (never in a log line)."""
-    tag = "TeeTimeBooker" + (f" · {environment.upper()}" if environment else "") + " · dry run"
-    # Every user subject starts with the bare "[TeeTimeBooker] " tag; the dry-run tag replaces it.
-    subject = rendered.subject.removeprefix("[TeeTimeBooker] ")
-    lead = (
-        f"Dry run: this email would have gone to {user_email}. Nothing was sent to them, and "
-        "nothing was booked.\n\n"
-    )
-    return RenderedEmail(subject=f"[{tag}] {subject}", body=lead + rendered.body)
 
 
 async def deliver_operator_booking_notice(

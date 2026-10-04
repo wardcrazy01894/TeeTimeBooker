@@ -213,7 +213,10 @@ async def test_a_hanging_sender_does_not_delay_a_bug_report(
     provider_mock: respx.MockRouter,
 ) -> None:
     sender = HangingSender()
-    app = create_app(settings, store=store, clock=clock, email_sender=sender)
+    # Feedback mail is live-site behaviour; a dry-run site only logs it (2026-10-04).
+    app = create_app(
+        replace(settings, dry_run=False), store=store, clock=clock, email_sender=sender
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://testserver"
     ) as client:
@@ -238,7 +241,10 @@ async def test_the_feedback_audit_records_the_send_outcome(
     fail: bool,
 ) -> None:
     sender = FakeEmailSender(fail=fail)
-    app = create_app(settings, store=store, clock=clock, email_sender=sender)
+    # Feedback mail is live-site behaviour; a dry-run site only logs it (2026-10-04).
+    app = create_app(
+        replace(settings, dry_run=False), store=store, clock=clock, email_sender=sender
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://testserver"
     ) as client:

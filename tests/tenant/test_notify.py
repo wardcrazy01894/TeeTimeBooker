@@ -781,23 +781,32 @@ def test_operator_copy_kinds_are_exactly_the_bookings() -> None:
     assert frozenset({UserEventKind.BOOKED, UserEventKind.UPGRADED}) == OPERATOR_COPY_KINDS
 
 
-# --- dry-run redirect (dev emailed a real person "No tee time", 2026-10-03) ----------------------
+# --- dry run: the operator hears from a dry-run environment only when it FAILS (2026-10-04) -----
 
 
-def test_redirect_for_dry_run_readdresses_a_user_email_to_the_operator() -> None:
-    """A dry-run environment can never book, so every user-facing outcome it would report is
-    fiction. The rendered email keeps its subject and body but is tagged like the operator
-    summary and led by who it WOULD have gone to, so the operator can still read it in dev."""
-    rendered = render_user_event(_event(UserEventKind.LOST), first_name="Turk")
-    out = notify.redirect_for_dry_run(rendered, user_email="turk@example.com", environment="dev")
-    assert rendered.subject.startswith("[TeeTimeBooker] No tee time: ")  # non-vacuity
-    assert (
-        out.subject
-        == "[TeeTimeBooker · DEV · dry run] " + rendered.subject[len("[TeeTimeBooker] ") :]
-    )
-    first_line, _, rest = out.body.partition("\n")
-    assert "dry run" in first_line.lower()
-    assert "turk@example.com" in first_line
-    assert rest.strip().endswith(rendered.body.strip())
-    untagged = notify.redirect_for_dry_run(rendered, user_email="t@example.com", environment=None)
-    assert untagged.subject.startswith("[TeeTimeBooker · dry run] ")
+async def test_dry_run_operator_summary_goes_out_only_on_a_systemic_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Dev (permanent dry run) mailed its daily "Checked N requests" summary and, after
+    2026-10-03, every user email re-addressed to the operator. The operator wants NO mail from
+    dev unless something is actually broken (2026-10-04): a clean dry run (exit 0) sends nothing,
+    however many rows or events it has; a non-zero exit still sends the summary (§4.5 SF6: that
+    IS the failure channel). A live run is unchanged: a clean run with rows still reports."""
+    dry = _row_event(UserEventKind.DRY_RUN, detail="dry run: nothing booked")
+    summary = _summary((_alex_row(),), (dry,), environment="dev", dry_run=True)
+    sender = FakeEmailSender(fail=True)  # nothing may even be attempted
+    with caplog.at_level(logging.INFO):
+        code = await deliver_operator_summary(sender, to=OPS, summary=summary, exit_code=0, at=AT)
+    assert code == 0
+    assert sender.sent == []
+    assert "dry run" in caplog.text and "not sent" in caplog.text
+
+    sender = FakeEmailSender()
+    code = await deliver_operator_summary(sender, to=OPS, summary=summary, exit_code=2, at=AT)
+    assert code == 2
+    (failed,) = sender.sent
+    assert "FAILED" in failed.subject and "dry run" in failed.subject
+
+    live = _summary((_alex_row(),), (_booked_alex(),))
+    assert await deliver_operator_summary(sender, to=OPS, summary=live, exit_code=0, at=AT) == 0
+    assert len(sender.sent) == 2
