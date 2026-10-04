@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import textwrap
+from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from uuid import uuid4
@@ -444,3 +445,66 @@ def test_the_booker_builds_its_notifier_without_the_operator_copy() -> None:
     }
     assert "booker_user_notifier" in called
     assert called.isdisjoint({"StoreUserNotifier", "user_notifier_from_env"})
+    # And that call passes the run's own dry-run flag (review #316): a dry-run booker's user
+    # events are logged, never mailed to the person.
+    (call,) = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "booker_user_notifier"
+    ]
+    assert [kw.arg for kw in call.keywords] == ["dry_run"]
+    assert isinstance(call.keywords[0].value, ast.Name)
+    assert call.keywords[0].value.id == "dry_run"
+
+
+# --- dry run: no user-facing mail ever leaves a dry-run environment (2026-10-03) ----------------
+
+
+async def test_dry_run_store_user_notifier_mails_the_operator_instead_of_the_user(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Dev (permanent dry run) emailed the operator's own user "No tee time ... before the
+    booking cutoff" at the Oct 4 cutoff: a dry-run watcher never books, so every row it holds
+    expires unbooked, and the lost email read as a real miss from an Azure address. In dry run a
+    user-facing event goes ONLY to the operator, re-addressed and tagged, never to the person;
+    and it is the operator's copy, so no separate booking notice is added on top."""
+    store = _store()
+    user, _ = await _seed(store, n=1)
+    sender = FakeEmailSender()
+    notifier = StoreUserNotifier(
+        store, sender, operator_to="ops@example.test", environment="dev", dry_run=True
+    )
+    with caplog.at_level(logging.INFO):
+        await notifier.send(_event(user.id))  # MISSED_DROP
+        await notifier.send(replace(_event(user.id), kind=UserEventKind.LOST))
+        await notifier.send(_booked(user.id))  # a booking would get an operator notice when live
+
+    assert [m.to for m in sender.sent] == ["ops@example.test"] * 3
+    assert all(user.email not in m.to for m in sender.sent)
+    missed, lost, booked = sender.sent
+    assert missed.subject.startswith("[TeeTimeBooker · DEV · dry run] No tee time yet: ")
+    assert lost.subject.startswith("[TeeTimeBooker · DEV · dry run] No tee time: ")
+    assert booked.subject.startswith("[TeeTimeBooker · DEV · dry run] Booked: ")
+    assert all(user.email in m.body.partition("\n")[0] for m in sender.sent)
+    assert "dry run" in caplog.text and user.email not in caplog.text
+
+
+async def test_dry_run_store_user_notifier_without_an_operator_address_only_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The booker builds its notifier without an operator address (its summary lists every row),
+    and a dry-run web has none either: then a dry-run user event is logged, not mailed."""
+    store = _store()
+    user, _ = await _seed(store, n=1)
+    sender = FakeEmailSender()
+    with caplog.at_level(logging.INFO):
+        await StoreUserNotifier(store, sender, dry_run=True).send(_event(user.id))
+    assert sender.sent == []
+    assert "dry run" in caplog.text and "missed_drop" in caplog.text
+
+
+def test_dry_run_reaches_the_booker_notifier() -> None:
+    assert booker_user_notifier(_store(), FakeEmailSender(), dry_run=True).dry_run is True
+    assert booker_user_notifier(_store(), FakeEmailSender(), dry_run=False).dry_run is False

@@ -779,3 +779,25 @@ def test_operator_booking_notice_refuses_a_non_booking_kind() -> None:
 
 def test_operator_copy_kinds_are_exactly_the_bookings() -> None:
     assert frozenset({UserEventKind.BOOKED, UserEventKind.UPGRADED}) == OPERATOR_COPY_KINDS
+
+
+# --- dry-run redirect (dev emailed a real person "No tee time", 2026-10-03) ----------------------
+
+
+def test_redirect_for_dry_run_readdresses_a_user_email_to_the_operator() -> None:
+    """A dry-run environment can never book, so every user-facing outcome it would report is
+    fiction. The rendered email keeps its subject and body but is tagged like the operator
+    summary and led by who it WOULD have gone to, so the operator can still read it in dev."""
+    rendered = render_user_event(_event(UserEventKind.LOST), first_name="Turk")
+    out = notify.redirect_for_dry_run(rendered, user_email="turk@example.com", environment="dev")
+    assert rendered.subject.startswith("[TeeTimeBooker] No tee time: ")  # non-vacuity
+    assert (
+        out.subject
+        == "[TeeTimeBooker · DEV · dry run] " + rendered.subject[len("[TeeTimeBooker] ") :]
+    )
+    first_line, _, rest = out.body.partition("\n")
+    assert "dry run" in first_line.lower()
+    assert "turk@example.com" in first_line
+    assert rest.strip().endswith(rendered.body.strip())
+    untagged = notify.redirect_for_dry_run(rendered, user_email="t@example.com", environment=None)
+    assert untagged.subject.startswith("[TeeTimeBooker · dry run] ")

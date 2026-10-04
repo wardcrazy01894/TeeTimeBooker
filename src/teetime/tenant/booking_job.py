@@ -46,7 +46,11 @@ from .notify import (
     EmailSendResult,
     EmailUserNotifier,
     UserEvent,
+    _safe_send,
     deliver_operator_booking_notice,
+    first_name,
+    redirect_for_dry_run,
+    render_user_event,
 )
 from .runner import (
     EventPlan,
@@ -213,7 +217,14 @@ class StoreUserNotifier:
     ``OPERATOR_COPY_KINDS`` event (a booking or an upgrade) ALSO sends the operator one short
     notice (operator request 2026-10-01), even when the user could not be mailed or the user's
     send raised. The booker leaves it unset: its run summary already lists every booking. The
-    web shares the wiring but never books (and its env names the address differently)."""
+    web shares the wiring but never books (and its env names the address differently).
+
+    With ``dry_run`` set (dev, permanently; MULTIUSER_PLAN §7.8), NO user-facing mail ever reaches
+    the person: a dry run never books, so every outcome it would report is fiction (dev mailed
+    the operator's own user "No tee time ... before the booking cutoff" at the Oct 4 cutoff,
+    2026-10-03). The rendered email goes to ``operator_to`` instead, re-addressed by
+    ``redirect_for_dry_run`` (that IS the operator's copy, so no booking notice on top); with no
+    operator address it is logged only."""
 
     def __init__(
         self,
@@ -223,6 +234,7 @@ class StoreUserNotifier:
         course_labels: Mapping[CourseId, str] | None = None,
         operator_to: str | None = None,
         environment: str | None = None,
+        dry_run: bool = False,
     ) -> None:
         self._directory = directory
         self._sender = sender
@@ -230,6 +242,7 @@ class StoreUserNotifier:
         self._labels = dict(COURSE_DISPLAY_NAMES if course_labels is None else course_labels)
         self.operator_to = operator_to
         self.environment = environment
+        self.dry_run = dry_run
 
     async def send(self, event: UserEvent) -> None:
         user = await self._directory.get_user_unscoped(event.user_id) if event.user_id else None
@@ -240,6 +253,9 @@ class StoreUserNotifier:
                 event.user_id,
                 event.kind.value,
             )
+        elif self.dry_run:
+            await self._send_dry_run(event, user)
+            return
         else:
             try:
                 notifier = EmailUserNotifier(self._sender, user=user, course_labels=self._labels)
@@ -265,12 +281,51 @@ class StoreUserNotifier:
                 environment=self.environment,
             )
 
+    async def _send_dry_run(self, event: UserEvent, user: User) -> None:
+        """The dry-run path: the person's email, re-addressed to the operator (or logged)."""
+        if not self.operator_to:
+            log.info(
+                "dry run: user notification %s for row %s not sent (no operator address)",
+                event.kind.value,
+                event.row_id,
+            )
+            return
+        label = self._labels.get(event.course_id) if event.course_id is not None else None
+        try:
+            rendered = redirect_for_dry_run(
+                render_user_event(
+                    event, first_name=first_name(user.display_name), course_label=label
+                ),
+                user_email=user.email,
+                environment=self.environment,
+            )
+        except Exception as exc:  # an operator-only kind, or a render bug: never a crash
+            log.warning(
+                "dry run: user notification %s for row %s not rendered (%s)",
+                event.kind.value,
+                event.row_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            return
+        message = EmailMessage(to=self.operator_to, subject=rendered.subject, body=rendered.body)
+        result = await _safe_send(self._sender, message)
+        log.info(
+            "dry run: user notification %s for row %s redirected to the operator (ok=%s)",
+            event.kind.value,
+            event.row_id,
+            result.ok,
+        )
 
-def booker_user_notifier(store: _UserDirectory, sender: EmailSender) -> StoreUserNotifier:
+
+def booker_user_notifier(
+    store: _UserDirectory, sender: EmailSender, *, dry_run: bool = False
+) -> StoreUserNotifier:
     """The booker's user notifier: deliberately WITHOUT the per-booking operator copy. Its run
     summary already lists every booking, so a copy per row would double the 06:00 mail. The only
-    ``StoreUserNotifier`` the booker builds goes through here (pinned by an AST test)."""
-    return StoreUserNotifier(store, sender)
+    ``StoreUserNotifier`` the booker builds goes through here (pinned by an AST test). In dry
+    run (no operator address here) a user-facing event is logged, never mailed."""
+    return StoreUserNotifier(store, sender, dry_run=dry_run)
 
 
 async def run_booking_job(
@@ -301,7 +356,7 @@ async def run_booking_job(
     sink = operator or operator_sink_from_env(source)
     # The deploy sets TEETIME_ENV (dev/prod) so the operator can tell the two summaries apart.
     environment = source.get(TEETIME_ENV_VAR, "").strip() or None
-    notifier = booker_user_notifier(store, sink.sender)
+    notifier = booker_user_notifier(store, sink.sender, dry_run=dry_run)
     failure, keyring, api_key = _load_config(source, dry_run=dry_run)
     if failure is not None or keyring is None:
         report = RunReport(

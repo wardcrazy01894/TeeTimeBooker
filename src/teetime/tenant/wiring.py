@@ -191,10 +191,13 @@ def user_notifier_from_env(
     env: Mapping[str, str] | None = None,
     *,
     command: str,
+    dry_run: bool = False,
 ) -> UserNotifier:
     """ACS-backed ``StoreUserNotifier`` when ACS is configured, else ``LoggingUserNotifier``
     (events are logged; ``email_sender_from_env`` has already warned). ``OPERATOR_NOTIFY_EMAIL``
-    (+ ``TEETIME_ENV`` for the tag) adds the operator copy of every booking."""
+    (+ ``TEETIME_ENV`` for the tag) adds the operator copy of every booking. ``dry_run`` (the
+    command's own flag) sends the person's mail to that operator address instead of the person
+    (§7.8; logged only without one): a dry run never books, so its outcomes are not news."""
     client = email_sender_from_env(env, command=command)
     if client is None:
         return LoggingUserNotifier()
@@ -203,4 +206,6 @@ def user_notifier_from_env(
     # mails the operator one notice (operator request 2026-10-01). Unset = the user only.
     operator_to = source.get(OPERATOR_NOTIFY_EMAIL_ENV, "").strip() or None
     environment = source.get(TEETIME_ENV_VAR, "").strip() or None
-    return StoreUserNotifier(directory, client, operator_to=operator_to, environment=environment)
+    return StoreUserNotifier(
+        directory, client, operator_to=operator_to, environment=environment, dry_run=dry_run
+    )

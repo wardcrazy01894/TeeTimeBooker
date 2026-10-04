@@ -144,6 +144,7 @@ def test_tenant_watch_uses_cosmos_and_acs_when_configured(
     (call,) = watch_calls
     assert call["store"] is cosmos.store
     assert isinstance(call["notifier"], StoreUserNotifier)
+    assert call["notifier"].dry_run is True  # --dry-run true: user mail goes to the operator
     assert (cosmos.opened, cosmos.closed) == (1, 1)
     assert "IN-MEMORY" not in caplog.text
 

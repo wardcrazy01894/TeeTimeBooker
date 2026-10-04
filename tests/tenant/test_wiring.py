@@ -212,3 +212,14 @@ def test_user_notifier_copies_the_operator_when_the_address_is_configured() -> N
     plain = user_notifier_from_env(store, ACS_ENV, command="tenant-watch")
     assert isinstance(plain, StoreUserNotifier)
     assert plain.operator_to is None
+
+
+def test_user_notifier_carries_the_dry_run_flag() -> None:
+    """A dry-run environment's user-facing mail goes to the operator, not the person (2026-10-03):
+    the flag rides on the notifier so every command's wiring passes it, and defaults to live."""
+    store = InMemoryTenantStore(course_timezones={}, cutoff=wiring.BookingCutoffConfig())
+    env = {**ACS_ENV, "OPERATOR_NOTIFY_EMAIL": "ops@example.test", "TEETIME_ENV": "dev"}
+    dry = user_notifier_from_env(store, env, command="tenant-watch", dry_run=True)
+    live = user_notifier_from_env(store, env, command="tenant-watch")
+    assert isinstance(dry, StoreUserNotifier) and dry.dry_run is True
+    assert isinstance(live, StoreUserNotifier) and live.dry_run is False

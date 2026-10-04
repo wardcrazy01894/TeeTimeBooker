@@ -357,6 +357,29 @@ send; it RETURNS an `EmailSendResult` and never raises. `load_acs_settings` read
 `UserEventKind` gained the operator-only `NEEDS_RECONCILE`. `FakeEmailSender` is the test double.
 Tests: `tests/tenant/test_{notify,acs_email}.py`.
 
+### Dry run never mails a person (2026-10-03)
+
+On 2026-10-03 at 16:00 ET the operator received "We couldn't find a tee time at Mangrove Bay for
+Sun Oct 4 before the booking cutoff" from `DoNotReply@…azurecomm.net`. It was **dev**: its hourly
+dry-run watcher (`finalize_lost`, §7.1) moved the dev account's Oct 4 row to LOST at the cutoff and
+the lost email went to the row's user, who is a real person. A dry run never books, so every
+dev row expires unbooked and every user-facing outcome it reports is fiction; prod's 16:00 cycle
+was `lost=0` and holds its Oct 4 booking. Fix: `StoreUserNotifier(dry_run=…)`. In dry run the
+rendered user email is re-addressed to `operator_to` by `notify.redirect_for_dry_run` (subject
+tag `[TeeTimeBooker · DEV · dry run]` replacing the bare `[TeeTimeBooker]`, a first line naming
+who it would have gone to; that is the operator's copy, so no separate booking notice), and
+logged when there is no operator address: the booker (`booker_user_notifier(dry_run=…)`, whose
+summary lists every row anyway) and the web (its only user-facing notifier send is the cancel
+email, unreachable in dry run because cancel is refused, so wiring `WebSettings.operator_email`
+in would redirect nothing). The flag is each command's own: `tenant-watch --dry-run`,
+`tenant-run --dry-run`, `WebSettings.dry_run`, through `wiring.user_notifier_from_env(dry_run=…)`;
+the watch + web CLI wiring tests and the booker's AST test pin that it arrives. The invitation
+email (`web/app.py::_send_invitation`) is the deliberate exception: it goes to the invitee in
+every environment, because it is how a person signs in to dev at all.
+Cheaper alternatives rejected: deleting the dev rule (dev exists to exercise rules, so the next
+test rule would do it again) and a `[dev]` subject prefix alone (still a real miss in a real
+inbox).
+
 ### Every booking reaches the operator; the cancel email leaves the request path (2026-10-01)
 
 The first new user's session showed two gaps. (1) The operator heard about the 06:00 run (its
