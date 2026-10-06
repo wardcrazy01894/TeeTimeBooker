@@ -762,10 +762,10 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   the tee time and id from the outcome's `booking`, never from the row as read** (before
   2026-10-06 both the user's and the operator's email for a watcher booking named only the date;
   pinned by `test_watch_booked_event_carries_the_tee_time_and_the_request`). The booker
-  constructs its notifier WITHOUT it (no duplicate of the summary). Web emails never hold a response: the cancel email is a
-  `BackgroundJobs` job like invites and reports (`cancel_row(jobs=…)`); our side hands mail to
-  ACS in ~1 s, and `AcsEmailClient` logs the send-to-Succeeded duration so a slow delivery can be
-  placed (ours vs ACS's).
+  constructs its notifier WITHOUT it (no duplicate of the summary). Web emails never hold a
+  response: the cancel email is a `BackgroundJobs` job like invites and reports
+  (`cancel_row(jobs=…)`); our side hands mail to ACS in ~1 s, and `AcsEmailClient` logs the
+  send-to-Succeeded duration so a slow delivery can be placed (ours vs ACS's).
 - **Tenant exit codes are non-zero only for systemic causes** (`runner.exit_code_for`,
   `watch_exit_status`, §4.5/§7.9): store failures, keyring, decrypt failures, CAPTCHA/OTP,
   UNCERTAIN (booker), the self-deadline, a failed outcome write, a failed operator summary. One
