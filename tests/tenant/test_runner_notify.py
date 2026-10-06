@@ -176,8 +176,9 @@ async def test_runner_missed_drop_emails_user_and_exits_zero() -> None:
     assert (event.kind, event.user_id) == (UserEventKind.MISSED_DROP, a.user.id)
     assert "no_inventory" in event.detail
     # The miss email's card and cutoff sentence come from the row (operator request 2026-10-02):
-    # the best option's window, the party, how many more options, the cutoff in the COURSE tz.
-    assert (event.window, event.party_size, event.extra_options) == (WINDOW, 2, 0)
+    # the ranked windows, the party, the price cap, the cutoff in the COURSE tz, the tz itself.
+    assert (event.windows, event.party_size) == ((WINDOW,), 2)
+    assert (event.max_price, event.course_timezone) == (a.account.default_max_price, TZ)
     assert event.cutoff_local is not None
     assert event.cutoff_local == a.row.cutoff_at
     assert event.cutoff_local.tzinfo is not None and str(event.cutoff_local.tzinfo) == TZ

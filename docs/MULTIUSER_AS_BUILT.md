@@ -394,6 +394,23 @@ Cheaper alternatives rejected: deleting the dev rule (dev exists to exercise rul
 test rule would do it again) and a `[dev]` subject prefix alone (still a real miss in a real
 inbox).
 
+### The operator notice carries the whole request; a watcher booking names its tee time (2026-10-06)
+
+The first watcher booking for a friend produced two thin emails: the user's said "You're booked
+at Mangrove Bay on Sun Oct 11." and the operator's named the same date and nothing else. Cause:
+`WatchRunner._notify` built the event from the row as READ this run, whose `booked_tee_time` is
+still None for a row the engine has just booked. The BOOKED and UPGRADED paths now pass the
+outcome's `booking` (the new tee time, converted to the course timezone, and its raw reservation
+id), and an upgrade passes the row's old tee time as `previous_tee_time`. The operator asked for
+all the context in that one email, so `UserEvent` grew `windows` (every ranked window, replacing
+the miss card's `window` + `extra_options`), `max_price`, `previous_tee_time` and
+`course_timezone`, which both the watcher and the booker fill; `render_operator_booking_notice`
+lays out the tee time with the ranked choice it landed in ("2nd choice", "outside every window"),
+"Asked for" (party, price cap), the numbered windows, how, the id, the cutoff "(the watcher keeps
+upgrading until then)" and the send time on the course's clock, each line only when the event
+carries it. Pinned by `test_watch_booked_event_carries_the_tee_time_and_the_request`, the upgrade
+test's tee-time assertions and the `test_operator_booking_notice_*` renders.
+
 ### Every booking reaches the operator; the cancel email leaves the request path (2026-10-01)
 
 The first new user's session showed two gaps. (1) The operator heard about the 06:00 run (its

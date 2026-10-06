@@ -998,10 +998,23 @@ class _Run:
             )
         elif outcome.last_outcome == _UPGRADED:
             self.tally.upgraded.append(row.id)
-            await self._notify(UserEventKind.UPGRADED, row, account=work.account, detail="watcher")
+            await self._notify(
+                UserEventKind.UPGRADED,
+                row,
+                account=work.account,
+                detail="watcher",
+                booking=outcome.booking,
+                previous_tee_time=row_local_tee_time(row),
+            )
         elif outcome.to_status is RowStatus.BOOKED:
             self.tally.booked.append(row.id)
-            await self._notify(UserEventKind.BOOKED, row, account=work.account, detail="watcher")
+            await self._notify(
+                UserEventKind.BOOKED,
+                row,
+                account=work.account,
+                detail="watcher",
+                booking=outcome.booking,
+            )
         elif result is not None and result.outcome is BookingOutcome.DRY_RUN:
             log.info("tenant-watch: DRY RUN — row %s would book %s", row.id, result.slot)
 
@@ -1078,18 +1091,38 @@ class _Run:
                 log.warning("tenant-watch: adapter close failed (%s)", type(exc).__name__)
 
     async def _notify(
-        self, kind: UserEventKind, row: RequestRow, *, account: CourseAccount | None, detail: str
+        self,
+        kind: UserEventKind,
+        row: RequestRow,
+        *,
+        account: CourseAccount | None,
+        detail: str,
+        booking: OwnedBooking | None = None,
+        previous_tee_time: datetime | None = None,
     ) -> None:
+        """One ``UserEvent`` for ``row`` as READ this run, plus the request context every email
+        may lay out. A booking or an upgrade passes the outcome's ``booking``: its tee time and
+        reservation id are the NEW ones, which the row as read does not have (2026-10-06: a
+        watcher booking's emails named only the date). ``previous_tee_time`` is the upgrade's
+        old tee time (the row as read)."""
+        zone = ZoneInfo(row.timezone)
+        tee_time = booking.tee_time.astimezone(zone) if booking else row_local_tee_time(row)
         event = UserEvent(
             kind=kind,
             user_id=account.user_id if account is not None else None,
             row_id=row.id,
             course_id=row.course_id,
             target_date=row.target_date,
-            tee_time=row_local_tee_time(row),
-            confirmation=None,
+            tee_time=tee_time,
+            confirmation=booking.raw_reservation_id if booking else None,
             detail=detail,
             at=self.clock.now_utc(),
+            windows=tuple((o.earliest, o.latest) for o in row.options),
+            party_size=row.party_size,
+            max_price=row_max_price(row, account) if account is not None else None,
+            cutoff_local=row.cutoff_at.astimezone(zone),
+            previous_tee_time=previous_tee_time,
+            course_timezone=row.timezone,
         )
         try:
             await self.notifier.send(event)

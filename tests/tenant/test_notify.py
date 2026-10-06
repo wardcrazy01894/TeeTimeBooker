@@ -13,6 +13,7 @@ import logging
 import random
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -212,9 +213,8 @@ CUTOFF_LOCAL = datetime(2026, 10, 9, 16, 0, tzinfo=ZoneInfo("America/New_York"))
 
 def _miss(detail: str = "no_inventory", **kw: object) -> UserEvent:
     base = {
-        "window": (time(8, 45), time(10, 0)),
+        "windows": ((time(8, 45), time(10, 0)),),
         "party_size": 4,
-        "extra_options": 0,
         "cutoff_local": CUTOFF_LOCAL,
     }
     base.update(kw)
@@ -269,9 +269,15 @@ def test_miss_email_owns_a_service_error() -> None:
 
 
 def test_miss_email_lists_the_best_option_and_counts_the_rest() -> None:
-    body = render_user_event(_miss(extra_options=2, party_size=1), first_name="Alex").body
+    first = (time(8, 45), time(10, 0))
+    body = render_user_event(
+        _miss(windows=(first, (time(10, 0), time(11, 0)), (time(7, 0), time(8, 0))), party_size=1),
+        first_name="Alex",
+    ).body
     assert "  You asked:  8:45 AM to 10:00 AM, 1 player (+2 more options)" in body
-    body = render_user_event(_miss(extra_options=1), first_name="Alex").body
+    body = render_user_event(
+        _miss(windows=(first, (time(7, 0), time(8, 0)))), first_name="Alex"
+    ).body
     assert "4 players (+1 more option)" in body
 
 
@@ -285,7 +291,7 @@ def test_miss_email_never_renders_the_engine_detail() -> None:
 
 def test_miss_email_without_row_facts_still_reads_well() -> None:
     body = render_user_event(
-        _miss(window=None, party_size=None, cutoff_local=None), first_name="Alex"
+        _miss(windows=(), party_size=None, cutoff_local=None), first_name="Alex"
     ).body
     assert "You asked" not in body
     assert "before the booking cutoff" in body
@@ -731,6 +737,94 @@ def test_operator_booking_notice_names_who_what_and_when() -> None:
     assert "8:12 AM" in mail.body
     assert "watcher" in mail.body  # how it got booked (a check between drops)
     assert str(MB) not in mail.subject + mail.body
+
+
+def test_operator_booking_notice_carries_the_whole_request(snapshot_free: None = None) -> None:
+    """Operator request 2026-10-06 (the watcher booked a friend's Sunday and the notice said only
+    the date): everything the operator would otherwise look up is in the one email. The tee
+    time and which ranked choice it landed in, every window the person asked for, the party and
+    the price cap, how it was booked, the course's reservation id, the cutoff until which the
+    watcher keeps upgrading, and the send time on the COURSE's clock, not UTC."""
+    event = replace(
+        _event(UserEventKind.BOOKED, detail="watcher"),
+        windows=((time(7, 0), time(8, 0)), (time(8, 0), time(9, 0))),
+        party_size=4,
+        max_price=Decimal("60.00"),
+        cutoff_local=CUTOFF_LOCAL,
+        course_timezone="America/New_York",
+    )
+    mail = render_operator_booking_notice(
+        event, user_name="Brad", course_label="Mangrove Bay", environment="prod"
+    )
+    assert (
+        mail.subject == "[TeeTimeBooker · PROD] Booked: Brad · Mangrove Bay Sat Oct 10 at 8:12 AM"
+    )
+    assert mail.body.split("\n") == [
+        "Brad got a tee time at Mangrove Bay.",
+        "",
+        "  Course:     Mangrove Bay",
+        "  Date:       Saturday, October 10",
+        "  Tee time:   8:12 AM (2nd choice)",
+        "  Asked for:  4 players, up to $60.00 each",
+        "  Windows:    1. 7:00-8:00 AM",
+        "              2. 8:00-9:00 AM",
+        "  How:        watcher",
+        "  Id:         123456",
+        "  Cutoff:     4 PM on Friday, October 9 (the watcher keeps upgrading until then)",
+        "",
+        "Sent Sat Oct 3, 6:00 AM EDT",
+    ]
+
+
+def test_operator_booking_notice_choice_wording() -> None:
+    one = replace(_event(UserEventKind.BOOKED), windows=((time(7, 0), time(9, 0)),), party_size=2)
+    body = render_operator_booking_notice(
+        one, user_name="Brad", course_label="MB", environment=None
+    ).body
+    assert "  Tee time:   8:12 AM\n" in body  # one window: nothing to rank
+    assert "  Asked for:  2 players\n" in body  # no price cap known
+    assert "  Windows:    7:00-9:00 AM\n" in body  # one window: no numbering
+    outside = replace(one, windows=((time(9, 0), time(10, 0)),))
+    body = render_operator_booking_notice(
+        outside, user_name="Brad", course_label="MB", environment=None
+    ).body
+    assert "  Tee time:   8:12 AM (outside every window)" in body
+    first = replace(
+        one, windows=((time(8, 0), time(9, 0)), (time(7, 0), time(8, 0)), (time(6, 0), time(7, 0)))
+    )
+    body = render_operator_booking_notice(
+        first, user_name="Brad", course_label="MB", environment=None
+    ).body
+    assert "(1st choice)" in body and "3. 6:00-7:00 AM" in body
+
+
+def test_operator_booking_notice_for_an_upgrade_names_the_old_tee_time() -> None:
+    event = replace(
+        _event(UserEventKind.UPGRADED, detail="watcher"),
+        previous_tee_time=TEE.replace(hour=7, minute=30),
+        windows=((time(7, 0), time(9, 0)),),
+        party_size=4,
+    )
+    body = render_operator_booking_notice(
+        event, user_name="Brad", course_label="Mangrove Bay", environment="prod"
+    ).body
+    assert body.startswith(
+        "Brad's tee time at Mangrove Bay was moved to a better tee time: 8:12 AM (was 7:30 AM)."
+    )
+    assert "  Tee time:   8:12 AM, was 7:30 AM\n" in body
+
+
+def test_operator_booking_notice_without_context_reads_like_before() -> None:
+    """The booker's events (and an old row) carry no context: no empty labels, UTC send time."""
+    body = render_operator_booking_notice(
+        _event(UserEventKind.BOOKED, detail="watcher"),
+        user_name="Brad",
+        course_label="Mangrove Bay",
+        environment="prod",
+    ).body
+    assert "Asked for" not in body and "Windows" not in body and "Cutoff" not in body
+    assert "  Tee time:   8:12 AM\n" in body
+    assert body.endswith("Sent Sat Oct 3, 10:00 AM UTC")
 
 
 def test_operator_booking_notice_for_an_upgrade_says_so_and_tolerates_no_name() -> None:

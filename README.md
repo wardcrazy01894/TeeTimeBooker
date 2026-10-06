@@ -265,7 +265,7 @@ what the Manual `teetime-migrate-<env>` job runs; CI starts it after deploy pass
 |---------|---------|---------|
 | `TENANT_CREDS_KEYRING` | `tenant-run`, `tenant-watch`, `web` | Credential keyring (required by the jobs; optional for `web`) |
 | `TWOCAPTCHA_API_KEY` | `tenant-run`, `tenant-watch` | 2captcha key for the shared per-course CAPTCHA pool (not needed with `--dry-run true`) |
-| `OPERATOR_NOTIFY_EMAIL` | `tenant-run`, `tenant-watch` | Operator-summary recipient for `tenant-run` (unset means every summary send fails and a run with anything to report exits non-zero). For `tenant-watch` it adds one short operator email per booking or upgrade made between release runs, so the operator hears about every tee time (2026-10-01); unset = the user is mailed alone. (The web shares the notifier wiring but never books; its operator address is `TEETIME_OPERATOR_EMAIL`) |
+| `OPERATOR_NOTIFY_EMAIL` | `tenant-run`, `tenant-watch` | Operator-summary recipient for `tenant-run` (unset means every summary send fails and a run with anything to report exits non-zero). For `tenant-watch` it adds one short operator email per booking or upgrade made between release runs, so the operator hears about every tee time (2026-10-01), with the tee time and ranked choice, the windows, party and price cap asked for, the reservation id and the cutoff (2026-10-06); unset = the user is mailed alone. (The web shares the notifier wiring but never books; its operator address is `TEETIME_OPERATOR_EMAIL`) |
 | `ACS_EMAIL_CONNECTION` | all three | ACS connection string (a Key Vault secret; the access key is masked in logs) |
 | `ACS_EMAIL_SENDER` | all three | Sender on the Azure-managed domain, e.g. `DoNotReply@<guid>.azurecomm.net` |
 

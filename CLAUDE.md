@@ -754,8 +754,15 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   release run; for a tee time the watcher books or upgrades between runs, `StoreUserNotifier`
   (with `operator_to` from `OPERATOR_NOTIFY_EMAIL`, tag from `TEETIME_ENV`) sends one
   `render_operator_booking_notice` email per `OPERATOR_COPY_KINDS` event after the user's own,
-  even when the user cannot be mailed. The booker constructs its notifier WITHOUT it (no
-  duplicate of the summary). Web emails never hold a response: the cancel email is a
+  even when the user cannot be mailed. The notice carries the whole request (operator,
+  2026-10-06): the tee time and which ranked choice it landed in, every window asked for, the
+  party and price cap, how, the course's reservation id, the cutoff until which the watcher keeps
+  upgrading, and the send time on the course's clock; an upgrade names the old tee time. Context
+  the event lacks is left out, never printed empty. **The watcher's BOOKED / UPGRADED events take
+  the tee time and id from the outcome's `booking`, never from the row as read** (before
+  2026-10-06 both the user's and the operator's email for a watcher booking named only the date;
+  pinned by `test_watch_booked_event_carries_the_tee_time_and_the_request`). The booker
+  constructs its notifier WITHOUT it (no duplicate of the summary). Web emails never hold a response: the cancel email is a
   `BackgroundJobs` job like invites and reports (`cancel_row(jobs=…)`); our side hands mail to
   ACS in ~1 s, and `AcsEmailClient` logs the send-to-Succeeded duration so a slow delivery can be
   placed (ours vs ACS's).
