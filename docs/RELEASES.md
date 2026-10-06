@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.11.0: 2026-10-06 (`main`@`ae9345e`)](#infrav3110-2026-10-06-mainae9345e)
 - [infra/v3.10.0: 2026-10-04 (`main`@`08c6fe8`)](#infrav3100-2026-10-04-main08c6fe8)
 - [infra/v3.9.0: 2026-10-02 (`main`@`68c4b8c`)](#infrav390-2026-10-02-main68c4b8c)
 - [infra/v3.8.0: 2026-10-02 (`main`@`f38f481`)](#infrav380-2026-10-02-mainf38f481)
@@ -49,6 +50,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.11.0` | 2026-10-06 | `ae9345e` | unchanged (watcher email) | A watcher booking's emails name the tee time (both said only the date); the operator booking notice carries the whole request: tee time + ranked choice, windows, party, price cap, id, cutoff (#323) |
 | `infra/v3.10.0` | 2026-10-04 | `08c6fe8` | **changed** (race timing) | Blind-POST first rung `-400` → `-369` ms, per-POST round trip logged, dev sends no email unless its booker fails (#317–#319) |
 | `infra/v3.9.0` | 2026-10-02 | `68c4b8c` | unchanged (email, web) | The miss email, Course username hint, operator page per person, Your account (own name), sign-in note for non-Gmail addresses (#307, #309–#314) |
 | `infra/v3.8.0` | 2026-10-02 | `f38f481` | **changed** (race timing) | Blind burst 3 → 2, ladder `-400/0`; time pickers bounded to each course's tee-sheet hours (#305, #306) |
@@ -78,6 +80,39 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.11.0: 2026-10-06 (`main`@`ae9345e`)
+
+**Booking behaviour unchanged.** The first tee time the watcher booked for a friend (Sun Oct 11
+08:52, found 12:51 UTC on Oct 6 after his release-day miss) produced two thin emails: his said
+"You're booked at Mangrove Bay on Sun Oct 11." and the operator's named the same date and nothing
+else. `WatchRunner._notify` built the event from the row as READ this run, whose booked tee time
+is still empty for a row the engine has just booked.
+
+- **A watcher booking's emails name the tee time** (#323). BOOKED / UPGRADED events take the tee
+  time (course-local) and reservation id from the outcome's `booking`; an upgrade also carries the
+  old tee time. The user's email is now the same as the 06:00 run's (one renderer; the operator
+  confirmed that is what he wants).
+- **The operator booking notice carries the whole request** (#323; operator: "all the context I'd
+  want is in the email"). Tee time with the ranked choice it landed in ("2nd choice", "outside
+  every window"), "Asked for" (party, price cap), the numbered windows, how, the course's
+  reservation id, the cutoff "(the watcher keeps upgrading until then)", and the send time on the
+  course's clock instead of UTC. Each line only when the event carries it. `UserEvent` grew
+  `windows` (replacing the miss card's `window` + `extra_options`), `max_price`,
+  `previous_tee_time` and `course_timezone`, filled by both the watcher and the booker.
+- Reading the logs: ForeUP's `start_front` slot id is `YYYYMMDDHHMM` with a ZERO-INDEXED month
+  (`202609110852` = Oct 11 08:52). The bot never decodes it (it reads the `time` field and posts
+  the id back), so nothing ever depended on this; it only matters to a human reading the
+  `book POST for slot …` line.
+
+**Deploy:** dev deployed `ae9345e` first (auto, 09:29–09:35 ET); tag pushed 09:36 ET; the
+permission layer blocked Claude's first approval of the prod deployment again, the operator said
+"you can approve it", approved 09:42 ET; pass 1 skipped, pass 2 + migrations green, done 09:48 ET.
+**Verified:** both booking jobs and the watch job run `teetime:ae9345ee…`; `teetime-web-prod`
+revision `--0000019` on the same image, Running; `/healthz` 200 on https://spicyteetimebooker.com;
+the first watch run on the new image (09:50 ET, `-29854910`) Succeeded. **First exercise:** the
+next tee time the watcher books or upgrades mails the user the full tee time and the operator the
+new notice.
 
 ## infra/v3.10.0: 2026-10-04 (`main`@`08c6fe8`)
 
