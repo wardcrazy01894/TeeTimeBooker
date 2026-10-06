@@ -739,7 +739,7 @@ def test_operator_booking_notice_names_who_what_and_when() -> None:
     assert str(MB) not in mail.subject + mail.body
 
 
-def test_operator_booking_notice_carries_the_whole_request(snapshot_free: None = None) -> None:
+def test_operator_booking_notice_carries_the_whole_request() -> None:
     """Operator request 2026-10-06 (the watcher booked a friend's Sunday and the notice said only
     the date): everything the operator would otherwise look up is in the one email. The tee
     time and which ranked choice it landed in, every window the person asked for, the party and

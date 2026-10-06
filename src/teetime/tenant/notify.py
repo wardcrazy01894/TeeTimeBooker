@@ -390,7 +390,10 @@ def _ordinal(n: int) -> str:
 def _choice_text(windows: tuple[tuple[time, time], ...], tee_time: datetime) -> str:
     """Which ranked window the tee time landed in, by the engine's first-match rule
     (``models.achieved_rank``): nothing with no windows known or a single window hit (nothing
-    to rank); a tee time no window contains is flagged even then."""
+    to rank); a tee time no window contains is flagged even then. ``windows`` is the row's
+    options in rank order (``validate_options`` pins ascending ranks), and the choice is numbered
+    by POSITION on purpose: a row's ranks may skip numbers (they span the person's courses), and
+    the notice says "2nd choice" meaning the second window asked for at this course."""
     if not windows:
         return ""
     t = tee_time.time()
