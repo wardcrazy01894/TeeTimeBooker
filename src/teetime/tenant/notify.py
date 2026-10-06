@@ -26,8 +26,10 @@ import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
+from zoneinfo import ZoneInfo
 
 from ..core.models import BookingResult, CourseId
 from ..core.redaction import redact_text
@@ -89,14 +91,19 @@ class UserEvent:
     confirmation: str | None
     detail: str
     at: datetime
-    # What the person asked for, for the miss email's card (operator request 2026-10-02): the
-    # best-ranked option's window, the party, how many more options the row had, and the
-    # booking cutoff as an aware instant in the COURSE timezone ("before 4 PM on Friday …").
-    # All optional: only the booker fills them, and the email reads fine without them.
-    window: tuple[time, time] | None = None
+    # What the person asked for: the row's ranked windows (best first), the party, the price
+    # cap, and the booking cutoff as an aware instant in the COURSE timezone ("before 4 PM on
+    # Friday …"). The miss email's card uses the first window (operator request 2026-10-02); the
+    # operator's booking notice lays all of it out (operator request 2026-10-06, after a watcher
+    # booking's notice named only the date). ``previous_tee_time`` is an upgrade's old tee time;
+    # ``course_timezone`` puts the notice's send time on the course's clock. All optional: the
+    # booker and the watcher fill them, and every email reads fine without them.
+    windows: tuple[tuple[time, time], ...] = ()
     party_size: int | None = None
-    extra_options: int = 0
+    max_price: Decimal | None = None
     cutoff_local: datetime | None = None
+    previous_tee_time: datetime | None = None
+    course_timezone: str | None = None
 
 
 @runtime_checkable
@@ -267,13 +274,24 @@ def _miss_card(event: UserEvent, course: str) -> list[str]:
     card = [f"  Course:     {course}"]
     if event.target_date is not None:
         card.append(f"  Date:       {event.target_date:%A, %B} {event.target_date.day}")
-    if event.window is not None and event.party_size is not None:
-        lo, hi = event.window
-        players = "1 player" if event.party_size == 1 else f"{event.party_size} players"
-        n = event.extra_options
+    if event.windows and event.party_size is not None:
+        lo, hi = event.windows[0]
+        n = len(event.windows) - 1
         more = f" (+{n} more option{'s' if n != 1 else ''})" if n else ""
-        card.append(f"  You asked:  {_clock(lo)} to {_clock(hi)}, {players}{more}")
+        card.append(
+            f"  You asked:  {_clock(lo)} to {_clock(hi)}, {_players(event.party_size)}{more}"
+        )
     return card
+
+
+def _players(n: int) -> str:
+    return "1 player" if n == 1 else f"{n} players"
+
+
+def _deadline_text(cutoff_local: datetime) -> str:
+    """``4 PM on Friday, October 9`` (the course's clock; ``:00`` dropped)."""
+    c = cutoff_local
+    return f"{_clock(c.time()).replace(':00 ', ' ')} on {c:%A, %B} {c.day}"
 
 
 def _miss_lines(event: UserEvent, course: str, rng: random.Random | None) -> list[str]:
@@ -282,11 +300,11 @@ def _miss_lines(event: UserEvent, course: str, rng: random.Random | None) -> lis
     cause = (
         _MISS_CAUSE_OURS if event.detail.startswith(_SERVICE_ERROR_DETAIL) else _MISS_CAUSE_COURSE
     )
-    if event.cutoff_local is not None:
-        c = event.cutoff_local
-        deadline = f"{_clock(c.time()).replace(':00 ', ' ')} on {c:%A, %B} {c.day}"
-    else:
-        deadline = "the booking cutoff"
+    deadline = (
+        _deadline_text(event.cutoff_local)
+        if event.cutoff_local is not None
+        else "the booking cutoff"
+    )
     return [
         "",
         *_miss_card(event, course),
@@ -357,8 +375,56 @@ def render_user_event(
 
 _OPERATOR_NOTICE_LEAD: Mapping[UserEventKind, str] = {
     UserEventKind.BOOKED: "{who} got a tee time at {course}.",
-    UserEventKind.UPGRADED: "{who}'s tee time at {course} was moved to a better tee time.",
+    UserEventKind.UPGRADED: (
+        "{who}'s tee time at {course} was moved to a better tee time: {now}{was}."
+    ),
 }
+
+_ORDINALS = {1: "1st", 2: "2nd", 3: "3rd"}
+
+
+def _ordinal(n: int) -> str:
+    return _ORDINALS.get(n, f"{n}th")
+
+
+def _choice_text(windows: tuple[tuple[time, time], ...], tee_time: datetime) -> str:
+    """Which ranked window the tee time landed in, by the engine's first-match rule
+    (``models.achieved_rank``): nothing with no windows known or a single window hit (nothing
+    to rank); a tee time no window contains is flagged even then. ``windows`` is the row's
+    options in rank order (``validate_options`` pins ascending ranks), and the choice is numbered
+    by POSITION on purpose: a row's ranks may skip numbers (they span the person's courses), and
+    the notice says "2nd choice" meaning the second window asked for at this course."""
+    if not windows:
+        return ""
+    t = tee_time.time()
+    for position, (lo, hi) in enumerate(windows, start=1):
+        if lo <= t <= hi:
+            return f" ({_ordinal(position)} choice)" if len(windows) > 1 else ""
+    return " (outside every window)"
+
+
+def _operator_context(event: UserEvent) -> list[str]:
+    """The request behind the booking, as card lines; nothing for an event that carries none."""
+    lines: list[str] = []
+    if event.party_size is not None:
+        cap = f", up to ${event.max_price:.2f} each" if event.max_price is not None else ""
+        lines.append(f"  Asked for:  {_players(event.party_size)}{cap}")
+    if len(event.windows) == 1:
+        lines.append(f"  Windows:    {_window_span(*event.windows[0])}")
+    elif event.windows:
+        lines.append(f"  Windows:    1. {_window_span(*event.windows[0])}")
+        lines += [
+            f"              {i}. {_window_span(lo, hi)}"
+            for i, (lo, hi) in enumerate(event.windows[1:], start=2)
+        ]
+    return lines
+
+
+def _window_span(lo: time, hi: time) -> str:
+    """``7:00-8:00 AM`` (one meridiem) or ``11:30 AM-1:00 PM``, as the run summary prints it."""
+    if f"{lo:%p}" == f"{hi:%p}":
+        return f"{_time_of_day(lo, ampm=False)}-{_time_of_day(hi)}"
+    return f"{_time_of_day(lo)}-{_time_of_day(hi)}"
 
 
 def render_operator_booking_notice(
@@ -368,10 +434,14 @@ def render_operator_booking_notice(
     course_label: str | None,
     environment: str | None,
 ) -> RenderedEmail:
-    """One short operator email for a booking made OUTSIDE the release run (the watcher found a
-    free time, or upgraded one): who (display name, else a short user id), course, date, tee time
-    and how (``event.detail``). Tagged with the environment like the run summary. Refuses any kind
-    outside ``OPERATOR_COPY_KINDS``."""
+    """One operator email for a booking made OUTSIDE the release run (the watcher found a free
+    time, or upgraded one), with everything the operator would otherwise look up (2026-10-06):
+    who (display name, else a short user id), course, date, the tee time and which ranked
+    choice it landed in (an upgrade also names the old tee time), what the person asked for
+    (party, price cap, every window), how (``event.detail``), the course's reservation id, the
+    cutoff until which the watcher keeps upgrading, and the send time on the course's clock.
+    Context the event does not carry is left out, never printed empty. Tagged with the
+    environment like the run summary. Refuses any kind outside ``OPERATOR_COPY_KINDS``."""
     if event.kind not in OPERATOR_COPY_KINDS:
         raise ValueError(f"{event.kind} is not a booking; only {sorted(OPERATOR_COPY_KINDS)}")
     who = _who(event.user_id, user_name) if (user_name or event.user_id) else "Someone"
@@ -379,16 +449,32 @@ def render_operator_booking_notice(
     tag = "TeeTimeBooker" + (f" · {environment.upper()}" if environment else "")
     verb = "Booked" if event.kind is UserEventKind.BOOKED else "Upgraded"
     subject = f"[{tag}] {verb}: {who} · {course} {_when(event)}"
+    now = _time(event.tee_time) if event.tee_time is not None else _day(event.target_date)
+    was = f" (was {_time(event.previous_tee_time)})" if event.previous_tee_time else ""
+    day = event.tee_time.date() if event.tee_time else event.target_date
     lines = [
-        _OPERATOR_NOTICE_LEAD[event.kind].format(who=who, course=course),
+        _OPERATOR_NOTICE_LEAD[event.kind].format(who=who, course=course, now=now, was=was),
         "",
-        *_booking_card(event, course),
+        f"  Course:     {course}",
     ]
+    if day is not None:
+        lines.append(f"  Date:       {day:%A, %B} {day.day}")
+    if event.tee_time is not None:
+        choice = _choice_text(event.windows, event.tee_time)
+        old = f", was {_time(event.previous_tee_time)}" if event.previous_tee_time else ""
+        lines.append(f"  Tee time:   {_time(event.tee_time)}{choice}{old}")
+    lines += _operator_context(event)
     if event.detail:
-        lines.append(f"  How:       {event.detail}")
+        lines.append(f"  How:        {event.detail}")
     if event.confirmation:
-        lines.append(f"  Id:        {event.confirmation.removeprefix('TTB:')}")
-    lines += ["", f"Sent {event.at:%a %b} {event.at.day}, {_time(event.at)} {event.at:%Z}".rstrip()]
+        lines.append(f"  Id:         {event.confirmation.removeprefix('TTB:')}")
+    if event.cutoff_local is not None:
+        lines.append(
+            f"  Cutoff:     {_deadline_text(event.cutoff_local)} "
+            "(the watcher keeps upgrading until then)"
+        )
+    at = event.at.astimezone(ZoneInfo(event.course_timezone)) if event.course_timezone else event.at
+    lines += ["", f"Sent {at:%a %b} {at.day}, {_time(at)} {at:%Z}".rstrip()]
     return _redacted(subject, "\n".join(lines))
 
 
@@ -533,13 +619,8 @@ def _who(user_id: UserId | None, name: str | None) -> str:
 
 
 def _window_text(windows: tuple[tuple[time, time], ...]) -> str:
-    def one(lo: time, hi: time) -> str:
-        if f"{lo:%p}" == f"{hi:%p}":
-            return f"{_time_of_day(lo, ampm=False)}-{_time_of_day(hi)}"
-        return f"{_time_of_day(lo)}-{_time_of_day(hi)}"
-
     label = "Window" if len(windows) == 1 else "Windows"
-    return f"{label} " + ", ".join(one(lo, hi) for lo, hi in windows)
+    return f"{label} " + ", ".join(_window_span(lo, hi) for lo, hi in windows)
 
 
 def _time_of_day(t: time, *, ampm: bool = True) -> str:

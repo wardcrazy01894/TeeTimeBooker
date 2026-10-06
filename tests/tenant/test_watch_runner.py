@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from teetime.core.adapter import AdapterError, AuthError, CaptchaError, RateLimitError
 from teetime.core.clock import FakeClock
@@ -139,6 +140,33 @@ async def test_watch_books_a_pending_row_when_a_slot_opens() -> None:
     assert fake.book_call_count == 1
     assert UserEventKind.BOOKED in [e.kind for e in notifier.events]
     assert watch_exit_status(report) is ExitStatus.OK
+
+
+async def test_watch_booked_event_carries_the_tee_time_and_the_request() -> None:
+    """2026-10-06: the watcher booked a user's Sunday and both emails (the user's, the
+    operator's) named only the DATE: the event took its tee time from the row as READ, before
+    the booking. The event carries the booked tee time and confirmation from the outcome, and
+    the request context the operator's notice lays out: the ranked windows, the party, the
+    price cap, the cutoff (course-local) and the course timezone."""
+    store = new_store()
+    s = await seed(store, n=1, party_size=4)
+    fake = WatchFake()
+    notifier = RecordingNotifier()
+
+    await _watch(store, FakeFactory(adapters={s.account.id: fake}), notifier=notifier)
+
+    (event,) = [e for e in notifier.events if e.kind is UserEventKind.BOOKED]
+    assert event.tee_time == BETTER.tee_time
+    assert event.confirmation == f"FAKE-{BETTER.slot_id}"
+    assert event.previous_tee_time is None
+    assert event.windows == (WINDOW,)
+    assert event.party_size == 4
+    assert event.max_price == s.account.default_max_price
+    assert event.course_timezone == "America/New_York"
+    assert event.cutoff_local == s.row.cutoff_at.astimezone(ZoneInfo("America/New_York"))
+    assert event.cutoff_local is not None and event.cutoff_local.tzinfo == ZoneInfo(
+        "America/New_York"
+    )
 
 
 # --- §3.5 leases: the watcher never acts under someone else's lease --------------------------

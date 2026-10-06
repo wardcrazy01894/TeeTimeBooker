@@ -424,7 +424,11 @@ async def test_watch_upgrades_an_owned_booking() -> None:
     assert ledger[HELD_RAW][0] is BookingState.CANCELLED_UPGRADE
     assert ledger[BETTER_RAW] == (BookingState.HELD, BookingSource.UPGRADE)
     assert report.upgraded == (s.row.id,)
-    assert [e.kind for e in notifier.events] == [UserEventKind.UPGRADED]
+    (event,) = notifier.events
+    assert event.kind is UserEventKind.UPGRADED
+    # The new tee time from the outcome, the old one from the row as read (2026-10-06).
+    assert (event.tee_time, event.previous_tee_time) == (BETTER.tee_time, HELD_EARLY.tee_time)
+    assert event.confirmation == BETTER_RAW
 
 
 async def test_watch_upgrade_failed_rebook_sets_pending_reconcile() -> None:
