@@ -11,7 +11,7 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Date</th><th>Course</th><th>Window</th><th>Players</th><th>From</th><th>Status</th><th>Actions</th></tr>
+        <tr><th>Date</th><th>Course</th><th>Window</th><th>Players</th><th>From</th><th>Until</th><th>Status</th><th>Actions</th></tr>
       </thead>
       <tbody>
         {% for r in rows %}
@@ -21,6 +21,7 @@
           <td class="tabular">{{ windows(r.row.options) }}</td>
           <td class="num">{{ r.row.party_size }}</td>
           <td class="muted">{{ "weekly" if r.row.source.value == "rule" else "one-off" }}</td>
+          <td class="muted tabular" title="Until then the bot keeps booking this date and upgrading to a better tee time">{{ r.cutoff_local }}</td>
           <td>
             <span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span>
             {% if r.booked_tee_time_local %} <strong class="tabular">{{ r.booked_tee_time_local }}</strong>{% endif %}

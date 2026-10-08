@@ -1112,8 +1112,8 @@ account.
 | POST | `/accounts/{id}/price` | user | yes | the account's default price cap (MU-R3) |
 | GET/POST | `/me`, `/me/name`, `/me/cutoff` | user | yes | "Your account" (click your name next to Sign out): set your own display name (emails, top bar, operator list; 2026-10-02) and your own booking cutoff (`User.booking_cutoff`, `TenantStore.set_booking_cutoff` rewrites your live rows' `cutoff_at`; 2026-10-08) |
 | POST | `/accounts/{id}/adopt` | operator | yes | adopt existing bookings as owned, re-planned and confirmed (MU-16b, `web/adopt.py`) |
-| POST | `/bookings/date`, `/bookings/weekly` | user | yes | the ranked booking form: one date, or a weekly rule (MU-R3) |
-| GET/POST | `/rules`, `/rules/{id}` | user | yes | create/edit/deactivate standing rules (materializes synchronously) |
+| POST | `/bookings/date`, `/bookings/weekly` | user | yes | the ranked booking form: one date, or a weekly rule (MU-R3); since 2026-10-08 with the booking's own cutoff (`cutoff_days_before` blank = the person's, else + `cutoff_time`; `StandingRule.booking_cutoff` on every rule of the group, `RequestRow.booking_cutoff` on every one-off) |
+| GET/POST | `/rules`, `/rules/{id}` | user | yes | create/edit/deactivate standing rules (materializes synchronously); a single-window rule's edit form carries its own cutoff (2026-10-08), and an edit that changes it moves the rule's live rows (`rewrite_rule_cutoff`) |
 | GET | `/dates` | user | – | the dated-row list with its actions (the dashboard's read model) |
 | POST | `/rows` | user | yes | create an explicit dated row |
 | POST | `/rows/{id}/skip`, `/rows/{id}/unskip` | user | yes | state-machine transitions |

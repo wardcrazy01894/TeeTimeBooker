@@ -111,6 +111,7 @@ async def create_group_one_off(
                 max_price=choice.prices.get(account_id),
                 group_id=group_id,
                 group_rank=options[0].rank,
+                booking_cutoff=choice.booking_cutoff,
             )
         except TenantNotFoundError:
             # Ownership was checked when the form was parsed; the account vanished since.
@@ -161,6 +162,7 @@ async def create_group_rule(
             max_price=choice.prices.get(account_id),
             group_id=group_id,
             group_rank=options[0].rank,
+            booking_cutoff=choice.booking_cutoff,
         )
         try:
             stored = await store.upsert_rule(rule, user_id=user_id)

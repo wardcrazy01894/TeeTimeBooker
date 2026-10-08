@@ -964,6 +964,7 @@ def create_app(
     templates.env.globals["cutoff_days_choices"] = CUTOFF_DAYS_CHOICES
     templates.env.globals["cutoff_hour_choices"] = CUTOFF_HOUR_CHOICES
     templates.env.globals["cutoff_days_label"] = cutoff_days_label
+    templates.env.globals["cutoff_text"] = cutoff_text
     # The site default; a signed-in page's base_context shadows it with the person's own.
     templates.env.globals["booking_cutoff_text"] = cutoff_text(
         ctx.cutoff.days_before, ctx.cutoff.time_of_day

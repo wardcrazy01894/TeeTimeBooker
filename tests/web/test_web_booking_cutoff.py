@@ -195,7 +195,7 @@ async def test_the_weekly_form_offers_a_cutoff_of_its_own_and_saves_it_on_every_
     r = await _post(client, "/bookings/weekly", form)
     assert r.status_code == 303, r.text
     rules = await store.list_rules_for_user(member.user.id)
-    assert len(rules) == 2 and {rule.booking_cutoff for rule in rules} == {FRIDAY_NOON}
+    assert [rule.booking_cutoff for rule in rules] == [FRIDAY_NOON, FRIDAY_NOON]
     for rule in rules:
         (row,) = await store.rows_for_account_date(rule.course_account_id, OCT3)
         assert row.cutoff_at == cutoff_instant(OCT3, timezone=TZ, cutoff=FRIDAY_NOON)

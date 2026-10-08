@@ -61,6 +61,10 @@ _NOTICES = {
     "one_off_added": "Date added.",
     "name_saved": "Name saved.",
     "cutoff_saved": "Booking cutoff saved. Your pending and booked dates now follow it.",
+    "cutoff_saved_kept_own": (
+        "Booking cutoff saved. A weekly or one-off booking with its own cutoff keeps it; "
+        "your other pending and booked dates now follow this one."
+    ),
     "cutoff_saved_partly": (
         "Booking cutoff saved. A date the bot was checking at that moment keeps the old "
         "cutoff: save again in a few minutes to apply it there too."
@@ -299,7 +303,12 @@ def _register_read_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
                 cutoff=services.parse_cutoff_form(form),
                 clock=pages.ctx.clock,
             )
-            notice = "cutoff_saved_partly" if change.skipped_leased else "cutoff_saved"
+            if change.skipped_leased:
+                notice = "cutoff_saved_partly"
+            elif change.kept_own:
+                notice = "cutoff_saved_kept_own"
+            else:
+                notice = "cutoff_saved"
             return f"/me?notice={notice}"
 
         return await pages.act(request, user, action, on_error=pages.account)

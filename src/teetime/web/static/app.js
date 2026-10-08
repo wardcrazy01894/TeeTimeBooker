@@ -19,6 +19,10 @@
    Also with script: under Connect a course, only the chosen course's facts (release cycle,
    where to create a login) are shown; without it every connectable course's line shows.
 
+   Also with script: a weekly form's "Stop looking" pickers show the weekday the pick lands on
+   ("that's Thursday 4 PM", from the chosen weekday and days-before); without script the
+   "N days before" wording stands.
+
    Also with script: every button answers a click at once. A submitted form's buttons are
    disabled and the clicked one shows a spinner; a button-styled link shows it while the next
    page loads (see onSubmit / onButtonLinkClick). */
@@ -415,7 +419,53 @@
     refresh();
   }
 
+  // ---- stop looking: name the weekday the cutoff lands on -----------------------------------
+
+  var DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+  function clockLabel(hhmm) {
+    var h = parseInt(hhmm.split(":")[0], 10);
+    if (isNaN(h)) {
+      return hhmm;
+    }
+    var suffix = h >= 12 ? "PM" : "AM";
+    var twelve = h % 12 === 0 ? 12 : h % 12;
+    return twelve + " " + suffix;
+  }
+
+  function cutoffHint(picker) {
+    var form = picker.closest("form");
+    var weekday = form ? form.querySelector("select[name=weekday]") : null;
+    var days = picker.querySelector("select[name=cutoff_days_before]");
+    var clock = picker.querySelector("select[name=cutoff_time]");
+    var hint = picker.querySelector(".cutoff-hint");
+    if (!weekday || !days || !clock || !hint) {
+      return;
+    }
+    function refresh() {
+      var before = parseInt(days.value, 10);
+      var target = parseInt(weekday.value, 10);
+      if (isNaN(before) || isNaN(target)) {
+        hint.hidden = true;
+        hint.textContent = "";
+        return;
+      }
+      var landing = ((target - before) % 7 + 7) % 7;
+      hint.textContent = "that's " + DAY_NAMES[landing] + " " + clockLabel(clock.value) +
+        (before === 0 ? " that day" : "");
+      hint.hidden = false;
+    }
+    weekday.addEventListener("change", refresh);
+    days.addEventListener("change", refresh);
+    clock.addEventListener("change", refresh);
+    refresh();
+  }
+
   function init() {
+    var pickers = document.querySelectorAll("fieldset.cutoff-picker");
+    for (var c = 0; c < pickers.length; c += 1) {
+      cutoffHint(pickers[c]);
+    }
     var forms = document.querySelectorAll("form.ranked");
     for (var i = 0; i < forms.length; i += 1) {
       enhance(forms[i]);

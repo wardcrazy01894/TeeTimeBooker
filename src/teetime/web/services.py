@@ -174,6 +174,8 @@ class RuleInput:
     window_earliest: time
     window_latest: time
     party_size: int
+    # The rule's own cutoff (2026-10-08); None = "my account's cutoff" on the form.
+    booking_cutoff: BookingCutoffConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +197,10 @@ class DashboardRow:
     booked_tee_time_local: str | None  # "09:30", course-local
     can_rerequest: bool  # a cancelled date with no active row: offer "Re-request this date"
     frozen: bool
+    # The date's own cutoff on the course's clock ("Fri Oct 2, 4 PM"; 2026-10-08): until then
+    # the bot keeps booking and upgrading it. The row's ``cutoff_at``, so a weekly or one-off
+    # booking's own cutoff shows as such.
+    cutoff_local: str = ""
     # MU-14 (§8.5): a BOOKED row whose reservation the ledger owns (the bot made it). An
     # unowned one offers Cancel only behind an explicit confirm.
     owned: bool = False
@@ -316,6 +322,15 @@ def parse_cutoff_form(form: Mapping[str, str]) -> BookingCutoffConfig:
     return BookingCutoffConfig(days_before=days_before, time_of_day=time_of_day)
 
 
+def parse_optional_cutoff(form: Mapping[str, str]) -> BookingCutoffConfig | None:
+    """A booking's own cutoff (2026-10-08): the same two pickers as Your account, but the Day
+    select opens on "my account's cutoff" (value ``""``). A blank day means None and the time
+    is ignored, whatever it says; a chosen day is validated like the account form."""
+    if not form.get("cutoff_days_before", "").strip():
+        return None
+    return parse_cutoff_form(form)
+
+
 async def set_booking_cutoff(
     store: TenantStore, *, user_id: UserId, cutoff: BookingCutoffConfig, clock: Clock
 ) -> CutoffChange:
@@ -341,6 +356,12 @@ async def set_booking_cutoff(
         at=now,
     )
     return change
+
+
+def cutoff_local_text(local: datetime) -> str:
+    """``Fri Oct 2, 4 PM`` (``4:30 PM`` off the hour): a date's cutoff on the course's clock."""
+    clock = local.strftime("%I:%M %p").lstrip("0").replace(":00 ", " ")
+    return f"{local:%a %b} {local.day}, {clock}"
 
 
 def effective_cutoff(user: User, default: BookingCutoffConfig) -> BookingCutoffConfig:
@@ -376,6 +397,7 @@ def parse_rule_form(form: Mapping[str, str]) -> RuleInput:
         window_earliest=earliest,
         window_latest=latest,
         party_size=_int_in(form, "party_size", MIN_PARTY, MAX_PARTY),
+        booking_cutoff=parse_optional_cutoff(form),
     )
 
 
@@ -532,6 +554,7 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
         snap = await reader.snapshot(row.course_account_id)
         tz = ZoneInfo(row.timezone)
         frozen = row_is_frozen(row, now=now)
+        cutoff_local = cutoff_local_text(row.cutoff_at.astimezone(tz))
         booked_local = None
         if row.status is RowStatus.BOOKED and row.booked_tee_time is not None:
             booked_local = row.booked_tee_time.astimezone(tz).strftime("%H:%M")
@@ -547,6 +570,7 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
                     and not frozen
                 ),
                 frozen=frozen,
+                cutoff_local=cutoff_local,
                 owned=(
                     row.status is RowStatus.BOOKED
                     and row.booked_raw_id is not None
@@ -646,6 +670,7 @@ async def create_rule(
         active=True,
         materialized_through=None,
         version=1,
+        booking_cutoff=rule_input.booking_cutoff,
     )
     try:
         stored = await store.upsert_rule(rule, user_id=user_id)
@@ -720,6 +745,7 @@ async def edit_rule(
         options=_single_option(rule_input.window_earliest, rule_input.window_latest),
         party_size=rule_input.party_size,
         version=version,
+        booking_cutoff=rule_input.booking_cutoff,
     )
     return await _edit(
         store, user_id=user_id, old=old, new=new, policies=policies, cutoff=cutoff, clock=clock

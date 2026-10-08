@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, error_block, players_picker, ranked_form, windows, course_facts, time_select with context %}
+{% from "_macros.html" import hhmm, error_block, players_picker, ranked_form, windows, course_facts, time_select, cutoff_picker with context %}
 {% block title %}Weekly bookings · TeeTimeBooker{% endblock %}
 
-{% macro rule_fields(weekday, earliest, latest, party, course_id) %}
+{% macro rule_fields(weekday, earliest, latest, party, course_id, own_cutoff) %}
 {# This rule's course only; its saved window stays selectable even off the quarter-hour grid. #}
 {% set times = time_choices([course_id], [earliest, latest]) %}
 <div class="form-row">
@@ -14,6 +14,9 @@
   <label>From {{ time_select("window_earliest", hhmm(earliest), times, "Earliest time") }}</label>
   <label>To {{ time_select("window_latest", hhmm(latest), times, "Latest time") }}</label>
   {{ players_picker(party) }}
+</div>
+{{ cutoff_picker(own_cutoff) }}
+<div class="form-row">
   <button type="submit">Save</button>
 </div>
 {% endmacro %}
@@ -30,14 +33,14 @@
     <span class="status status-{{ 'active' if v.rule.active else 'disabled' }}">{{ "active" if v.rule.active else "inactive" }}</span>
   </div>
   {% if v.rule.group_id or v.rule.options|length > 1 %}
-  <p class="meta"><span>Options <strong class="tabular">{{ windows(v.rule.options) }}</strong></span><span>ranks {% for o in v.rule.options %}{{ o.rank }}{% if not loop.last %}, {% endif %}{% endfor %}</span><span>{{ v.rule.party_size }} players</span>{% if v.rule.max_price is not none %}<span>up to ${{ v.rule.max_price }} per player</span>{% endif %}</p>
+  <p class="meta"><span>Options <strong class="tabular">{{ windows(v.rule.options) }}</strong></span><span>ranks {% for o in v.rule.options %}{{ o.rank }}{% if not loop.last %}, {% endif %}{% endfor %}</span><span>{{ v.rule.party_size }} players</span>{% if v.rule.max_price is not none %}<span>up to ${{ v.rule.max_price }} per player</span>{% endif %}{% if v.rule.booking_cutoff %}<span>stops looking {{ cutoff_text(v.rule.booking_cutoff.days_before, v.rule.booking_cutoff.time_of_day) }}</span>{% endif %}</p>
   <p class="hint">Part of a ranked weekly booking: deactivating it deactivates every course of that booking. To change the options, deactivate it and save a new weekly booking.</p>
   {% else %}
   <form method="post" action="/rules/{{ v.rule.id }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="version" value="{{ v.rule.version }}">
     <input type="hidden" name="action" value="save">
-    {{ rule_fields(v.rule.weekday, v.rule.options[0].earliest, v.rule.options[0].latest, v.rule.party_size, v.account.course_id) }}
+    {{ rule_fields(v.rule.weekday, v.rule.options[0].earliest, v.rule.options[0].latest, v.rule.party_size, v.account.course_id, v.rule.booking_cutoff) }}
   </form>
   {% endif %}
   <div class="card-actions">

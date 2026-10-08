@@ -108,6 +108,31 @@
 </details>
 {% endmacro %}
 
+{# A booking's own cutoff (2026-10-08): the same Time + Day pickers as Your account, with the Day
+   list opening on "my account's cutoff" (value ""; the server then ignores the time). `own` is
+   the booking's saved cutoff (a BookingCutoffConfig) or none. app.js adds, on a weekly form, a
+   hint naming the weekday the pick lands on. #}
+{% macro cutoff_picker(own) %}
+<fieldset class="cutoff-picker">
+  <legend>Stop looking</legend>
+  <p class="hint">Until this moment the bot keeps booking the date and switches to a better tee time if one opens; after it, what it holds is final. Leave it on my account's cutoff ({{ booking_cutoff_text }}, set on Your account) or pick one for this booking.</p>
+  <div class="form-row">
+    <label>Day
+      <select name="cutoff_days_before">
+        <option value=""{% if not own %} selected{% endif %}>my account's cutoff</option>
+        {% for d in cutoff_days_choices %}<option value="{{ d }}"{% if own and d == own.days_before %} selected{% endif %}>{{ cutoff_days_label(d) }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Time
+      <select name="cutoff_time">
+        {% for t in cutoff_hour_choices %}<option value="{{ t.strftime('%H:%M') }}"{% if (own and t == own.time_of_day) or (not own and t.hour == 16) %} selected{% endif %}>{{ t | time_label }}</option>{% endfor %}
+      </select>
+    </label>
+    <span class="cutoff-hint hint" hidden></span>
+  </div>
+</fieldset>
+{% endmacro %}
+
 {# MU-R3 (§16.1): ONE ranked list of (course, time window) options, for a date or every week.
    Order is a rank number per option. Option 1 shows up front; the rest wait behind "Add another
    time slot" (a <details> without script; one row at a time with /static/app.js). #}
@@ -149,6 +174,7 @@
     </div>
     <p class="hint">Blank uses the course's default (set on the Connected Courses page).</p>
   </fieldset>
+  {{ cutoff_picker(none) }}
   <p class="hint">The bot books the highest-ranked time slot that has a tee time, aiming for the middle of that slot (see "How the bot picks your tee time" above). It holds at most one tee time per day.</p>
   <div class="actions">
     <button type="submit">{% if weekly %}Save weekly booking{% else %}Book this date{% endif %}</button>

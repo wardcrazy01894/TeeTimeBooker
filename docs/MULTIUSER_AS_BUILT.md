@@ -798,10 +798,21 @@ source of truth (the row's `cutoff_at`):
   covers the row" all along).
 - Cosmos: `bookingCutoff` on rule and row documents, absent → None; no index change (nothing
   filters on it), no migration.
-- Web (next PR): the weekly and one-date forms get the same Time + Day pickers as Your account
-  with a leading "my account's cutoff" option; the rules page words a rule's own; Dates shows
-  each row's. "Re-request this date" after a cancel creates a one-off under the form's cutoff
-  (none = the person's), not the rule's.
+- Web (the second PR): `_macros.cutoff_picker` is the same Time + Day pickers as Your account
+  with the Day list opening on "my account's cutoff" (value `""`): `services.parse_optional_cutoff`
+  turns a blank day into None and ignores the time, else validates like the account form. It
+  sits on the ranked form (`RankedChoice.booking_cutoff`, one cutoff for every course of the
+  group: `create_group_rule` / `create_group_one_off` pass it on) and on a single-window rule's
+  in-place edit form (`RuleInput.booking_cutoff`, pre-selected from the rule's own, even one
+  equal to the account's: own is own). The rules page says "stops looking 12 PM the day before"
+  for a rule with its own; Dates has an **Until** column (`DashboardRow.cutoff_local`, the
+  row's `cutoff_at` on the course's clock) so every date's cutoff is visible, whichever setting
+  it came from; Your account's save says `cutoff_saved_kept_own` when a booking with its own
+  was left alone. "Re-request this date" after a cancel creates a one-off under the account's
+  cutoff (its hidden form has no picker), not the rule's. With script, `app.js` names the
+  weekday a weekly form's pick lands on ("that's Thursday 4 PM"); without it the "N days
+  before" wording stands. Pinned by `tests/web/test_web_booking_cutoff.py` ("a cutoff per
+  booking" block) and `tests/web/test_booking_form.py`.
 
 Pinned by the conformance suite ("a cutoff per booking" block, both backends),
 `tests/tenant/test_materialize.py::test_materialize_freezes_by_the_rules_own_cutoff` /
