@@ -6,7 +6,7 @@ duplicate reconcile, orphans, and dry-run safety (§7.8)."""
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -24,13 +24,16 @@ from teetime.tenant.models import (
     RowFingerprint,
     RowStatus,
 )
+from teetime.core.config import BookingCutoffConfig
 from teetime.tenant.notify import UserEventKind
+from teetime.tenant.semantics import cutoff_config_of
 from teetime.tenant.runner import WatchReport
 from teetime.tenant.store import RowOutcome
 from teetime.tenant.watch_runner import run_tenant_watch, seeded_terminal
 
 from . import watcher_builders
 from .watch_runner_builders import (
+    AFTER_CUTOFF,
     BETTER,
     CUTOFF,
     HELD_EARLY,
@@ -403,6 +406,26 @@ async def test_watch_upgrade_gated_on_ownership_end_to_end() -> None:
 
 
 # --- the recorder-derived upgrade outcome (M2) ---------------------------------------------------
+
+
+async def test_watch_keeps_upgrading_until_the_rows_own_cutoff() -> None:
+    """2026-10-08: the engine's stop-acting gate takes the ROW's cutoff, not the site default.
+    A person whose cutoff is 8 PM the day before is still upgraded at 5 PM the day before,
+    an hour past the default 4 PM."""
+    store = new_store()
+    fake = WatchFake()
+    s, factory = await _owned_booking(store, fake=fake)
+    eight_pm = BookingCutoffConfig(days_before=1, time_of_day=time(20, 0))
+    change = await store.set_booking_cutoff(s.user.id, eight_pm, now=SEED_NOW)
+    assert change.rewritten == (s.row.id,)
+    row = await stored_row(store, s)
+    assert cutoff_config_of(row) == eight_pm  # the inverse of the row's cutoff_at
+    assert cutoff_config_of(row) != CUTOFF
+
+    report = await _watch(store, factory, now=now_with_cadence(s.account, base=AFTER_CUTOFF))
+
+    assert report.upgraded == (s.row.id,)
+    assert (await stored_row(store, s)).booked_raw_id == BETTER_RAW
 
 
 async def test_watch_upgrades_an_owned_booking() -> None:
