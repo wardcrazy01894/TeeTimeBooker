@@ -72,6 +72,7 @@ from ..tenant.models import (
     BookingState,
     CourseAccount,
     CourseAccountId,
+    CutoffChange,
     OwnedBooking,
     RankedWindow,
     RequestRow,
@@ -281,6 +282,70 @@ def parse_display_name(raw: str) -> str:
     if len(name) > DISPLAY_NAME_MAX_LEN:
         raise InvalidInputError(f"Your name must be {DISPLAY_NAME_MAX_LEN} characters or fewer")
     return name
+
+
+# The person's own booking cutoff (operator request 2026-10-08): a day count and an hour on the
+# course's clock. "The day of" (0) up to a week before; whole hours only (a quarter-hour cutoff
+# buys nothing and would clutter the picker).
+CUTOFF_DAYS_CHOICES: tuple[int, ...] = tuple(range(0, 8))
+CUTOFF_HOUR_CHOICES: tuple[time, ...] = tuple(time(h, 0) for h in range(24))
+
+
+def cutoff_days_label(days_before: int) -> str:
+    """``the day of`` / ``the day before`` / ``2 days before``: the picker's wording."""
+    if days_before == 0:
+        return "the day of"
+    if days_before == 1:
+        return "the day before"
+    return f"{days_before} days before"
+
+
+def parse_cutoff_form(form: Mapping[str, str]) -> BookingCutoffConfig:
+    try:
+        days_before = int(form.get("cutoff_days_before", ""))
+    except ValueError:
+        raise InvalidInputError("Pick how many days before the date the cutoff falls") from None
+    if days_before not in CUTOFF_DAYS_CHOICES:
+        raise InvalidInputError("Pick how many days before the date the cutoff falls")
+    try:
+        time_of_day = time.fromisoformat(form.get("cutoff_time", ""))
+    except ValueError:
+        raise InvalidInputError("Pick an hour for the cutoff") from None
+    if time_of_day not in CUTOFF_HOUR_CHOICES:
+        raise InvalidInputError("Pick an hour for the cutoff")
+    return BookingCutoffConfig(days_before=days_before, time_of_day=time_of_day)
+
+
+async def set_booking_cutoff(
+    store: TenantStore, *, user_id: UserId, cutoff: BookingCutoffConfig, clock: Clock
+) -> CutoffChange:
+    """Save the person's cutoff and move their live dates onto it (``TenantStore.
+    set_booking_cutoff``: pending and booked rows from today on; a row the bot is writing at
+    that moment is reported, not touched). Audited with the setting and the counts."""
+    now = clock.now_utc()
+    try:
+        change = await store.set_booking_cutoff(user_id, cutoff, now=now)
+    except TenantNotFoundError:
+        raise WebNotFoundError from None
+    await _audit(
+        store,
+        user_id=user_id,
+        action="cutoff_set",
+        row_id=None,
+        detail={
+            "days_before": cutoff.days_before,
+            "time_of_day": cutoff.time_of_day.isoformat(timespec="minutes"),
+            "rewritten": len(change.rewritten),
+            "skipped_leased": len(change.skipped_leased),
+        },
+        at=now,
+    )
+    return change
+
+
+def effective_cutoff(user: User, default: BookingCutoffConfig) -> BookingCutoffConfig:
+    """The cutoff the bot runs for this person: their own, else the site default."""
+    return user.booking_cutoff if user.booking_cutoff is not None else default
 
 
 async def set_display_name(store: TenantStore, *, user_id: UserId, raw: str) -> User:

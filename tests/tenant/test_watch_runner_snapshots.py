@@ -14,6 +14,7 @@ import pytest
 
 from teetime.core.adapter import AdapterError
 from teetime.core.clock import FakeClock
+from teetime.core.config import BookingCutoffConfig
 from teetime.core.models import MANAGED_BOOKING_TAG
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.models import (
@@ -24,10 +25,9 @@ from teetime.tenant.models import (
     RowFingerprint,
     RowStatus,
 )
-from teetime.core.config import BookingCutoffConfig
 from teetime.tenant.notify import UserEventKind
-from teetime.tenant.semantics import cutoff_config_of
 from teetime.tenant.runner import WatchReport
+from teetime.tenant.semantics import cutoff_config_of
 from teetime.tenant.store import RowOutcome
 from teetime.tenant.watch_runner import run_tenant_watch, seeded_terminal
 

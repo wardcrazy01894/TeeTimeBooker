@@ -451,9 +451,7 @@ async def test_tick_materializes_each_rule_under_its_owners_cutoff() -> None:
     assert report.skipped_frozen == (TARGET,)
     assert await _own_row_or_none(s, t, rule, TARGET) is None
     later = await _own_row(s, t, rule, date(2026, 10, 10))
-    assert later.cutoff_at == cutoff_instant(
-        date(2026, 10, 10), timezone=TZ, cutoff=noon_two_days
-    )
+    assert later.cutoff_at == cutoff_instant(date(2026, 10, 10), timezone=TZ, cutoff=noon_two_days)
 
 
 async def test_materialize_creates_superseded_when_one_off_holds_the_date() -> None:

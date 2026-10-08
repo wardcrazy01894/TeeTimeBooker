@@ -63,6 +63,7 @@ ROUTES: tuple[RouteSpec, ...] = (
     # 2026-10-02: "Your account" (click your name next to Sign out): set your own display name.
     RouteSpec("GET", "/me", "account_page", AuthLevel.USER, False, "OPS"),
     RouteSpec("POST", "/me/name", "set_display_name", AuthLevel.USER, True, "OPS"),
+    RouteSpec("POST", "/me/cutoff", "set_booking_cutoff", AuthLevel.USER, True, "OPS"),
     # 2026-09-29: Report a bug / Request a course (web/feedback.py): emails the operator and, in
     # prod, files an anonymized GitHub issue.
     RouteSpec("GET", "/feedback", "feedback_page", AuthLevel.USER, False, "OPS"),

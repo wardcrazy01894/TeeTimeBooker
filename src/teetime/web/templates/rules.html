@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import hhmm, error_block, players_picker, ranked_form, windows, course_facts, time_select %}
+{% from "_macros.html" import hhmm, error_block, players_picker, ranked_form, windows, course_facts, time_select with context %}
 {% block title %}Weekly bookings · TeeTimeBooker{% endblock %}
 
 {% macro rule_fields(weekday, earliest, latest, party, course_id) %}

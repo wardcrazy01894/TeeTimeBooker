@@ -290,7 +290,7 @@ in-process only).
 cutoff=policy_cutoff, skip_dates=frozenset())`. The skip leg is retired for tenant rows (a skip is
 the `skipped` status). `cutoff_at` is a denormalized copy of `cutoff_instant(...)` so the Cosmos
 queries can filter on it. The Python `frozen_reason` re-check is authoritative (belt and braces;
-a global cutoff-policy change needs a migration that recomputes `cutoff_at`, §13 Q13).
+a global cutoff-policy change needs a migration that recomputes `cutoff_at`, §13 Q13). Since 2026-10-08 the cutoff is per PERSON: `User.booking_cutoff` (None = the site default) is what the store computes a new row's `cutoff_at` from, `set_booking_cutoff` rewrites the person's live rows when they change it, and the watcher hands the engine each row's own cutoff (`semantics.cutoff_config_of`).
 
 ```
              create (web explicit / materializer rule)  [guard: not frozen, date >= today]
@@ -1109,7 +1109,7 @@ account.
 | POST | `/accounts/{id}/reverify` | user | yes | re-probe after `auth_failed` |
 | POST | `/accounts/{id}/refresh` | user | yes | live refresh (TTL + rate limit, §8.6) |
 | POST | `/accounts/{id}/price` | user | yes | the account's default price cap (MU-R3) |
-| GET/POST | `/me`, `/me/name` | user | yes | "Your account" (click your name next to Sign out): set your own display name (emails, top bar, operator list; 2026-10-02) |
+| GET/POST | `/me`, `/me/name`, `/me/cutoff` | user | yes | "Your account" (click your name next to Sign out): set your own display name (emails, top bar, operator list; 2026-10-02) and your own booking cutoff (`User.booking_cutoff`, `TenantStore.set_booking_cutoff` rewrites your live rows' `cutoff_at`; 2026-10-08) |
 | POST | `/accounts/{id}/adopt` | operator | yes | adopt existing bookings as owned, re-planned and confirmed (MU-16b, `web/adopt.py`) |
 | POST | `/bookings/date`, `/bookings/weekly` | user | yes | the ranked booking form: one date, or a weekly rule (MU-R3) |
 | GET/POST | `/rules`, `/rules/{id}` | user | yes | create/edit/deactivate standing rules (materializes synchronously) |

@@ -9,7 +9,7 @@ checker (``check_transition``, §3.4), and both are exercised by the store confo
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum

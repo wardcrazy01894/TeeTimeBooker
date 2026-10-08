@@ -36,6 +36,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
 from starlette.datastructures import FormData, MutableHeaders
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -72,7 +73,15 @@ from .oauth import (
 from .pages import STATUS_LABELS, register_page_routes
 from .ranking_explainer import cutoff_text, ranking_example
 from .security import CookiePolicy, security_headers, verify_csrf_token
-from .services import DISPLAY_NAME_MAX_LEN, ProbeLimits, RefreshCache
+from .services import (
+    CUTOFF_DAYS_CHOICES,
+    CUTOFF_HOUR_CHOICES,
+    DISPLAY_NAME_MAX_LEN,
+    ProbeLimits,
+    RefreshCache,
+    cutoff_days_label,
+    effective_cutoff,
+)
 from .time_options import check_window, time_label, time_options, union_hours, with_values
 
 log = logging.getLogger(__name__)
@@ -425,14 +434,18 @@ class _Ctx:
     def check_window(self, course_id: object, earliest: time, latest: time) -> None:
         check_window(self.course_name(course_id), self.hours_of(course_id), earliest, latest)
 
-    def release_cycle(self, course_id: object) -> ReleaseCycle | None:
+    def release_cycle(
+        self, course_id: object, *, cutoff: BookingCutoffConfig | None = None
+    ) -> ReleaseCycle | None:
         """The course's release cycle in words (``web/course_info.py``), None for a course with
-        no hosted policy (nothing is shown rather than a guess)."""
+        no hosted policy (nothing is shown rather than a guess). ``cutoff`` is the viewing
+        person's own (2026-10-08); the site default without one."""
         policy = self.policies.get(str(course_id))
         if policy is None:
             return None
+        effective = cutoff if cutoff is not None else self.cutoff
         return release_cycle(
-            policy, cutoff_text=cutoff_text(self.cutoff.days_before, self.cutoff.time_of_day)
+            policy, cutoff_text=cutoff_text(effective.days_before, effective.time_of_day)
         )
 
     def page(
@@ -930,7 +943,17 @@ def create_app(
     )
     templates.env.filters["course_name"] = ctx.course_name
     templates.env.filters["course_signup_url"] = lambda cid: ctx.course_signup_urls.get(str(cid))
-    templates.env.filters["release_cycle"] = ctx.release_cycle
+
+    @pass_context
+    def release_cycle_for_viewer(
+        context: Mapping[str, Any], course_id: object
+    ) -> ReleaseCycle | None:
+        # The page's signed-in user (base_context) picks the cutoff the sentence names.
+        user = context.get("user")
+        cutoff = effective_cutoff(user, ctx.cutoff) if isinstance(user, User) else None
+        return ctx.release_cycle(course_id, cutoff=cutoff)
+
+    templates.env.filters["release_cycle"] = release_cycle_for_viewer
     templates.env.filters["provider_name"] = provider_display_name
     templates.env.filters["time_label"] = time_label
     templates.env.globals["time_choices"] = ctx.time_choices
@@ -938,6 +961,10 @@ def create_app(
     templates.env.globals["static_url"] = _static_url_for(static_asset_versions(STATIC_DIR))
     templates.env.globals["ranking_example"] = ranking_example()
     templates.env.globals["display_name_max_len"] = DISPLAY_NAME_MAX_LEN
+    templates.env.globals["cutoff_days_choices"] = CUTOFF_DAYS_CHOICES
+    templates.env.globals["cutoff_hour_choices"] = CUTOFF_HOUR_CHOICES
+    templates.env.globals["cutoff_days_label"] = cutoff_days_label
+    # The site default; a signed-in page's base_context shadows it with the person's own.
     templates.env.globals["booking_cutoff_text"] = cutoff_text(
         ctx.cutoff.days_before, ctx.cutoff.time_of_day
     )

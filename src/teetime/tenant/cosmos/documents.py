@@ -251,7 +251,7 @@ def _decode_cutoff(value: object) -> object:
     try:
         return BookingCutoffConfig(
             days_before=_expect(int, doc["daysBefore"]),
-            time_of_day=_decode_time(doc["timeOfDay"]),
+            time_of_day=_expect(time, _decode_time(doc["timeOfDay"])),
         )
     except KeyError as exc:
         raise DocumentError(f"booking cutoff is missing {exc}") from exc

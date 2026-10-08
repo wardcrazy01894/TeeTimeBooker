@@ -237,7 +237,8 @@ a test that proves the new behaviour, and update this section in the same PR.
 - **The idempotency key is `(RequestId, resolved_date)`**, not `RequestId` alone, so
   `target_offsets = [7]` keeps one RequestId while targeting a new date each week. It lives
   in-process only (`InMemoryStore`); there is no durable cross-run record (PLAN.md §13.1).
-- **Hard booking cutoff** (LEADTIME_SKIP_PLAN F1). `request.booking_cutoff`
+- **Hard booking cutoff** (LEADTIME_SKIP_PLAN F1; on the tenant path it is PER PERSON since
+  2026-10-08, see the Multi-user section). `request.booking_cutoff`
   (`{days_before, time_of_day}`, default 16:00 ET the day before) FREEZES a date: no new booking
   and no upgrade after it; held bookings are never auto-cancelled. Cutoff + skip-days are decided
   by ONE pure primitive, `core/booking_cutoff.py::frozen_reason(now, target_date, *, timezone,
@@ -782,6 +783,20 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
 - **The Cosmos index policy must equal `CosmosTenantStore.QUERIED_PATHS`** (Cosmos rejects a
   filter on an unindexed path). A new query filter path means updating `cosmos.bicep` too;
   `tests/test_cosmos_bicep.py` fails CI otherwise.
+- **The booking cutoff is per person, and the ROW's `cutoff_at` is the single source of truth**
+  (2026-10-08). `User.booking_cutoff` (None = the site default `BookingCutoffConfig()` every
+  tenant command and the web pass) is what both stores compute a new row's `cutoff_at` from
+  (`insert_rule_row_if_absent`, `create_explicit_row`, refreshed on `reactivate_rule_row`);
+  `TenantStore.set_booking_cutoff` (Your account, `/me/cutoff`) saves it and rewrites the
+  person's live rows (PENDING/BOOKED/SKIPPED/SUPERSEDED from today on, version bumped; a
+  LEASED row is reported and keeps the old instant until the next save). The materializer tick
+  materializes each rule under its OWNER's cutoff (`_context_for`; the `cutoff` argument is the
+  site default fallback) so its frozen check matches the store's `check_create`; the watcher
+  hands the engine `semantics.cutoff_config_of(row)` (the inverse of `cutoff_at`), never the
+  site default. Pages word the viewer's own cutoff (`base_context["booking_cutoff_text"]`, the
+  `pass_context` `release_cycle` filter), emails word the row's. Pinned by the conformance
+  suite, `test_tick_materializes_each_rule_under_its_owners_cutoff`,
+  `test_watch_keeps_upgrading_until_the_rows_own_cutoff` and `tests/web/test_web_booking_cutoff.py`.
 - **The materializer walks the FULL horizon every call and decides by HISTORY, never by an id
   collision** (`tenant/materialize.py`, §7.7). It covers
   `[local_today, local_today + max(21, advance_days + 7)]` in the COURSE timezone and, per date,

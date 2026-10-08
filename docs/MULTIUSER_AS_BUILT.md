@@ -728,6 +728,37 @@ else about the user changes; `TenantStore.upsert_user`). The name is what the to
 every email opens with (`notify.first_name`) and what `/admin/users` lists. Pinned by
 `tests/web/test_web_display_name.py`.
 
+### Your own booking cutoff (2026-10-08)
+
+Operator request: "4 PM the day before" is the operator's taste; a friend may want noon the day
+before, or 4 PM two days before. The cutoff moved from one site-wide `BookingCutoffConfig` to a
+per-person setting, with the row's denormalized `cutoff_at` staying the single source of truth:
+
+- `User.booking_cutoff: BookingCutoffConfig | None` (None = the site default the store was built
+  with; a Cosmos user doc written before the field decodes to None). Set from **Your account**
+  (`/me/cutoff`, `services.set_booking_cutoff`): an hour (whole hours only) and a day count
+  (the day of, up to a week before), audited as `cutoff_set`.
+- Both stores take a NEW row's `cutoff_at` from its owner's setting
+  (`insert_rule_row_if_absent`, `create_explicit_row`) and refresh it on `reactivate_rule_row`.
+  `TenantStore.set_booking_cutoff` saves the setting and recomputes `cutoff_at` on the person's
+  PENDING / BOOKED / SKIPPED / SUPERSEDED rows from today on (version bumped: a web write). A
+  LEASED row is reported, not touched (the page says "save again in a few minutes"); accepted
+  residual: it keeps the old instant until then. The Cosmos user doc (global container) and the
+  rows (tenant container) cannot share a batch, so the setting lands first and each row follows in
+  its own IfMatch replace.
+- The materializer tick resolves each rule's owner and materializes under THEIR cutoff
+  (`_context_for`), so its frozen check agrees with the store's `check_create`; the web's
+  synchronous materialize passes the signed-in person's (`pages.cutoff_of`).
+- The watcher hands the engine the ROW's cutoff (`semantics.cutoff_config_of`, the inverse of
+  `cutoff_at`), never the site default, so a person with a later cutoff keeps being upgraded
+  past 4 PM the day before. `load_watch_rows` and `finalize_lost` already read `cutoff_at`.
+- Every page that words the cutoff (the "How the bot picks" panel, each course's release-cycle
+  tip) uses the viewer's own (`base_context["booking_cutoff_text"]`, the `release_cycle` filter
+  is `pass_context`), and the booking / upgrade / miss emails' "until ..." comes from the row.
+
+Pinned by the conformance suite (both backends), `tests/tenant/test_materialize.py`,
+`tests/tenant/test_watch_runner_snapshots.py` and `tests/web/test_web_booking_cutoff.py`.
+
 ### Time pickers list only the course's tee-sheet hours (2026-10-02)
 
 Operator request: "no reason to show 4 AM or 9 PM on the time list; per course." Every From/To

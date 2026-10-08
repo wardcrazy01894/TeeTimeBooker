@@ -29,9 +29,9 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
 from decimal import Decimal
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from ..core.config import BookingCutoffConfig
 from ..core.models import CourseId
