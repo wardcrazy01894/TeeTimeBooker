@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import AsyncIterator
 from datetime import time
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -19,7 +20,8 @@ from teetime.core.booking_cutoff import cutoff_instant
 from teetime.core.clock import FakeClock
 from teetime.core.config import BookingCutoffConfig
 from teetime.tenant.in_memory_store import InMemoryTenantStore
-from teetime.tenant.models import RankedWindow, RequestRow
+from teetime.tenant.materialize import materialize_rule
+from teetime.tenant.models import RankedWindow, RequestRow, RuleId, StandingRule
 from teetime.web.app import WebSettings, create_app
 from teetime.web.routes import ROUTES
 
@@ -146,3 +148,195 @@ async def test_a_date_the_bot_is_checking_keeps_the_old_cutoff_and_the_page_says
     assert saved is not None and saved.booking_cutoff == NOON_TWO_DAYS
     (after,) = await store.rows_for_account_date(member.a.id, OCT3)
     assert after.cutoff_at == row.cutoff_at  # untouched under the lease
+
+
+# --- a cutoff per booking (2026-10-08, the same day) --------------------------------------------
+# "Friday at noon for Saturday and Friday at 4 PM for Sunday, or Thursday, whatever": the weekly
+# and one-date forms carry their own Stop-looking pickers (the Day select opens with "my
+# account's cutoff"), a single-window rule's edit form too, the rules page words a rule's own,
+# Dates shows each date's, and the person's save leaves such bookings alone.
+
+FRIDAY_NOON = BookingCutoffConfig(days_before=1, time_of_day=time(12, 0))
+
+
+def _ranked_one(member: Member) -> dict[str, str]:
+    return {
+        "party_size": "2",
+        "opt1_account": str(member.a.id),
+        "opt1_earliest": "09:00",
+        "opt1_latest": "10:00",
+        "opt1_rank": "1",
+    }
+
+
+def _picker_opens_on_the_account(html: str, form_action: str) -> None:
+    form = re.search(rf'<form[^>]*action="{form_action}"[^>]*>(.*?)</form>', html, re.DOTALL)
+    assert form, f"no form posting to {form_action}"
+    assert "Stop looking" in form.group(1)
+    assert _selected(form.group(1), "cutoff_days_before") == ""
+    assert "my account" in form.group(1).lower()
+
+
+async def test_the_weekly_form_offers_a_cutoff_of_its_own_and_saves_it_on_every_rule(
+    client: httpx.AsyncClient, member: Member, store: InMemoryTenantStore
+) -> None:
+    html = (await client.get("/rules")).text
+    _picker_opens_on_the_account(html, "/bookings/weekly")
+    form = {
+        **_ranked_one(member),
+        "opt2_account": str(member.b.id),
+        "opt2_earliest": "09:00",
+        "opt2_latest": "10:00",
+        "opt2_rank": "2",
+        "weekday": "5",
+        "cutoff_days_before": "1",
+        "cutoff_time": "12:00",
+    }
+    r = await _post(client, "/bookings/weekly", form)
+    assert r.status_code == 303, r.text
+    rules = await store.list_rules_for_user(member.user.id)
+    assert len(rules) == 2 and {rule.booking_cutoff for rule in rules} == {FRIDAY_NOON}
+    for rule in rules:
+        (row,) = await store.rows_for_account_date(rule.course_account_id, OCT3)
+        assert row.cutoff_at == cutoff_instant(OCT3, timezone=TZ, cutoff=FRIDAY_NOON)
+        assert row.booking_cutoff is None  # a rule row follows its rule
+    page = (await client.get("/rules")).text
+    assert "stops looking 12 PM the day before" in page
+    # A weekly booking left on the account's cutoff says nothing of its own.
+    r = await _post(client, "/bookings/weekly", {**_ranked_one(member), "weekday": "6"})
+    assert r.status_code == 303, r.text
+    sunday = [rule for rule in await store.list_rules_for_user(member.user.id) if rule.weekday == 6]
+    assert len(sunday) == 1 and sunday[0].booking_cutoff is None
+    page = (await client.get("/rules")).text
+    assert page.count("stops looking") == 2  # the two Saturday rules only
+
+
+async def test_a_bad_cutoff_on_the_weekly_form_is_refused(
+    client: httpx.AsyncClient, member: Member, store: InMemoryTenantStore
+) -> None:
+    form = {
+        **_ranked_one(member),
+        "weekday": "5",
+        "cutoff_days_before": "1",
+        "cutoff_time": "12:30",
+    }
+    r = await _post(client, "/bookings/weekly", form)
+    assert r.status_code == 400
+    assert await store.list_rules_for_user(member.user.id) == []
+
+
+async def test_the_one_date_form_offers_a_cutoff_of_its_own_and_dates_shows_each_dates(
+    client: httpx.AsyncClient, member: Member, store: InMemoryTenantStore
+) -> None:
+    html = (await client.get("/dates")).text
+    _picker_opens_on_the_account(html, "/bookings/date")
+    form = {
+        **_ranked_one(member),
+        "target_date": OCT3.isoformat(),
+        "cutoff_days_before": "2",
+        "cutoff_time": "16:00",
+    }
+    r = await _post(client, "/bookings/date", form)
+    assert r.status_code == 303, r.text
+    (row,) = await store.rows_for_account_date(member.a.id, OCT3)
+    thursday_four = BookingCutoffConfig(days_before=2, time_of_day=time(16, 0))
+    assert row.booking_cutoff == thursday_four
+    assert row.cutoff_at == cutoff_instant(OCT3, timezone=TZ, cutoff=thursday_four)
+    page = (await client.get("/dates")).text
+    assert "Thu Oct 1, 4 PM" in page  # the date's own cutoff, on the course's clock
+
+
+async def test_a_single_window_rules_edit_form_carries_its_own_cutoff(
+    client: httpx.AsyncClient, member: Member, store: InMemoryTenantStore, clock: FakeClock
+) -> None:
+    """The in-place edit form pre-selects the rule's own cutoff (even one equal to the
+    account's: own is own), saving a cutoff moves the rule's live rows, and clearing it puts
+    them back under the account's."""
+    rule = await store.upsert_rule(
+        StandingRule(
+            id=RuleId(uuid4()),
+            course_account_id=member.a.id,
+            weekday=5,
+            options=(RankedWindow(1, time(8), time(10)),),
+            party_size=2,
+            active=True,
+            materialized_through=None,
+            version=1,
+        ),
+        user_id=member.user.id,
+    )
+    await materialize_rule(rule, store=store, policy=POLICY, cutoff=CUTOFF, now=clock.now_utc())
+    (before,) = await store.rows_for_account_date(member.a.id, OCT3)
+    html = (await client.get("/rules")).text
+    _picker_opens_on_the_account(html, f"/rules/{rule.id}")
+    base = {"action": "save", "weekday": "5", "window_earliest": "08:00", "window_latest": "10:00"}
+    r = await _post(
+        client,
+        f"/rules/{rule.id}",
+        {
+            **base,
+            "party_size": "2",
+            "version": "1",
+            "cutoff_days_before": "1",
+            "cutoff_time": "16:00",
+        },
+    )
+    assert r.status_code == 303, r.text
+    stored = await store.get_rule_unscoped(rule.id)
+    assert stored is not None and stored.booking_cutoff == CUTOFF  # own, though equal
+    html = (await client.get("/rules")).text
+    form = re.search(rf'<form[^>]*action="/rules/{rule.id}"[^>]*>(.*?)</form>', html, re.DOTALL)
+    assert form and _selected(form.group(1), "cutoff_days_before") == "1"
+    assert _selected(form.group(1), "cutoff_time") == "16:00"
+    # Now Friday noon: the pending row moves with the rule.
+    r = await _post(
+        client,
+        f"/rules/{rule.id}",
+        {
+            **base,
+            "party_size": "2",
+            "version": "2",
+            "cutoff_days_before": "1",
+            "cutoff_time": "12:00",
+        },
+    )
+    assert r.status_code == 303, r.text
+    (after,) = await store.rows_for_account_date(member.a.id, OCT3)
+    assert after.cutoff_at == cutoff_instant(OCT3, timezone=TZ, cutoff=FRIDAY_NOON)
+    assert after.version > before.version
+    # Back to the account's: with the person on noon-two-days, the row follows THAT.
+    assert (
+        await _post(client, "/me/cutoff", {"cutoff_time": "12:00", "cutoff_days_before": "2"})
+    ).status_code == 303
+    assert (await store.rows_for_account_date(member.a.id, OCT3))[0].cutoff_at == after.cutoff_at
+    r = await _post(
+        client,
+        f"/rules/{rule.id}",
+        {**base, "party_size": "2", "version": "3", "cutoff_days_before": ""},
+    )
+    assert r.status_code == 303, r.text
+    stored = await store.get_rule_unscoped(rule.id)
+    assert stored is not None and stored.booking_cutoff is None
+    (cleared,) = await store.rows_for_account_date(member.a.id, OCT3)
+    assert cleared.cutoff_at == cutoff_instant(OCT3, timezone=TZ, cutoff=NOON_TWO_DAYS)
+
+
+async def test_the_account_save_leaves_a_booking_with_its_own_cutoff_alone_and_says_so(
+    client: httpx.AsyncClient, member: Member, store: InMemoryTenantStore, clock: FakeClock
+) -> None:
+    own = await store.create_explicit_row(
+        user_id=member.user.id,
+        account_id=member.a.id,
+        target_date=OCT3,
+        options=(RankedWindow(1, time(8), time(10)),),
+        party_size=2,
+        now=clock.now_utc(),
+        booking_cutoff=FRIDAY_NOON,
+    )
+    r = await _post(client, "/me/cutoff", {"cutoff_time": "12:00", "cutoff_days_before": "2"})
+    assert r.status_code == 303 and r.headers["location"] == "/me?notice=cutoff_saved_kept_own"
+    html = (await client.get(r.headers["location"])).text
+    assert "its own cutoff" in html
+    assert "keeps it" in html  # the hint on the page, in every state
+    (after,) = await store.rows_for_account_date(member.a.id, OCT3)
+    assert after == own
