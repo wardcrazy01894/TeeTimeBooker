@@ -165,6 +165,60 @@ def test_booked_email_lays_out_the_tee_time() -> None:
     assert "Tee time:  8:12 AM" in email.body
 
 
+def test_upgraded_email_is_good_news_and_names_the_old_tee_time() -> None:
+    """Operator request 2026-10-08: an upgrade reads as good news, says the time is closer to
+    what was asked for, shows the old time, and says we keep looking until the cutoff."""
+    event = replace(
+        _event(UserEventKind.UPGRADED, detail="watcher"),
+        previous_tee_time=TEE.replace(hour=9, minute=30),
+        cutoff_local=datetime(2026, 10, 9, 16, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    email = render_user_event(
+        event, first_name="Brad", course_label="Mangrove Bay", rng=random.Random(0)
+    )
+    assert email.subject == "[TeeTimeBooker] Upgraded: Mangrove Bay Sat Oct 10 at 8:12 AM"
+    lines = email.body.splitlines()
+    assert lines[:8] == [
+        "Hi Brad,",
+        "",
+        "Good news! We got you a tee time closer to what you asked for.",
+        "",
+        "  Course:    Mangrove Bay",
+        "  Date:      Saturday, October 10",
+        "  Tee time:  8:12 AM (was 9:30 AM)",
+        "",
+    ]
+    assert lines[8] == (
+        "We'll keep checking for an even better time until 4 PM on Friday, October 9."
+    )
+    assert lines[9] == "" and lines[10] in GOLF_QUIPS and lines[-1] == "— TeeTimeBooker"
+    assert "watcher" not in email.body and "TTB" not in email.body
+
+
+def test_upgraded_email_without_context_still_reads() -> None:
+    """The old tee time and the cutoff are optional context: no "(was ...)" and no deadline
+    sentence when the event lacks them, never an empty one."""
+    email = render_user_event(_event(UserEventKind.UPGRADED), first_name="Brad")
+    assert "Good news! We got you a tee time closer to what you asked for." in email.body
+    assert "(was" not in email.body and "keep checking" not in email.body
+
+
+def test_booked_email_says_we_keep_checking_until_the_cutoff() -> None:
+    """A booking carries the same promise as an upgrade: the watcher keeps upgrading until the
+    person's cutoff (so the cutoff they set on Your account is explained where it matters)."""
+    event = replace(
+        _event(UserEventKind.BOOKED),
+        cutoff_local=datetime(2026, 10, 8, 12, 0, tzinfo=ZoneInfo("America/New_York")),
+    )
+    email = render_user_event(event, first_name="Brad", course_label="Mangrove Bay")
+    assert (
+        "  Tee time:  8:12 AM\n\n"
+        "We'll keep checking for a better time until 12 PM on Thursday, October 8.\n"
+    ) in email.body
+    without = render_user_event(_event(UserEventKind.BOOKED), first_name="Brad")
+    assert "keep checking" not in without.body
+
+
 def test_booked_email_signs_off_with_a_random_golf_quip() -> None:
     seen = set()
     for seed in range(40):
