@@ -26,6 +26,7 @@ from teetime.web.routes import ROUTES
 from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE, TZ
 from .test_web_course_info import NAMES, POLICY
 from .test_web_ranked_pages import OCT3, Member, _post
+from .test_web_ranked_pages import member as member  # noqa: PLC0414 — pytest fixture re-export
 
 NOON_TWO_DAYS = BookingCutoffConfig(days_before=2, time_of_day=time(12, 0))
 
