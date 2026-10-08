@@ -112,8 +112,8 @@ keeps looking be the person's own choice.
 **Deploy:** dev deployed `ea796fe` first (auto, 16:00–16:07 ET); tag pushed 16:43 ET; approved by
 Claude on the operator's "lets do the prod tag and release yeah" at 16:46 ET; pass 1 skipped, pass 2 + migrations green, done 16:50 ET. **Verified:** both
 booking jobs, the watch job and the migrate job run `teetime:ea796fe…`; `teetime-web-prod`'s
-active revision is on the same image, Running; `/healthz` 200 on https://spicyteetimebooker.com.
-**First exercise:** the next watcher upgrade mails the new wording; a person who sets a cutoff on
+active revision is on the same image, Running; `/healthz` 200 on https://spicyteetimebooker.com;
+the first watch run on the new image (16:50 ET, `-29858210`) Succeeded. **First exercise:** the next watcher upgrade mails the new wording; a person who sets a cutoff on
 Your account sees their dates move onto it at once.
 
 ## infra/v3.11.0: 2026-10-06 (`main`@`ae9345e`)
