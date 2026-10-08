@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.12.0: 2026-10-08 (`main`@`ea796fe`)](#infrav3120-2026-10-08-mainea796fe)
 - [infra/v3.11.0: 2026-10-06 (`main`@`ae9345e`)](#infrav3110-2026-10-06-mainae9345e)
 - [infra/v3.10.0: 2026-10-04 (`main`@`08c6fe8`)](#infrav3100-2026-10-04-main08c6fe8)
 - [infra/v3.9.0: 2026-10-02 (`main`@`68c4b8c`)](#infrav390-2026-10-02-main68c4b8c)
@@ -50,6 +51,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.12.0` | 2026-10-08 | `ea796fe` | unchanged (email, web; the cutoff a person sets is honoured) | The upgrade email reads as good news and says until when the bot keeps checking; the booking cutoff is per person, set on Your account (#325) |
 | `infra/v3.11.0` | 2026-10-06 | `ae9345e` | unchanged (watcher email) | A watcher booking's emails name the tee time (both said only the date); the operator booking notice carries the whole request: tee time + ranked choice, windows, party, price cap, id, cutoff (#323) |
 | `infra/v3.10.0` | 2026-10-04 | `08c6fe8` | **changed** (race timing) | Blind-POST first rung `-400` → `-369` ms, per-POST round trip logged, dev sends no email unless its booker fails (#317–#319) |
 | `infra/v3.9.0` | 2026-10-02 | `68c4b8c` | unchanged (email, web) | The miss email, Course username hint, operator page per person, Your account (own name), sign-in note for non-Gmail addresses (#307, #309–#314) |
@@ -80,6 +82,39 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.12.0: 2026-10-08 (`main`@`ea796fe`)
+
+**Booking behaviour unchanged for everyone who leaves the cutoff alone.** Checking what a friend
+was mailed for his Sun Oct 11 booking (the user email, while the operator got the operator notice)
+led to the next one: the "Upgraded" email a later watcher upgrade would send was a bare card, and
+the operator asked that it read as the good news it is, and that the time until which the bot
+keeps looking be the person's own choice.
+
+- **The upgrade email reads as good news** (#325). Subject "Upgraded: <course> <when>", body "Good
+  news! We got you a tee time closer to what you asked for.", the card names the new tee time with
+  the old one beside it ("8:00 AM (was 9:30 AM)"), and every booking email ends with "We'll keep
+  checking for a better time until 4 PM on Saturday, October 10." ("an even better" after an
+  upgrade). The deadline is the ROW's own cutoff, so it is right for whatever the person set.
+- **The booking cutoff is per person** (#325). Your account has a "Booking cutoff" form (`POST
+  /me/cutoff`: a time on the hour, and the day of / the day before / N days before); unset means
+  the site default, 4 PM the day before. `User.booking_cutoff` is what both stores compute a new
+  row's `cutoff_at` from, and saving it rewrites the person's live rows (pending and booked, from
+  today on), so a later cutoff re-opens upgrades for a date already past the old one; a row the
+  watcher holds at that moment keeps the old instant until the next save and the page says so. The
+  materializer ticks each rule under its owner's cutoff and the watcher derives the engine's
+  cutoff from the row, never from the site default. Pages word the viewer's own cutoff, emails the
+  row's. Reviewed adversarially (approved; the Cosmos IfMatch race on the rewrite became a
+  reported skip with a test).
+- A CI note: the operator's GitHub account was suspended from Oct 6 to Oct 8, so the PR sat with
+  no checks until reinstatement; pushes themselves kept working.
+
+**Deploy:** dev deployed `ea796fe` first (auto, 16:00–16:07 ET); tag pushed 16:43 ET; approved by
+Claude on the operator's "lets do the prod tag and release yeah" at 16:46 ET; pass 1 skipped, pass 2 + migrations green, done 16:50 ET. **Verified:** both
+booking jobs, the watch job and the migrate job run `teetime:ea796fe…`; `teetime-web-prod`'s
+active revision is on the same image, Running; `/healthz` 200 on https://spicyteetimebooker.com.
+**First exercise:** the next watcher upgrade mails the new wording; a person who sets a cutoff on
+Your account sees their dates move onto it at once.
 
 ## infra/v3.11.0: 2026-10-06 (`main`@`ae9345e`)
 
