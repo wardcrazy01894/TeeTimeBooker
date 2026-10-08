@@ -46,6 +46,7 @@ from teetime.tenant.models import (
     RowStatus,
     RuleId,
     StandingRule,
+    row_is_frozen,
     row_request_id,
     rule_row_id,
 )
@@ -697,6 +698,28 @@ async def test_rule_window_edit_skips_frozen_rows() -> None:
     assert first.id not in report.rewritten
     assert await _get(s, first) == first
     assert set(report.rewritten) == {rule_row_id(rule.id, d) for d in SATURDAYS[1:]}
+
+
+async def test_an_edit_that_moves_the_cutoff_later_and_the_window_applies_both() -> None:
+    """One edit changes the window AND moves the rule's cutoff later. The cutoff rewrite must run
+    BEFORE the window rewrite: a row frozen under the old instant is re-opened by the first and
+    then gets the window from the second (review of #327; the window rewrite skips frozen rows,
+    so the other order left the re-opened row with its old window until the next edit)."""
+    s = _store()
+    t = await _tenant(s)
+    rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
+    await _materialize(s, rule)
+    first = await _own_row(s, t, rule, SATURDAYS[0])
+    now = datetime(2026, 9, 25, 20, 0, tzinfo=UTC)  # 9/26's default cutoff (16:00 EDT on 9/25)
+    assert row_is_frozen(first, now=now)
+    stored = await _stored_rule(s, rule)
+    nine_that_day = BookingCutoffConfig(days_before=0, time_of_day=time(9, 0))
+    edited = replace(stored, party_size=4, booking_cutoff=nine_that_day)
+    report = await _edit(s, stored, edited, t, now=now)
+    assert first.id in report.cutoff_rewritten and first.id in report.rewritten
+    after = await _get(s, first)
+    assert after.cutoff_at == cutoff_instant(SATURDAYS[0], timezone=TZ, cutoff=nine_that_day)
+    assert after.party_size == 4 and not row_is_frozen(after, now=now)
 
 
 async def test_apply_rule_edit_surfaces_version_conflict() -> None:

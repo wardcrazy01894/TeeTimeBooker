@@ -296,9 +296,13 @@ async def materialize_rule(
     rewrite's IfMatch) converges on the rule's next walk, which the tick runs daily. A no-op
     when nothing differs.
     """
+    # ``cutoff`` is already the owner's effective (their own, else the default), so it stands in
+    # for both fallbacks; only the rule's own can override it here.
     cutoff = resolve_cutoff(rule.booking_cutoff, cutoff, cutoff)
     today = _local_today(policy, now)
     through = today + timedelta(days=horizon_days(policy))
+    # First, before any date is judged: an inactive or stale rule is refused here by the store
+    # (``TransitionRefusedError``), as it would be by the first row write.
     moved = await store.rewrite_rule_cutoff(rule, now=now)
     tally = _Tally.empty()
     for day in dates_for_rule(rule, today=today, horizon=horizon_days(policy)):
@@ -552,11 +556,19 @@ async def _edit_window(
     user_id: UserId,
 ) -> MaterializeReport:
     stored = await store.upsert_rule(new, user_id=user_id)
+    # The cutoff rewrite FIRST (review of #327): a cutoff moved later re-opens rows the old
+    # instant had frozen, and the window rewrite skips frozen rows, so the other order would
+    # leave a re-opened row with its old window until the next edit. ``materialize_rule``'s own
+    # leading call then finds nothing to do.
+    moved = await store.rewrite_rule_cutoff(stored, now=now)
     rewritten, skipped = await _rewrite_pending_rows(stored, store=store, policy=policy, now=now)
     # The web materializes on every edit (§7.7 owners); idempotent, and it keeps the horizon full.
     report = await materialize_rule(stored, store=store, policy=policy, cutoff=cutoff, now=now)
     return replace(
-        report, rewritten=tuple(rewritten), skipped_leased=_merged(skipped, report.skipped_leased)
+        report,
+        rewritten=tuple(rewritten),
+        cutoff_rewritten=_merged(list(moved.rewritten), report.cutoff_rewritten),
+        skipped_leased=_merged([*moved.skipped_leased, *skipped], report.skipped_leased),
     )
 
 

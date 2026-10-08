@@ -785,7 +785,11 @@ source of truth (the row's `cutoff_at`):
   which gives one mechanism for both the edit (`apply_rule_edit` ends in a materialize) and the
   convergence of a skipped row or a crash between the rule write and the rewrite (the tick
   walks every rule daily). Idempotent: a row already at the instant is not written. In Cosmos it
-  is one partition query on the indexed `/ruleId` plus a per-row IfMatch replace.
+  is one partition query on the indexed `/ruleId` plus a per-row IfMatch replace. In
+  `_edit_window` it also runs BEFORE the window rewrite (PR review): a cutoff moved later
+  re-opens rows the old instant had frozen, and the window rewrite skips frozen rows, so the
+  other order left a re-opened row with its old window until the next edit
+  (`test_an_edit_that_moves_the_cutoff_later_and_the_window_applies_both`).
 - `reactivate_rule_row` computes the fresh instant BEFORE its transition check and checks a copy
   of the row carrying it (second review finding): a withdrawn row keeps its stale `cutoff_at`,
   and a rule whose cutoff moved later must re-open a date the old instant had closed, where the
