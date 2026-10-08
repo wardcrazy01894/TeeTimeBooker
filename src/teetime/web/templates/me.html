@@ -20,6 +20,18 @@
 </section>
 
 <section>
+  <h2>Booking cutoff</h2>
+  <p class="hint">Up to this moment the bot keeps trying to book each date and switches to a better tee time if one opens. After it, what you hold is final: a tee time you have is never dropped, and nothing new is booked for that date. Pick when that is, on the course's clock.</p>
+  <form method="post" action="/me/cutoff" class="form-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Time <select name="cutoff_time">{% for t in cutoff_hour_choices %}<option value="{{ t.strftime('%H:%M') }}"{% if t == cutoff_time %} selected{% endif %}>{{ t | time_label }}</option>{% endfor %}</select></label>
+    <label>Day <select name="cutoff_days_before">{% for d in cutoff_days_choices %}<option value="{{ d }}"{% if d == cutoff_days %} selected{% endif %}>{{ cutoff_days_label(d) }}</option>{% endfor %}</select></label>
+    <button type="submit" class="primary">Save</button>
+  </form>
+  <p class="hint">Right now: {{ booking_cutoff_text }}. Saving moves your pending and booked dates onto the new cutoff, so a later cutoff re-opens upgrades for a date already past the old one.</p>
+</section>
+
+<section>
   <h2>Your courses</h2>
   <p class="hint">Course logins, prices and refreshes live on <a href="/accounts">Connected Courses</a>.</p>
 </section>

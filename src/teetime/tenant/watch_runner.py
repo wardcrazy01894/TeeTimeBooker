@@ -136,6 +136,7 @@ from .notify import UserEvent, UserEventKind, UserNotifier
 from .recording import RecordedBook, RecordingLog, make_recording_adapter
 from .retry import retry_transient
 from .runner import AdapterFactory, ExitStatus, WatchReport, resolve_credentials
+from .semantics import cutoff_config_of
 from .store import RowOutcome, TenantStore
 from .watcher import (
     RECONCILE_EVERY_N_RUNS,
@@ -238,8 +239,9 @@ async def run_tenant_watch(
 ) -> WatchReport:
     """One tenant-watcher run (§7.1; the module docstring is the full contract). ``policies``
     names the hosted courses and their horizons; ``booking_policy`` is the one-booking (upgrade)
-    policy, handed to the engine for OWNED booked rows only; ``cutoff`` is the hard booking
-    cutoff (the engine's stop-acting gate and the materializer's)."""
+    policy, handed to the engine for OWNED booked rows only; ``cutoff`` is the SITE default
+    booking cutoff, the materializer tick's fallback for a user without their own. The engine's
+    stop-acting gate gets each ROW's cutoff (``cutoff_config_of``), never this one."""
     run = _Run(
         store=store,
         clock=clock,
@@ -934,7 +936,9 @@ class _Run:
             watch_config=WatchConfig(),
             creds={row.course_id: creds},
             policy=self.booking_policy if policy_on else OneBookingPolicyConfig(enabled=False),
-            booking_cutoff=self.cutoff,
+            # The ROW's cutoff (its owner's setting when it was created or last rewritten):
+            # the same instant the store's reads and finalize_lost use, never the site default.
+            booking_cutoff=cutoff_config_of(row),
             reconcile_eligible=self._eligibility(row, work.owned, uncertain_times),
         )
         result: BookingResult | None = None

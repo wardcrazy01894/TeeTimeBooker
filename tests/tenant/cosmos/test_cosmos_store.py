@@ -18,7 +18,7 @@ import os
 import re
 from collections.abc import AsyncIterator
 from dataclasses import fields, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -28,6 +28,7 @@ from azure.cosmos.exceptions import CosmosHttpResponseError
 from azure.identity.aio import DefaultAzureCredential
 
 from teetime.core.clock import FakeClock
+from teetime.core.config import BookingCutoffConfig
 from teetime.core.models import CourseId
 from teetime.tenant.cosmos import store as store_module
 from teetime.tenant.cosmos.documents import (
@@ -83,6 +84,7 @@ from ..conformance import (
     TenantStoreConformance,
     _book,
     _explicit,
+    _get,
     _outcome,
     _rule,
     _rule_row,
@@ -216,6 +218,30 @@ async def test_batch_create_slot_conflict_aborts_row_create() -> None:
         await _explicit(store, t)
     assert await store.rows_for_account_date(t.account.id, TARGET) == []
     assert await store.slot_pointer(t.account.id, TARGET) == squatter
+
+
+async def test_set_booking_cutoff_reports_a_row_written_under_its_ifmatch() -> None:
+    """Review of #325: a lease taken between the query and the row's IfMatch replace (the
+    watcher starting on it) must count as skipped, never escape as a 500 with the setting
+    already saved and the other rows unwritten."""
+    store, tenant, _ = _fake_store()
+    t = await _tenant(store)
+    raced = await _explicit(store, t)
+    other = await _explicit(store, t, target=TARGET + timedelta(days=7))
+
+    async def lease_it() -> None:
+        assert await store.acquire_row_lease(
+            raced.id, owner=WATCHER, until=NOW + timedelta(minutes=5), now=NOW, expected=None
+        )
+
+    tenant.before_write = lease_it
+    noon = BookingCutoffConfig(days_before=1, time_of_day=time(12, 0))
+    change = await store.set_booking_cutoff(t.user.id, noon, now=NOW)
+    assert change.skipped_leased == (raced.id,)
+    assert change.rewritten == (other.id,)
+    assert (await store.get_user_unscoped(t.user.id)) == change.user
+    assert (await _get(store, raced)).cutoff_at == raced.cutoff_at
+    assert (await _get(store, other)).cutoff_at != other.cutoff_at
 
 
 async def test_rule_row_create_asserts_ruleday_pointer_in_batch() -> None:

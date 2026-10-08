@@ -25,12 +25,14 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.datastructures import FormData
 
+from ..core.config import BookingCutoffConfig
 from ..core.models import CourseId
 from ..tenant.crypto import Keyring
 from ..tenant.models import CourseAccountId, RowId, RuleId, User
 from ..tenant.runner import AdapterFactory
 from . import adopt, auth, feedback, group_services, services
 from .booking_form import MAX_OPTIONS, RankedChoice, parse_ranked_form
+from .ranking_explainer import cutoff_text
 from .services import (
     RULE_EDIT_HINT,
     WEEKDAY_NAMES,
@@ -58,6 +60,11 @@ _NOTICES = {
     "rule_activated": "Rule reactivated and its dates added back.",
     "one_off_added": "Date added.",
     "name_saved": "Name saved.",
+    "cutoff_saved": "Booking cutoff saved. Your pending and booked dates now follow it.",
+    "cutoff_saved_partly": (
+        "Booking cutoff saved. A date the bot was checking at that moment keeps the old "
+        "cutoff: save again in a few minutes to apply it there too."
+    ),
     "skipped": "Date skipped: the bot will not book it.",
     "unskipped": "Date back on: the bot will try to book it.",
     "withdrawn": "Date withdrawn.",
@@ -91,9 +98,17 @@ class _Pages:
     def __init__(self, ctx: _Ctx) -> None:
         self.ctx = ctx
 
+    def cutoff_of(self, user: User) -> BookingCutoffConfig:
+        """The cutoff the bot runs for ``user`` (their own, else the site default): what every
+        rule write materializes under and what the pages word."""
+        return services.effective_cutoff(user, self.ctx.cutoff)
+
     def base_context(self, request: Request, user: User) -> dict[str, object]:
+        cutoff = self.cutoff_of(user)
         return {
             "user": user,
+            # The person's OWN cutoff in words (2026-10-08), shadowing the site-default global.
+            "booking_cutoff_text": cutoff_text(cutoff.days_before, cutoff.time_of_day),
             "is_operator": auth.is_operator(user, operator_email=self.ctx.settings.operator_email),
             "dry_run": self.ctx.settings.dry_run,
             "notice": _NOTICES.get(request.query_params.get("notice", "")),
@@ -164,8 +179,11 @@ class _Pages:
         error: str | None = None,
         one_off: OneOffPrefill | None = None,
     ) -> Response:
-        """ "Your account" (2026-10-02): who you are signed in as and your own name."""
+        """ "Your account" (2026-10-02): who you are signed in as, your own name and, since
+        2026-10-08, your own booking cutoff."""
         context = self.base_context(request, user)
+        cutoff = self.cutoff_of(user)
+        context["cutoff_days"], context["cutoff_time"] = cutoff.days_before, cutoff.time_of_day
         context["error"], context["one_off"] = error, one_off
         return self.ctx.page(request, "me.html", context, status_code=status_code)
 
@@ -272,6 +290,20 @@ def _register_read_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
 
         return await pages.act(request, user, action, on_error=pages.account)
 
+    @app.post("/me/cutoff")
+    async def set_booking_cutoff(request: Request, user: CurrentUser) -> Response:
+        async def action(form: dict[str, str]) -> str:
+            change = await services.set_booking_cutoff(
+                pages.ctx.store,
+                user_id=user.id,
+                cutoff=services.parse_cutoff_form(form),
+                clock=pages.ctx.clock,
+            )
+            notice = "cutoff_saved_partly" if change.skipped_leased else "cutoff_saved"
+            return f"/me?notice={notice}"
+
+        return await pages.act(request, user, action, on_error=pages.account)
+
 
 def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Dependency) -> None:
     CurrentUser = Annotated[User, Depends(current_user)]  # noqa: N806 — type alias
@@ -290,7 +322,7 @@ def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
                 account_id=account_id,
                 rule_input=rule_input,
                 policies=ctx.policies,
-                cutoff=ctx.cutoff,
+                cutoff=pages.cutoff_of(user),
                 clock=ctx.clock,
             )
             return "/rules?notice=rule_created"
@@ -314,7 +346,7 @@ def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
                     rule_input=services.parse_rule_form(form),
                     version=version,
                     policies=ctx.policies,
-                    cutoff=ctx.cutoff,
+                    cutoff=pages.cutoff_of(user),
                     clock=ctx.clock,
                     check_window=ctx.check_window,
                 )
@@ -326,7 +358,7 @@ def _register_rule_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
                 active=verb == "activate",
                 version=version,
                 policies=ctx.policies,
-                cutoff=ctx.cutoff,
+                cutoff=pages.cutoff_of(user),
                 clock=ctx.clock,
             )
             return f"/rules?notice=rule_{verb}d"
@@ -554,7 +586,7 @@ def _register_booking_routes(app: FastAPI, pages: _Pages, *, current_user: _Depe
                 weekday=services.parse_weekday(form),
                 choice=choice,
                 policies=ctx.policies,
-                cutoff=ctx.cutoff,
+                cutoff=pages.cutoff_of(user),
                 clock=ctx.clock,
             )
             if report.failures:

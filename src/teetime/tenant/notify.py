@@ -197,7 +197,8 @@ _USER_TEMPLATES: Mapping[UserEventKind, tuple[str, str]] = {
     UserEventKind.BOOKED: ("Booked: {course} {when}", "You're booked at {course} on {when}."),
     UserEventKind.UPGRADED: (
         "Upgraded: {course} {when}",
-        "We moved your booking at {course} to a better tee time: {when}.",
+        # Operator request 2026-10-08: an upgrade is good news, not a notice.
+        "Good news! We got you a tee time closer to what you asked for.",
     ),
     UserEventKind.MISSED_DROP: (
         "No tee time yet: {course} {day}",
@@ -329,14 +330,29 @@ _BOOKING_KINDS = frozenset({UserEventKind.BOOKED, UserEventKind.UPGRADED})
 
 
 def _booking_card(event: UserEvent, course: str) -> list[str]:
-    """The tee time laid out as a small aligned block (plain text, so spaces align it)."""
+    """The tee time laid out as a small aligned block (plain text, so spaces align it); an
+    upgrade's old tee time follows the new one as ``(was 9:30 AM)``."""
     day = event.tee_time.date() if event.tee_time else event.target_date
     card = [f"  Course:    {course}"]
     if day is not None:
         card.append(f"  Date:      {day:%A, %B} {day.day}")
     if event.tee_time is not None:
-        card.append(f"  Tee time:  {_time(event.tee_time)}")
+        was = f" (was {_time(event.previous_tee_time)})" if event.previous_tee_time else ""
+        card.append(f"  Tee time:  {_time(event.tee_time)}{was}")
     return card
+
+
+def _keeps_checking_line(event: UserEvent) -> list[str]:
+    """What the watcher does next (operator request 2026-10-08): it keeps upgrading the booking
+    until the person's cutoff, so say so, in their own deadline's words. Nothing when the event
+    carries no cutoff (an old row, a test event): never an empty promise."""
+    if event.cutoff_local is None:
+        return []
+    better = "an even better" if event.kind is UserEventKind.UPGRADED else "a better"
+    return [
+        "",
+        f"We'll keep checking for {better} time until {_deadline_text(event.cutoff_local)}.",
+    ]
 
 
 def render_user_event(
@@ -364,6 +380,7 @@ def render_user_event(
         # The golfer's view only: no confirmation id (ours, and ForeUP's internal teetime id,
         # never shown to them by the course) and no engine detail ("watcher").
         lines += ["", *_booking_card(event, fields["course"])]
+        lines += _keeps_checking_line(event)
         lines += ["", (rng or random).choice(GOLF_QUIPS)]
     elif event.kind is UserEventKind.CANCELLED:
         lines += ["", "Hope to see you back on the course soon."]

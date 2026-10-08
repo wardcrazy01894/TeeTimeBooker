@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from teetime.core.config import BookingCutoffConfig
 from teetime.core.models import CourseId
 from teetime.tenant.cosmos.documents import (
     AUDIT_TTL_S,
@@ -486,6 +487,24 @@ class TestRoundtripGlobal:
             user, oauth_subject=None, status=UserStatus.INVITED, role=UserRole.OPERATOR
         )
         assert from_user_doc(to_user_doc(invited)).item == invited
+
+    def test_roundtrip_user_booking_cutoff(self) -> None:
+        """``User.booking_cutoff`` (2026-10-08) is a small nested doc; a user document written
+        before the field existed (no key) or with null decodes to None = the site default."""
+        custom = replace(
+            _user(), booking_cutoff=BookingCutoffConfig(days_before=2, time_of_day=time(12, 0))
+        )
+        doc = to_user_doc(custom)
+        assert doc["bookingCutoff"] == {"daysBefore": 2, "timeOfDay": "12:00:00"}
+        assert from_user_doc(doc).item == custom
+        assert to_user_doc(_user())["bookingCutoff"] is None
+        legacy = dict(to_user_doc(_user()))
+        del legacy["bookingCutoff"]
+        assert from_user_doc(legacy).item.booking_cutoff is None
+        with pytest.raises(DocumentError):
+            from_user_doc(dict(doc, bookingCutoff={"daysBefore": -1, "timeOfDay": "12:00:00"}))
+        with pytest.raises(DocumentError):
+            from_user_doc(dict(doc, bookingCutoff={"daysBefore": 1}))
 
     @pytest.mark.parametrize("kind", list(ClaimKind))
     def test_roundtrip_uniqueness_claim(self, kind: ClaimKind) -> None:

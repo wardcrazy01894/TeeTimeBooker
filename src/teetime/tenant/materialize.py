@@ -280,6 +280,9 @@ async def materialize_rule(
     ``rule`` must be the STORED version (the store IfMatches it on every row write, round-5), so
     pass what ``upsert_rule`` / ``rules_needing_materialization`` / ``get_rule_unscoped``
     returned, never a copy edited in memory. An inactive rule is refused by the store.
+    ``cutoff`` must be the rule OWNER's effective booking cutoff (``User.booking_cutoff``, else
+    the site default): the store computes each new row's ``cutoff_at`` from that setting and
+    refuses a frozen create, so the frozen check here has to use the same one.
     """
     today = _local_today(policy, now)
     through = today + timedelta(days=horizon_days(policy))
@@ -341,9 +344,16 @@ async def _sweep_uncovered(store: TenantStore, *, now: datetime) -> None:
         log.info("materializer sweep: withdrew row %s for %s (%s)", row.id, row.target_date, reason)
 
 
-async def _policy_for(
-    rule: StandingRule, *, store: TenantStore, policies: dict[str, ReleasePolicy]
-) -> ReleasePolicy | None:
+async def _context_for(
+    rule: StandingRule,
+    *,
+    store: TenantStore,
+    policies: dict[str, ReleasePolicy],
+    default_cutoff: BookingCutoffConfig,
+) -> tuple[ReleasePolicy, BookingCutoffConfig] | None:
+    """The rule's course policy and its OWNER's booking cutoff (``User.booking_cutoff``, else
+    ``default_cutoff``). The store computes a new row's ``cutoff_at`` from the same setting, so
+    the frozen check here and ``check_create`` in the store agree on which dates are closed."""
     account = await store.get_account_unscoped(rule.course_account_id)
     if account is None:
         log.warning("materializer tick: rule %s has no account; skipping", rule.id)
@@ -355,7 +365,10 @@ async def _policy_for(
             rule.id,
             account.course_id,
         )
-    return policy
+        return None
+    user = await store.get_user_unscoped(account.user_id)
+    cutoff = user.booking_cutoff if user is not None and user.booking_cutoff else default_cutoff
+    return policy, cutoff
 
 
 async def materialize_tick(
@@ -368,7 +381,8 @@ async def materialize_tick(
     """Watcher entry: one indexed query (rules with ``materialized_through`` short of the
     horizon), a no-op on most runs, plus the ``rows_no_longer_covered`` sweep that withdraws rows a
     deactivation had to skip while they were leased (§7.7). ``policies`` is keyed by CourseId
-    string.
+    string. ``cutoff`` is the SITE default; each rule is materialized under its owner's own
+    ``booking_cutoff`` when set (2026-10-08).
 
     The query is ONE superset read (through the FARTHEST course horizon); each due rule is then
     materialized to ITS OWN course's horizon, and a rule already at its horizon is left alone. A
@@ -381,14 +395,19 @@ async def materialize_tick(
             # The WHOLE per-rule body is isolated, including the policy lookup (a store read):
             # a transient error on one rule must neither stop the others nor skip the sweep.
             try:
-                policy = await _policy_for(rule, store=store, policies=policies)
-                if policy is None:
+                found = await _context_for(
+                    rule, store=store, policies=policies, default_cutoff=cutoff
+                )
+                if found is None:
                     continue
+                policy, own_cutoff = found
                 through = _horizon_end(policy, now)
                 if rule.materialized_through is not None and rule.materialized_through >= through:
                     continue  # the superset query returned it; its own horizon is covered
                 reports.append(
-                    await materialize_rule(rule, store=store, policy=policy, cutoff=cutoff, now=now)
+                    await materialize_rule(
+                        rule, store=store, policy=policy, cutoff=own_cutoff, now=now
+                    )
                 )
             except Exception:
                 log.exception(

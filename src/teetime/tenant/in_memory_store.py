@@ -31,6 +31,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from ..core.config import BookingCutoffConfig
 from ..core.models import CourseId
@@ -45,6 +46,7 @@ from .models import (
     BookingState,
     CourseAccount,
     CourseAccountId,
+    CutoffChange,
     EventRow,
     OwnedBooking,
     RankedWindow,
@@ -71,12 +73,14 @@ from .models import (
     rule_row_id,
 )
 from .semantics import (
+    CUTOFF_REWRITE_STATUSES,
     LEASABLE_STATUSES,
     NOT_FOUND,
     SOFT_AUTH_FAILURE_LIMIT,
     RowIntent,
     RowWrite,
     becomes_bookable,
+    cutoff_at,
     fingerprint_matches,
     ledger_entries,
     new_row,
@@ -198,6 +202,13 @@ class InMemoryTenantStore:
             raise TenantNotFoundError(NOT_FOUND)
         return row
 
+    def _cutoff_for(self, account: CourseAccount) -> BookingCutoffConfig:
+        """The owner's own booking cutoff, else the site default (``User.booking_cutoff``)."""
+        user = self._users.get(account.user_id)
+        if user is not None and user.booking_cutoff is not None:
+            return user.booking_cutoff
+        return self._cutoff
+
     def _account_for_user(
         self, account_id: CourseAccountId, user_id: UserId | None
     ) -> CourseAccount:
@@ -229,7 +240,7 @@ class InMemoryTenantStore:
             row_id=row_id,
             account=account,
             timezone=self.course_timezone(account.course_id),
-            cutoff=self._cutoff,
+            cutoff=self._cutoff_for(account),
             target_date=target_date,
             intent=intent,
             status=status,
@@ -597,11 +608,17 @@ class InMemoryTenantStore:
         self._refuse_if_user_terminal(row.course_account_id, row.target_date)
         if lease_held(stored, now=now):
             raise RowLeaseError(f"row {row.id} is leased by {stored.lease_owner!r}")
+        account = self._account_for_user(row.course_account_id, None)
         new = replace(
             self._unleased_write(row, now),
             status=target,
             status_reason=None,
             superseded_from=None,
+            # The owner's cutoff as it is NOW (a withdrawn row is not rewritten by
+            # set_booking_cutoff).
+            cutoff_at=cutoff_at(
+                timezone=row.timezone, day=row.target_date, cutoff=self._cutoff_for(account)
+            ),
             options=rule.options,
             party_size=rule.party_size,
             max_price=rule.max_price,
@@ -676,6 +693,35 @@ class InMemoryTenantStore:
             if bound is not None and bound.id != user.id:
                 raise UniquenessConflictError("that sign-in identity is bound to another user")
         self._users[user.id] = user
+
+    async def set_booking_cutoff(
+        self, user_id: UserId, cutoff: BookingCutoffConfig | None, *, now: datetime
+    ) -> CutoffChange:
+        user = self._users.get(user_id)
+        if user is None:
+            raise TenantNotFoundError(NOT_FOUND)
+        saved = replace(user, booking_cutoff=cutoff)
+        self._users[user_id] = saved
+        effective = cutoff if cutoff is not None else self._cutoff
+        mine = {a.id for a in self._accounts.values() if a.user_id == user_id}
+        rewritten: list[RowId] = []
+        skipped: list[RowId] = []
+        for row in sorted(self._rows.values(), key=lambda r: r.id):
+            if row.course_account_id not in mine or row.status not in CUTOFF_REWRITE_STATUSES:
+                continue
+            if row.target_date < now.astimezone(ZoneInfo(row.timezone)).date():
+                continue
+            fresh = cutoff_at(timezone=row.timezone, day=row.target_date, cutoff=effective)
+            if fresh == row.cutoff_at:
+                continue
+            if lease_held(row, now=now):
+                skipped.append(row.id)
+                continue
+            self._commit(
+                [(row, replace(unleased_write(row, now), cutoff_at=fresh, version=row.version + 1))]
+            )
+            rewritten.append(row.id)
+        return CutoffChange(user=saved, rewritten=tuple(rewritten), skipped_leased=tuple(skipped))
 
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:
         existing = await self.get_user_by_subject(provider, subject)

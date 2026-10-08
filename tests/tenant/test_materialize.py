@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 
 from teetime.core.booking_cutoff import cutoff_instant
+from teetime.core.config import BookingCutoffConfig
 from teetime.core.models import CourseId
 from teetime.core.release_policy import ReleasePolicy
 from teetime.tenant.in_memory_store import InMemoryTenantStore
@@ -432,6 +433,25 @@ async def test_materialize_skips_frozen_dates() -> None:
     report = await _materialize(s, await _stored_rule(s, fresh), now=at_cutoff)
     assert report.skipped_frozen == (date(2026, 10, 4),)
     assert (await _own_row(s, t, fresh, date(2026, 10, 4))).status is RowStatus.PENDING
+
+
+async def test_tick_materializes_each_rule_under_its_owners_cutoff() -> None:
+    """2026-10-08: a person's own booking cutoff (noon, two days before) closes a date the site
+    default (4 PM the day before) would still open. The tick must skip it as frozen under THEIR
+    setting; otherwise the store (which computes ``cutoff_at`` from the same setting) refuses
+    the create as frozen and the rule's whole tick fails."""
+    s = _store()
+    t = await _tenant(s)
+    noon_two_days = BookingCutoffConfig(days_before=2, time_of_day=time(12, 0))
+    await s.upsert_user(replace(t.user, booking_cutoff=noon_two_days))
+    rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
+    # Fri 10/2 13:00 EDT: TARGET (Sat 10/3) is open under the default, frozen under theirs.
+    now = datetime(2026, 10, 2, 17, 0, tzinfo=UTC)
+    (report,) = await _tick(s, now=now)
+    assert report.skipped_frozen == (TARGET,)
+    assert await _own_row_or_none(s, t, rule, TARGET) is None
+    later = await _own_row(s, t, rule, date(2026, 10, 10))
+    assert later.cutoff_at == cutoff_instant(date(2026, 10, 10), timezone=TZ, cutoff=noon_two_days)
 
 
 async def test_materialize_creates_superseded_when_one_off_holds_the_date() -> None:
