@@ -27,6 +27,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from teetime.core.booking_cutoff import cutoff_instant
 from teetime.core.config import BookingCutoffConfig
 from teetime.core.models import BookingOutcome, BookingResult, CourseId
 from teetime.tenant.materialize import RuleConflictError
@@ -42,6 +43,7 @@ from teetime.tenant.models import (
     BookingState,
     CourseAccount,
     CourseAccountId,
+    CutoffChange,
     OwnedBooking,
     OwnedBookingId,
     RankedWindow,
@@ -1672,6 +1674,110 @@ class TenantStoreConformance:
         assert await s.get_rule_unscoped(RuleId(uuid4())) is None
         edited = await s.upsert_rule(replace(active, party_size=3), user_id=t.user.id)
         assert await s.get_rule_unscoped(active.id) == edited  # always the STORED version
+
+    # --- the person's own booking cutoff (operator request 2026-10-08) -----------------------
+
+    async def test_rows_take_the_owners_booking_cutoff(self, harness: StoreHarness) -> None:
+        """A row's ``cutoff_at`` comes from its owner's ``booking_cutoff``; a user without one
+        gets the site default the store was built with."""
+        s = harness.store
+        t = await _tenant(s)
+        noon_two_days = BookingCutoffConfig(days_before=2, time_of_day=time(12, 0))
+        await s.upsert_user(replace(t.user, booking_cutoff=noon_two_days))
+        _, rule_row = await _rule_row(s, t)
+        explicit = await _explicit(s, t, target=TARGET + timedelta(days=7))
+        tz = "America/New_York"
+        assert rule_row.cutoff_at == cutoff_instant(TARGET, timezone=tz, cutoff=noon_two_days)
+        assert explicit.cutoff_at == cutoff_instant(
+            TARGET + timedelta(days=7), timezone=tz, cutoff=noon_two_days
+        )
+        other = await _tenant(s, n=1)
+        assert other.user.booking_cutoff is None
+        default_row = await _explicit(s, other)
+        assert default_row.cutoff_at == TARGET_CUTOFF
+
+    async def test_set_booking_cutoff_rewrites_live_rows_and_skips_leased(
+        self, harness: StoreHarness
+    ) -> None:
+        """Saving a cutoff recomputes ``cutoff_at`` on the person's PENDING and BOOKED rows
+        (version bumped: a web write), reports a LEASED row instead of touching it, and leaves
+        another person's rows alone."""
+        s = harness.store
+        t = await _tenant(s)
+        _, pending = await _rule_row(s, t)
+        booked = await _book(s, await _explicit(s, t, target=TARGET + timedelta(days=7)))
+        leased = await _explicit(s, t, target=TARGET + timedelta(days=14))
+        await _lease(s, leased, owner=WATCHER)
+        leased = await _get(s, leased)  # as stored, lease fields included
+        bystander = await _tenant(s, n=1)
+        theirs = await _explicit(s, bystander)
+        nine_same_day = BookingCutoffConfig(days_before=0, time_of_day=time(9, 0))
+        change = await s.set_booking_cutoff(t.user.id, nine_same_day, now=NOW)
+        assert isinstance(change, CutoffChange)
+        assert change.user == replace(t.user, booking_cutoff=nine_same_day)
+        assert (await s.get_user_unscoped(t.user.id)) == change.user
+        assert set(change.rewritten) == {pending.id, booked.id}
+        assert change.skipped_leased == (leased.id,)
+        tz = "America/New_York"
+        for before in (pending, booked):
+            after = await _get(s, before)
+            assert after.cutoff_at == cutoff_instant(
+                before.target_date, timezone=tz, cutoff=nine_same_day
+            )
+            assert after.version == before.version + 1
+            assert after.status is before.status and after.booked_raw_id == before.booked_raw_id
+        assert await _get(s, leased) == leased
+        assert await _get(s, theirs) == theirs
+        # Rows created afterwards take the new setting too.
+        later = await _explicit(s, t, target=TARGET + timedelta(days=21))
+        assert later.cutoff_at == cutoff_instant(
+            TARGET + timedelta(days=21), timezone=tz, cutoff=nine_same_day
+        )
+
+    async def test_set_booking_cutoff_none_restores_the_site_default(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        await s.set_booking_cutoff(
+            t.user.id, BookingCutoffConfig(days_before=3, time_of_day=time(8, 0)), now=NOW
+        )
+        row = await _explicit(s, t)
+        assert row.cutoff_at != TARGET_CUTOFF
+        change = await s.set_booking_cutoff(t.user.id, None, now=NOW)
+        assert change.user.booking_cutoff is None and change.rewritten == (row.id,)
+        assert (await _get(s, row)).cutoff_at == TARGET_CUTOFF
+
+    async def test_set_booking_cutoff_unknown_user(self, harness: StoreHarness) -> None:
+        with pytest.raises(TenantNotFoundError):
+            await harness.store.set_booking_cutoff(UserId(uuid4()), None, now=NOW)
+
+    async def test_reactivate_refreshes_cutoff_from_the_setting(
+        self, harness: StoreHarness
+    ) -> None:
+        """A withdrawn row is not rewritten by ``set_booking_cutoff``; bringing it back
+        recomputes ``cutoff_at`` from the setting in force then."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, row = await _rule_row(s, t)
+        rule = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        row = await s.transition_row(
+            row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        assert row.status is RowStatus.WITHDRAWN
+        early = BookingCutoffConfig(days_before=2, time_of_day=time(10, 0))
+        change = await s.set_booking_cutoff(t.user.id, early, now=NOW)
+        assert change.rewritten == ()
+        assert (await _get(s, row)).cutoff_at == TARGET_CUTOFF  # untouched while withdrawn
+        rule = await s.upsert_rule(replace(rule, active=True), user_id=t.user.id)
+        back = await s.reactivate_rule_row(await _get(s, row), rule, now=NOW)
+        assert back.status is RowStatus.PENDING
+        assert back.cutoff_at == cutoff_instant(TARGET, timezone="America/New_York", cutoff=early)
 
     async def test_get_account_unscoped_reads_any_users_account(
         self, harness: StoreHarness

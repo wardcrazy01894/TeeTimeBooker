@@ -54,6 +54,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from azure.core import MatchConditions
 from azure.core.credentials_async import AsyncTokenCredential
@@ -75,6 +76,7 @@ from ..models import (
     BookingState,
     CourseAccount,
     CourseAccountId,
+    CutoffChange,
     EventRow,
     OwnedBooking,
     RankedWindow,
@@ -101,11 +103,13 @@ from ..models import (
     rule_row_id,
 )
 from ..semantics import (
+    CUTOFF_REWRITE_STATUSES,
     LEASABLE_STATUSES,
     NOT_FOUND,
     SOFT_AUTH_FAILURE_LIMIT,
     RowIntent,
     becomes_bookable,
+    cutoff_at,
     fingerprint_matches,
     ledger_entries,
     new_row,
@@ -813,11 +817,20 @@ class CosmosTenantStore:
             raise TransitionRefusedError(f"stale rule {rule.id}: re-read and retry")
         return stored.item
 
+    async def _cutoff_for(self, account: CourseAccount) -> BookingCutoffConfig:
+        """The owner's own booking cutoff, else the site default (``User.booking_cutoff``): one
+        point read, on row creation and reactivation only."""
+        stored = await self._user(account.user_id)
+        if stored is not None and stored.item.booking_cutoff is not None:
+            return stored.item.booking_cutoff
+        return self._cutoff
+
     def _new_row(
         self,
         *,
         row_id: RowId,
         account: CourseAccount,
+        cutoff: BookingCutoffConfig,
         target_date: date,
         intent: RowIntent,
         status: RowStatus,
@@ -828,7 +841,7 @@ class CosmosTenantStore:
             row_id=row_id,
             account=account,
             timezone=self.course_timezone(account.course_id),
-            cutoff=self._cutoff,
+            cutoff=cutoff,
             target_date=target_date,
             intent=intent,
             status=status,
@@ -1247,6 +1260,7 @@ class CosmosTenantStore:
         row = self._new_row(
             row_id=row_id,
             account=account,
+            cutoff=await self._cutoff_for(account),
             target_date=target_date,
             intent=rule_intent(rule),
             status=RowStatus.SUPERSEDED if slot_held else RowStatus.PENDING,
@@ -1288,11 +1302,19 @@ class CosmosTenantStore:
             raise RowLeaseError(f"row {row.id} is leased by {stored.item.lease_owner!r}")
         if stored.item != row:
             raise TransitionRefusedError(f"row {row.id} changed since it was read")
+        account = await self._account_for_user(row.course_account_id, None)
         new = replace(
             unleased_write(row, now),
             status=target,
             status_reason=None,
             superseded_from=None,
+            # The owner's cutoff as it is NOW (a withdrawn row is not rewritten by
+            # set_booking_cutoff).
+            cutoff_at=cutoff_at(
+                timezone=row.timezone,
+                day=row.target_date,
+                cutoff=await self._cutoff_for(account),
+            ),
             options=rule.options,
             party_size=rule.party_size,
             max_price=rule.max_price,
@@ -1437,6 +1459,42 @@ class CosmosTenantStore:
                 return
         if old_key is not None:
             await self._release_claim(ClaimKind.IDENTITY, old_key, owner=user.id)
+
+    async def set_booking_cutoff(
+        self, user_id: UserId, cutoff: BookingCutoffConfig | None, *, now: datetime
+    ) -> CutoffChange:
+        stored = await self._user(user_id)
+        if stored is None:
+            raise TenantNotFoundError(NOT_FOUND)
+        saved = replace(stored.item, booking_cutoff=cutoff)
+        await self.upsert_user(saved)
+        # The user doc (global container) and the rows (tenant container) cannot share a
+        # batch: the setting is saved first, then each row in its own IfMatch replace, so a
+        # failure part-way leaves rows the person can re-save, never a setting their new rows
+        # would not follow.
+        effective = cutoff if cutoff is not None else self._cutoff
+        rewritten: list[RowId] = []
+        skipped: list[RowId] = []
+        for account in sorted(await self._user_accounts(user_id), key=lambda a: a.id):
+            today = now.astimezone(ZoneInfo(self.course_timezone(account.course_id))).date()
+            found = await self._rows_where(
+                "ARRAY_CONTAINS(@statuses, c.status) AND c.targetDate >= @today",
+                partition_key=str(account.id),
+                statuses=[st.value for st in sorted(CUTOFF_REWRITE_STATUSES)],
+                today=today.isoformat(),
+            )
+            for row_stored in sorted(found, key=lambda st: st.item.id):
+                row = row_stored.item
+                fresh = cutoff_at(timezone=row.timezone, day=row.target_date, cutoff=effective)
+                if fresh == row.cutoff_at:
+                    continue
+                if lease_held(row, now=now):
+                    skipped.append(row.id)
+                    continue
+                new = replace(unleased_write(row, now), cutoff_at=fresh, version=row.version + 1)
+                await self._commit([(row_stored, new)])
+                rewritten.append(row.id)
+        return CutoffChange(user=saved, rewritten=tuple(rewritten), skipped_leased=tuple(skipped))
 
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:
         for _ in range(_MAX_ATTEMPTS):
@@ -1870,6 +1928,7 @@ class CosmosTenantStore:
         row = self._new_row(
             row_id=RowId(uuid4()),
             account=account,
+            cutoff=await self._cutoff_for(account),
             target_date=target_date,
             intent=RowIntent(
                 options=options,

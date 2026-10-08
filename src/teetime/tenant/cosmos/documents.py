@@ -32,6 +32,7 @@ from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from ...core.config import BookingCutoffConfig
 from ...core.models import CourseId
 from ..models import (
     REJECTED_SIGNIN_RETENTION,
@@ -238,6 +239,27 @@ def _decode_decimal(value: object) -> object:
 
 
 _DECIMAL = _Codec(encode=_encode_decimal, decode=_decode_decimal)
+
+
+def _encode_cutoff(value: object) -> object:
+    cutoff = _expect(BookingCutoffConfig, value)
+    return {"daysBefore": cutoff.days_before, "timeOfDay": _encode_time(cutoff.time_of_day)}
+
+
+def _decode_cutoff(value: object) -> object:
+    doc = _expect(dict, value)
+    try:
+        return BookingCutoffConfig(
+            days_before=_expect(int, doc["daysBefore"]),
+            time_of_day=_decode_time(doc["timeOfDay"]),
+        )
+    except KeyError as exc:
+        raise DocumentError(f"booking cutoff is missing {exc}") from exc
+
+
+# ``User.booking_cutoff`` (2026-10-08): ``{"daysBefore": 1, "timeOfDay": "16:00:00"}``; absent
+# or null = the site default (a user document written before the field existed decodes to None).
+_CUTOFF = _Codec(encode=_encode_cutoff, decode=_decode_cutoff)
 
 
 def _encode_options(value: object) -> object:
@@ -695,6 +717,7 @@ _USER_FIELDS: tuple[_Field, ...] = (
     _Field("display_name", "displayName", _STR),
     _Field("role", "role", _enum(UserRole)),
     _Field("status", "status", _enum(UserStatus)),
+    _Field("booking_cutoff", "bookingCutoff", _optional(_CUTOFF)),
 )
 
 

@@ -58,6 +58,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from ..core.clock import Clock
+from ..core.config import BookingCutoffConfig
 from ..core.models import BookingResult, CourseId, RequestId
 from ..persistence.in_memory_store import InMemoryStore
 from ..persistence.store import ConcurrentRunError
@@ -66,6 +67,7 @@ from .models import (
     AuditLine,
     CourseAccount,
     CourseAccountId,
+    CutoffChange,
     EventRow,
     OwnedBooking,
     RankedWindow,
@@ -375,7 +377,23 @@ class TenantStore(Protocol):
 
     async def upsert_user(self, user: User) -> None:
         """Create or replace a user (operator ``/admin/users`` invite/disable, §8.2). Enforces
-        UNIQUE(provider, subject) for bound users (``UniquenessConflictError``)."""
+        UNIQUE(provider, subject) for bound users (``UniquenessConflictError``). It does NOT
+        touch the user's rows: a changed ``booking_cutoff`` reaches them only through
+        ``set_booking_cutoff``."""
+        ...
+
+    async def set_booking_cutoff(
+        self, user_id: UserId, cutoff: BookingCutoffConfig | None, *, now: datetime
+    ) -> CutoffChange:
+        """Save the person's own booking cutoff (``None`` = the site default) and recompute
+        ``cutoff_at`` on every row of theirs that can still act on it: PENDING, BOOKED, SKIPPED
+        and SUPERSEDED rows whose date is today or later (course-local). Each rewrite bumps
+        ``version`` (the web write rule, M5). A LEASED row is left alone and reported in
+        ``skipped_leased`` (the booker or watcher is writing it; it keeps the old instant until
+        the person saves again). Withdrawn rows are not touched: ``reactivate_rule_row``
+        refreshes ``cutoff_at`` from the setting when it brings one back. Rows the bot creates
+        afterwards (``insert_rule_row_if_absent``, ``create_explicit_row``) take the setting too.
+        ``TenantNotFoundError`` for an unknown user."""
         ...
 
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:

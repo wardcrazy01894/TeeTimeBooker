@@ -9,7 +9,7 @@ checker (``check_transition``, §3.4), and both are exercised by the store confo
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -17,6 +17,7 @@ from typing import NewType
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
+from ..core.config import BookingCutoffConfig
 from ..core.models import CourseId, RequestId, TimeWindow, derive_request_id
 
 UserId = NewType("UserId", UUID)
@@ -149,6 +150,22 @@ class User:
     display_name: str
     role: UserRole
     status: UserStatus
+    # The person's own booking cutoff (operator request 2026-10-08: "4 PM the day before" suits
+    # the operator; others want noon the day before, or 4 PM two days before). ``None`` = the
+    # site default the store was built with. Every row the bot creates for the person takes
+    # its ``cutoff_at`` from this; ``TenantStore.set_booking_cutoff`` rewrites their live rows.
+    booking_cutoff: BookingCutoffConfig | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CutoffChange:
+    """``TenantStore.set_booking_cutoff``'s report: the saved user, the rows whose ``cutoff_at``
+    was recomputed, and the rows left alone because they were leased at that moment (they keep
+    the old instant until the person saves again)."""
+
+    user: User
+    rewritten: tuple[RowId, ...] = ()
+    skipped_leased: tuple[RowId, ...] = ()
 
 
 # How long an uninvited sign-in is remembered after its LAST attempt (operator choice

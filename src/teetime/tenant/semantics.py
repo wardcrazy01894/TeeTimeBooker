@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from ..core.booking_cutoff import cutoff_instant
 from ..core.config import BookingCutoffConfig
@@ -94,6 +95,24 @@ def strip_ttb(code: str | None) -> str | None:
 
 def cutoff_at(*, timezone: str, day: date, cutoff: BookingCutoffConfig) -> datetime:
     return cutoff_instant(day, timezone=timezone, cutoff=cutoff).astimezone(UTC)
+
+
+# Rows ``TenantStore.set_booking_cutoff`` rewrites: the ones that can still act on their cutoff
+# (a withdrawn row gets a fresh instant on reactivation; cancelled / lost rows are history).
+CUTOFF_REWRITE_STATUSES: frozenset[RowStatus] = frozenset(
+    {RowStatus.PENDING, RowStatus.BOOKED, RowStatus.SKIPPED, RowStatus.SUPERSEDED}
+)
+
+
+def cutoff_config_of(row: RequestRow) -> BookingCutoffConfig:
+    """The ``BookingCutoffConfig`` a row's own ``cutoff_at`` encodes (the inverse of
+    ``cutoff_at``, in the row's course timezone), so the engine's stop-acting gate can be handed
+    the ROW's cutoff: the person's setting at the time the row was created or last rewritten,
+    the same instant the store's READ #1 filter and ``finalize_lost`` use. One source of truth."""
+    local = row.cutoff_at.astimezone(ZoneInfo(row.timezone))
+    return BookingCutoffConfig(
+        days_before=(row.target_date - local.date()).days, time_of_day=local.time()
+    )
 
 
 @dataclass(frozen=True, slots=True)
