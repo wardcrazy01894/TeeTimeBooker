@@ -28,7 +28,7 @@
     <label>Day <select name="cutoff_days_before">{% for d in cutoff_days_choices %}<option value="{{ d }}"{% if d == cutoff_days %} selected{% endif %}>{{ cutoff_days_label(d) }}</option>{% endfor %}</select></label>
     <button type="submit" class="primary">Save</button>
   </form>
-  <p class="hint">Right now: {{ booking_cutoff_text }}. Saving moves your pending and booked dates onto the new cutoff.</p>
+  <p class="hint">Right now: {{ booking_cutoff_text }}. Saving moves your pending and booked dates onto the new cutoff, so a later cutoff re-opens upgrades for a date already past the old one.</p>
 </section>
 
 <section>

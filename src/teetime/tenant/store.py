@@ -388,12 +388,20 @@ class TenantStore(Protocol):
         """Save the person's own booking cutoff (``None`` = the site default) and recompute
         ``cutoff_at`` on every row of theirs that can still act on it: PENDING, BOOKED, SKIPPED
         and SUPERSEDED rows whose date is today or later (course-local). Each rewrite bumps
-        ``version`` (the web write rule, M5). A LEASED row is left alone and reported in
-        ``skipped_leased`` (the booker or watcher is writing it; it keeps the old instant until
-        the person saves again). Withdrawn rows are not touched: ``reactivate_rule_row``
-        refreshes ``cutoff_at`` from the setting when it brings one back. Rows the bot creates
-        afterwards (``insert_rule_row_if_absent``, ``create_explicit_row``) take the setting too.
-        ``TenantNotFoundError`` for an unknown user."""
+        ``version`` (the web write rule, M5). A LEASED row, or one the booker / watcher wrote
+        between the read and the rewrite, is left alone and reported in ``skipped_leased`` (it
+        keeps the old instant until the person saves again). Withdrawn rows are not touched:
+        ``reactivate_rule_row`` refreshes ``cutoff_at`` from the setting when it brings one
+        back. Rows the bot creates afterwards (``insert_rule_row_if_absent``,
+        ``create_explicit_row``) take the setting too. ``TenantNotFoundError`` for an unknown
+        user.
+
+        Decided explicitly (review of #325): a BOOKED row IS rewritten, so moving the cutoff
+        later re-opens upgrades for a date already past the old one, and moving it earlier
+        than now freezes the date at once (that is what the setting means). And like every web
+        write, the version bump makes a booker claim racing it (READ #1 at ~05:51 -> claim)
+        refuse the row's fingerprint: a save in that minute costs that date the 06:00 run (the
+        watcher books it later)."""
         ...
 
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:

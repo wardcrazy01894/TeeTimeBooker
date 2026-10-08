@@ -6,13 +6,14 @@ duplicate reconcile, orphans, and dry-run safety (§7.8)."""
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from teetime.core.adapter import AdapterError
+from teetime.core.booking_cutoff import cutoff_instant
 from teetime.core.clock import FakeClock
 from teetime.core.config import BookingCutoffConfig
 from teetime.core.models import MANAGED_BOOKING_TAG
@@ -406,6 +407,22 @@ async def test_watch_upgrade_gated_on_ownership_end_to_end() -> None:
 
 
 # --- the recorder-derived upgrade outcome (M2) ---------------------------------------------------
+
+
+async def test_cutoff_config_of_round_trips_by_instant_across_a_spring_forward() -> None:
+    """A 2 AM cutoff the day before Mon 2027-03-15 falls in the hour spring-forward skips;
+    ``cutoff_instant`` resolves it, and the config read back from the row lands on the SAME
+    instant (the engine's gate recomputes it), even though its hour reads 3 AM."""
+    two_am = BookingCutoffConfig(days_before=1, time_of_day=time(2, 0))
+    target = date(2027, 3, 15)
+    at = cutoff_instant(target, timezone="America/New_York", cutoff=two_am)
+    s = await seed(new_store(), n=1)
+    row = replace(s.row, target_date=target, cutoff_at=at.astimezone(UTC))
+    back = cutoff_config_of(row)
+    assert back.days_before == 1 and back.time_of_day == time(3, 0)
+    # Same instant (compared in UTC: two aware datetimes sharing a tzinfo compare by wall clock).
+    again = cutoff_instant(target, timezone="America/New_York", cutoff=back)
+    assert again.astimezone(UTC) == row.cutoff_at
 
 
 async def test_watch_keeps_upgrading_until_the_rows_own_cutoff() -> None:

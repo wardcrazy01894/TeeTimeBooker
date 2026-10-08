@@ -1467,6 +1467,8 @@ class CosmosTenantStore:
         if stored is None:
             raise TenantNotFoundError(NOT_FOUND)
         saved = replace(stored.item, booking_cutoff=cutoff)
+        # Accepted, like set_display_name: a read-replace-write of the user doc with no IfMatch
+        # (upsert_user has none); a name edit landing in the same few ms would be overwritten.
         await self.upsert_user(saved)
         # The user doc (global container) and the rows (tenant container) cannot share a
         # batch: the setting is saved first, then each row in its own IfMatch replace, so a
@@ -1492,7 +1494,14 @@ class CosmosTenantStore:
                     skipped.append(row.id)
                     continue
                 new = replace(unleased_write(row, now), cutoff_at=fresh, version=row.version + 1)
-                await self._commit([(row_stored, new)])
+                try:
+                    await self._commit([(row_stored, new)])
+                except TransitionRefusedError, RowLeaseError:
+                    # Written by the booker / watcher (a lease, an outcome) between the query
+                    # and this IfMatch replace: the same answer as a row found leased.
+                    log.info("set_booking_cutoff: row %s changed under us; skipped", row.id)
+                    skipped.append(row.id)
+                    continue
                 rewritten.append(row.id)
         return CutoffChange(user=saved, rewritten=tuple(rewritten), skipped_leased=tuple(skipped))
 

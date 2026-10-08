@@ -789,7 +789,9 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   (`insert_rule_row_if_absent`, `create_explicit_row`, refreshed on `reactivate_rule_row`);
   `TenantStore.set_booking_cutoff` (Your account, `/me/cutoff`) saves it and rewrites the
   person's live rows (PENDING/BOOKED/SKIPPED/SUPERSEDED from today on, version bumped; a
-  LEASED row is reported and keeps the old instant until the next save). The materializer tick
+  LEASED row, or one written under the rewrite's IfMatch, is reported and keeps the old instant
+  until the next save; a BOOKED row is rewritten on purpose, so a later cutoff re-opens upgrades;
+  the version bump can refuse a booker claim racing it, like any web write). The materializer tick
   materializes each rule under its OWNER's cutoff (`_context_for`; the `cutoff` argument is the
   site default fallback) so its frozen check matches the store's `check_create`; the watcher
   hands the engine `semantics.cutoff_config_of(row)` (the inverse of `cutoff_at`), never the
@@ -841,7 +843,7 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   create/edit path refuses a window outside the course's hours with a 400 that names the course
   and its hours. Pinned by `tests/web/test_web_time_picker.py`. Every release-cycle sentence a page shows
   ("Tee times open 7 days ahead, at 6:00 AM Eastern.") is `web/course_info.py::release_cycle`
-  over the course's `ReleasePolicy` + the configured cutoff, never typed into a template, so a
+  over the course's `ReleasePolicy` + the viewer's own cutoff (site default when unset), never typed into a template, so a
   page cannot state a rule the bot does not run (2026-10-01). The Connect dropdown lists only
   courses the user has NOT connected (`connectable` in `pages.accounts`). Every form is a CSRF-guarded POST
   and every id is resolved through user-scoped reads (a foreign id is the uniform 404). Pinned by

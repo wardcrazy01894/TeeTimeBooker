@@ -742,8 +742,11 @@ per-person setting, with the row's denormalized `cutoff_at` staying the single s
   (`insert_rule_row_if_absent`, `create_explicit_row`) and refresh it on `reactivate_rule_row`.
   `TenantStore.set_booking_cutoff` saves the setting and recomputes `cutoff_at` on the person's
   PENDING / BOOKED / SKIPPED / SUPERSEDED rows from today on (version bumped: a web write). A
-  LEASED row is reported, not touched (the page says "save again in a few minutes"); accepted
-  residual: it keeps the old instant until then. The Cosmos user doc (global container) and the
+  LEASED row, or one the booker / watcher wrote under the rewrite's IfMatch, is reported, not
+  touched (the page says "save again in a few minutes"); accepted residual: it keeps the old
+  instant until then. Decided on review: a BOOKED row is rewritten (a later cutoff re-opens
+  upgrades for a date past the old one; an earlier one freezes it at once), and the version
+  bump can refuse a booker claim racing the save (READ #1 -> claim, ~05:51), like any web write. The Cosmos user doc (global container) and the
   rows (tenant container) cannot share a batch, so the setting lands first and each row follows in
   its own IfMatch replace.
 - The materializer tick resolves each rule's owner and materializes under THEIR cutoff
