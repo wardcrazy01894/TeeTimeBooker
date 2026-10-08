@@ -93,9 +93,9 @@ keeps looking be the person's own choice.
 
 - **The upgrade email reads as good news** (#325). Subject "Upgraded: <course> <when>", body "Good
   news! We got you a tee time closer to what you asked for.", the card names the new tee time with
-  the old one beside it ("8:00 AM (was 9:30 AM)"), and every booking email ends with "We'll keep
+  the old one beside it ("8:00 AM (was 9:30 AM)"), and every booking email carries "We'll keep
   checking for a better time until 4 PM on Saturday, October 10." ("an even better" after an
-  upgrade). The deadline is the ROW's own cutoff, so it is right for whatever the person set.
+  upgrade) after the card, when the event knows the cutoff. The deadline is the ROW's own cutoff, so it is right for whatever the person set.
 - **The booking cutoff is per person** (#325). Your account has a "Booking cutoff" form (`POST
   /me/cutoff`: a time on the hour, and the day of / the day before / N days before); unset means
   the site default, 4 PM the day before. `User.booking_cutoff` is what both stores compute a new
