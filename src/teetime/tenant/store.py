@@ -424,7 +424,9 @@ class TenantStore(Protocol):
         the status does not change; a BOOKED row IS moved, so a later cutoff re-opens its
         upgrades and a cutoff earlier than now freezes the date at once, where
         ``finalize_lost`` then marks a PENDING row LOST). A leased row, or one written under
-        the rewrite's IfMatch, is reported in ``skipped_leased``. Idempotent: a row already at
+        the rewrite's IfMatch, is reported in ``skipped_leased``. An INACTIVE rule is not
+        refused (decided: its booked and pending rows keep acting until withdrawn, so they
+        follow its cutoff). Idempotent: a row already at
         the instant is not written, so ``materialize_rule`` calls it on every walk of the rule
         and a skipped row converges on the next one (daily, by the tick). Not atomic with
         ``upsert_rule`` in Cosmos (the rule doc and the rows are separate IfMatch writes): the

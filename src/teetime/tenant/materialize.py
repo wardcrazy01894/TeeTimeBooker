@@ -301,8 +301,9 @@ async def materialize_rule(
     cutoff = resolve_cutoff(rule.booking_cutoff, cutoff, cutoff)
     today = _local_today(policy, now)
     through = today + timedelta(days=horizon_days(policy))
-    # First, before any date is judged: an inactive or stale rule is refused here by the store
-    # (``TransitionRefusedError``), as it would be by the first row write.
+    # First, before any date is judged. A STALE rule is refused here by the store
+    # (``TransitionRefusedError``), as it would be by the first row write; an inactive rule is
+    # not (its BOOKED / PENDING rows keep acting until withdrawn, so they follow its cutoff).
     moved = await store.rewrite_rule_cutoff(rule, now=now)
     tally = _Tally.empty()
     for day in dates_for_rule(rule, today=today, horizon=horizon_days(policy)):
