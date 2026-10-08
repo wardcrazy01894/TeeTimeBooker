@@ -97,6 +97,22 @@ def cutoff_at(*, timezone: str, day: date, cutoff: BookingCutoffConfig) -> datet
     return cutoff_instant(day, timezone=timezone, cutoff=cutoff).astimezone(UTC)
 
 
+def resolve_cutoff(
+    own: BookingCutoffConfig | None,
+    owner: BookingCutoffConfig | None,
+    default: BookingCutoffConfig,
+) -> BookingCutoffConfig:
+    """The cutoff a booking runs under (2026-10-08): the booking's own (a rule's or a one-off's
+    ``booking_cutoff``) -> the owner's (``User.booking_cutoff``) -> the site default. The ONE
+    resolution both stores and the materializer use, so they cannot disagree on a frozen date.
+    ``is not None`` on purpose: a config object is never tested for truth."""
+    if own is not None:
+        return own
+    if owner is not None:
+        return owner
+    return default
+
+
 # Rows ``TenantStore.set_booking_cutoff`` rewrites: the ones that can still act on their cutoff
 # (a withdrawn row gets a fresh instant on reactivation; cancelled / lost rows are history).
 CUTOFF_REWRITE_STATUSES: frozenset[RowStatus] = frozenset(
@@ -148,7 +164,10 @@ def new_row(
     status: RowStatus,
     source: RowSource,
     rule_id: RuleId | None,
+    booking_cutoff: BookingCutoffConfig | None = None,
 ) -> RequestRow:
+    """``cutoff`` is the RESOLVED cutoff the row's ``cutoff_at`` is computed from;
+    ``booking_cutoff`` is the one-off's own marker (always None for a rule row)."""
     return RequestRow(
         id=row_id,
         course_account_id=account.id,
@@ -166,6 +185,7 @@ def new_row(
         max_price=intent.max_price,
         group_id=intent.group_id,
         group_rank=intent.group_rank,
+        booking_cutoff=booking_cutoff,
     )
 
 

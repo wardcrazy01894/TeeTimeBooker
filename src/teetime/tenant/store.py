@@ -77,6 +77,7 @@ from .models import (
     RowFingerprint,
     RowId,
     RowStatus,
+    RuleCutoffChange,
     RuleId,
     StandingRule,
     User,
@@ -317,7 +318,12 @@ class TenantStore(Protocol):
         user-terminal row (``models.USER_TERMINAL``). ``rule`` must be the STORED version
         (IfMatch; a stale copy is ``TransitionRefusedError``), so a row is never created under a
         rule that has since moved weekday. Cosmos (MU-8b): assert the rule doc's (or its
-        ``ruleday|<weekday>`` pointer's) ETag in the same batch as the row create."""
+        ``ruleday|<weekday>`` pointer's) ETag in the same batch as the row create.
+
+        The row's ``cutoff_at`` is ``semantics.resolve_cutoff``: the rule's own
+        ``booking_cutoff``, else the owner's ``User.booking_cutoff``, else the site default
+        (2026-10-08). The row carries NO copy of the rule's cutoff (``booking_cutoff`` stays
+        None): it follows the stored rule through ``rule_id``."""
         ...
 
     async def reactivate_rule_row(
@@ -325,11 +331,14 @@ class TenantStore(Protocol):
     ) -> RequestRow:
         """System-withdrawn (``models.SYSTEM_WITHDRAW_REASONS``) rule row -> its pre-supersede
         status if it was superseded before the withdraw (``superseded_from``, round-5: SKIPPED
-        stays SKIPPED), else PENDING, with window and party refreshed from ``rule``: one batch of
-        IfMatch replace + slot create. Refused (``TransitionRefusedError``) if ``rule`` is not the
-        STORED version (IfMatch, round-5), the stored rule no longer covers the row (inactive,
-        other weekday or account), the date has a user-terminal row, is frozen, or the slot is
-        held. Every writer of an active status onto a rule row applies the same coverage +
+        stays SKIPPED), else PENDING, with window, party and ``cutoff_at`` refreshed from
+        ``rule`` (its own cutoff, else the owner's as set NOW: a withdrawn row is never rewritten
+        by a cutoff change, so its stored instant is stale, and the frozen guard runs against
+        the fresh one): one batch of IfMatch replace + slot create. Refused
+        (``TransitionRefusedError``) if ``rule`` is not the STORED version (IfMatch, round-5),
+        the stored rule no longer covers the row (inactive, other weekday, account or rule), the
+        date has a user-terminal row, is frozen under the fresh cutoff, or the slot is held.
+        Every writer of an active status onto a rule row applies the same coverage +
         user-terminal guard (round-5 MF1)."""
         ...
 
@@ -386,15 +395,17 @@ class TenantStore(Protocol):
         self, user_id: UserId, cutoff: BookingCutoffConfig | None, *, now: datetime
     ) -> CutoffChange:
         """Save the person's own booking cutoff (``None`` = the site default) and recompute
-        ``cutoff_at`` on every row of theirs that can still act on it: PENDING, BOOKED, SKIPPED
-        and SUPERSEDED rows whose date is today or later (course-local). Each rewrite bumps
-        ``version`` (the web write rule, M5). A LEASED row, or one the booker / watcher wrote
-        between the read and the rewrite, is left alone and reported in ``skipped_leased`` (it
-        keeps the old instant until the person saves again). Withdrawn rows are not touched:
-        ``reactivate_rule_row`` refreshes ``cutoff_at`` from the setting when it brings one
-        back. Rows the bot creates afterwards (``insert_rule_row_if_absent``,
-        ``create_explicit_row``) take the setting too. ``TenantNotFoundError`` for an unknown
-        user.
+        ``cutoff_at`` on every row of theirs that FOLLOWS it and can still act on it: PENDING,
+        BOOKED, SKIPPED and SUPERSEDED rows whose date is today or later (course-local). A row
+        whose booking has a cutoff of its own (a rule row whose STORED rule sets
+        ``booking_cutoff``, or a one-off whose own ``booking_cutoff`` is set) is left alone and
+        reported in ``kept_own`` (2026-10-08). Each rewrite bumps ``version`` (the web write
+        rule, M5). A LEASED row, or one the booker / watcher wrote between the read and the
+        rewrite, is left alone and reported in ``skipped_leased`` (it keeps the old instant
+        until the person saves again). Withdrawn rows are not touched: ``reactivate_rule_row``
+        refreshes ``cutoff_at`` from the setting when it brings one back. Rows the bot creates
+        afterwards (``insert_rule_row_if_absent``, ``create_explicit_row``) take the setting
+        too. ``TenantNotFoundError`` for an unknown user.
 
         Decided explicitly (review of #325): a BOOKED row IS rewritten, so moving the cutoff
         later re-opens upgrades for a date already past the old one, and moving it earlier
@@ -402,6 +413,24 @@ class TenantStore(Protocol):
         write, the version bump makes a booker claim racing it (READ #1 at ~05:51 -> claim)
         refuse the row's fingerprint: a save in that minute costs that date the 06:00 run (the
         watcher books it later)."""
+        ...
+
+    async def rewrite_rule_cutoff(self, rule: StandingRule, *, now: datetime) -> RuleCutoffChange:
+        """Move every live row of ``rule`` (the same statuses and date bound as
+        ``set_booking_cutoff``) onto the rule's cutoff as it resolves NOW: its own
+        ``booking_cutoff``, else the owner's, else the site default (2026-10-08). ``rule`` must
+        be the STORED version (IfMatch; a stale copy is ``TransitionRefusedError``). The same
+        write as the person's save (``unleased_write`` + a version bump, no transition check:
+        the status does not change; a BOOKED row IS moved, so a later cutoff re-opens its
+        upgrades and a cutoff earlier than now freezes the date at once, where
+        ``finalize_lost`` then marks a PENDING row LOST). A leased row, or one written under
+        the rewrite's IfMatch, is reported in ``skipped_leased``. An INACTIVE rule is not
+        refused (decided: its booked and pending rows keep acting until withdrawn, so they
+        follow its cutoff). Idempotent: a row already at
+        the instant is not written, so ``materialize_rule`` calls it on every walk of the rule
+        and a skipped row converges on the next one (daily, by the tick). Not atomic with
+        ``upsert_rule`` in Cosmos (the rule doc and the rows are separate IfMatch writes): the
+        walk covers a crash in between."""
         ...
 
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:
@@ -490,10 +519,13 @@ class TenantStore(Protocol):
         max_price: Decimal | None = None,
         group_id: UUID | None = None,
         group_rank: int | None = None,
+        booking_cutoff: BookingCutoffConfig | None = None,
     ) -> RequestRow:
         """Supersedes a PENDING/SKIPPED rule row for the same (account, date) in the same
         transaction; refuses (``TransitionRefusedError``) if a BOOKED row or another explicit row
-        holds the date, or the date is frozen; ``RowLeaseError`` if the rule row is leased (M4)."""
+        holds the date, or the date is frozen; ``RowLeaseError`` if the rule row is leased (M4).
+        ``booking_cutoff`` is the one-off's own cutoff (2026-10-08), stored on the row and what
+        its ``cutoff_at`` is computed from; None = the owner's setting, else the site default."""
         ...
 
     async def transition_row(

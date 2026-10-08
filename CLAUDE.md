@@ -783,21 +783,35 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
 - **The Cosmos index policy must equal `CosmosTenantStore.QUERIED_PATHS`** (Cosmos rejects a
   filter on an unindexed path). A new query filter path means updating `cosmos.bicep` too;
   `tests/test_cosmos_bicep.py` fails CI otherwise.
-- **The booking cutoff is per person, and the ROW's `cutoff_at` is the single source of truth**
-  (2026-10-08). `User.booking_cutoff` (None = the site default `BookingCutoffConfig()` every
-  tenant command and the web pass) is what both stores compute a new row's `cutoff_at` from
-  (`insert_rule_row_if_absent`, `create_explicit_row`, refreshed on `reactivate_rule_row`);
-  `TenantStore.set_booking_cutoff` (Your account, `/me/cutoff`) saves it and rewrites the
-  person's live rows (PENDING/BOOKED/SKIPPED/SUPERSEDED from today on, version bumped; a
-  LEASED row, or one written under the rewrite's IfMatch, is reported and keeps the old instant
-  until the next save; a BOOKED row is rewritten on purpose, so a later cutoff re-opens upgrades;
-  the version bump can refuse a booker claim racing it, like any web write). The materializer tick
-  materializes each rule under its OWNER's cutoff (`_context_for`; the `cutoff` argument is the
-  site default fallback) so its frozen check matches the store's `check_create`; the watcher
-  hands the engine `semantics.cutoff_config_of(row)` (the inverse of `cutoff_at`), never the
-  site default. Pages word the viewer's own cutoff (`base_context["booking_cutoff_text"]`, the
-  `pass_context` `release_cycle` filter), emails word the row's. Pinned by the conformance
-  suite, `test_tick_materializes_each_rule_under_its_owners_cutoff`,
+- **The booking cutoff resolves per BOOKING, then per person, and the ROW's `cutoff_at` is the
+  single source of truth** (2026-10-08, both the same day). `semantics.resolve_cutoff(own, owner,
+  default)` is the ONE resolution order: the booking's own (`StandingRule.booking_cutoff`, or a
+  one-off's `RequestRow.booking_cutoff`) → `User.booking_cutoff` → the site default
+  `BookingCutoffConfig()` every tenant command and the web pass. Both stores compute a new row's
+  `cutoff_at` by it (`insert_rule_row_if_absent`, `create_explicit_row`, refreshed on
+  `reactivate_rule_row`, whose frozen guard runs against the FRESH instant, since a withdrawn
+  row's stored one is stale). **A rule row carries NO copy of its rule's cutoff** (its
+  `booking_cutoff` stays None; it follows the STORED rule through `rule_id`), so there is one
+  state to keep right; only a one-off stores its own as the marker. Two rewriters, the same
+  write (`unleased_write` + version bump, no transition check): `TenantStore.set_booking_cutoff`
+  (Your account, `/me/cutoff`) saves the person's and rewrites their live rows that FOLLOW it
+  (PENDING/BOOKED/SKIPPED/SUPERSEDED from today on; a row whose booking has its own is reported
+  in `kept_own`, untouched); `TenantStore.rewrite_rule_cutoff(stored_rule)` moves a rule's live
+  rows onto the rule's resolved cutoff and is the FIRST step of every `materialize_rule` walk,
+  which is how a rule cutoff edit reaches its rows (`apply_rule_edit` ends in a materialize)
+  and how a row skipped then (LEASED, or written under the rewrite's IfMatch) converges on the
+  rule's next walk (daily, by the tick; reported as `MaterializeReport.cutoff_rewritten`). A
+  BOOKED row is rewritten on purpose, so a later cutoff re-opens upgrades and an earlier one
+  freezes the date at once (`finalize_lost` then marks a PENDING row LOST); the version bump can
+  refuse a booker claim racing it, like any web write. The materializer tick materializes each
+  rule under its OWNER's cutoff (`_context_for`; the `cutoff` argument is the site default
+  fallback) and `materialize_rule` lets the rule's own win, so its frozen check matches the
+  store's `check_create`; the watcher hands the engine `semantics.cutoff_config_of(row)` (the
+  inverse of `cutoff_at`), never the site default. Pages word the viewer's own cutoff
+  (`base_context["booking_cutoff_text"]`, the `pass_context` `release_cycle` filter), emails
+  word the row's. Pinned by the conformance suite ("a cutoff per booking" block),
+  `test_tick_materializes_each_rule_under_its_owners_cutoff`,
+  `test_materialize_freezes_by_the_rules_own_cutoff`, `test_rule_cutoff_edit_moves_its_live_rows`,
   `test_watch_keeps_upgrading_until_the_rows_own_cutoff` and `tests/web/test_web_booking_cutoff.py`.
 - **The materializer walks the FULL horizon every call and decides by HISTORY, never by an id
   collision** (`tenant/materialize.py`, §7.7). It covers

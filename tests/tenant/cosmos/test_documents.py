@@ -308,6 +308,27 @@ class TestRoundtripTenant:
         inactive = replace(rule, active=False, materialized_through=None)
         assert from_rule_doc(to_rule_doc(inactive)).item == inactive
 
+    def test_roundtrip_booking_cutoff_on_rules_and_one_offs(self) -> None:
+        """A cutoff per booking (2026-10-08): ``StandingRule.booking_cutoff`` and a one-off's
+        ``RequestRow.booking_cutoff`` round-trip as the same nested doc as the user's; a rule or
+        row document written before the field existed (key absent) decodes to None."""
+        own = BookingCutoffConfig(days_before=1, time_of_day=time(12, 0))
+        rule = replace(_rule(), booking_cutoff=own)
+        doc = to_rule_doc(rule)
+        assert doc["bookingCutoff"] == {"daysBefore": 1, "timeOfDay": "12:00:00"}
+        assert from_rule_doc(doc).item == rule
+        assert to_rule_doc(_rule())["bookingCutoff"] is None
+        legacy_rule = to_rule_doc(_rule())
+        del legacy_rule["bookingCutoff"]
+        assert from_rule_doc(legacy_rule).item.booking_cutoff is None
+        row = replace(_explicit_row(), booking_cutoff=own)
+        doc = to_row_doc(row)
+        assert doc["bookingCutoff"] == {"daysBefore": 1, "timeOfDay": "12:00:00"}
+        assert from_row_doc(doc).item == row
+        legacy_row = to_row_doc(_explicit_row())
+        del legacy_row["bookingCutoff"]
+        assert from_row_doc(legacy_row).item.booking_cutoff is None
+
     def test_roundtrip_course_account(self) -> None:
         account = _account()
         assert from_account_doc(to_account_doc(account)).item == account

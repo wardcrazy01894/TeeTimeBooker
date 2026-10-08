@@ -152,18 +152,34 @@ class User:
     status: UserStatus
     # The person's own booking cutoff (operator request 2026-10-08: "4 PM the day before" suits
     # the operator; others want noon the day before, or 4 PM two days before). ``None`` = the
-    # site default the store was built with. Every row the bot creates for the person takes
-    # its ``cutoff_at`` from this; ``TenantStore.set_booking_cutoff`` rewrites their live rows.
+    # site default the store was built with. A row the bot creates for the person takes its
+    # ``cutoff_at`` from this unless its rule or one-off has its own (``StandingRule.
+    # booking_cutoff`` / ``RequestRow.booking_cutoff``, the same day); ``TenantStore.
+    # set_booking_cutoff`` rewrites their live rows that follow it.
     booking_cutoff: BookingCutoffConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class CutoffChange:
     """``TenantStore.set_booking_cutoff``'s report: the saved user, the rows whose ``cutoff_at``
-    was recomputed, and the rows left alone because they were leased at that moment (they keep
-    the old instant until the person saves again)."""
+    was recomputed, the rows left alone because they were leased at that moment (they keep
+    the old instant until the person saves again), and the rows left alone because their
+    booking has a cutoff of its own (``kept_own``: a rule row whose stored rule has one, or a
+    one-off that has one)."""
 
     user: User
+    rewritten: tuple[RowId, ...] = ()
+    skipped_leased: tuple[RowId, ...] = ()
+    kept_own: tuple[RowId, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuleCutoffChange:
+    """``TenantStore.rewrite_rule_cutoff``'s report: the stored rule the rows now follow, the
+    rows whose ``cutoff_at`` was recomputed, and the rows skipped because they were leased (the
+    materializer's next walk converges them)."""
+
+    rule: StandingRule
     rewritten: tuple[RowId, ...] = ()
     skipped_leased: tuple[RowId, ...] = ()
 
@@ -289,6 +305,11 @@ class StandingRule:
     # §16.2: one weekly group = one rule per course sharing ``group_id``; copied onto its rows.
     group_id: UUID | None = None
     group_rank: int | None = None
+    # This booking's own cutoff (2026-10-08: "Friday noon for Saturday, Friday 4 PM for
+    # Sunday"). None = the owner's ``User.booking_cutoff``, else the site default. Its rows
+    # resolve it through the STORED rule (they carry no copy), so there is one state to keep
+    # right; ``TenantStore.rewrite_rule_cutoff`` moves the live rows when it changes.
+    booking_cutoff: BookingCutoffConfig | None = None
 
     def __post_init__(self) -> None:
         validate_options(self.options)
@@ -328,6 +349,11 @@ class RequestRow:
     # (an upgrade may cancel first); cleared by the outcome write. If still set on a later run,
     # a missing reservation is bot-caused (-> PENDING + needs_reconcile), never external.
     upgrade_started_at: datetime | None = None
+    # A ONE-OFF's own cutoff (2026-10-08); None = the row follows its owner's setting. Set only
+    # on explicit rows: a rule row follows its stored rule's ``booking_cutoff`` through
+    # ``rule_id`` and keeps None here. ``cutoff_at`` stays what every reader uses; this marker
+    # only tells ``set_booking_cutoff`` which rows to leave alone.
+    booking_cutoff: BookingCutoffConfig | None = None
     # Round-4 D2 (MU-5 review): the status (PENDING or SKIPPED) a rule row had when an explicit
     # row superseded it. Set while SUPERSEDED and KEPT through a system withdraw (round-5), so
     # both un-superseding and a later reactivation restore exactly this: a user's skip is

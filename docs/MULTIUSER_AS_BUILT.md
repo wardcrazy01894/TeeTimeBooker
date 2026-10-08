@@ -762,6 +762,52 @@ per-person setting, with the row's denormalized `cutoff_at` staying the single s
 Pinned by the conformance suite (both backends), `tests/tenant/test_materialize.py`,
 `tests/tenant/test_watch_runner_snapshots.py` and `tests/web/test_web_booking_cutoff.py`.
 
+### A cutoff per booking (2026-10-08, the same day)
+
+Operator request, hours after the per-person cutoff: "Friday at noon for Saturday and Friday at
+4 PM for Sunday, or Thursday, or whatever." Layered on the per-person setting without moving the
+source of truth (the row's `cutoff_at`):
+
+- `semantics.resolve_cutoff(own, owner, default)` is the one resolution order, used by both
+  stores and by `materialize_rule`: the booking's own `booking_cutoff` (a `StandingRule`'s, or a
+  one-off `RequestRow`'s) → `User.booking_cutoff` → the site default. `is not None` throughout; a
+  config object is never tested for truth.
+- **A rule row carries no copy of its rule's cutoff.** The plan review's main finding: a marker
+  on every row goes stale the moment a rewrite skips a leased row, and the person's next save
+  would then clobber the rule's cutoff. So a rule row's `booking_cutoff` stays None and it
+  follows its STORED rule through `rule_id`; only a one-off stores its own (there is no rule to
+  resolve through, and the person's save has to tell it apart). `set_booking_cutoff` reports
+  such rows as `CutoffChange.kept_own` and leaves them alone.
+- `TenantStore.rewrite_rule_cutoff(stored_rule, now)` moves a rule's live rows (the same
+  statuses, date bound and write as `set_booking_cutoff`; a BOOKED row is moved) onto the
+  rule's resolved cutoff; a leased row, or one written under the IfMatch, is reported. It is
+  the **first step of every `materialize_rule` walk** (`MaterializeReport.cutoff_rewritten`),
+  which gives one mechanism for both the edit (`apply_rule_edit` ends in a materialize) and the
+  convergence of a skipped row or a crash between the rule write and the rewrite (the tick
+  walks every rule daily). Idempotent: a row already at the instant is not written. In Cosmos it
+  is one partition query on the indexed `/ruleId` plus a per-row IfMatch replace. In
+  `_edit_window` it also runs BEFORE the window rewrite (PR review): a cutoff moved later
+  re-opens rows the old instant had frozen, and the window rewrite skips frozen rows, so the
+  other order left a re-opened row with its old window until the next edit
+  (`test_an_edit_that_moves_the_cutoff_later_and_the_window_applies_both`).
+- `reactivate_rule_row` computes the fresh instant BEFORE its transition check and checks a copy
+  of the row carrying it (second review finding): a withdrawn row keeps its stale `cutoff_at`,
+  and a rule whose cutoff moved later must re-open a date the old instant had closed, where the
+  materializer (resolving the same way) already says "not frozen". A row of another rule is now
+  refused with `TransitionRefusedError` (it was a `ValueError`; the Protocol said "no longer
+  covers the row" all along).
+- Cosmos: `bookingCutoff` on rule and row documents, absent → None; no index change (nothing
+  filters on it), no migration.
+- Web (next PR): the weekly and one-date forms get the same Time + Day pickers as Your account
+  with a leading "my account's cutoff" option; the rules page words a rule's own; Dates shows
+  each row's. "Re-request this date" after a cancel creates a one-off under the form's cutoff
+  (none = the person's), not the rule's.
+
+Pinned by the conformance suite ("a cutoff per booking" block, both backends),
+`tests/tenant/test_materialize.py::test_materialize_freezes_by_the_rules_own_cutoff` /
+`test_rule_cutoff_edit_moves_its_live_rows` and
+`tests/tenant/cosmos/test_documents.py::test_roundtrip_booking_cutoff_on_rules_and_one_offs`.
+
 ### Time pickers list only the course's tee-sheet hours (2026-10-02)
 
 Operator request: "no reason to show 4 AM or 9 PM on the time list; per course." Every From/To
