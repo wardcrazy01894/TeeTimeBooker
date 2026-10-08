@@ -454,6 +454,72 @@ async def test_tick_materializes_each_rule_under_its_owners_cutoff() -> None:
     assert later.cutoff_at == cutoff_instant(date(2026, 10, 10), timezone=TZ, cutoff=noon_two_days)
 
 
+async def test_materialize_freezes_by_the_rules_own_cutoff() -> None:
+    """A cutoff per booking (2026-10-08): the rule's own cutoff wins over the owner's, both in
+    the frozen check here and in the ``cutoff_at`` the store writes, in either direction."""
+    s = _store()
+    t = await _tenant(s)
+    noon_two_days = BookingCutoffConfig(days_before=2, time_of_day=time(12, 0))
+    # Fri 10/2 13:00 EDT: TARGET (Sat 10/3) is open under the default, frozen under noon-two-days.
+    now = datetime(2026, 10, 2, 17, 0, tzinfo=UTC)
+    # Owner on the default, rule on noon-two-days: TARGET is frozen.
+    early = await s.upsert_rule(_rule(t, booking_cutoff=noon_two_days), user_id=t.user.id)
+    report = await _materialize(s, early, now=now)
+    assert report.skipped_frozen == (TARGET,)
+    later = await _own_row(s, t, early, date(2026, 10, 10))
+    assert later.cutoff_at == cutoff_instant(date(2026, 10, 10), timezone=TZ, cutoff=noon_two_days)
+    assert later.booking_cutoff is None  # a rule row carries no copy
+    # Owner on noon-two-days, a Sunday rule on the default: 10/4 is open under the rule's own.
+    await s.upsert_user(replace(t.user, booking_cutoff=noon_two_days))
+    sunday = await s.upsert_rule(
+        _rule(t, weekday=SUN, booking_cutoff=BookingCutoffConfig()), user_id=t.user.id
+    )
+    (report,) = await _tick(s, now=now)  # the tick resolves the same way
+    assert report.rule_id == str(sunday.id) and report.skipped_frozen == ()
+    row = await _own_row(s, t, sunday, date(2026, 10, 4))
+    assert row.cutoff_at == cutoff_instant(date(2026, 10, 4), timezone=TZ, cutoff=CUTOFF)
+
+
+async def test_rule_cutoff_edit_moves_its_live_rows() -> None:
+    """Editing a rule's cutoff moves every live row of the rule (pending AND booked; a leased
+    one is reported) through ``materialize_rule``'s leading ``rewrite_rule_cutoff``, so the
+    same call converges a row that was skipped, or a rule written without its rewrite."""
+    s = _store()
+    t = await _tenant(s)
+    rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
+    await _materialize(s, rule)
+    pending = await _own_row(s, t, rule, SATURDAYS[1])
+    booked = await _book(s, await _own_row(s, t, rule, SATURDAYS[2]))
+    leased = await _own_row(s, t, rule, SATURDAYS[0])
+    await _lease(s, leased, owner=WATCHER)
+    friday_noon = BookingCutoffConfig(days_before=1, time_of_day=time(12, 0))
+    stored = await _stored_rule(s, rule)
+    report = await _edit(s, stored, replace(stored, booking_cutoff=friday_noon), t)
+    assert set(report.cutoff_rewritten) == {pending.id, booked.id}
+    assert report.skipped_leased == (leased.id,)
+    for before in (pending, booked):
+        after = await _get(s, before)
+        assert after.cutoff_at == cutoff_instant(
+            before.target_date, timezone=TZ, cutoff=friday_noon
+        )
+        assert after.status is before.status
+    assert (await _get(s, leased)).cutoff_at == leased.cutoff_at
+    # Convergence: a rule write that never got its rewrite (a crash in between) is caught by the
+    # next walk of the rule, which the tick runs daily.
+    stored = await _stored_rule(s, rule)
+    week_before = BookingCutoffConfig(days_before=7, time_of_day=time(9, 0))
+    stored = await s.upsert_rule(replace(stored, booking_cutoff=week_before), user_id=t.user.id)
+    report = await _materialize(s, stored)
+    assert set(report.cutoff_rewritten) == {pending.id, booked.id}
+    assert report.skipped_leased == (leased.id,)
+    assert (await _get(s, pending)).cutoff_at == cutoff_instant(
+        pending.target_date, timezone=TZ, cutoff=week_before
+    )
+    # And nothing to do means nothing written.
+    report = await _materialize(s, await _stored_rule(s, rule))
+    assert report.cutoff_rewritten == ()
+
+
 async def test_materialize_creates_superseded_when_one_off_holds_the_date() -> None:
     s = _store()
     t = await _tenant(s)

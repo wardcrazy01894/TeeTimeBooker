@@ -432,6 +432,9 @@ _ROW_FIELDS: tuple[_Field, ...] = (
     _Field("group_id", "groupId", _optional(_UUID)),
     _Field("group_rank", "groupRank", _optional(_INT)),
     _Field("max_price", "maxPrice", _optional(_DECIMAL)),
+    # A one-off's own cutoff (2026-10-08); absent on every row written before, and on every
+    # rule row (they follow their stored rule), decodes to None.
+    _Field("booking_cutoff", "bookingCutoff", _optional(_CUTOFF)),
 )
 
 
@@ -478,6 +481,8 @@ _RULE_FIELDS: tuple[_Field, ...] = (
     _Field("max_price", "maxPrice", _optional(_DECIMAL)),
     _Field("group_id", "groupId", _optional(_UUID)),
     _Field("group_rank", "groupRank", _optional(_INT)),
+    # The rule's own cutoff (2026-10-08); absent on a rule written before decodes to None.
+    _Field("booking_cutoff", "bookingCutoff", _optional(_CUTOFF)),
 )
 
 

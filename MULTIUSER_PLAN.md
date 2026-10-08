@@ -176,8 +176,9 @@ Fields are those of `tenant/models.py`. Abridged: `row` = `course_id`, `target_d
 (**course tz**), window, `party_size`, `status`, `status_reason`, `source`, `rule_id`, `cutoff_at`
 (UTC, from `booking_cutoff.cutoff_instant`), `request_id`, `booked_*`, `needs_reconcile`,
 `upgrade_started_at` (M2 marker), `lease_owner`, `lease_expires_at`, `last_outcome*`,
-`group_id`/`group_rank`, `version`, `schemaVersion`. Deterministic **document ids** carry the
-uniqueness keys:
+`group_id`/`group_rank`, `booking_cutoff` (a one-off's own cutoff, 2026-10-08; None on a rule row,
+which follows its rule's `booking_cutoff`), `version`, `schemaVersion`. Deterministic **document
+ids** carry the uniqueness keys:
 
 | Doc | `id` | Guarantees |
 |-----|------|-----------|
@@ -290,7 +291,7 @@ in-process only).
 cutoff=policy_cutoff, skip_dates=frozenset())`. The skip leg is retired for tenant rows (a skip is
 the `skipped` status). `cutoff_at` is a denormalized copy of `cutoff_instant(...)` so the Cosmos
 queries can filter on it. The Python `frozen_reason` re-check is authoritative (belt and braces;
-a global cutoff-policy change needs a migration that recomputes `cutoff_at`, §13 Q13). Since 2026-10-08 the cutoff is per PERSON: `User.booking_cutoff` (None = the site default) is what the store computes a new row's `cutoff_at` from, `set_booking_cutoff` rewrites the person's live rows when they change it, and the watcher hands the engine each row's own cutoff (`semantics.cutoff_config_of`).
+a global cutoff-policy change needs a migration that recomputes `cutoff_at`, §13 Q13). Since 2026-10-08 the cutoff resolves per BOOKING, then per PERSON (`semantics.resolve_cutoff`): a rule's or a one-off's own `booking_cutoff`, else `User.booking_cutoff`, else the site default, is what the store computes a new row's `cutoff_at` from; `set_booking_cutoff` rewrites the person's live rows that follow their setting when they change it, `rewrite_rule_cutoff` (the first step of every `materialize_rule` walk) moves a rule's live rows when the rule's own changes, and the watcher hands the engine each row's own cutoff (`semantics.cutoff_config_of`).
 
 ```
              create (web explicit / materializer rule)  [guard: not frozen, date >= today]
@@ -1670,8 +1671,12 @@ immediately after MU-0: MU-1, MU-2, MU-3, MU-4, MU-5, MU-7.
     only, `compute.bicep`) and available for the web app's `TEETIME_OPERATOR_EMAIL` (a separate,
     plain, non-secret value — the operator's SIGN-IN identity, not the notification recipient;
     they happen to be the same address but serve different purposes, see `webapp.bicep`).
-13. Is the 16:00-day-before cutoff global for all users, or will per-user cutoffs be wanted? v1
-    assumes global. Changing it later requires recomputing `cutoff_at`.
+13. ~~Is the 16:00-day-before cutoff global for all users, or will per-user cutoffs be wanted?~~
+    **RESOLVED 2026-10-08:** wanted, twice in one day. Per person (`User.booking_cutoff`,
+    `set_booking_cutoff` recomputes the person's live rows' `cutoff_at`), then per booking
+    (`StandingRule.booking_cutoff` / a one-off's `RequestRow.booking_cutoff`,
+    `rewrite_rule_cutoff` from every `materialize_rule` walk); the site default stays the
+    fallback and no migration was needed (an absent field decodes to None).
 14. ~~Rehearsal~~. **RESOLVED 2026-09-25:** no dev harness. The first coordinated-pool burst runs
     live in prod, with only the operator's account (§11.2).
 

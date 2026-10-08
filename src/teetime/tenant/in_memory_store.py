@@ -57,6 +57,7 @@ from .models import (
     RowId,
     RowSource,
     RowStatus,
+    RuleCutoffChange,
     RuleId,
     RuleNoLongerCoversError,
     StandingRule,
@@ -85,6 +86,7 @@ from .semantics import (
     ledger_entries,
     new_row,
     outcome_row,
+    resolve_cutoff,
     restorable_rule_row,
     rule_covers_row,
     rule_intent,
@@ -202,12 +204,13 @@ class InMemoryTenantStore:
             raise TenantNotFoundError(NOT_FOUND)
         return row
 
-    def _cutoff_for(self, account: CourseAccount) -> BookingCutoffConfig:
-        """The owner's own booking cutoff, else the site default (``User.booking_cutoff``)."""
+    def _cutoff_for(
+        self, account: CourseAccount, own: BookingCutoffConfig | None = None
+    ) -> BookingCutoffConfig:
+        """``semantics.resolve_cutoff``: the booking's own cutoff, else the owner's
+        (``User.booking_cutoff``), else the site default."""
         user = self._users.get(account.user_id)
-        if user is not None and user.booking_cutoff is not None:
-            return user.booking_cutoff
-        return self._cutoff
+        return resolve_cutoff(own, user.booking_cutoff if user is not None else None, self._cutoff)
 
     def _account_for_user(
         self, account_id: CourseAccountId, user_id: UserId | None
@@ -235,17 +238,21 @@ class InMemoryTenantStore:
         status: RowStatus,
         source: RowSource,
         rule_id: RuleId | None,
+        own_cutoff: BookingCutoffConfig | None,
     ) -> RequestRow:
+        """``own_cutoff`` is the rule's (resolved, not copied onto a rule row) or the one-off's
+        (resolved AND stored on the row as its marker)."""
         return new_row(
             row_id=row_id,
             account=account,
             timezone=self.course_timezone(account.course_id),
-            cutoff=self._cutoff_for(account),
+            cutoff=self._cutoff_for(account, own_cutoff),
             target_date=target_date,
             intent=intent,
             status=status,
             source=source,
             rule_id=rule_id,
+            booking_cutoff=own_cutoff if rule_id is None else None,
         )
 
     @staticmethod
@@ -588,6 +595,7 @@ class InMemoryTenantStore:
             status=RowStatus.SUPERSEDED if slot_held else RowStatus.PENDING,
             source=RowSource.RULE,
             rule_id=rule.id,
+            own_cutoff=rule.booking_cutoff,
         )
         check_create(row, actor=Actor.MATERIALIZER, now=now)
         self._commit([(None, row)])
@@ -599,26 +607,30 @@ class InMemoryTenantStore:
         stored = self._row(row.id)
         # Round-5: back to the pre-supersede status if it was superseded before the withdraw.
         target = stored.superseded_from or RowStatus.PENDING
-        check_transition(row, target, actor=Actor.MATERIALIZER, now=now)
         if row.rule_id != rule.id:
-            raise ValueError(f"row {row.id} does not belong to rule {rule.id}")
+            raise TransitionRefusedError(f"row {row.id} does not belong to rule {rule.id}")
         rule = self._stored_rule_matching(rule)
+        account = self._account_for_user(row.course_account_id, None)
+        # The cutoff as it resolves NOW (the rule's own, else the owner's): a withdrawn row is
+        # never rewritten, so its stored instant is stale, and the frozen check must run against
+        # the fresh one (a cutoff moved later re-opens a date the old instant had closed).
+        fresh = cutoff_at(
+            timezone=row.timezone,
+            day=row.target_date,
+            cutoff=self._cutoff_for(account, rule.booking_cutoff),
+        )
+        check_transition(replace(row, cutoff_at=fresh), target, actor=Actor.MATERIALIZER, now=now)
         if not rule.active:
             raise TransitionRefusedError(f"rule {rule.id} is inactive")
         self._refuse_if_user_terminal(row.course_account_id, row.target_date)
         if lease_held(stored, now=now):
             raise RowLeaseError(f"row {row.id} is leased by {stored.lease_owner!r}")
-        account = self._account_for_user(row.course_account_id, None)
         new = replace(
             self._unleased_write(row, now),
             status=target,
             status_reason=None,
             superseded_from=None,
-            # The owner's cutoff as it is NOW (a withdrawn row is not rewritten by
-            # set_booking_cutoff).
-            cutoff_at=cutoff_at(
-                timezone=row.timezone, day=row.target_date, cutoff=self._cutoff_for(account)
-            ),
+            cutoff_at=fresh,
             options=rule.options,
             party_size=rule.party_size,
             max_price=rule.max_price,
@@ -702,12 +714,51 @@ class InMemoryTenantStore:
             raise TenantNotFoundError(NOT_FOUND)
         saved = replace(user, booking_cutoff=cutoff)
         self._users[user_id] = saved
-        effective = cutoff if cutoff is not None else self._cutoff
+        effective = resolve_cutoff(None, cutoff, self._cutoff)
         mine = {a.id for a in self._accounts.values() if a.user_id == user_id}
         rewritten: list[RowId] = []
         skipped: list[RowId] = []
+        kept_own: list[RowId] = []
         for row in sorted(self._rows.values(), key=lambda r: r.id):
             if row.course_account_id not in mine or row.status not in CUTOFF_REWRITE_STATUSES:
+                continue
+            if row.target_date < now.astimezone(ZoneInfo(row.timezone)).date():
+                continue
+            if self._own_cutoff_of(row) is not None:
+                kept_own.append(row.id)
+                continue
+            fresh = cutoff_at(timezone=row.timezone, day=row.target_date, cutoff=effective)
+            if fresh == row.cutoff_at:
+                continue
+            if lease_held(row, now=now):
+                skipped.append(row.id)
+                continue
+            self._commit(
+                [(row, replace(unleased_write(row, now), cutoff_at=fresh, version=row.version + 1))]
+            )
+            rewritten.append(row.id)
+        return CutoffChange(
+            user=saved,
+            rewritten=tuple(rewritten),
+            skipped_leased=tuple(skipped),
+            kept_own=tuple(kept_own),
+        )
+
+    def _own_cutoff_of(self, row: RequestRow) -> BookingCutoffConfig | None:
+        """The booking's own cutoff: a one-off's marker, or a rule row's STORED rule's."""
+        if row.rule_id is None:
+            return row.booking_cutoff
+        rule = self._rules.get(row.rule_id)
+        return rule.booking_cutoff if rule is not None else None
+
+    async def rewrite_rule_cutoff(self, rule: StandingRule, *, now: datetime) -> RuleCutoffChange:
+        account = self._account_for_user(rule.course_account_id, None)
+        rule = self._stored_rule_matching(rule)
+        effective = self._cutoff_for(account, rule.booking_cutoff)
+        rewritten: list[RowId] = []
+        skipped: list[RowId] = []
+        for row in sorted(self._rows.values(), key=lambda r: r.id):
+            if row.rule_id != rule.id or row.status not in CUTOFF_REWRITE_STATUSES:
                 continue
             if row.target_date < now.astimezone(ZoneInfo(row.timezone)).date():
                 continue
@@ -721,7 +772,9 @@ class InMemoryTenantStore:
                 [(row, replace(unleased_write(row, now), cutoff_at=fresh, version=row.version + 1))]
             )
             rewritten.append(row.id)
-        return CutoffChange(user=saved, rewritten=tuple(rewritten), skipped_leased=tuple(skipped))
+        return RuleCutoffChange(
+            rule=rule, rewritten=tuple(rewritten), skipped_leased=tuple(skipped)
+        )
 
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:
         existing = await self.get_user_by_subject(provider, subject)
@@ -838,6 +891,7 @@ class InMemoryTenantStore:
         max_price: Decimal | None = None,
         group_id: UUID | None = None,
         group_rank: int | None = None,
+        booking_cutoff: BookingCutoffConfig | None = None,
     ) -> RequestRow:
         account = self._account_for_user(account_id, user_id)
         row = self._new_row(
@@ -854,6 +908,7 @@ class InMemoryTenantStore:
             status=RowStatus.PENDING,
             source=RowSource.EXPLICIT,
             rule_id=None,
+            own_cutoff=booking_cutoff,
         )
         check_create(row, actor=Actor.WEB, now=now)
         writes: list[_Write] = [(None, row)]

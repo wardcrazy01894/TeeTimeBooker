@@ -53,6 +53,7 @@ from teetime.tenant.models import (
     RowId,
     RowSource,
     RowStatus,
+    RuleCutoffChange,
     RuleId,
     RuleNoLongerCoversError,
     SnapshotEntry,
@@ -144,6 +145,7 @@ def _rule(
     latest: time = time(10, 0),
     party: int = 2,
     rule_id: RuleId | None = None,
+    booking_cutoff: BookingCutoffConfig | None = None,
 ) -> StandingRule:
     return StandingRule(
         id=rule_id or RuleId(uuid4()),
@@ -154,7 +156,21 @@ def _rule(
         active=active,
         materialized_through=None,
         version=1,
+        booking_cutoff=booking_cutoff,
     )
+
+
+async def _stored_rule(store: TenantStore, rule: StandingRule) -> StandingRule:
+    stored = await store.get_rule_unscoped(rule.id)
+    assert stored is not None, f"rule {rule.id} is not stored"
+    return stored
+
+
+async def _rule_row_for(store: TenantStore, rule: StandingRule, target: date) -> RequestRow:
+    """``rule``'s row for ``target`` (created now; the rule must be the stored version)."""
+    row = await store.insert_rule_row_if_absent(rule, target, now=NOW)
+    assert row is not None, f"rule {rule.id} already had a row for {target}"
+    return row
 
 
 async def _rule_row(
@@ -1778,6 +1794,222 @@ class TenantStoreConformance:
         back = await s.reactivate_rule_row(await _get(s, row), rule, now=NOW)
         assert back.status is RowStatus.PENDING
         assert back.cutoff_at == cutoff_instant(TARGET, timezone="America/New_York", cutoff=early)
+
+    # --- a cutoff per booking (operator request 2026-10-08, the same day) -------------------
+
+    async def test_rule_rows_take_the_rules_own_cutoff_over_the_owners(
+        self, harness: StoreHarness
+    ) -> None:
+        """Resolution order: the rule's own ``booking_cutoff`` -> the owner's -> the site
+        default. A rule row carries NO copy of it (``RequestRow.booking_cutoff`` stays None):
+        it follows its stored rule through ``rule_id``, so there is one state to keep right."""
+        s = harness.store
+        t = await _tenant(s)
+        owners = BookingCutoffConfig(days_before=2, time_of_day=time(12, 0))
+        await s.upsert_user(replace(t.user, booking_cutoff=owners))
+        friday_noon = BookingCutoffConfig(days_before=1, time_of_day=time(12, 0))
+        rule = await s.upsert_rule(_rule(t, booking_cutoff=friday_noon), user_id=t.user.id)
+        assert (await s.get_rule_unscoped(rule.id)) == rule
+        assert rule.booking_cutoff == friday_noon
+        row = await s.insert_rule_row_if_absent(rule, TARGET, now=NOW)
+        assert row is not None
+        tz = "America/New_York"
+        assert row.cutoff_at == cutoff_instant(TARGET, timezone=tz, cutoff=friday_noon)
+        assert row.booking_cutoff is None
+        assert (await _get(s, row)).cutoff_at == row.cutoff_at
+        # A rule WITHOUT its own cutoff still follows the owner.
+        plain = await s.upsert_rule(_rule(t, weekday=6), user_id=t.user.id)
+        sunday = await s.insert_rule_row_if_absent(plain, TARGET + timedelta(days=1), now=NOW)
+        assert sunday is not None
+        assert sunday.cutoff_at == cutoff_instant(
+            TARGET + timedelta(days=1), timezone=tz, cutoff=owners
+        )
+
+    async def test_explicit_row_takes_its_own_cutoff(self, harness: StoreHarness) -> None:
+        """A one-off's own cutoff is stored ON the row (``booking_cutoff``): there is no rule
+        to resolve it through, and the person's save must be able to tell it apart."""
+        s = harness.store
+        t = await _tenant(s)
+        thursday_four = BookingCutoffConfig(days_before=2, time_of_day=time(16, 0))
+        row = await s.create_explicit_row(
+            user_id=t.user.id,
+            account_id=t.account.id,
+            target_date=TARGET,
+            options=(RankedWindow(1, time(9, 0), time(11, 0)),),
+            party_size=2,
+            now=NOW,
+            booking_cutoff=thursday_four,
+        )
+        tz = "America/New_York"
+        assert row.cutoff_at == cutoff_instant(TARGET, timezone=tz, cutoff=thursday_four)
+        assert row.booking_cutoff == thursday_four
+        assert (await _get(s, row)).booking_cutoff == thursday_four
+        plain = await _explicit(s, t, target=TARGET + timedelta(days=7))
+        assert plain.booking_cutoff is None
+        assert plain.cutoff_at == cutoff_instant(
+            TARGET + timedelta(days=7), timezone=tz, cutoff=BookingCutoffConfig()
+        )
+
+    async def test_reactivate_takes_the_rules_own_cutoff_even_past_the_old_instant(
+        self, harness: StoreHarness
+    ) -> None:
+        """A withdrawn row keeps its old ``cutoff_at`` (it is never rewritten while withdrawn).
+        Bringing it back recomputes the instant from the RULE's own cutoff as stored THEN, and
+        the frozen check runs against that fresh instant, not the stale one: a rule whose
+        cutoff moved later re-opens a date the old instant had already closed."""
+        s = harness.store
+        t = await _tenant(s)
+        rule, row = await _rule_row(s, t)
+        assert row.cutoff_at == TARGET_CUTOFF  # 16:00 EDT on Fri 10/2
+        rule = await s.upsert_rule(replace(rule, active=False), user_id=t.user.id)
+        row = await s.transition_row(
+            row.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        nine_that_day = BookingCutoffConfig(days_before=0, time_of_day=time(9, 0))
+        rule = await s.upsert_rule(
+            replace(rule, active=True, booking_cutoff=nine_that_day), user_id=t.user.id
+        )
+        past_old = datetime(2026, 10, 2, 21, 0, tzinfo=UTC)  # 17:00 EDT Fri: old says frozen
+        back = await s.reactivate_rule_row(await _get(s, row), rule, now=past_old)
+        assert back.status is RowStatus.PENDING
+        assert back.cutoff_at == cutoff_instant(
+            TARGET, timezone="America/New_York", cutoff=nine_that_day
+        )
+        assert back.booking_cutoff is None
+        # And the other way round: a rule cutoff EARLIER than now refuses, like any frozen date.
+        rule2, row2 = await _rule_row(s, t, target=TARGET + timedelta(days=1))  # a Sunday rule
+        rule2 = await s.upsert_rule(replace(rule2, active=False), user_id=t.user.id)
+        row2 = await s.transition_row(
+            row2.id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        week_before = BookingCutoffConfig(days_before=7, time_of_day=time(9, 0))
+        rule2 = await s.upsert_rule(
+            replace(rule2, active=True, booking_cutoff=week_before), user_id=t.user.id
+        )
+        with pytest.raises(TransitionRefusedError):
+            await s.reactivate_rule_row(await _get(s, row2), rule2, now=past_old)
+
+    async def test_rewrite_rule_cutoff_rewrites_live_rows_and_skips_leased(
+        self, harness: StoreHarness
+    ) -> None:
+        """A rule's cutoff edit reaches every live row of the rule (PENDING, BOOKED, SKIPPED,
+        SUPERSEDED; frozen or not), like the person's save does (``unleased_write`` + a version
+        bump, no transition check: the status never changes), skips a leased one, and leaves
+        the person's other rows alone. Idempotent, so the materializer can call it on every
+        walk to converge a row skipped earlier. Clearing it (None) puts the rows back under the
+        owner's setting."""
+        s = harness.store
+        t = await _tenant(s)
+        owners = BookingCutoffConfig(days_before=2, time_of_day=time(12, 0))
+        await s.upsert_user(replace(t.user, booking_cutoff=owners))
+        rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        pending = await _rule_row_for(s, rule, TARGET)
+        booked = await _book(s, await _rule_row_for(s, rule, TARGET + timedelta(days=7)))
+        leased = await _rule_row_for(s, rule, TARGET + timedelta(days=14))
+        await _lease(s, leased, owner=WATCHER)
+        leased = await _get(s, leased)
+        one_off = await _explicit(s, t, target=TARGET + timedelta(days=21))
+        bystander = await _tenant(s, n=1)
+        theirs = await _explicit(s, bystander)
+        friday_noon = BookingCutoffConfig(days_before=1, time_of_day=time(12, 0))
+        stored = await s.upsert_rule(
+            replace(await _stored_rule(s, rule), booking_cutoff=friday_noon), user_id=t.user.id
+        )
+        change = await s.rewrite_rule_cutoff(stored, now=NOW)
+        assert isinstance(change, RuleCutoffChange)
+        assert change.rule == stored
+        assert set(change.rewritten) == {pending.id, booked.id}
+        assert change.skipped_leased == (leased.id,)
+        tz = "America/New_York"
+        for before in (pending, booked):
+            after = await _get(s, before)
+            assert after.cutoff_at == cutoff_instant(
+                before.target_date, timezone=tz, cutoff=friday_noon
+            )
+            assert after.booking_cutoff is None
+            assert after.version == before.version + 1
+            assert after.status is before.status and after.booked_raw_id == before.booked_raw_id
+        assert await _get(s, leased) == leased
+        assert await _get(s, one_off) == one_off
+        assert await _get(s, theirs) == theirs
+        # Idempotent: nothing left to change, nothing rewritten (no version churn).
+        again = await s.rewrite_rule_cutoff(stored, now=NOW)
+        assert again.rewritten == () and again.skipped_leased == (leased.id,)
+        # Clearing the rule's cutoff puts its rows back under the owner's.
+        cleared = await s.upsert_rule(replace(stored, booking_cutoff=None), user_id=t.user.id)
+        change = await s.rewrite_rule_cutoff(cleared, now=NOW)
+        assert set(change.rewritten) == {pending.id, booked.id}
+        assert (await _get(s, pending)).cutoff_at == cutoff_instant(
+            TARGET, timezone=tz, cutoff=owners
+        )
+        # A stale copy of the rule is refused, like every other rule-row writer.
+        with pytest.raises(TransitionRefusedError):
+            await s.rewrite_rule_cutoff(stored, now=NOW)
+
+    async def test_rewrite_rule_cutoff_leaves_past_and_withdrawn_rows_alone(
+        self, harness: StoreHarness
+    ) -> None:
+        s = harness.store
+        t = await _tenant(s)
+        rule = await s.upsert_rule(_rule(t), user_id=t.user.id)
+        gone = await _rule_row_for(s, rule, date(2026, 9, 26))  # a Saturday already past
+        withdrawn = await s.transition_row(
+            (await _rule_row_for(s, rule, TARGET)).id,
+            user_id=None,
+            to=RowStatus.WITHDRAWN,
+            actor=Actor.MATERIALIZER,
+            reason="rule_deactivated",
+            now=NOW,
+        )
+        stored = await s.upsert_rule(
+            replace(
+                await _stored_rule(s, rule),
+                booking_cutoff=BookingCutoffConfig(days_before=0, time_of_day=time(9, 0)),
+            ),
+            user_id=t.user.id,
+        )
+        change = await s.rewrite_rule_cutoff(stored, now=datetime(2026, 9, 28, 12, tzinfo=UTC))
+        assert change.rewritten == () and change.skipped_leased == ()
+        assert await _get(s, gone) == gone
+        assert await _get(s, withdrawn) == withdrawn
+
+    async def test_set_booking_cutoff_keeps_rows_with_their_own_cutoff(
+        self, harness: StoreHarness
+    ) -> None:
+        """The person's save never clobbers a booking's own cutoff: a rule row whose STORED rule
+        has one, or a one-off that has one, is reported as ``kept_own`` and untouched."""
+        s = harness.store
+        t = await _tenant(s)
+        friday_noon = BookingCutoffConfig(days_before=1, time_of_day=time(12, 0))
+        rule = await s.upsert_rule(_rule(t, booking_cutoff=friday_noon), user_id=t.user.id)
+        rule_own = await _rule_row_for(s, rule, TARGET)
+        one_off_own = await s.create_explicit_row(
+            user_id=t.user.id,
+            account_id=t.account.id,
+            target_date=TARGET + timedelta(days=7),
+            options=(RankedWindow(1, time(9, 0), time(11, 0)),),
+            party_size=2,
+            now=NOW,
+            booking_cutoff=friday_noon,
+        )
+        follows = await _explicit(s, t, target=TARGET + timedelta(days=14))
+        change = await s.set_booking_cutoff(
+            t.user.id, BookingCutoffConfig(days_before=0, time_of_day=time(9, 0)), now=NOW
+        )
+        assert change.rewritten == (follows.id,)
+        assert set(change.kept_own) == {rule_own.id, one_off_own.id}
+        assert await _get(s, rule_own) == rule_own
+        assert await _get(s, one_off_own) == one_off_own
 
     async def test_get_account_unscoped_reads_any_users_account(
         self, harness: StoreHarness

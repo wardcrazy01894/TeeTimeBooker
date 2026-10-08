@@ -87,6 +87,7 @@ from ..models import (
     RowId,
     RowSource,
     RowStatus,
+    RuleCutoffChange,
     RuleId,
     RuleNoLongerCoversError,
     StandingRule,
@@ -114,6 +115,7 @@ from ..semantics import (
     ledger_entries,
     new_row,
     outcome_row,
+    resolve_cutoff,
     restorable_rule_row,
     rule_covers_row,
     rule_intent,
@@ -817,13 +819,29 @@ class CosmosTenantStore:
             raise TransitionRefusedError(f"stale rule {rule.id}: re-read and retry")
         return stored.item
 
-    async def _cutoff_for(self, account: CourseAccount) -> BookingCutoffConfig:
-        """The owner's own booking cutoff, else the site default (``User.booking_cutoff``): one
-        point read, on row creation and reactivation only."""
+    async def _cutoff_for(
+        self, account: CourseAccount, own: BookingCutoffConfig | None = None
+    ) -> BookingCutoffConfig:
+        """``semantics.resolve_cutoff``: the booking's own cutoff, else the owner's
+        (``User.booking_cutoff``, one point read), else the site default. Read on row creation,
+        reactivation and the cutoff rewrites only."""
+        if own is not None:
+            return own
         stored = await self._user(account.user_id)
-        if stored is not None and stored.item.booking_cutoff is not None:
-            return stored.item.booking_cutoff
-        return self._cutoff
+        return resolve_cutoff(None, stored.item.booking_cutoff if stored else None, self._cutoff)
+
+    async def _own_cutoff_of(
+        self, row: RequestRow, rules: dict[RuleId, StandingRule | None]
+    ) -> BookingCutoffConfig | None:
+        """The booking's own cutoff: a one-off's marker, or a rule row's STORED rule's
+        (``rules`` memoises the rule reads across one call)."""
+        if row.rule_id is None:
+            return row.booking_cutoff
+        if row.rule_id not in rules:
+            stored = await self._rule_in(row.course_account_id, row.rule_id)
+            rules[row.rule_id] = stored.item if stored is not None else None
+        rule = rules[row.rule_id]
+        return rule.booking_cutoff if rule is not None else None
 
     def _new_row(
         self,
@@ -836,6 +854,7 @@ class CosmosTenantStore:
         status: RowStatus,
         source: RowSource,
         rule_id: RuleId | None,
+        booking_cutoff: BookingCutoffConfig | None = None,
     ) -> RequestRow:
         return new_row(
             row_id=row_id,
@@ -847,6 +866,7 @@ class CosmosTenantStore:
             status=status,
             source=source,
             rule_id=rule_id,
+            booking_cutoff=booking_cutoff,
         )
 
     # --- TenantStore: lifecycle -----------------------------------------------------------
@@ -1260,7 +1280,7 @@ class CosmosTenantStore:
         row = self._new_row(
             row_id=row_id,
             account=account,
-            cutoff=await self._cutoff_for(account),
+            cutoff=await self._cutoff_for(account, rule.booking_cutoff),
             target_date=target_date,
             intent=rule_intent(rule),
             status=RowStatus.SUPERSEDED if slot_held else RowStatus.PENDING,
@@ -1291,10 +1311,19 @@ class CosmosTenantStore:
         stored = await self._row(row.id)
         # Round-5: back to the pre-supersede status if it was superseded before the withdraw.
         target = stored.item.superseded_from or RowStatus.PENDING
-        check_transition(row, target, actor=Actor.MATERIALIZER, now=now)
         if row.rule_id != rule.id:
-            raise ValueError(f"row {row.id} does not belong to rule {rule.id}")
+            raise TransitionRefusedError(f"row {row.id} does not belong to rule {rule.id}")
         rule = await self._stored_rule_matching(rule)
+        account = await self._account_for_user(row.course_account_id, None)
+        # The cutoff as it resolves NOW (the rule's own, else the owner's): a withdrawn row is
+        # never rewritten, so its stored instant is stale, and the frozen check must run against
+        # the fresh one (a cutoff moved later re-opens a date the old instant had closed).
+        fresh = cutoff_at(
+            timezone=row.timezone,
+            day=row.target_date,
+            cutoff=await self._cutoff_for(account, rule.booking_cutoff),
+        )
+        check_transition(replace(row, cutoff_at=fresh), target, actor=Actor.MATERIALIZER, now=now)
         if not rule.active:
             raise TransitionRefusedError(f"rule {rule.id} is inactive")
         await self._refuse_if_user_terminal(row.course_account_id, row.target_date)
@@ -1302,19 +1331,12 @@ class CosmosTenantStore:
             raise RowLeaseError(f"row {row.id} is leased by {stored.item.lease_owner!r}")
         if stored.item != row:
             raise TransitionRefusedError(f"row {row.id} changed since it was read")
-        account = await self._account_for_user(row.course_account_id, None)
         new = replace(
             unleased_write(row, now),
             status=target,
             status_reason=None,
             superseded_from=None,
-            # The owner's cutoff as it is NOW (a withdrawn row is not rewritten by
-            # set_booking_cutoff).
-            cutoff_at=cutoff_at(
-                timezone=row.timezone,
-                day=row.target_date,
-                cutoff=await self._cutoff_for(account),
-            ),
+            cutoff_at=fresh,
             options=rule.options,
             party_size=rule.party_size,
             max_price=rule.max_price,
@@ -1474,36 +1496,86 @@ class CosmosTenantStore:
         # batch: the setting is saved first, then each row in its own IfMatch replace, so a
         # failure part-way leaves rows the person can re-save, never a setting their new rows
         # would not follow.
-        effective = cutoff if cutoff is not None else self._cutoff
+        effective = resolve_cutoff(None, cutoff, self._cutoff)
         rewritten: list[RowId] = []
         skipped: list[RowId] = []
+        kept_own: list[RowId] = []
+        rules: dict[RuleId, StandingRule | None] = {}
         for account in sorted(await self._user_accounts(user_id), key=lambda a: a.id):
             today = now.astimezone(ZoneInfo(self.course_timezone(account.course_id))).date()
-            found = await self._rows_where(
-                "ARRAY_CONTAINS(@statuses, c.status) AND c.targetDate >= @today",
-                partition_key=str(account.id),
-                statuses=[st.value for st in sorted(CUTOFF_REWRITE_STATUSES)],
-                today=today.isoformat(),
-            )
-            for row_stored in sorted(found, key=lambda st: st.item.id):
-                row = row_stored.item
-                fresh = cutoff_at(timezone=row.timezone, day=row.target_date, cutoff=effective)
-                if fresh == row.cutoff_at:
+            found = await self._live_rows_from(today, partition_key=str(account.id), extra="")
+            for row_stored in found:
+                if await self._own_cutoff_of(row_stored.item, rules) is not None:
+                    kept_own.append(row_stored.item.id)
                     continue
-                if lease_held(row, now=now):
-                    skipped.append(row.id)
-                    continue
-                new = replace(unleased_write(row, now), cutoff_at=fresh, version=row.version + 1)
-                try:
-                    await self._commit([(row_stored, new)])
-                except TransitionRefusedError, RowLeaseError:
-                    # Written by the booker / watcher (a lease, an outcome) between the query
-                    # and this IfMatch replace: the same answer as a row found leased.
-                    log.info("set_booking_cutoff: row %s changed under us; skipped", row.id)
-                    skipped.append(row.id)
-                    continue
-                rewritten.append(row.id)
-        return CutoffChange(user=saved, rewritten=tuple(rewritten), skipped_leased=tuple(skipped))
+                await self._rewrite_cutoff(row_stored, effective, now, rewritten, skipped)
+        return CutoffChange(
+            user=saved,
+            rewritten=tuple(rewritten),
+            skipped_leased=tuple(skipped),
+            kept_own=tuple(kept_own),
+        )
+
+    async def rewrite_rule_cutoff(self, rule: StandingRule, *, now: datetime) -> RuleCutoffChange:
+        account = await self._account_for_user(rule.course_account_id, None)
+        rule = await self._stored_rule_matching(rule)
+        effective = await self._cutoff_for(account, rule.booking_cutoff)
+        today = now.astimezone(ZoneInfo(self.course_timezone(account.course_id))).date()
+        # One partition query on the indexed ``/ruleId``; each row then its own IfMatch replace
+        # (not atomic with the rule write: a row skipped here is converged by the materializer's
+        # next walk, which calls this again).
+        found = await self._live_rows_from(
+            today, partition_key=str(account.id), extra=" AND c.ruleId = @rule", rule=str(rule.id)
+        )
+        rewritten: list[RowId] = []
+        skipped: list[RowId] = []
+        for row_stored in found:
+            await self._rewrite_cutoff(row_stored, effective, now, rewritten, skipped)
+        return RuleCutoffChange(
+            rule=rule, rewritten=tuple(rewritten), skipped_leased=tuple(skipped)
+        )
+
+    async def _live_rows_from(
+        self, today: date, *, partition_key: str, extra: str, **params: object
+    ) -> list[Stored[RequestRow]]:
+        """The rows a cutoff change may rewrite (``CUTOFF_REWRITE_STATUSES``, dated today or
+        later), in id order."""
+        found = await self._rows_where(
+            "ARRAY_CONTAINS(@statuses, c.status) AND c.targetDate >= @today" + extra,
+            partition_key=partition_key,
+            statuses=[st.value for st in sorted(CUTOFF_REWRITE_STATUSES)],
+            today=today.isoformat(),
+            **params,
+        )
+        return sorted(found, key=lambda st: st.item.id)
+
+    async def _rewrite_cutoff(
+        self,
+        row_stored: Stored[RequestRow],
+        effective: BookingCutoffConfig,
+        now: datetime,
+        rewritten: list[RowId],
+        skipped: list[RowId],
+    ) -> None:
+        """Move one row onto ``effective`` (``unleased_write`` + a version bump, no transition
+        check: the status does not change), or report it skipped."""
+        row = row_stored.item
+        fresh = cutoff_at(timezone=row.timezone, day=row.target_date, cutoff=effective)
+        if fresh == row.cutoff_at:
+            return
+        if lease_held(row, now=now):
+            skipped.append(row.id)
+            return
+        new = replace(unleased_write(row, now), cutoff_at=fresh, version=row.version + 1)
+        try:
+            await self._commit([(row_stored, new)])
+        except TransitionRefusedError, RowLeaseError:
+            # Written by the booker / watcher (a lease, an outcome) between the query and this
+            # IfMatch replace: the same answer as a row found leased.
+            log.info("cutoff rewrite: row %s changed under us; skipped", row.id)
+            skipped.append(row.id)
+            return
+        rewritten.append(row.id)
 
     async def bind_invited_user(self, *, email: str, provider: str, subject: str) -> User | None:
         for _ in range(_MAX_ATTEMPTS):
@@ -1932,12 +2004,14 @@ class CosmosTenantStore:
         max_price: Decimal | None = None,
         group_id: UUID | None = None,
         group_rank: int | None = None,
+        booking_cutoff: BookingCutoffConfig | None = None,
     ) -> RequestRow:
         account = await self._account_for_user(account_id, user_id)
         row = self._new_row(
             row_id=RowId(uuid4()),
             account=account,
-            cutoff=await self._cutoff_for(account),
+            cutoff=await self._cutoff_for(account, booking_cutoff),
+            booking_cutoff=booking_cutoff,
             target_date=target_date,
             intent=RowIntent(
                 options=options,

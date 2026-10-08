@@ -76,6 +76,7 @@ from .models import (
     is_user_terminal,
     row_is_frozen,
 )
+from .semantics import resolve_cutoff
 from .store import RowLeaseError, TenantStore
 
 log = logging.getLogger(__name__)
@@ -176,6 +177,10 @@ class MaterializeReport:
     withdrawn: tuple[RowId, ...] = ()
     rewritten: tuple[RowId, ...] = ()
     skipped_leased: tuple[RowId, ...] = ()
+    # Rows whose ``cutoff_at`` ``materialize_rule``'s leading ``rewrite_rule_cutoff`` moved
+    # onto the rule's (resolved) cutoff: a rule cutoff edit, or the convergence of a row skipped
+    # earlier (2026-10-08).
+    cutoff_rewritten: tuple[RowId, ...] = ()
 
 
 def _empty_report(rule: StandingRule) -> MaterializeReport:
@@ -281,11 +286,20 @@ async def materialize_rule(
     pass what ``upsert_rule`` / ``rules_needing_materialization`` / ``get_rule_unscoped``
     returned, never a copy edited in memory. An inactive rule is refused by the store.
     ``cutoff`` must be the rule OWNER's effective booking cutoff (``User.booking_cutoff``, else
-    the site default): the store computes each new row's ``cutoff_at`` from that setting and
-    refuses a frozen create, so the frozen check here has to use the same one.
+    the site default); the rule's own ``booking_cutoff`` wins over it (``resolve_cutoff``, the
+    same order the store computes each new row's ``cutoff_at`` by and refuses a frozen create
+    by, so the frozen check here agrees with it).
+
+    The walk starts with ``store.rewrite_rule_cutoff``: every live row of the rule is moved
+    onto the rule's cutoff as it resolves now. That is how a rule cutoff edit reaches its rows
+    (``apply_rule_edit`` ends here) and how a row skipped then (leased, or written under the
+    rewrite's IfMatch) converges on the rule's next walk, which the tick runs daily. A no-op
+    when nothing differs.
     """
+    cutoff = resolve_cutoff(rule.booking_cutoff, cutoff, cutoff)
     today = _local_today(policy, now)
     through = today + timedelta(days=horizon_days(policy))
+    moved = await store.rewrite_rule_cutoff(rule, now=now)
     tally = _Tally.empty()
     for day in dates_for_rule(rule, today=today, horizon=horizon_days(policy)):
         frozen = _is_frozen(day, policy=policy, cutoff=cutoff, now=now)
@@ -310,6 +324,8 @@ async def materialize_rule(
         skipped_user_terminal=tuple(tally.skipped_user_terminal),
         reactivated=tuple(tally.reactivated),
         materialized_through=through,
+        cutoff_rewritten=moved.rewritten,
+        skipped_leased=moved.skipped_leased,
     )
 
 
@@ -367,7 +383,7 @@ async def _context_for(
         )
         return None
     user = await store.get_user_unscoped(account.user_id)
-    cutoff = user.booking_cutoff if user is not None and user.booking_cutoff else default_cutoff
+    cutoff = resolve_cutoff(None, user.booking_cutoff if user is not None else None, default_cutoff)
     return policy, cutoff
 
 
@@ -521,7 +537,9 @@ async def _activate_or_move(
             old, reason=_REASON_WEEKDAY_CHANGED, store=store, policy=policy, now=now
         )
     report = await materialize_rule(stored, store=store, policy=policy, cutoff=cutoff, now=now)
-    return replace(report, withdrawn=tuple(withdrawn), skipped_leased=tuple(skipped))
+    return replace(
+        report, withdrawn=tuple(withdrawn), skipped_leased=_merged(skipped, report.skipped_leased)
+    )
 
 
 async def _edit_window(
@@ -537,7 +555,15 @@ async def _edit_window(
     rewritten, skipped = await _rewrite_pending_rows(stored, store=store, policy=policy, now=now)
     # The web materializes on every edit (§7.7 owners); idempotent, and it keeps the horizon full.
     report = await materialize_rule(stored, store=store, policy=policy, cutoff=cutoff, now=now)
-    return replace(report, rewritten=tuple(rewritten), skipped_leased=tuple(skipped))
+    return replace(
+        report, rewritten=tuple(rewritten), skipped_leased=_merged(skipped, report.skipped_leased)
+    )
+
+
+def _merged(first: list[RowId], second: tuple[RowId, ...]) -> tuple[RowId, ...]:
+    """Both lists in order, a row once (the window rewrite and the cutoff rewrite each skip the
+    same leased row)."""
+    return tuple(dict.fromkeys((*first, *second)))
 
 
 async def apply_rule_edit(
