@@ -540,6 +540,20 @@ async def test_inactive_rules_are_hidden_behind_a_closed_disclosure(
     assert f'action="/rules/{saturday.id}"' not in details.group(1)  # the active one outside
     assert f'action="/rules/{saturday.id}"' in page
     assert page.index(f"/rules/{saturday.id}") < page.index('<details class="inactive-rules"')
+    # Only inactive rules: nothing outside the disclosure, and no "no weekly bookings" placeholder.
+    await _post(
+        client,
+        f"/rules/{saturday.id}",
+        {
+            "action": "deactivate",
+            "version": str(
+                next(r for r in await _rules(store, member) if r.id == saturday.id).version
+            ),
+        },
+    )
+    page = (await client.get("/rules")).text
+    assert "Inactive weekly bookings (2)" in page and "No weekly bookings yet" not in page
+    assert page.index('<details class="inactive-rules"') < page.index(f"/rules/{saturday.id}")
 
 
 # --- dates ---------------------------------------------------------------------------------

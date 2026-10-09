@@ -812,7 +812,8 @@ source of truth (the row's `cutoff_at`):
   cutoff (`DashboardRow.own_cutoff`: the rule's, or the one-off's) as hidden fields, like its
   window, so "Friday noon for Saturday" survives a cancel (review of #328); an edit form that
   omits the pickers clears a rule's own (pinned: absent = "my account's cutoff"). With script, `app.js` names the
-  weekday a weekly form's pick lands on ("that's Thursday 4 PM"); without it the "N days
+  weekday a weekly form's pick lands on ("that's Thursday, 4 PM" since #329, which added the
+  comma and the one-date form's day); without it the "N days
   before" wording stands. Pinned by `tests/web/test_web_booking_cutoff.py` ("a cutoff per
   booking" block) and `tests/web/test_booking_form.py`.
 
@@ -834,7 +835,7 @@ on the page forever ("probably just hide it"), and the one-date form should say 
   `test_inactive_rules_are_hidden_behind_a_closed_disclosure`.
 - `app.js`'s cutoff hint reads the one-date form's `target_date` input (the calendar dispatches
   `change` when a day is picked) and names the actual day: "that's Friday, Oct 2, 4 PM"; the
-  weekly form keeps "that's Thursday, 4 PM". Script-only, like before.
+  weekly form says "that's Thursday, 4 PM" (the comma is new). Script-only, like before.
 
 ### Time pickers list only the course's tee-sheet hours (2026-10-02)
 

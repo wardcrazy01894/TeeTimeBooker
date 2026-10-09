@@ -276,6 +276,9 @@ td.actions { white-space: nowrap; }
 td.actions form, td.actions .inline { margin-right: 0.35rem; }
 td.actions label.check { white-space: normal; max-width: 16rem; font-size: 0.85rem; }
 details.cancel { margin-top: 0.3rem; font-weight: 400; }
+/* Deactivated weekly bookings, folded away (2026-10-08). */
+details.inactive-rules { margin-top: 1.25rem; }
+details.inactive-rules > section.rule:first-of-type { margin-top: 0.75rem; }
 tr.inactive { color: var(--muted); }
 details.cancel > form { display: grid; gap: 0.4rem; margin-top: 0.4rem; justify-items: start; }
 
