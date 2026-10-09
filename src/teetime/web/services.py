@@ -103,6 +103,7 @@ from ..tenant.store import (
     VersionConflictError,
 )
 from .background import BackgroundJobs
+from .ranking_explainer import clock_label
 
 log = logging.getLogger(__name__)
 
@@ -185,6 +186,9 @@ class OneOffInput:
     window_earliest: time
     window_latest: time
     party_size: int
+    # The one-off's own cutoff (2026-10-08): "Re-request this date" carries the cancelled
+    # booking's own, hidden like its window; None = the account's.
+    booking_cutoff: BookingCutoffConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +205,9 @@ class DashboardRow:
     # the bot keeps booking and upgrading it. The row's ``cutoff_at``, so a weekly or one-off
     # booking's own cutoff shows as such.
     cutoff_local: str = ""
+    # The BOOKING's own cutoff (a rule row's stored rule's, a one-off's own; None = the
+    # account's), so "Re-request this date" after a cancel can carry it onto the new one-off.
+    own_cutoff: BookingCutoffConfig | None = None
     # MU-14 (§8.5): a BOOKED row whose reservation the ledger owns (the bot made it). An
     # unowned one offers Cancel only behind an explicit confirm.
     owned: bool = False
@@ -360,8 +367,7 @@ async def set_booking_cutoff(
 
 def cutoff_local_text(local: datetime) -> str:
     """``Fri Oct 2, 4 PM`` (``4:30 PM`` off the hour): a date's cutoff on the course's clock."""
-    clock = local.strftime("%I:%M %p").lstrip("0").replace(":00 ", " ")
-    return f"{local:%a %b} {local.day}, {clock}"
+    return f"{local:%a %b} {local.day}, {clock_label(local.time())}"
 
 
 def effective_cutoff(user: User, default: BookingCutoffConfig) -> BookingCutoffConfig:
@@ -422,6 +428,7 @@ def parse_one_off_form(form: Mapping[str, str]) -> OneOffInput:
         window_earliest=earliest,
         window_latest=latest,
         party_size=_int_in(form, "party_size", MIN_PARTY, MAX_PARTY),
+        booking_cutoff=parse_optional_cutoff(form),
     )
 
 
@@ -501,6 +508,16 @@ class _DashboardReader:
         self._store = store
         self._snapshots: dict[CourseAccountId, ReservationSnapshot | None] = {}
         self._owned: dict[tuple[CourseAccountId, date], frozenset[str]] = {}
+        self._rules: dict[RuleId, StandingRule | None] = {}
+
+    async def own_cutoff(self, row: RequestRow) -> BookingCutoffConfig | None:
+        """The booking's own cutoff: a one-off's marker, or a rule row's STORED rule's."""
+        if row.rule_id is None:
+            return row.booking_cutoff
+        if row.rule_id not in self._rules:
+            self._rules[row.rule_id] = await self._store.get_rule_unscoped(row.rule_id)
+        rule = self._rules[row.rule_id]
+        return rule.booking_cutoff if rule is not None else None
 
     async def snapshot(self, account_id: CourseAccountId) -> ReservationSnapshot | None:
         if account_id not in self._snapshots:
@@ -571,6 +588,7 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
                 ),
                 frozen=frozen,
                 cutoff_local=cutoff_local,
+                own_cutoff=await reader.own_cutoff(row),
                 owned=(
                     row.status is RowStatus.BOOKED
                     and row.booked_raw_id is not None
@@ -821,6 +839,7 @@ async def create_one_off(
             options=_single_option(one_off.window_earliest, one_off.window_latest),
             party_size=one_off.party_size,
             now=clock.now_utc(),
+            booking_cutoff=one_off.booking_cutoff,
         )
     except TenantNotFoundError as e:
         raise WebNotFoundError from e

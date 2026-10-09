@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
-from datetime import time
+from datetime import time, timedelta
 from uuid import uuid4
 
 import httpx
@@ -21,12 +21,14 @@ from teetime.core.clock import FakeClock
 from teetime.core.config import BookingCutoffConfig
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.materialize import materialize_rule
-from teetime.tenant.models import RankedWindow, RequestRow, RuleId, StandingRule
+from teetime.tenant.models import Actor, RankedWindow, RequestRow, RowStatus, RuleId, StandingRule
+from teetime.tenant.store import RowOutcome
 from teetime.web.app import WebSettings, create_app
 from teetime.web.routes import ROUTES
 
 from ..tenant.conformance import CUTOFF, MB, OTHER_COURSE, TZ
 from .test_web_course_info import NAMES, POLICY
+from .test_web_pages import _book
 from .test_web_ranked_pages import OCT3, Member, _post
 from .test_web_ranked_pages import member as member  # noqa: PLC0414 — pytest fixture re-export
 
@@ -340,3 +342,106 @@ async def test_the_account_save_leaves_a_booking_with_its_own_cutoff_alone_and_s
     assert "keeps it" in html  # the hint on the page, in every state
     (after,) = await store.rows_for_account_date(member.a.id, OCT3)
     assert after == own
+
+
+async def test_re_requesting_a_cancelled_rule_date_keeps_the_rules_own_cutoff(
+    client: httpx.AsyncClient, member: Member, store: InMemoryTenantStore, clock: FakeClock
+) -> None:
+    """Review of #328: "Friday noon for Saturday" must not quietly turn into the account's
+    cutoff after one cancel. The Re-request form carries the rule's own cutoff (hidden, like
+    its window), so the one-off keeps it; a rule without its own carries nothing."""
+    rule = await store.upsert_rule(
+        StandingRule(
+            id=RuleId(uuid4()),
+            course_account_id=member.a.id,
+            weekday=5,
+            options=(RankedWindow(1, time(8), time(10)),),
+            party_size=2,
+            active=True,
+            materialized_through=None,
+            version=1,
+            booking_cutoff=FRIDAY_NOON,
+        ),
+        user_id=member.user.id,
+    )
+    await materialize_rule(rule, store=store, policy=POLICY, cutoff=CUTOFF, now=clock.now_utc())
+    (row,) = await store.rows_for_account_date(member.a.id, OCT3)
+    booked = await _book(store, row)
+    owner = "watcher:test"
+    now = clock.now_utc()
+    assert await store.acquire_row_lease(
+        booked.id, owner=owner, until=now + timedelta(minutes=5), now=now, expected=None
+    )
+    await store.record_outcomes(
+        [
+            RowOutcome(
+                row_id=booked.id,
+                course_account_id=booked.course_account_id,
+                target_date=OCT3,
+                actor=Actor.WATCHER,
+                to_status=RowStatus.CANCELLED,
+                last_outcome="cancelled_external",
+                at=now,
+                status_reason="external",
+                release_lease_owner=owner,
+            )
+        ]
+    )
+    html = (await client.get("/dates")).text
+    form = re.search(r'<form[^>]*action="/rows"[^>]*>(.*?)</form>', html, re.DOTALL)
+    assert form and "Re-request" in form.group(1)
+    assert 'name="cutoff_days_before" value="1"' in form.group(1)
+    assert 'name="cutoff_time" value="12:00"' in form.group(1)
+    r = await _post(
+        client,
+        "/rows",
+        {
+            "account_id": str(member.a.id),
+            "target_date": OCT3.isoformat(),
+            "window_earliest": "08:00",
+            "window_latest": "10:00",
+            "party_size": "2",
+            "cutoff_days_before": "1",
+            "cutoff_time": "12:00",
+        },
+    )
+    assert r.status_code == 303, r.text
+    again = [
+        r
+        for r in await store.rows_for_account_date(member.a.id, OCT3)
+        if r.status is RowStatus.PENDING
+    ]
+    assert len(again) == 1 and again[0].booking_cutoff == FRIDAY_NOON
+    assert again[0].cutoff_at == cutoff_instant(OCT3, timezone=TZ, cutoff=FRIDAY_NOON)
+
+
+async def test_a_rule_edit_without_the_cutoff_fields_clears_its_own(
+    client: httpx.AsyncClient, member: Member, store: InMemoryTenantStore
+) -> None:
+    """Pinned (review of #328): absent equals "my account's cutoff". A client that omits the
+    pickers clears the rule's own cutoff rather than keeping it by accident."""
+    rule = await store.upsert_rule(
+        StandingRule(
+            id=RuleId(uuid4()),
+            course_account_id=member.a.id,
+            weekday=5,
+            options=(RankedWindow(1, time(8), time(10)),),
+            party_size=2,
+            active=True,
+            materialized_through=None,
+            version=1,
+            booking_cutoff=FRIDAY_NOON,
+        ),
+        user_id=member.user.id,
+    )
+    form = {
+        "action": "save",
+        "weekday": "5",
+        "window_earliest": "08:00",
+        "window_latest": "10:00",
+        "party_size": "2",
+        "version": "1",
+    }
+    assert (await _post(client, f"/rules/{rule.id}", form)).status_code == 303
+    stored = await store.get_rule_unscoped(rule.id)
+    assert stored is not None and stored.booking_cutoff is None

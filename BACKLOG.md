@@ -92,6 +92,10 @@ delete it here when it ships.
 
 ## Multi-user follow-ups
 
+- **The ranked form forgets its fields on a 400** (review of #328): a refused submit (a bad window,
+  say) re-renders the weekly / one-date form empty, the "Stop looking" cutoff included, so a
+  resubmit silently drops the chosen cutoff. Echo the submitted form back (the legacy one-off
+  form's `OneOffPrefill` is the pattern), cutoff first since it is the safety-relevant field.
 - **Killswitch job names are hand-written** (MU-15a review): `killswitch.bicep` hardcodes
   `teetime-job-<env>-edt/-est` instead of deriving them from `infra/bicep/release_events.json`.
   Correct while v1 has one event; derive them (or pin every event's names in the parity test)

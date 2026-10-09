@@ -31,7 +31,8 @@
 {%- endmacro %}
 
 {# A plain POST form with the CSRF token and the one-off fields as hidden inputs. #}
-{% macro one_off_form(csrf_token, account_id, target_date, earliest, latest, party, label) %}
+{# `own_cutoff`: the booking's own cutoff to carry onto the one-off (2026-10-08), or none. #}
+{% macro one_off_form(csrf_token, account_id, target_date, earliest, latest, party, label, own_cutoff=none) %}
 <form method="post" action="/rows" class="inline">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="account_id" value="{{ account_id }}">
@@ -39,6 +40,10 @@
   <input type="hidden" name="window_earliest" value="{{ hhmm(earliest) }}">
   <input type="hidden" name="window_latest" value="{{ hhmm(latest) }}">
   <input type="hidden" name="party_size" value="{{ party }}">
+  {% if own_cutoff %}
+  <input type="hidden" name="cutoff_days_before" value="{{ own_cutoff.days_before }}">
+  <input type="hidden" name="cutoff_time" value="{{ own_cutoff.time_of_day.strftime('%H:%M') }}">
+  {% endif %}
   <button type="submit" class="small">{{ label }}</button>
 </form>
 {% endmacro %}

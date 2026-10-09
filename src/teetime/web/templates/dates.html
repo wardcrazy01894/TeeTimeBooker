@@ -59,7 +59,7 @@
               {% endif %}
             {% endif %}
             {% if r.can_rerequest %}
-              {{ one_off_form(csrf_token, r.row.course_account_id, r.row.target_date, r.row.options[0].earliest, r.row.options[0].latest, r.row.party_size, "Re-request this date") }}
+              {{ one_off_form(csrf_token, r.row.course_account_id, r.row.target_date, r.row.options[0].earliest, r.row.options[0].latest, r.row.party_size, "Re-request this date", r.own_cutoff) }}
             {% endif %}
           </td>
         </tr>

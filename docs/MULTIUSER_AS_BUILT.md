@@ -808,8 +808,10 @@ source of truth (the row's `cutoff_at`):
   for a rule with its own; Dates has an **Until** column (`DashboardRow.cutoff_local`, the
   row's `cutoff_at` on the course's clock) so every date's cutoff is visible, whichever setting
   it came from; Your account's save says `cutoff_saved_kept_own` when a booking with its own
-  was left alone. "Re-request this date" after a cancel creates a one-off under the account's
-  cutoff (its hidden form has no picker), not the rule's. With script, `app.js` names the
+  was left alone. "Re-request this date" after a cancel carries the cancelled booking's own
+  cutoff (`DashboardRow.own_cutoff`: the rule's, or the one-off's) as hidden fields, like its
+  window, so "Friday noon for Saturday" survives a cancel (review of #328); an edit form that
+  omits the pickers clears a rule's own (pinned: absent = "my account's cutoff"). With script, `app.js` names the
   weekday a weekly form's pick lands on ("that's Thursday 4 PM"); without it the "N days
   before" wording stands. Pinned by `tests/web/test_web_booking_cutoff.py` ("a cutoff per
   booking" block) and `tests/web/test_booking_form.py`.
