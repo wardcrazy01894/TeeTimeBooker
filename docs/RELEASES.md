@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.13.0: 2026-10-08 (`main`@`69b4a2f`)](#infrav3130-2026-10-08-main69b4a2f)
 - [infra/v3.12.0: 2026-10-08 (`main`@`ea796fe`)](#infrav3120-2026-10-08-mainea796fe)
 - [infra/v3.11.0: 2026-10-06 (`main`@`ae9345e`)](#infrav3110-2026-10-06-mainae9345e)
 - [infra/v3.10.0: 2026-10-04 (`main`@`08c6fe8`)](#infrav3100-2026-10-04-main08c6fe8)
@@ -51,6 +52,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.13.0` | 2026-10-08 | `69b4a2f` | unchanged (web; a cutoff a booking sets is honoured) | A booking cutoff per weekly or one-off booking ("Stop looking" pickers), resolved before the person's; Until column on Dates; inactive weekly bookings folded away; the one-date cutoff hint (#327–#329) |
 | `infra/v3.12.0` | 2026-10-08 | `ea796fe` | unchanged (email, web; the cutoff a person sets is honoured) | The upgrade email reads as good news and says until when the bot keeps checking; the booking cutoff is per person, set on Your account (#325) |
 | `infra/v3.11.0` | 2026-10-06 | `ae9345e` | unchanged (watcher email) | A watcher booking's emails name the tee time (both said only the date); the operator booking notice carries the whole request: tee time + ranked choice, windows, party, price cap, id, cutoff (#323) |
 | `infra/v3.10.0` | 2026-10-04 | `08c6fe8` | **changed** (race timing) | Blind-POST first rung `-400` → `-369` ms, per-POST round trip logged, dev sends no email unless its booker fails (#317–#319) |
@@ -82,6 +84,39 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.13.0: 2026-10-08 (`main`@`69b4a2f`)
+
+**Booking behaviour unchanged for everyone who sets no cutoff on a booking.** Hours after v3.12.0
+made the cutoff per person, the operator wanted it per booking: "Friday at noon for Saturday and
+Friday at 4 PM for Sunday, or Thursday, whatever."
+
+- **A cutoff per booking** (#327, the store half). `StandingRule.booking_cutoff` and a one-off's
+  `RequestRow.booking_cutoff`; `semantics.resolve_cutoff` is the one order both stores and the
+  materializer use: the booking's own → the person's → the site default. A rule row carries no
+  copy (it follows its stored rule), so a rewrite that skips a leased row can never go stale and
+  let the person's next save clobber the rule's cutoff. `TenantStore.rewrite_rule_cutoff` moves a
+  rule's live rows when its cutoff changes and runs first on every materializer walk, so a skipped
+  row converges by itself; a reactivated row is judged against its fresh instant. Cosmos: an
+  optional field on rule and row docs, no index change, no migration. Two review rounds.
+- **"Stop looking" pickers** (#328, the web half). The weekly and one-date forms and a
+  single-window rule's edit form carry the same Time + Day pickers as Your account, opening on "my
+  account's cutoff". One cutoff per ranked group. The rules page says "stops looking 12 PM the day
+  before" for a rule with its own; **Dates has an Until column** with each date's cutoff on the
+  course's clock; Your account's save says when a booking with its own cutoff was left alone;
+  "Re-request this date" after a cancel keeps the cancelled booking's own cutoff. Two review rounds.
+- **Inactive weekly bookings fold away; the one-date hint names the day** (#329). Deactivated
+  rules sit inside a closed "Inactive weekly bookings (N)" disclosure, still there to reactivate
+  (rule deletion stays in BACKLOG); with script the pickers say "that's Friday, Oct 2, 4 PM" on
+  the one-date form and "that's Thursday, 4 PM" on the weekly one.
+
+**Deploy:** dev deployed `69b4a2f` first (auto, 21:51–21:57 ET); tag pushed 22:01 ET; approved by
+Claude on the operator's "looks great, can we tag it and do a prod deployment now?" at 22:02 ET;
+done 22:08 ET. **Verified:** both booking jobs, the watch job and the migrate job run
+`teetime:69b4a2f…`; `teetime-web-prod`'s active revision (`--0000021`) is on the same image,
+Running; `/healthz` 200 on https://spicyteetimebooker.com; the first watch run on the new image
+(22:10 ET, `-29858530`) Succeeded. **First exercise:** a weekly or one-off booking saved with its
+own "Stop looking" cutoff keeps it past a change on Your account; Dates shows every date's Until.
 
 ## infra/v3.12.0: 2026-10-08 (`main`@`ea796fe`)
 
