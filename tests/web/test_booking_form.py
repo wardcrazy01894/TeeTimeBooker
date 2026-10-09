@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 
+from teetime.core.config import BookingCutoffConfig
 from teetime.tenant.models import CourseAccountId, RankedWindow
 from teetime.web.booking_form import MAX_OPTIONS, RankedChoice, parse_ranked_form
 from teetime.web.services import InvalidInputError, WebNotFoundError
@@ -110,3 +111,36 @@ def test_option_rows_beyond_the_limit_are_not_read() -> None:
     got = parse_ranked_form(form, own_accounts=OWN)
     assert list(got.per_account) == [A]
     assert isinstance(got, RankedChoice)
+
+
+# --- a cutoff per booking (2026-10-08) ---------------------------------------------------------
+
+
+def _one_option() -> dict[str, str]:
+    return {"party_size": "2", **_row(1, A, "09:00", "10:00", 1)}
+
+
+def test_a_cutoff_of_its_own_is_optional_and_blank_means_the_accounts() -> None:
+    """The Day select's first option is "my account's cutoff" (value ""): then the time is
+    ignored, whatever it says, and the choice carries None."""
+    assert parse_ranked_form(_one_option(), own_accounts=OWN).booking_cutoff is None
+    form = {**_one_option(), "cutoff_days_before": "", "cutoff_time": "12:00"}
+    assert parse_ranked_form(form, own_accounts=OWN).booking_cutoff is None
+    form = {**_one_option(), "cutoff_days_before": "1", "cutoff_time": "12:00"}
+    assert parse_ranked_form(form, own_accounts=OWN).booking_cutoff == BookingCutoffConfig(
+        days_before=1, time_of_day=time(12, 0)
+    )
+
+
+@pytest.mark.parametrize(
+    "cutoff",
+    [
+        {"cutoff_days_before": "1", "cutoff_time": "12:30"},  # not on the hour
+        {"cutoff_days_before": "9", "cutoff_time": "12:00"},  # too far out
+        {"cutoff_days_before": "1", "cutoff_time": ""},
+        {"cutoff_days_before": "one", "cutoff_time": "12:00"},
+    ],
+)
+def test_a_bad_cutoff_of_its_own_is_refused(cutoff: dict[str, str]) -> None:
+    with pytest.raises(InvalidInputError):
+        parse_ranked_form({**_one_option(), **cutoff}, own_accounts=OWN)

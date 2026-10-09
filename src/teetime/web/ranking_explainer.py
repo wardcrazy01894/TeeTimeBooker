@@ -89,10 +89,15 @@ def ranking_example(
     )
 
 
+def clock_label(time_of_day: time) -> str:
+    """``4 PM`` / ``4:30 PM`` / ``12 AM``: a time of day the way the pages say it."""
+    return f"{time_of_day:%I:%M %p}".lstrip("0").replace(":00 ", " ")
+
+
 def cutoff_text(days_before: int, time_of_day: time) -> str:
     """The booking cutoff in words, from the configured ``BookingCutoffConfig`` ("4 PM the day
     before"), so the panel never states a cutoff the watcher does not use."""
-    clock = f"{time_of_day:%I:%M %p}".lstrip("0").replace(":00 ", " ")
+    clock = clock_label(time_of_day)
     if days_before == 0:
         return f"{clock} that day"
     if days_before == 1:

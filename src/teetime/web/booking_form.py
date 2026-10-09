@@ -15,8 +15,9 @@ from datetime import time
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
+from ..core.config import BookingCutoffConfig
 from ..tenant.models import CourseAccountId, RankedWindow
-from .services import InvalidInputError, WebNotFoundError, parse_party_size
+from .services import InvalidInputError, WebNotFoundError, parse_optional_cutoff, parse_party_size
 
 MAX_OPTIONS = 6
 MAX_RANK = 99  # the form's own bound; ranks are renumbered 1..N anyway
@@ -32,6 +33,9 @@ class RankedChoice:
     party_size: int
     per_account: dict[CourseAccountId, tuple[RankedWindow, ...]]
     prices: dict[CourseAccountId, Decimal]
+    # This booking's own cutoff (2026-10-08), the same for every course of the group; None =
+    # "my account's cutoff".
+    booking_cutoff: BookingCutoffConfig | None = None
 
 
 def _time(raw: str, label: str) -> time:
@@ -106,4 +110,5 @@ def parse_ranked_form(
         party_size=party,
         per_account={a: tuple(opts) for a, opts in per_account.items()},
         prices=prices,
+        booking_cutoff=parse_optional_cutoff(form),
     )
