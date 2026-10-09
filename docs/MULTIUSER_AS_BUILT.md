@@ -821,6 +821,21 @@ Pinned by the conformance suite ("a cutoff per booking" block, both backends),
 `test_rule_cutoff_edit_moves_its_live_rows` and
 `tests/tenant/cosmos/test_documents.py::test_roundtrip_booking_cutoff_on_rules_and_one_offs`.
 
+### Inactive weekly bookings fold away; the one-date cutoff hint (2026-10-08)
+
+Operator, after seeing the per-booking cutoff on dev: a deactivated weekly booking should not sit
+on the page forever ("probably just hide it"), and the one-date form should say "that's Friday at
+4 PM" like the weekly form does.
+
+- `rules.html` renders each rule through one `rule_card` macro; active rules first, then the
+  inactive ones inside a closed `<details class="inactive-rules">` ("Inactive weekly bookings
+  (N)"), none when there are none. No store change and no script: the rule stays reachable to
+  reactivate. Rule DELETION is still not on the Protocol (BACKLOG). Pinned by
+  `test_inactive_rules_are_hidden_behind_a_closed_disclosure`.
+- `app.js`'s cutoff hint reads the one-date form's `target_date` input (the calendar dispatches
+  `change` when a day is picked) and names the actual day: "that's Friday, Oct 2, 4 PM"; the
+  weekly form keeps "that's Thursday, 4 PM". Script-only, like before.
+
 ### Time pickers list only the course's tee-sheet hours (2026-10-02)
 
 Operator request: "no reason to show 4 AM or 9 PM on the time list; per course." Every From/To

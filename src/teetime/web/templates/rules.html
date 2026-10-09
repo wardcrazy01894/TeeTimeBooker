@@ -26,7 +26,7 @@
 <p class="hint">{{ rule_edit_hint }}</p>
 {{ error_block(error, one_off, csrf_token) }}
 
-{% for v in rules %}
+{% macro rule_card(v) %}
 <section class="rule{% if not v.rule.active %} inactive{% endif %}">
   <div class="section-head">
     <h2>{{ v.weekday_name }}s at {{ v.account.course_id | course_name }}</h2>
@@ -55,9 +55,22 @@
     </form>
   </div>
 </section>
-{% else %}
+{% endmacro %}
+
+{% set active_rules = rules | selectattr("rule.active") | list %}
+{% set inactive_rules = rules | rejectattr("rule.active") | list %}
+{% for v in active_rules %}{{ rule_card(v) }}{% endfor %}
+{% if not rules %}
 <p class="placeholder">No weekly bookings yet.</p>
-{% endfor %}
+{% endif %}
+{% if inactive_rules %}
+{# A deactivated weekly booking stays out of the way (operator request 2026-10-08) but is still
+   here to reactivate: a closed disclosure, no script needed. #}
+<details class="inactive-rules">
+  <summary class="button small">Inactive weekly bookings ({{ inactive_rules | length }})</summary>
+  {% for v in inactive_rules %}{{ rule_card(v) }}{% endfor %}
+</details>
+{% endif %}
 
 <section>
   <h2>New weekly booking</h2>
