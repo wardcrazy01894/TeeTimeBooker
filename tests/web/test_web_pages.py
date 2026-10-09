@@ -518,6 +518,44 @@ async def test_rule_deactivate_and_reactivate(
     assert {r.status for r in await _rows(store, member)} == {RowStatus.PENDING}
 
 
+async def test_inactive_rules_are_hidden_behind_a_closed_disclosure(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, member: Member
+) -> None:
+    """Operator request 2026-10-08: a deactivated weekly booking must not sit on the page
+    forever. Inactive rules fold into a closed <details> (still reachable to reactivate); with
+    none, there is no disclosure at all."""
+    await _post(client, "/rules", _rule_form(member.account))
+    await _post(client, "/rules", _rule_form(member.account, weekday=6))
+    saturday, sunday = sorted(await _rules(store, member), key=lambda r: r.weekday)
+    page = (await client.get("/rules")).text
+    assert '<details class="inactive-rules"' not in page
+    await _post(
+        client, f"/rules/{sunday.id}", {"action": "deactivate", "version": str(sunday.version)}
+    )
+    page = (await client.get("/rules")).text
+    details = re.search(r'<details class="inactive-rules"[^>]*>(.*?)</details>', page, re.DOTALL)
+    assert details and '<details class="inactive-rules" open' not in page  # closed by default
+    assert "Inactive weekly bookings (1)" in details.group(0)
+    assert f'action="/rules/{sunday.id}"' in details.group(1)  # reactivate lives inside
+    assert f'action="/rules/{saturday.id}"' not in details.group(1)  # the active one outside
+    assert f'action="/rules/{saturday.id}"' in page
+    assert page.index(f"/rules/{saturday.id}") < page.index('<details class="inactive-rules"')
+    # Only inactive rules: nothing outside the disclosure, and no "no weekly bookings" placeholder.
+    await _post(
+        client,
+        f"/rules/{saturday.id}",
+        {
+            "action": "deactivate",
+            "version": str(
+                next(r for r in await _rules(store, member) if r.id == saturday.id).version
+            ),
+        },
+    )
+    page = (await client.get("/rules")).text
+    assert "Inactive weekly bookings (2)" in page and "No weekly bookings yet" not in page
+    assert page.index('<details class="inactive-rules"') < page.index(f"/rules/{saturday.id}")
+
+
 # --- dates ---------------------------------------------------------------------------------
 
 

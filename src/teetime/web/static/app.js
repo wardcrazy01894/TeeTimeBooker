@@ -19,9 +19,9 @@
    Also with script: under Connect a course, only the chosen course's facts (release cycle,
    where to create a login) are shown; without it every connectable course's line shows.
 
-   Also with script: a weekly form's "Stop looking" pickers show the weekday the pick lands on
-   ("that's Thursday 4 PM", from the chosen weekday and days-before); without script the
-   "N days before" wording stands.
+   Also with script: the "Stop looking" pickers show the day the pick lands on ("that's Thursday,
+   4 PM" on a weekly form, from the chosen weekday and days-before; "that's Friday, Oct 2, 4 PM"
+   on a one-date form, from the chosen date); without script the "N days before" wording stands.
 
    Also with script: every button answers a click at once. A submitted form's buttons are
    disabled and the clicked one shows a spinner; a button-styled link shows it while the next
@@ -436,26 +436,39 @@
   function cutoffHint(picker) {
     var form = picker.closest("form");
     var weekday = form ? form.querySelector("select[name=weekday]") : null;
+    var dateInput = form ? form.querySelector("input[name=target_date]") : null;
     var days = picker.querySelector("select[name=cutoff_days_before]");
     var clock = picker.querySelector("select[name=cutoff_time]");
     var hint = picker.querySelector(".cutoff-hint");
-    if (!weekday || !days || !clock || !hint) {
+    if ((!weekday && !dateInput) || !days || !clock || !hint) {
       return;
+    }
+    function landingText(before) {
+      // A weekly form: the weekday the pick lands on. A one-date form: the actual day.
+      if (weekday) {
+        var target = parseInt(weekday.value, 10);
+        return isNaN(target) ? null : DAY_NAMES[((target - before) % 7 + 7) % 7];
+      }
+      var date = parseIso(dateInput.value);
+      if (!date) {
+        return null;
+      }
+      date.setDate(date.getDate() - before);
+      return date.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
     }
     function refresh() {
       var before = parseInt(days.value, 10);
-      var target = parseInt(weekday.value, 10);
-      if (isNaN(before) || isNaN(target)) {
+      var landing = isNaN(before) ? null : landingText(before);
+      if (landing === null) {
         hint.hidden = true;
         hint.textContent = "";
         return;
       }
-      var landing = ((target - before) % 7 + 7) % 7;
-      hint.textContent = "that's " + DAY_NAMES[landing] + " " + clockLabel(clock.value) +
+      hint.textContent = "that's " + landing + ", " + clockLabel(clock.value) +
         (before === 0 ? " that day" : "");
       hint.hidden = false;
     }
-    weekday.addEventListener("change", refresh);
+    (weekday || dateInput).addEventListener("change", refresh);
     days.addEventListener("change", refresh);
     clock.addEventListener("change", refresh);
     refresh();
