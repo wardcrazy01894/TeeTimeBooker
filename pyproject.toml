@@ -25,13 +25,13 @@ dependencies = [
     # MULTIUSER_PLAN §9.2. Fernet was rejected because it has no associated data. The floor
     # is Dependabot-managed (bumped with the lock on every release), so this comment names
     # no version.
-    "cryptography>=50.0.1",
+    "cryptography>=50.0.2",
     # Multi-user web app (MULTIUSER_PLAN §8, MU-12): `teetime web` — the ASGI app factory,
     # server-rendered pages, OAuth sign-in (GitHub + Google), signed sessions and form parsing.
     # Floors are Dependabot-managed (bumped with the lock on every release), so these comments
     # name no version. Only the web command imports any of them; the booking/watch jobs and
     # the TOML production path never do.
-    "fastapi>=0.141.1",         # app factory + routing + dependencies (§8.1)
+    "fastapi>=0.142.2",         # app factory + routing + dependencies (§8.1)
     "uvicorn>=0.54.0",          # ASGI server behind `teetime web` (§8.1)
     "jinja2>=3.1.6",            # server-rendered templates, autoescape on (§9.1 XSS row)
     "authlib>=1.8.0",           # OAuth 2 / OIDC client for GitHub + Google sign-in (§8.3)
@@ -43,8 +43,8 @@ dependencies = [
     # needs. Floors are Dependabot-managed, so these comments name no version. Only the tenant
     # store imports them; the booking/watch TOML production path never does.
     "azure-cosmos>=4.17.1",     # async ContainerProxy: transactional batch + IfMatch ETags
-    "azure-identity>=1.25.3",   # DefaultAzureCredential (azure.identity.aio)
-    "aiohttp>=3.14.3",          # async HTTP transport for azure-core (azure.cosmos.aio)
+    "azure-identity>=1.26.0",   # DefaultAzureCredential (azure.identity.aio)
+    "aiohttp>=3.14.4",          # async HTTP transport for azure-core (azure.cosmos.aio)
 ]
 
 # Dev deps are a PEP 735 dependency-group, NOT a `[project.optional-dependencies]` extra.
