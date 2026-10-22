@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.14.0: 2026-10-22 (`main`@`2640b1f`)](#infrav3140-2026-10-22-main2640b1f)
 - [infra/v3.13.0: 2026-10-08 (`main`@`69b4a2f`)](#infrav3130-2026-10-08-main69b4a2f)
 - [infra/v3.12.0: 2026-10-08 (`main`@`ea796fe`)](#infrav3120-2026-10-08-mainea796fe)
 - [infra/v3.11.0: 2026-10-06 (`main`@`ae9345e`)](#infrav3110-2026-10-06-mainae9345e)
@@ -52,6 +53,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.14.0` | 2026-10-22 | `2640b1f` | unchanged | Dependency + toolchain refresh: certifi 2026.10.19 (PYSEC-2026-4320), pydantic 2.14.1, fastapi 0.143.0, cryptography 50.0.2, azure-identity 1.26.0, aiohttp 3.14.5; ruff 0.17.0, mypy 2.4.0 (#331–#336) |
 | `infra/v3.13.0` | 2026-10-08 | `69b4a2f` | unchanged (web; a cutoff a booking sets is honoured) | A booking cutoff per weekly or one-off booking ("Stop looking" pickers), resolved before the person's; Until column on Dates; inactive weekly bookings folded away; the one-date cutoff hint (#327–#329) |
 | `infra/v3.12.0` | 2026-10-08 | `ea796fe` | unchanged (email, web; the cutoff a person sets is honoured) | The upgrade email reads as good news and says until when the bot keeps checking; the booking cutoff is per person, set on Your account (#325) |
 | `infra/v3.11.0` | 2026-10-06 | `ae9345e` | unchanged (watcher email) | A watcher booking's emails name the tee time (both said only the date); the operator booking notice carries the whole request: tee time + ranked choice, windows, party, price cap, id, cutoff (#323) |
@@ -84,6 +86,36 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.14.0: 2026-10-22 (`main`@`2640b1f`)
+
+The dependency + toolchain refresh. **No booking-behaviour change**: nothing touches slot selection,
+burst size, timing or any T0 decision path (same risk class as `infra/v2.13.0`, the previous
+dependency refresh). Dev had run these dependencies in dry-run since 2026-10-16, through the
+Oct 17 and Oct 18 drops.
+
+- **Runtime deps IN the image** (#331, #334): `pydantic` 2.13.5→2.14.1 (`pydantic-core`
+  2.46.5→2.50.1, `typing-inspection` 0.4.2→0.4.4), `fastapi` 0.141.1→0.143.0, `cryptography`
+  50.0.1→50.0.2, `azure-identity` 1.25.3→1.26.0, `aiohttp` 3.14.3→3.14.5. Floors in
+  `pyproject.toml` raised to match.
+- **`certifi` 2026.7.22→2026.10.19** (#336, PYSEC-2026-4320). Certifi before 2026.10.18 trusted the
+  `emSign ECC Root CA - G3` root, whose eMudhra intermediates had compromised private keys; an
+  on-path attacker with one could impersonate any host to a client using the bundle (every ForeUP,
+  ACS and Cosmos call goes through it). The advisory was published after the last merge, so
+  `pip-audit` blocked the FIRST `infra/v3.14.0` push at the pre-push gate (the gate doing its job,
+  as in #293). The lock-only bump merged and dev-deployed first; the tag was re-cut on the new
+  `main`. Lock-only, like #293: certifi is transitive (`httpx`) and Dependabot keeps tracking it.
+- **Dev toolchain, NOT in the image** (#332, #335; `uv sync --no-dev` excludes it): `ruff`
+  0.16.9→0.17.0, `mypy` 2.3.1→2.4.0. CI: `setup-uv` 10.2.0→10.3.0 (#333).
+
+**Deploy:** dev deployed `2640b1f` first (auto, 09:04–09:10 ET); tag pushed 09:22 ET (the first
+push, on `29a58db`, was blocked by the pre-push gate's `pip-audit` at 08:59 ET, see the certifi
+bullet); approved by Claude on the operator's "can we tag and deploy prod then do the doc update?"
+and "you can" at 09:30 ET, after the auto-mode permission layer blocked the first approval call;
+done 09:37 ET. **Verified:** both booking jobs, the watch job and the migrate job run
+`teetime:2640b1f…`; `teetime-web-prod`'s active revision (`--0000022`) is on the same image,
+Running; `/healthz` 200 on https://spicyteetimebooker.com; the first watch run on the new image
+(09:40 ET, `-29877940`) Succeeded.
 
 ## infra/v3.13.0: 2026-10-08 (`main`@`69b4a2f`)
 
