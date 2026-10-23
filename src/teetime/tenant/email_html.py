@@ -46,6 +46,7 @@ _LAST_CELL = '<td style="padding:0 0 2px;vertical-align:top">{text}</td>'
 
 def html_from_text(text: str) -> str:
     """The HTML document for a plain-text email body (see the module doc)."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")  # a browser textarea submits CRLF
     blocks = [b for b in re.split(r"\n\s*\n", text) if b.strip()]
     pieces: list[str] = []
     for block in blocks:
@@ -59,8 +60,7 @@ def html_from_text(text: str) -> str:
 
 
 def _card_rows(lines: list[str]) -> list[list[str]] | None:
-    first = _CARD_ROW.match(lines[0])
-    if first is None:
+    if _CARD_ROW.match(lines[0]) is None:
         return None
     rows: list[list[str]] = []
     for line in lines:
@@ -113,9 +113,23 @@ def _table(rows: list[list[str]], *, left: str, last: bool) -> str:
 
 def _line(line: str) -> str:
     """One text line: its leading spaces kept as non-breaking ones (a browser collapses the
-    plain kind, and the summary's hierarchy is its indentation), the rest escaped + linked."""
+    plain kind, and the summary's hierarchy is its indentation), a run of spaces inside it kept
+    bar its last one (a pasted log keeps its columns, a long line can still wrap), the rest
+    escaped + linked."""
     stripped = line.lstrip(" ")
-    return "&nbsp;" * (len(line) - len(stripped)) + _inline(stripped)
+    body = _CELL_GAP.sub(lambda m: "&nbsp;" * (len(m.group()) - 1) + " ", _inline(stripped))
+    return "&nbsp;" * (len(line) - len(stripped)) + body
+
+
+def _without_trailing_punctuation(url: str) -> str:
+    """``https://x.io/a).`` → ``https://x.io/a``, but a ``)`` that closes a ``(`` inside the URL
+    (a Wikipedia or Maps link) belongs to it."""
+    end = len(url)
+    while end and url[end - 1] in _TRAILING_PUNCTUATION:
+        if url[end - 1] == ")" and url[:end].count("(") >= url[:end].count(")"):
+            break
+        end -= 1
+    return url[:end]
 
 
 def _inline(text: str) -> str:
@@ -123,7 +137,7 @@ def _inline(text: str) -> str:
     out: list[str] = []
     pos = 0
     for m in _URL.finditer(text):
-        url = m.group(0).rstrip(_TRAILING_PUNCTUATION)
+        url = _without_trailing_punctuation(m.group(0))
         out.append(html.escape(text[pos : m.start()], quote=False))
         out.append(f'<a href="{html.escape(url)}">{html.escape(url, quote=False)}</a>')
         pos = m.start() + len(url)

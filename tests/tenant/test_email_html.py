@@ -10,7 +10,6 @@ included).
 
 from __future__ import annotations
 
-import html
 import random
 from dataclasses import replace
 from datetime import date, datetime, time
@@ -23,10 +22,11 @@ import pytest
 
 from teetime.courses.foreup.mangrove_bay import MANGROVE_BAY_COURSE_ID
 from teetime.tenant.email_html import html_from_text
-from teetime.tenant.models import RowId, UserId
+from teetime.tenant.models import RowId, User, UserId, UserRole, UserStatus
 from teetime.tenant.notify import (
     USER_FACING_KINDS,
     AttemptResult,
+    EmailMessage,
     RunSummary,
     SummaryAttempt,
     SummaryRow,
@@ -37,6 +37,7 @@ from teetime.tenant.notify import (
     render_operator_summary,
     render_user_event,
 )
+from teetime.web.feedback import render_feedback
 
 NY = ZoneInfo("America/New_York")
 TEE = datetime(2026, 10, 10, 8, 12, tzinfo=NY)
@@ -210,6 +211,28 @@ def test_a_url_becomes_a_link_without_its_trailing_punctuation() -> None:
     assert '(<a href="https://x.io">https://x.io</a>).' in markup
 
 
+def test_a_balanced_parenthesis_stays_inside_the_link() -> None:
+    """A pasted Wikipedia or Maps link ends in ``)``: only an UNbalanced one is punctuation."""
+    markup = html_from_text("see https://a.b/c_(x) and (https://a.b/d_(y)).")
+    assert '<a href="https://a.b/c_(x)">https://a.b/c_(x)</a> and' in markup
+    assert '(<a href="https://a.b/d_(y)">https://a.b/d_(y)</a>).' in markup
+
+
+def test_runs_of_spaces_inside_a_text_line_survive() -> None:
+    """A pasted log in the feedback form keeps its columns (a browser collapses plain runs);
+    the last space of a run stays breakable so a long line can still wrap."""
+    markup = html_from_text("a    b  c d")
+    assert "a&nbsp;&nbsp;&nbsp; b&nbsp; c d" in markup
+
+
+def test_windows_line_endings_are_plain_line_breaks() -> None:
+    """A browser textarea submits CRLF; a stray ``\r`` must not reach a cell or a paragraph."""
+    markup = html_from_text("Hi,\r\n\r\n  Course:    Mangrove Bay\r\n  Date:      Sat\r\n\r\nBye")
+    assert "\r" not in markup
+    assert _cells(markup) == [["Course:", "Mangrove Bay"], ["Date:", "Sat"]]
+    assert markup.count("<p") == 2
+
+
 def test_no_colour_or_font_of_its_own() -> None:
     """Dark mode and the client's own font are the client's business: style the layout only."""
     markup = html_from_text("Hi,\n\n  Course:    Mangrove Bay\n  Date:      Saturday, October 10")
@@ -283,14 +306,43 @@ def _samples() -> list[tuple[str, str]]:
         captcha_solved=2,
     )
     out.append(("summary", render_operator_summary(summary, exit_code=0, at=EVENT.at).body))
+    out.append(("feedback", _feedback().body))
     return out
+
+
+def _feedback() -> EmailMessage:
+    """The email the feedback form mails the operator: a person's own words."""
+    user = User(
+        id=USER_ID,
+        oauth_provider="google",
+        oauth_subject="sub-1",
+        email="turk@example.com",
+        display_name="Turk <b>",
+        role=UserRole.MEMBER,
+        status=UserStatus.ACTIVE,
+    )
+    return render_feedback(
+        "bug",
+        user=user,
+        page="/dates",
+        message="The 2nd row  lost  its time.\r\nSee https://en.wikipedia.org/wiki/Golf_(sport).",
+    )
 
 
 @pytest.mark.parametrize(("name", "body"), _samples(), ids=[n for n, _ in _samples()])
 def test_the_html_part_says_exactly_what_the_text_says(name: str, body: str) -> None:
     markup = html_from_text(body)
     assert _words(markup) == body.split()
-    assert html.unescape(markup) != markup or "&" not in body  # escaped, never raw
+
+
+def test_the_feedback_email_escapes_the_persons_words_and_links_their_url() -> None:
+    markup = html_from_text(_feedback().body)
+    assert "<b>" not in markup and "Turk &lt;b&gt;" in markup
+    assert (
+        '<a href="https://en.wikipedia.org/wiki/Golf_(sport)">'
+        "https://en.wikipedia.org/wiki/Golf_(sport)</a>." in markup
+    )
+    assert "<table" not in markup
 
 
 def test_every_card_in_every_email_is_a_table() -> None:

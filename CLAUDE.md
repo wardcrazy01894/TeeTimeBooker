@@ -775,8 +775,10 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   lines with cells two or more spaces apart (the summary's attempts) a table, everything else a
   paragraph with its line breaks and indentation. A colon followed by one space is never a card
   row. The words are identical in both parts (`test_the_html_part_says_exactly_what_the_text_says`
-  round-trips every renderer), text is escaped, and the markup sets no colour, background or
-  font, so clients theme it. A new card layout must keep that shape or it ships misaligned again.
+  round-trips every renderer listed in that test's `_samples()`, the feedback form's included),
+  text is escaped, and the markup sets no colour, background or font, so clients theme it. A new
+  renderer goes into `_samples()`, and a new card keeps that shape, or it ships misaligned again:
+  nothing else checks it.
 - **Tenant exit codes are non-zero only for systemic causes** (`runner.exit_code_for`,
   `watch_exit_status`, §4.5/§7.9): store failures, keyring, decrypt failures, CAPTCHA/OTP,
   UNCERTAIN (booker), the self-deadline, a failed outcome write, a failed operator summary. One

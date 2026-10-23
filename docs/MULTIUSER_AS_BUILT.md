@@ -341,7 +341,11 @@ card row. Text is escaped (the feedback form carries a person's own words), URLs
 and the markup sets no colour, background or font: the client themes it, dark mode included, and
 the label cell is the only `nowrap`. Rejected: a `<pre>` wrapper (the whole email in a code
 font) and single-space labels (no card). Pinned by `tests/tenant/test_email_html.py`, whose
-round-trip test checks the HTML's text against every renderer's output, and the ACS payload test.
+round-trip test checks the HTML's words against every renderer in its `_samples()` (user, operator,
+invitation, summary, feedback; a new renderer must be added there, nothing discovers it), and the
+ACS payload test. Known limits, accepted: a card block with one odd line, or without a blank line
+before it, falls back to a paragraph (words kept, alignment lost); Outlook desktop drops the
+card's indent.
 
 ### The miss email (2026-10-02)
 
