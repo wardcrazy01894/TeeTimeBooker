@@ -29,6 +29,7 @@ from teetime.tenant.acs_email import (
     sign_request,
     string_to_sign,
 )
+from teetime.tenant.email_html import html_from_text
 from teetime.tenant.notify import EmailMessage, EmailSender
 
 # Known-answer vector (computed independently from ACS's documented HMAC scheme).
@@ -144,7 +145,11 @@ async def test_acs_poll_until_succeeded() -> None:
     payload = json.loads(request.content)
     assert payload["senderAddress"] == SENDER
     assert payload["recipients"] == {"to": [{"address": "turk@example.com"}]}
-    assert payload["content"] == {"subject": MSG.subject, "plainText": MSG.body}
+    assert payload["content"] == {
+        "subject": MSG.subject,
+        "plainText": MSG.body,
+        "html": html_from_text(MSG.body),
+    }
     # The request carries a valid signature over its exact bytes and date.
     expected = sign_request(
         method="POST",
