@@ -43,6 +43,7 @@ import httpx
 
 from ..core.clock import Clock, RealClock
 from ..core.redaction import redact_text, register_secret_literals
+from .email_html import html_from_text
 from .notify import EmailMessage, EmailSendResult
 
 log = logging.getLogger(__name__)
@@ -231,7 +232,11 @@ class AcsEmailClient:
         body = json.dumps(
             {
                 "senderAddress": self._sender,
-                "content": {"subject": message.subject, "plainText": message.body},
+                "content": {
+                    "subject": message.subject,
+                    "plainText": message.body,
+                    "html": html_from_text(message.body),
+                },
                 "recipients": {"to": [{"address": message.to}]},
             },
             separators=(",", ":"),

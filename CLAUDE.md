@@ -767,6 +767,16 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md
   response: the cancel email is a `BackgroundJobs` job like invites and reports
   (`cancel_row(jobs=…)`); our side hands mail to ACS in ~1 s, and `AcsEmailClient` logs the
   send-to-Succeeded duration so a slow delivery can be placed (ours vs ACS's).
+- **Every email goes out as plain text PLUS an HTML part derived from it** (2026-10-23,
+  `tenant/email_html.py::html_from_text`, applied in `AcsEmailClient._send`). The renderers
+  write plain text only; the cards align values with spaces, which Gmail's proportional font
+  put off by a space or two. In the HTML a `  Label:  value` block (two leading spaces, a label
+  ending in a colon, TWO or more spaces) is a two-column table, a run of six-plus-space indented
+  lines with cells two or more spaces apart (the summary's attempts) a table, everything else a
+  paragraph with its line breaks and indentation. A colon followed by one space is never a card
+  row. The words are identical in both parts (`test_the_html_part_says_exactly_what_the_text_says`
+  round-trips every renderer), text is escaped, and the markup sets no colour, background or
+  font, so clients theme it. A new card layout must keep that shape or it ships misaligned again.
 - **Tenant exit codes are non-zero only for systemic causes** (`runner.exit_code_for`,
   `watch_exit_status`, §4.5/§7.9): store failures, keyring, decrypt failures, CAPTCHA/OTP,
   UNCERTAIN (booker), the self-deadline, a failed outcome write, a failed operator summary. One

@@ -322,6 +322,27 @@ Tests: `tests/web/test_web_course_info.py`.
 
 ## MU-11: Notifications (buffering, rendering, ACS Email REST)
 
+### The HTML part (2026-10-23)
+
+The operator noticed the cards' values sat "off by about a space" in Gmail: every email was
+text-only (`content.plainText`), its cards align values with spaces, and Gmail renders plain text
+in a proportional font, where "Date:" is narrower than "Tee time:" (measured in Arial: the user
+card's Date value two spaces left of Course, Tee time half a space right; the operator notice's
+Id four and a half spaces left). `tenant/email_html.py::html_from_text` now derives an HTML part
+from the finished plain text and `AcsEmailClient._send` sends both (`plainText` + `html`), so
+the renderers and their tests are untouched and the words are identical in both parts. A
+blank-line-delimited block whose first line is `  Label:  value` (two leading spaces, a label
+ending in a colon, two or more spaces) is a two-column table, with a three-plus-space
+continuation line (the notice's second window) a row with an empty label; a run of six-plus-space
+indented lines with cells two or more spaces apart (the summary's attempts) is a table inside its
+paragraph; everything else is a paragraph with `<br>` line breaks and leading spaces as `&nbsp;`
+(the summary's hierarchy). A colon followed by ONE space (`Brad: Mangrove Bay, …`) is never a
+card row. Text is escaped (the feedback form carries a person's own words), URLs become links,
+and the markup sets no colour, background or font: the client themes it, dark mode included, and
+the label cell is the only `nowrap`. Rejected: a `<pre>` wrapper (the whole email in a code
+font) and single-space labels (no card). Pinned by `tests/tenant/test_email_html.py`, whose
+round-trip test checks the HTML's text against every renderer's output, and the ACS payload test.
+
 ### The miss email (2026-10-02)
 
 Operator request: when the 06:00 run cannot book the release-day date (the one that should win),
