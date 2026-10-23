@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.15.0: 2026-10-23 (`main`@`b4c6b8f`)](#infrav3150-2026-10-23-mainb4c6b8f)
 - [infra/v3.14.0: 2026-10-22 (`main`@`2640b1f`)](#infrav3140-2026-10-22-main2640b1f)
 - [infra/v3.13.0: 2026-10-08 (`main`@`69b4a2f`)](#infrav3130-2026-10-08-main69b4a2f)
 - [infra/v3.12.0: 2026-10-08 (`main`@`ea796fe`)](#infrav3120-2026-10-08-mainea796fe)
@@ -53,6 +54,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.15.0` | 2026-10-23 | `b4c6b8f` | unchanged (email rendering only) | Every email carries an HTML part beside its plain text, so the cards (Course / Date / Tee time) align in Gmail's proportional font; words identical in both parts (#340) |
 | `infra/v3.14.0` | 2026-10-22 | `2640b1f` | unchanged | Dependency + toolchain refresh: certifi 2026.10.19 (PYSEC-2026-4320), pydantic 2.14.1, fastapi 0.143.0, cryptography 50.0.2, azure-identity 1.26.0, aiohttp 3.14.5; ruff 0.17.0, mypy 2.4.0 (#331–#336) |
 | `infra/v3.13.0` | 2026-10-08 | `69b4a2f` | unchanged (web; a cutoff a booking sets is honoured) | A booking cutoff per weekly or one-off booking ("Stop looking" pickers), resolved before the person's; Until column on Dates; inactive weekly bookings folded away; the one-date cutoff hint (#327–#329) |
 | `infra/v3.12.0` | 2026-10-08 | `ea796fe` | unchanged (email, web; the cutoff a person sets is honoured) | The upgrade email reads as good news and says until when the bot keeps checking; the booking cutoff is per person, set on Your account (#325) |
@@ -86,6 +88,37 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.15.0: 2026-10-23 (`main`@`b4c6b8f`)
+
+The email alignment fix (#340). **No booking-behaviour change**: only how an email is rendered
+for the client; the plain-text part every email always had is unchanged, word for word.
+
+- **Why.** The operator saw the cards' values "off by about a space" in Gmail. Every email went
+  out text-only (`content.plainText`), its cards align values with spaces, and Gmail renders plain
+  text in a proportional font, where "Date:" is narrower than "Tee time:". Measured in Arial: the
+  user card's Date value sat two spaces left of Course and Tee time half a space right; the
+  operator notice's Id four and a half spaces left, Windows two spaces right.
+- **What.** `tenant/email_html.py::html_from_text` derives an HTML part from the finished plain
+  text and `AcsEmailClient._send` sends both (`plainText` + `html`). A `  Label:  value` block is
+  a two-column table (a continuation line a row with an empty label), the run summary's attempt
+  lines a three-column one, everything else a paragraph with its line breaks and indentation. A
+  colon followed by one space is never a card row. Text is escaped (the feedback form carries a
+  person's own words), URLs become links (a `)` that closes a `(` inside the URL stays in it),
+  CRLF input is normalized, the document declares UTF-8, and the markup sets no colour,
+  background or font, so clients theme it, dark mode included. Pinned by
+  `tests/tenant/test_email_html.py`, whose round trip checks the HTML's words against every
+  renderer's output (user, operator, invitation, summary, feedback).
+- **Docs.** README notifications, CLAUDE.md Multi-user invariant, `docs/MULTIUSER_AS_BUILT.md`
+  MU-11 "The HTML part", MULTIUSER_PLAN §12 MU-11 row.
+
+**Deploy:** dev deployed `b4c6b8f` first (auto, 09:51–09:58 ET); tag pushed 09:59 ET; approved by
+Claude on the operator's "put a tag on it so that it goes to prod" and "you can approve" at
+10:08 ET, after the auto-mode permission layer blocked the first approval call (as on every
+release since v3.10.0); done 10:14 ET. **Verified:** both booking jobs, the watch job and the migrate job run
+`teetime:b4c6b8f…`; `teetime-web-prod`'s active revision (`--0000023`) is on the same image,
+Running; `/healthz` 200 on https://spicyteetimebooker.com; the first watch run on the new image
+(10:20 ET, `-29879420`) Succeeded.
 
 ## infra/v3.14.0: 2026-10-22 (`main`@`2640b1f`)
 
