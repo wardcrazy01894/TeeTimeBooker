@@ -38,7 +38,7 @@ course login, pick the days and times you want to play.
 ## Status
 
 > **Prod is live** (`dryRun=false`) on the multi-user tenant path at the
-> latest infra tag `infra/v3.15.0` (2026-10-23; the site is https://spicyteetimebooker.com; the tenant path since MU-18 stage B, `infra/v3.0.0`): tenant booker and watcher over Cosmos, the invite-only
+> latest infra tag `infra/v3.16.0` (2026-10-24; the site is https://spicyteetimebooker.com; the tenant path since MU-18 stage B, `infra/v3.0.0`): tenant booker and watcher over Cosmos, the invite-only
 > web app, and ACS email. Release history: [docs/RELEASES.md](./docs/RELEASES.md).
 >
 > **Dev** runs the same tenant path in dry-run (since MU-17) and sends no email unless its booker
