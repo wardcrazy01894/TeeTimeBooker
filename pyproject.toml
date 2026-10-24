@@ -31,10 +31,10 @@ dependencies = [
     # Floors are Dependabot-managed (bumped with the lock on every release), so these comments
     # name no version. Only the web command imports any of them; the booking/watch jobs and
     # the TOML production path never do.
-    "fastapi>=0.143.0",         # app factory + routing + dependencies (§8.1)
+    "fastapi>=0.151.0",         # app factory + routing + dependencies (§8.1)
     "uvicorn>=0.54.0",          # ASGI server behind `teetime web` (§8.1)
     "jinja2>=3.1.6",            # server-rendered templates, autoescape on (§9.1 XSS row)
-    "authlib>=1.8.0",           # OAuth 2 / OIDC client for GitHub + Google sign-in (§8.3)
+    "authlib>=1.9.1",           # OAuth 2 / OIDC client for GitHub + Google sign-in (§8.3)
     "itsdangerous>=2.2.0",      # signed session cookie (Starlette SessionMiddleware, §8.3)
     "python-multipart>=0.0.32", # HTML form parsing (CSRF token + admin forms)
     # Multi-user tenant store (MULTIUSER_PLAN §10.2, MU-8b): `tenant/cosmos/store.py` — the async
