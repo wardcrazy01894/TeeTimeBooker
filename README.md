@@ -38,7 +38,7 @@ course login, pick the days and times you want to play.
 ## Status
 
 > **Prod is live** (`dryRun=false`) on the multi-user tenant path at the
-> latest infra tag `infra/v3.14.0` (2026-10-22; the site is https://spicyteetimebooker.com; the tenant path since MU-18 stage B, `infra/v3.0.0`): tenant booker and watcher over Cosmos, the invite-only
+> latest infra tag `infra/v3.15.0` (2026-10-23; the site is https://spicyteetimebooker.com; the tenant path since MU-18 stage B, `infra/v3.0.0`): tenant booker and watcher over Cosmos, the invite-only
 > web app, and ACS email. Release history: [docs/RELEASES.md](./docs/RELEASES.md).
 >
 > **Dev** runs the same tenant path in dry-run (since MU-17) and sends no email unless its booker
@@ -269,7 +269,10 @@ what the Manual `teetime-migrate-<env>` job runs; CI starts it after deploy pass
 | `ACS_EMAIL_CONNECTION` | all three | ACS connection string (a Key Vault secret; the access key is masked in logs) |
 | `ACS_EMAIL_SENDER` | all three | Sender on the Azure-managed domain, e.g. `DoNotReply@<guid>.azurecomm.net` |
 
-Notifications go out as plain-text email through Azure Communication Services over REST (no SDK).
+Notifications go out through Azure Communication Services over REST (no SDK). Every email is
+written as plain text and sent with an HTML part derived from it (`tenant/email_html.py`): the
+cards become tables so their values line up in a proportional font too (Gmail showed "Date:"
+two spaces left of "Course:" before 2026-10-23); the words are identical in both parts.
 
 ## Docker
 
