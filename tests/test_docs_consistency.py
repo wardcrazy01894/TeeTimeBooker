@@ -457,6 +457,7 @@ _LADDER_SWEEP = (
     "BACKLOG.md",
     "infra/AZURE_PLAN.md",
     "src/teetime/courses/CLAUDE.md",
+    "src/teetime/core/CLAUDE.md",
     "config/container.toml",
     "config/example.toml",
 )
