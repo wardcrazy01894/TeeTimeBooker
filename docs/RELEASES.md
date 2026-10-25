@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.16.0: 2026-10-24 (`main`@`441c69e`)](#infrav3160-2026-10-24-main441c69e)
 - [infra/v3.15.0: 2026-10-23 (`main`@`b4c6b8f`)](#infrav3150-2026-10-23-mainb4c6b8f)
 - [infra/v3.14.0: 2026-10-22 (`main`@`2640b1f`)](#infrav3140-2026-10-22-main2640b1f)
 - [infra/v3.13.0: 2026-10-08 (`main`@`69b4a2f`)](#infrav3130-2026-10-08-main69b4a2f)
@@ -54,6 +55,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.16.0` | 2026-10-24 | `441c69e` | unchanged (web deps + dev tooling) | Dependency sweep: fastapi 0.151.0 + authlib 1.9.1 (web only); filelock 4.2.4 for three same-day CVEs (dev-only, `pip-audit`'s cache); ruff 0.17.1 (#338, #339, #342) |
 | `infra/v3.15.0` | 2026-10-23 | `b4c6b8f` | unchanged (email rendering only) | Every email carries an HTML part beside its plain text, so the cards (Course / Date / Tee time) align in Gmail's proportional font; words identical in both parts (#340) |
 | `infra/v3.14.0` | 2026-10-22 | `2640b1f` | unchanged | Dependency + toolchain refresh: certifi 2026.10.19 (PYSEC-2026-4320), pydantic 2.14.1, fastapi 0.143.0, cryptography 50.0.2, azure-identity 1.26.0, aiohttp 3.14.5; ruff 0.17.0, mypy 2.4.0 (#331–#336) |
 | `infra/v3.13.0` | 2026-10-08 | `69b4a2f` | unchanged (web; a cutoff a booking sets is honoured) | A booking cutoff per weekly or one-off booking ("Stop looking" pickers), resolved before the person's; Until column on Dates; inactive weekly bookings folded away; the one-date cutoff hint (#327–#329) |
@@ -88,6 +90,35 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.16.0: 2026-10-24 (`main`@`441c69e`)
+
+The repo-triage dependency sweep (#338, #339, #342). **No booking-behaviour change**: the two
+runtime bumps are web-only packages (only the `web` command imports FastAPI or Authlib; the booking
+and watch jobs never do), the rest is dev tooling. Same risk class as `infra/v3.14.0`.
+
+- **Runtime deps IN the image, web only** (#338): `fastapi` 0.143.0→0.151.0 and `authlib`
+  1.8.0→1.9.1; floors in `pyproject.toml` raised to match. FastAPI 0.145 through 0.151 each list a
+  "breaking change", all in `Form()` parameter parsing (empty scalars and unselected file inputs
+  read as missing, omitted booleans as False, JSON null told apart from an omitted value), plus the
+  removal of `openapi_prefix` and the deprecation of `root_path`. The web app reads every form
+  through Starlette's `request.form()` and uses none of those, so nothing applies. Authlib 1.9.0
+  tightens the OIDC client (nonce, JOSE key/scope/audience validation; a rate-limited token fetch
+  raises a catchable error instead of `JSONDecodeError`); the Google sign-in tests pass unchanged.
+- **`filelock` 3.32.2→4.2.4** (#342; CVE-2026-112907, CVE-2026-112913, CVE-2026-112940, fix
+  4.2.1). Published the morning of the sweep, so `pip-audit` failed the local gate on #338 although
+  its CI had been green the day before (as certifi did in v3.14.0). filelock is a transitive DEV
+  dependency only (`pip-audit → cachecontrol[filecache]`), not in the image. Lock-only bump, merged
+  first; both Dependabot branches were then brought up to date on it and re-gated.
+- **Dev toolchain, NOT in the image** (#339): `ruff` 0.17.0→0.17.1.
+
+**Deploy:** dev deployed `441c69e` first (auto, 11:29–11:42 ET); tag pushed 11:43 ET (`pip-audit`
+clean at the gate); approved by Claude on the operator's "please create one and then accept the
+deployment" at 11:44 ET (the first approval call went through this time); done 11:50 ET.
+**Verified:** both booking jobs, the watch job and the migrate job run `teetime:441c69e…`;
+`teetime-web-prod`'s active revision (`--0000024`) is on the same image, Running, Healthy;
+`/healthz` 200 on https://spicyteetimebooker.com; the first watch run on the new image (11:50 ET,
+`-29880950`, started as the deploy finished) Succeeded.
 
 ## infra/v3.15.0: 2026-10-23 (`main`@`b4c6b8f`)
 
