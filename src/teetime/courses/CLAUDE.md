@@ -12,6 +12,8 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
 - [Mangrove Bay specifics (ForeUP)](#mangrove-bay-specifics-foreup)
 - [Sydney R. Marovitz specifics (TeeItUp)](#sydney-r-marovitz-specifics-teeitup)
 
+- [Email OTP (Mangrove Bay)](#email-otp-mangrove-bay)
+
 <!-- /toc -->
 
 ## Adding a course
@@ -180,3 +182,34 @@ prefix, and the cancel-before-book / `prepare_book` protocol) — read those too
 > the hosted job has no card secrets to fulfil it. If TeeItUp ever moves into hosted scope,
 > wire its card into Key Vault first — and note that storing the CVV (which must be sent on
 > every booking, unlike ForeUP's card-on-file) is a deliberate PCI-scope expansion to ratify.
+
+## Email OTP (Mangrove Bay)
+
+Moved here from the root `CLAUDE.md` on 2026-10-25 (the OTP source is `core/otp.py`; the
+challenge detection is in the ForeUP adapter).
+
+
+- **Mangrove Bay requires an emailed six-digit code from 2026-07-15, but enforcement is UI-only.**
+  Live recon showed the bot's direct API book POST is not challenged (HTTP 200 + instant
+  confirmation), so the OTP source is NOT on the booking critical path.
+  - `core/otp.py` holds the `OtpSource` Protocol, `ImapOtpSource` (polls the dedicated Gmail
+    inbox, fresh IMAP connection per poll, checks Spam, clock-injected, never logs the code) and
+    `FakeOtpSource`. `fetch_code(sent_after=..., timeout_s=...)` scopes to the current attempt
+    minus `freshness_grace_s` (default 60 s), because the mail server's clock may lag and
+    rejecting a live code is the fatal direction. A blip consumes one poll, not the window;
+    `connect_timeout_s` bounds a hung connect.
+  - **Detection is wired:** `ForeUpAdapter._guard_otp_challenge` runs in `book()` after
+    `_guard_captcha` and before the 400 → SlotGone mapping, and raises `OtpChallengeError`, a
+    `CaptchaError` subclass, so every operator-loud CaptchaError path fires (booking exits
+    non-zero; the watcher notifies and re-raises). Markers (`_OTP_CHALLENGE_MARKERS`) are
+    best-effort since the API wording is unobserved; a captcha match wins if both match
+    (test-pinned). Without it a challenge would read as SlotGone and end as a clean NO_INVENTORY.
+  - Carve-outs inherited from CaptchaError: the upgrade's rebook-after-cancel logs and continues
+    (the week's slot can be lost; accepted), and a challenge on a blind-burst POST is dropped like
+    any non-SlotGone error (if the fresh search then finds nothing, the run ends as a non-zero
+    NO_INVENTORY with the challenge only in a WARNING; accepted residual).
+  - Recon extras: a UI pending hold shows in `list_reservations`, blocks the slot, self-expires,
+    and does NOT count toward the 1-per-day limit.
+  - **Open constraint for any future fetch → verify wiring:** `fetch_code` has no per-attempt
+    correlation, so concurrent books sharing a mailbox could steal each other's codes. With the
+    burst at 3, the wiring must serialize OTP-requiring books or extend the Protocol first.
