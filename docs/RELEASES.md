@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.17.0: 2026-11-04 (`main`@`1fa6ab5`)](#infrav3170-2026-11-04-main1fa6ab5)
 - [infra/v3.16.0: 2026-10-24 (`main`@`441c69e`)](#infrav3160-2026-10-24-main441c69e)
 - [infra/v3.15.0: 2026-10-23 (`main`@`b4c6b8f`)](#infrav3150-2026-10-23-mainb4c6b8f)
 - [infra/v3.14.0: 2026-10-22 (`main`@`2640b1f`)](#infrav3140-2026-10-22-main2640b1f)
@@ -55,6 +56,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.17.0` | 2026-11-04 | `1fa6ab5` | unchanged (web deps + dev tooling + CI actions) | Dependency sweep: joserfc 1.8.0 (CVE-2026-119284, web sign-in chain) + msgpack 1.2.4 (CVE-2026-114613, dev-only); fastapi 0.162.0, authlib 1.9.2, pydantic 2.14.2, python-multipart 0.0.33, azure-identity 1.27.0; pytest 9.2.0, ruff 0.17.3, mypy 2.4.1; setup-uv 10.3.2, setup-python 7.1.0 (#345, #346, #350, #351, #352) |
 | `infra/v3.16.0` | 2026-10-24 | `441c69e` | unchanged (web deps + dev tooling) | Dependency sweep: fastapi 0.151.0 + authlib 1.9.1 (web only); filelock 4.2.4 for three same-day CVEs (dev-only, `pip-audit`'s cache); ruff 0.17.1 (#338, #339, #342) |
 | `infra/v3.15.0` | 2026-10-23 | `b4c6b8f` | unchanged (email rendering only) | Every email carries an HTML part beside its plain text, so the cards (Course / Date / Tee time) align in Gmail's proportional font; words identical in both parts (#340) |
 | `infra/v3.14.0` | 2026-10-22 | `2640b1f` | unchanged | Dependency + toolchain refresh: certifi 2026.10.19 (PYSEC-2026-4320), pydantic 2.14.1, fastapi 0.143.0, cryptography 50.0.2, azure-identity 1.26.0, aiohttp 3.14.5; ruff 0.17.0, mypy 2.4.0 (#331–#336) |
@@ -90,6 +92,45 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.17.0: 2026-11-04 (`main`@`1fa6ab5`)
+
+The November repo-triage dependency sweep (#345, #346, #350, #351, #352). **No booking-behaviour
+change**: the runtime bumps are web-only packages plus a patch of `azure-identity` and `pydantic`,
+the rest is dev tooling and CI actions. Same risk class as `infra/v3.16.0`.
+
+- **Two CVEs in `main`'s lock, lock-only fix first** (#350): `joserfc` 1.7.5→1.8.0
+  (CVE-2026-119284, fix 1.7.6; a transitive RUNTIME dependency via `authlib`, so it IS in the
+  image, on the web sign-in path; the 1.7.6/1.8.0 changes are hardening only: JWE/JWS size limits,
+  stricter claim and JWK validation) and `msgpack` 1.2.1→1.2.4 (CVE-2026-114613, fix 1.2.3; a
+  transitive DEV dependency via `pip-audit`'s cache, not in the image). `pip-audit` failed the gate
+  on every open PR, including the two that only touch workflow files, because the advisories were in
+  `main`'s lock, not the diffs; neither fix passed alone (each tripped on the other advisory), so both
+  landed in one PR, superseding Dependabot's msgpack PR (#349). Dependabot then closed its two
+  grouped PRs (#347, #348) and reopened them with fresher versions (#351, #352).
+- **Runtime deps IN the image** (#352): `fastapi` 0.151.0→0.162.0, `authlib` 1.9.1→1.9.2,
+  `python-multipart` 0.0.32→0.0.33 (web only; FastAPI 0.155/0.160/0.162 list three breaking
+  changes, all in `Form()`/parameter-model handling, and the web app declares no FastAPI
+  `Form`/`Query`/`Body` parameters: it reads every form through `request.form()`); `pydantic`
+  2.14.1→2.14.2 and `azure-identity` 1.26.0→1.27.0 (all jobs; patch and minor, no notes that
+  apply). Floors in `pyproject.toml` raised to match.
+- **Dev toolchain, NOT in the image** (#351): `pytest` 9.1.1→9.2.0 (surfaces a pytest-10
+  deprecation warning from anyio's plugin, third-party, nothing to change here), `pytest-asyncio`
+  1.4.0→1.4.1.post1, `ruff` 0.17.1→0.17.3, `mypy` 2.4.0→2.4.1.
+- **CI actions** (#345, #346): `astral-sh/setup-uv` 10.3.0→10.3.2, `actions/setup-python`
+  7.0.0→7.1.0.
+
+Every Python PR ran the full pre-push gate locally against the fixed `main` (in a scratch worktree
+merged with `origin/main`), each judged by exit code: ruff, format, mypy, 2597 tests, `pip-audit`
+clean.
+
+**Deploy:** dev deployed `1fa6ab5` first (auto, 18:52–19:02 ET); `pip-audit` run on `main` before
+tagging, clean; tag pushed 19:03 ET (gate passed); approved by Claude on the operator's "cut
+infra/v3.17.0 and deploy to prod" at 19:04 ET (first approval call went through); done 19:10 ET.
+**Verified:** both booking jobs, the watch job and the migrate job run `teetime:1fa6ab5…`;
+`teetime-web-prod`'s active revision (`--0000025`) is on the same image, Running, Healthy;
+`/healthz` 200 on https://spicyteetimebooker.com; the first watch run on the new image (19:10 ET,
+`-29897290`, started as the deploy finished) Succeeded.
 
 ## infra/v3.16.0: 2026-10-24 (`main`@`441c69e`)
 
