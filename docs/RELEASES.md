@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.18.0: 2026-11-06 (`main`@`b8b76b9`)](#infrav3180-2026-11-06-mainb8b76b9)
 - [infra/v3.17.0: 2026-11-04 (`main`@`1fa6ab5`)](#infrav3170-2026-11-04-main1fa6ab5)
 - [infra/v3.16.0: 2026-10-24 (`main`@`441c69e`)](#infrav3160-2026-10-24-main441c69e)
 - [infra/v3.15.0: 2026-10-23 (`main`@`b4c6b8f`)](#infrav3150-2026-10-23-mainb4c6b8f)
@@ -56,6 +57,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.18.0` | 2026-11-06 | `b8b76b9` | unchanged (web sign-in dep + CI action) | authlib 1.9.2→1.9.5 for GHSA-gp2m-377p-m4j3, GHSA-9qr6-8289-9j56 (both authorization-server side, not exercised) and GHSA-f7j6-p4qx-gq99 (JOSE HMAC key handling, defence in depth for ID-token verification); setup-uv 10.3.3 (#354, #355, #356) |
 | `infra/v3.17.0` | 2026-11-04 | `1fa6ab5` | unchanged (web deps + dev tooling + CI actions) | Dependency sweep: joserfc 1.8.0 (CVE-2026-119284, web sign-in chain) + msgpack 1.2.4 (CVE-2026-114613, dev-only); fastapi 0.162.0, authlib 1.9.2, pydantic 2.14.2, python-multipart 0.0.33, azure-identity 1.27.0; pytest 9.2.0, ruff 0.17.3, mypy 2.4.1; setup-uv 10.3.2, setup-python 7.1.0 (#345, #346, #350, #351, #352) |
 | `infra/v3.16.0` | 2026-10-24 | `441c69e` | unchanged (web deps + dev tooling) | Dependency sweep: fastapi 0.151.0 + authlib 1.9.1 (web only); filelock 4.2.4 for three same-day CVEs (dev-only, `pip-audit`'s cache); ruff 0.17.1 (#338, #339, #342) |
 | `infra/v3.15.0` | 2026-10-23 | `b4c6b8f` | unchanged (email rendering only) | Every email carries an HTML part beside its plain text, so the cards (Course / Date / Tee time) align in Gmail's proportional font; words identical in both parts (#340) |
@@ -92,6 +94,40 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.18.0: 2026-11-06 (`main`@`b8b76b9`)
+
+The November 6 repo-triage sweep (#354, #355, #356). **No booking-behaviour change**: the one
+runtime bump is `authlib`, imported only by the `web` command (`web/oauth.py`), and the other change
+is a CI action. Same risk class as `infra/v3.17.0`.
+
+- **`authlib` 1.9.2→1.9.3** (#355, Dependabot) **then 1.9.3→1.9.5** (#356, by hand the same
+  evening: PyPI already had 1.9.4 and 1.9.5 and Dependabot's weekly cadence would have left the gap
+  open). Three GitHub advisories, each assessed against how this app uses the library (an OAuth 2 /
+  OIDC CLIENT of Google and GitHub; it runs no authlib authorization server):
+  - 1.9.3, GHSA-gp2m-377p-m4j3 (high): OIDC web clients could register `javascript:` redirect
+    URIs on an authlib SERVER. Server-side code; not exercised here.
+  - 1.9.4, GHSA-9qr6-8289-9j56 (medium): the ID-JAG grant resolved the user from `sub` alone.
+    Server-side; not exercised here.
+  - 1.9.5, GHSA-f7j6-p4qx-gq99 (high): OpenSSH keys with a tab separator and OpenSSH certificates
+    were accepted as HMAC secrets in the JOSE layer (`jose/rfc7518/oct_key.py`, the only non-ID-JAG
+    code change between 1.9.3 and 1.9.5). ID-token verification goes through this layer, but the
+    Starlette client verifies against the provider's JWKS with the algorithms the provider metadata
+    allows (RS256), so this is defence in depth rather than a live hole; shipped promptly anyway.
+  The locked sdist hash was checked against PyPI. Floor in `pyproject.toml` raised to `>=1.9.5`.
+- **CI action** (#354): `astral-sh/setup-uv` 10.3.2→10.3.3 (version manifests now come from the
+  Astral mirror with a GitHub fallback). SHA pin verified against the tag.
+
+Every PR ran the full pre-push gate locally, judged by exit code: ruff, format, mypy, 2597 tests,
+`pip-audit` clean. The two Dependabot PRs' "Bicep build (advisory)" check was the usual no-OIDC
+false alarm.
+
+**Deploy:** dev deployed `b8b76b9` first (auto, 17:37 ET); tag pushed 19:37 ET (gate passed again
+on push); approved by Claude on the operator's "yeah deploy it then" at 19:38 ET (first approval
+call went through); done 19:44 ET. **Verified:** both booking jobs, the watch job and the migrate
+job run `teetime:b8b76b9…`; `teetime-web-prod`'s active revision (`--0000026`) is on the same image,
+Running, Healthy; `/healthz` 200 on https://spicyteetimebooker.com; the 19:40 ET watch run (started
+mid-deploy) and the 19:50 ET run (first on the new image, `-29900210`) both Succeeded.
 
 ## infra/v3.17.0: 2026-11-04 (`main`@`1fa6ab5`)
 
