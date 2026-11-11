@@ -127,6 +127,17 @@ main {
   padding: 0 1rem 3rem;
 }
 
+/* The credit line: the last, quietest thing on every page (base.html, after <main>). */
+footer.site-footer {
+  max-width: 64rem;
+  margin-inline: auto;
+  padding: 0 1rem 1.5rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+footer.site-footer p { margin: 0; }
+
 section, .card {
   background: var(--surface);
   border: 1px solid var(--border);
