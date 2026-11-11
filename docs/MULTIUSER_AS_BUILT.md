@@ -896,6 +896,14 @@ ranked booking form shows ONE option row up front; rows 2-6 sit in an "Add anoth
 CSP `script-src 'self'`) reveals rows one at a time with a Remove link that blanks the row so the
 server skips it. The nav's "Rules" is labelled "Weekly". Pinned by `tests/web/test_web_ui_polish.py`.
 
+### Footer credit line (2026-11-11)
+
+Operator request 2026-11-11. Every page ends with one small, muted, centred line, "A Spicy Al
+Software Solution": a `<footer class="site-footer">` in the shared layout (`templates/base.html`),
+after `<main>` and last in `<body>`, styled in `base.css` (no inline style, CSP unchanged). It shows
+signed in or out and on the error pages, because every page template extends `base.html`. Pinned by
+`tests/web/test_web_site_footer.py`.
+
 ## Retry audit (2026-09-27)
 
 Operator request after the prod cutover: "retries in places where there should be retries". Every

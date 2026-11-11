@@ -91,7 +91,10 @@ async def test_every_signed_in_page_has_a_report_a_bug_link(
     header = page[page.index('<header class="site">') : page.index("</header>")]
     assert f'class="button small report-bug" href="/feedback?kind=bug&amp;from={path}"' in header
     assert ">Report a bug<" in header
-    assert "<footer" not in page
+    # The page footer (the credit line, 2026-11-11) carries no report link: it stays in the top bar.
+    footer = page[page.index("<footer") : page.index("</footer>")]
+    assert "/feedback" not in footer
+    assert "Report a bug" not in footer
 
 
 def test_the_login_page_has_no_report_link() -> None:

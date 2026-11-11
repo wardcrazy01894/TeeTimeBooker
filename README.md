@@ -203,6 +203,7 @@ others still are, and the page says which. Skip, withdraw and deactivate act on 
 Plain HTML forms; the one script (`/static/app.js`, same-origin) only adds conveniences such as
 "Add another time slot", and every page works without it. Courses are shown by name ("Mangrove
 Bay", from `courses/names.py`), never by course id; one stylesheet with light and dark themes.
+Every page ends with a one-line footer credit, "A Spicy Al Software Solution" (the shared layout).
 Every From/To time is a list of quarter hours bounded by the course's tee-sheet hours (one line per
 course in `courses/names.py`, Mangrove Bay 6:30 AM-7:00 PM), never a free time box offering 4 AM:
 with script each option row's lists follow the course chosen on that row; without it the lists
