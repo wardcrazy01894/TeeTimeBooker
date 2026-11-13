@@ -3,7 +3,7 @@
 # PRs digest/tag bumps so the pin tracks upstream security patches instead of rotting.
 # 3.14 adopted 2026-07-10 (Dependabot #171): dev venvs already ran 3.14 (suite green),
 # so the image was the lagging environment; CI's setup-python matches (ci.yml).
-FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
 # Disable .pyc files and buffer flushing; uv link mode required in containers
 # (hardlinks don't work across overlay filesystem layers)
