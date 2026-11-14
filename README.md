@@ -97,7 +97,7 @@ course login, pick the days and times you want to play.
 
 ## Quick start
 
-Prerequisites: Python 3.14+, [`uv`](https://docs.astral.sh/uv/) (`brew install uv`), and a ForeUP
+Prerequisites: Python 3.15+, [`uv`](https://docs.astral.sh/uv/) (`brew install uv`), and a ForeUP
 account with Mangrove Bay access (not needed for the fake-adapter demo).
 
 ```bash

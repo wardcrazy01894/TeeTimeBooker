@@ -25,9 +25,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          # Matches the DEPLOYED interpreter (Dockerfile python:3.14-slim) and local dev
-          # (uv resolves 3.14); requires-python/ruff/mypy share the same >=3.14 floor.
-          python-version: "3.14"
+          # Matches the DEPLOYED interpreter (Dockerfile python:3.15-slim) and local dev
+          # (uv resolves 3.15); requires-python/ruff/mypy share the same >=3.15 floor.
+          python-version: "3.15"
 
       - name: Install uv
         # ALL actions in this repo are SHA-pinned (first-party included since 2026-07 —

@@ -1,9 +1,9 @@
 # Digest-pinned (full-repo-scan security): a moved slim tag must not silently change
 # the base under a rebuild. Dependabot (docker ecosystem, .github/dependabot.yml)
 # PRs digest/tag bumps so the pin tracks upstream security patches instead of rotting.
-# 3.14 adopted 2026-07-10 (Dependabot #171): dev venvs already ran 3.14 (suite green),
-# so the image was the lagging environment; CI's setup-python matches (ci.yml).
-FROM python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+# 3.15 adopted 2026-11-14 (Dependabot #359) together with CI's setup-python (ci.yml)
+# and the requires-python/ruff/mypy floor, so every environment runs one interpreter.
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
 # Disable .pyc files and buffer flushing; uv link mode required in containers
 # (hardlinks don't work across overlay filesystem layers)
