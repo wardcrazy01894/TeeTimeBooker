@@ -327,8 +327,9 @@ def test_long_docs_have_a_working_toc() -> None:
 
 # --- the prod mode claim (MU-18, #257) ---------------------------------------------------------
 # While MU-18 landed, four review rounds each found another doc still saying prod runs the TOML
-# path, in a new wording each time. The prod param file is the truth: when it runs the tenant path,
-# no current-state doc may say otherwise. docs/plans/ and docs/RELEASES.md are history, exempt.
+# path, in a new wording each time. Since MU-19 (2026-11-14) the jobs can run nothing but the
+# tenant path (the mode params are gone), so no current-state doc may say otherwise, and none may
+# offer the removed mode flip as a rollback. docs/plans/ and docs/RELEASES.md are history, exempt.
 
 _STALE_PROD_TOML = re.compile(
     r"prod (still )?runs the (single-user )?TOML|prod(uction)? is (untouched|unchanged) until MU-18"
@@ -337,18 +338,21 @@ _STALE_PROD_TOML = re.compile(
     re.IGNORECASE,
 )
 
+# A rollback that no longer exists: flipping the (removed) mode params back to `toml`.
+_STALE_MODE_FLIP = re.compile(
+    r"(flip|set|setting|revert)\b[^.\n]{0,60}(bookingMode|watchMode)[^.\n]{0,60}back to [`']{0,2}toml",
+    re.IGNORECASE,
+)
+
 
 def test_no_doc_says_prod_runs_toml_once_prod_runs_the_tenant_path() -> None:
-    prod = (REPO_ROOT / "infra" / "bicep" / "main.bicepparam.prod").read_text()
-    if "param bookingMode = 'tenant'" not in prod:
-        return  # prod is on the TOML path: the claim is true
     offenders = []
     for path in sorted(REPO_ROOT.rglob("*.md")):
         rel = path.relative_to(REPO_ROOT).as_posix()
         if rel.startswith(("docs/plans/", ".venv/", ".claude/")) or rel == "docs/RELEASES.md":
             continue
         for n, line in enumerate(path.read_text().splitlines(), start=1):
-            if _STALE_PROD_TOML.search(line):
+            if _STALE_PROD_TOML.search(line) or _STALE_MODE_FLIP.search(line):
                 offenders.append(f"{rel}:{n}: {line.strip()[:100]}")
     assert offenders == [], (
         "prod runs the tenant path (main.bicepparam.prod); stale claims:\n" + "\n".join(offenders)
@@ -363,6 +367,11 @@ def test_stale_prod_claim_guard_is_not_vacuous() -> None:
         "[MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) (live in dev).",
     ):
         assert _STALE_PROD_TOML.search(stale), stale
+    for stale in (
+        "as prod's rollback (flip `bookingMode`/`watchMode` back to `toml`).",
+        "- **Rollback:** set `bookingMode`/`watchMode` back to `'toml'` and tag",
+    ):
+        assert _STALE_MODE_FLIP.search(stale), stale
     assert not _STALE_PROD_TOML.search("prod was unchanged until MU-18 (below).")
 
 

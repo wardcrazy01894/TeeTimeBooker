@@ -1,7 +1,9 @@
-# TeeTimeBooker — container runtime config (v1 Azure / Docker).
-# Baked into the image. All secrets arrive as env vars via ACA secretRef;
-# this file only wires env-var names and non-secret settings.
-# See infra/AZURE_PLAN.md §7.3 for the full env var inventory.
+# TeeTimeBooker — the single-user TOML config baked into the image (`teetime run|watch --config`).
+# Since MU-19 (2026-11-14) NO Azure job runs this file: the ACA jobs run only the tenant path
+# (`tenant-run` / `tenant-watch`) and no longer inject the env vars named here. It stays as the
+# image's default CMD target and the committed reference for a single-user run (supply the env
+# vars yourself); its [scheduler] race knobs are also what the tenant runner's defaults mirror.
+# This file only wires env-var names and non-secret settings; no secret is ever written here.
 
 [[courses]]
 id      = "foreup:mangrove_bay"
@@ -24,9 +26,9 @@ course_preferences   = ["foreup:mangrove_bay"]
 # stated explicitly here because it is a safety-critical knob for the deployed job.
 booking_cutoff       = { days_before = 1, time_of_day = 16:00:00 }
 # No-redeploy "skip this day" (LEADTIME_SKIP_PLAN F2): env-var NAME only (never a literal date
-# list). The VALUE is a comma/space-separated ISO date list. In prod TEETIME_SKIP_DATES is a
-# Key Vault secret (TEETIME-SKIP-DATES) injected by ACA — edit it in the Azure Portal with NO
-# redeploy. Unset/empty/malformed = no skips (fail-open). See infra/AZURE_PLAN.md §7.
+# list). The VALUE is a comma/space-separated ISO date list. Unset/empty/malformed = no skips
+# (fail-open). Until MU-19 the ACA jobs injected it from the Key Vault secret TEETIME-SKIP-DATES;
+# the tenant path keeps skips in its own store instead.
 skip_dates_env       = "TEETIME_SKIP_DATES"
 
 # Always book a full foursome (4 slots) — matches how it ran locally.

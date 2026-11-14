@@ -10,7 +10,7 @@
 >
 > **Status:** living doc, implemented. Prod and dev both run the multi-user tenant jobs, web app,
 > ACS email and the shared Cosmos account: prod since MU-18 stage B (`infra/v3.0.0`, `dryRun=false`),
-> dev since MU-17 (dry-run). The single-user TOML jobs remain prod's rollback. Current prod tag and history: [../docs/RELEASES.md](../docs/RELEASES.md).
+> dev since MU-17 (dry-run). The single-user TOML job wiring was removed at MU-19 (2026-11-14, in prod from the next infra tag after that date): the jobs can run only the tenant path and a rollback is a redeploy of the previous tag. Sections written for the TOML jobs (§5.3's booking-day gate, §7.5 skip dates, the §10.1–§10.5 first-deploy runbooks) are kept as history and say so. Current prod tag and history: [../docs/RELEASES.md](../docs/RELEASES.md).
 > The killswitch design record is [../docs/plans/COST_KILLSWITCH_PLAN.md](../docs/plans/COST_KILLSWITCH_PLAN.md).
 
 ---
@@ -30,7 +30,7 @@
   - [5.2 Container cold-start](#52-container-cold-start)
   - [5.3 DST handling on ACA](#53-dst-handling-on-aca)
   - [5.4 Watch job ACA Job (M-feature-1)](#54-watch-job-aca-job-m-feature-1)
-  - [5.5 Migrate job (MU-16a, tenant mode only)](#55-migrate-job-mu-16a-tenant-mode-only)
+  - [5.5 Migrate job (MU-16a)](#55-migrate-job-mu-16a)
 - [6. State persistence (pre-emption items 4 & 10)](#6-state-persistence-pre-emption-items-4--10)
 - [7. Secrets & identity (pre-emption items 6, 7, 11)](#7-secrets--identity-pre-emption-items-6-7-11)
   - [7.1 Key Vault secret tree](#71-key-vault-secret-tree)
@@ -91,10 +91,10 @@
   │  ┌──────────────────────┐               │ RBAC: KV Secrets User │
   │  │  Azure Key Vault     │◄──────────────┘                       │
   │  │  (Standard)          │                                       │
-  │  │  MB_USERNAME         │                                       │
-  │  │  MB_PASSWORD         │                                       │
-  │  │  PLAYER* secrets     │                                       │
   │  │  TWOCAPTCHA-API-KEY  │                                       │
+  │  │  TENANT-CREDS-KEYRING│                                       │
+  │  │  ACS-EMAIL-CONNECTION│                                       │
+  │  │  OPERATOR-NOTIFY-…   │                                       │
   │  └──────────────────────┘                                       │
   │                                                                 │
   │  ┌──────────────────────┐                                       │
@@ -199,8 +199,8 @@ infra/
       logs.bicep               # Log Analytics Workspace + Application Insights; linked to ACA env
       compute.bicep            # ACA Environment (Consumption) + booking ACA Jobs derived from
                                #   ../release_events.json (v1: 2 jobs, DST crons) + watch ACA Job.
-                               #   bookingMode/watchMode params (MU-15a, default 'toml' both envs)
-                               #   select toml vs tenant CLI args/env/secrets per job.
+                               #   One path since MU-19: `tenant-run` / `tenant-watch` / the Manual
+                               #   migrate job. The bookingMode/watchMode params (MU-15a) are gone.
       webapp.bicep             # NEW (MU-15a): Container App teetime-web-<env> (`teetime web`).
                                #   Gated on deployWebApp (default false, both envs).
       email.bicep              # NEW (MU-15a): ACS Communication Service + Email Service +
@@ -250,7 +250,7 @@ before module B references the resource.
 | `budgetAlertEmail` | string | operator email | operator email | Cost alert recipient |
 | `acrSku` | string | `Basic` | `Basic` | Allow upgrade to Standard later |
 | `kvSku` | string | `standard` | `standard` | Allow upgrade if HSM needed |
-| `bookingMode` / `watchMode` | string (`toml`\|`tenant`) | `toml` | `toml` | MU-15a: which code path the ACA jobs run. Default in BOTH envs — flipped only at the MULTIUSER_PLAN §11 cutover steps |
+| ~~`bookingMode` / `watchMode`~~ | – | – | – | **Removed at MU-19 (2026-11-14).** MU-15a added them to choose the TOML or the tenant path per env; dev went `tenant` at MU-17, prod at MU-18 stage B. The jobs now run the tenant path unconditionally |
 | `watchCron` | string | `0 * * * *` (hourly) | `*/10 * * * *` (unchanged) | MU-15a operator directive: dev watch cadence cut to hourly; prod untouched |
 | `deployWebApp` / `deployAcsEmail` | bool | `false` | `false` | MU-15a: gate the web app + ACS resources off until the operator has pre-created their KV secrets |
 
@@ -258,7 +258,7 @@ before module B references the resource.
 
 | Constant | Value | Reason |
 |---|---|---|
-| KV secret names | `MB-USERNAME`, `MB-PASSWORD`, `PLAYER1-EMAIL`, `PLAYER1-PHONE`, `PLAYER1-MB-MEMBER`, `TWOCAPTCHA-API-KEY`, `TEETIME-SKIP-DATES` | Bot reads these by name; names are part of the interface contract (7 secrets — `TEETIME-SKIP-DATES` added in PR #111) |
+| KV secret names (jobs) | `TWOCAPTCHA-API-KEY`, `TENANT-CREDS-KEYRING`, `ACS-EMAIL-CONNECTION`, `OPERATOR-NOTIFY-EMAIL` | The jobs read these by name; names are part of the interface contract. Until MU-19 the list was the seven single-user secrets (`MB-USERNAME`, `MB-PASSWORD`, `PLAYER1-EMAIL`, `PLAYER1-PHONE`, `PLAYER1-MB-MEMBER`, `TWOCAPTCHA-API-KEY`, `TEETIME-SKIP-DATES`); six of those are no longer referenced (§7.1) |
 | RBAC role IDs | `Key Vault Secrets User` = `4633458b-17de-408a-b874-0445c86b69e6`; `AcrPull` = `7f951dda-4ed3-4680-a7ca-43fe172d538d` | Stable Azure built-in role GUIDs |
 | `parallelism` | `1` | Never run two replicas of the booking job simultaneously — see §6 |
 | `replicaCompletionCount` | `1` | Pair with parallelism=1; see §6 |
@@ -332,6 +332,10 @@ and `-est`, the `-sun` suffix was dropped) are implemented in `compute.bicep`:
 | 05:50 EDT, every day (UTC-4)   | `50 9 * * *` | Fires 10 min before T0, EDT |
 | 05:50 EST, every day (UTC-5)   | `50 10 * * *` | Fires 10 min before T0, EST |
 
+> **Since MU-19 (2026-11-14)** the booking jobs run `tenant-run --event mb0600et --wait`, which
+> has the same DST gate; what it books each morning comes from the tenant store's pending rows,
+> not from `[[request.time_windows]]`. The booking-day-gate text below describes the TOML CLI.
+
 Both crons fire every morning year-round. The bot's DST gate selects the correct season half,
 and the booking-day gate (`core/booking_day_gate.py`) fast-exits 0 on mornings whose
 `today+offset` weekday has no configured window (the wanted days are derived from
@@ -357,7 +361,7 @@ booking the wrong day.
 
 ### 5.4 Watch job ACA Job (M-feature-1)
 
-The cancellation-monitor (`teetime watch`) runs as a **third ACA Job** with a
+The cancellation-monitor (`teetime tenant-watch` since MU-18; `teetime watch` before) runs as a **third ACA Job** with a
 single cron `*/10 * * * *` (every 10 minutes, UTC, no DST gate needed).
 
 Key differences from the booking jobs:
@@ -367,8 +371,8 @@ Key differences from the booking jobs:
 | Cron | 2 entries (daily, one per DST half; booking-day gate restricts to wanted weekdays) | `*/10 * * * *` (single, year-round) |
 | DST gate | Required (races a wall-clock moment) | Not required (watcher polls on every run; only the past-deadline gate skips) |
 | `replicaTimeout` | 1200 s (20 min — covers the in-replica busy-wait to 06:00 ET) | 300 s (5 min — one HTTP round-trip plus headroom for idempotent-call retries) |
-| Command | `teetime run --config ...` | `teetime watch --config ...` |
-| Enabled | Always | `watcher.enabled = true` in v1 configs (M6 PR4); look-but-don't-book under `--dry-run true`. Uses the SAME `MB-*`/`PLAYER1-*` KV secrets — no new secrets. |
+| Command | `teetime tenant-run --event mb0600et --wait` (was `teetime run --config ...` until MU-18; the TOML form was removed from the Bicep at MU-19) | `teetime tenant-watch` (was `teetime watch --config ...`) |
+| Enabled | Always | Always; under `--dry-run true` the tenant watcher never mutates a reservation. Same job secrets as the booking jobs (§7.1). |
 | Concurrency | Serialized at the ACA-Job level (one execution per job) | Separate job; a watch+book overlap is safe because the in-process advisory lock handles it |
 
 The watch job is fully stateless (same as the booking jobs — `InMemoryStore`).
@@ -386,16 +390,17 @@ regardless of time of day; dev is `dryRun=true` so this has no booking-behavior 
 `compute.bicep` includes the watch job `Microsoft.App/jobs` resource
 (implemented as part of M-azure-T1, now DONE).
 
-### 5.5 Migrate job (MU-16a, tenant mode only)
+### 5.5 Migrate job (MU-16a)
 
 `teetime-migrate-<env>` runs `teetime tenant-migrate` (MULTIUSER_PLAN §10.1/§10.2): connect to the
 Cosmos tenant store, run the ordered idempotent data-migration list (v1: empty), exit 0 (non-zero
-on any failure). It exists ONLY when `bookingMode` or `watchMode` is `tenant`, is ALWAYS a
+on any failure). It is deployed in every env (unconditional since MU-19; before that only in an
+env whose mode was `tenant`), is ALWAYS a
 **Manual** trigger (never scheduled, so it is not a killswitch target and ignores
 `enableSchedules`), has a 600 s replica timeout and no Key Vault secret (env: the three Cosmos
 values + `TEETIME_ENV`). `azure-iac.yml` starts it and polls the execution to `Succeeded` (15 min
-cap; `Failed`/`Stopped`/timeout fails the deploy job) **right after deploy pass 2**, in a tenant
-env only. Not before the jobs switch image: pass 1 (when it runs; see §8) puts every job, this
+cap; `Failed`/`Stopped`/timeout fails the deploy job) **right after deploy pass 2**, on every
+deploy. Not before the jobs switch image: pass 1 (when it runs; see §8) puts every job, this
 one included, on the public bootstrap image, so the real migration code only exists once pass 2
 has also moved the booking/watch jobs and the web. That is safe because document readers accept `schemaVersion` N
 and N−1. An operator can re-run it by hand (`az containerapp job start -n teetime-migrate-<env>`);
@@ -434,28 +439,29 @@ involved.
 
 ### 7.1 Key Vault secret tree
 
-**Active secrets (current scope — notifications backend = console):**
+**Job secrets (booking + watch jobs; `compute.bicep` references all four unconditionally since
+MU-19, so each must exist in the env's vault before a deploy — ACA validates secret refs at
+job-CREATE time):**
 
 | Secret name | Contains | Used by |
 |---|---|---|
-| `MB-USERNAME` | Mangrove Bay / ForeUP login username | Bot env var `MB_USERNAME` |
-| `MB-PASSWORD` | Mangrove Bay / ForeUP login password | Bot env var `MB_PASSWORD` |
-| `PLAYER1-EMAIL` | Player 1 (account holder) email (PII) | Bot env var `PLAYER1_EMAIL` |
-| `PLAYER1-PHONE` | Player 1 (account holder) phone (PII) | Bot env var `PLAYER1_PHONE` |
-| `PLAYER1-MB-MEMBER` | Player 1 Mangrove Bay member number | Bot env var `PLAYER1_MB_MEMBER` |
 | `TWOCAPTCHA-API-KEY` | 2captcha.com API key for CAPTCHA solving | Bot env var `TWOCAPTCHA_API_KEY` |
-| `TEETIME-SKIP-DATES` | Comma/space ISO date list of days to NOT book (LEADTIME_SKIP_PLAN F2); `""` = no skips | Bot env var `TEETIME_SKIP_DATES` |
-
-**Tenant-mode-only secrets (MU-15a, MULTIUSER_PLAN §10.1) — referenced by compute.bicep ONLY
-inside a `bookingMode`/`watchMode == 'tenant'` branch, so the default `toml` mode never needs
-them to exist:**
-
-| Secret name | Contains | Used by |
-|---|---|---|
 | `TENANT-CREDS-KEYRING` | JSON keyring for AES-GCM account-password decryption (`tenant/crypto.py`) | Bot env var `TENANT_CREDS_KEYRING` |
 | `ACS-EMAIL-CONNECTION` | ACS Communication Service connection string — written by `email.bicep`'s `listKeys()` at deploy time, never an operator-typed value | Bot env var `ACS_EMAIL_CONNECTION` |
 | `OPERATOR-NOTIFY-EMAIL` | Operator's address: the booker's run summary and the watcher's per-booking copy (2026-10-01) | Bot env var `OPERATOR_NOTIFY_EMAIL` |
-| `GITHUB-ISSUES-TOKEN` | Fine-grained GitHub token, Issues read+write on `wardcrazy01894/TeeTimeBooker` only (created by the operator in PROD's vault, 2026-09-29) | Web env var `GITHUB_ISSUES_TOKEN`, only where `githubIssuesRepo` is set (prod): site reports become anonymized issues |
+| `GITHUB-ISSUES-TOKEN` | Fine-grained GitHub token, Issues read+write on `wardcrazy01894/TeeTimeBooker` only (created by the operator in PROD's vault, 2026-09-29) | Web env var `GITHUB_ISSUES_TOKEN`, only where `githubIssuesRepo` is set (prod): site reports become anonymized issues. Not a job secret |
+
+**Retired single-user secrets (MU-19, 2026-11-14).** The TOML jobs read these; no job references
+them any more, and no tenant command reads the matching env var. They may still exist in the
+vaults (Bicep never declared them): the operator deletes them by hand, after the prod release
+that carries MU-19. A local `teetime run|watch --config` still reads the env vars from your shell.
+
+| Secret name | Contained | Was |
+|---|---|---|
+| `MB-USERNAME` / `MB-PASSWORD` | Mangrove Bay / ForeUP login | `MB_USERNAME` / `MB_PASSWORD` |
+| `PLAYER1-EMAIL` / `PLAYER1-PHONE` | Player 1 (account holder) contact (PII) | `PLAYER1_EMAIL` / `PLAYER1_PHONE` |
+| `PLAYER1-MB-MEMBER` | Player 1 Mangrove Bay member number | `PLAYER1_MB_MEMBER` |
+| `TEETIME-SKIP-DATES` | ISO date list of days not to book (§7.5) | `TEETIME_SKIP_DATES` |
 
 **Web-app-only secrets (MU-15a) — referenced by `webapp.bicep` ONLY when `deployWebApp=true`
 (default false, both envs); the operator must pre-create all three (see the PR body for the
@@ -472,26 +478,29 @@ decision 2026-09-26: Google only for v1.
 
 **The web app's tenant backend (MU-16a):** once `tenantCosmosEndpoint` is non-empty, `webapp.bicep`
 ALSO references `TENANT-CREDS-KEYRING` and `ACS-EMAIL-CONNECTION` (the same secrets the
-tenant-mode jobs use), so both must exist before the web is deployed with an endpoint set. With
+jobs use), so both must exist before the web is deployed with an endpoint set. With
 the endpoint empty the web references neither and runs on its in-memory store.
+
+*The next three paragraphs describe the single-user TOML config (`config/container.toml`),
+which no job runs since MU-19; they apply to a local TOML run only.*
 
 **Only Player 1 needs secrets — guests do not.** The bot books a full foursome
 (4 player slots), but ForeUP's booking POST transmits only the player *count*,
 not per-guest name/email/phone (verified in `courses/foreup/base.py` `book()`;
 matches the website, which never collects guest emails). So guests 2–4 in
 `config/container.toml` are name-only and require **no** `PLAYER2/3/4-EMAIL`
-secrets. `tests/test_container_config_parity.py` enforces that every `*_env`
-referenced by `container.toml` is wired in `compute.bicep`, so this set can't
-silently drift.
+secrets. `tests/test_container_config_parity.py` enforced that every `*_env`
+referenced by `container.toml` was wired in `compute.bicep`; since MU-19 it enforces
+the opposite (none of them is).
 
 **No SMTP secrets.** `config/container.toml` uses `backend = "console"` —
 notifications are written to stdout/Log Analytics only. The golf course sends
 booking confirmation emails directly to the player. No `SMTP-*` secrets are
 needed and none are provisioned in Key Vault.
 
-The set of secrets is determined by `config/container.toml` (the image's runtime
-config), which references env var names; the Key Vault must contain matching
-secrets. The parity test in §7.1 keeps this in sync automatically.
+Until MU-19 the set of job secrets was determined by `config/container.toml`, which
+references env var names. It is now the fixed list at the top of this section, pinned by
+`tests/test_compute_bicep_tenant_mode.py`.
 
 KV secret names use hyphens (Azure KV convention); the bot's config references
 the env var names with underscores. The mapping is 1:1 via the `secretRef`
@@ -540,8 +549,8 @@ tier cannot be provisioned), databases `prod` and `dev` at 400 RU/s shared each,
 
 **This retires "no authenticated Azure SDK calls at runtime" for the tenant path only.** The tenant
 jobs and web authenticate to Cosmos with their env's user-assigned MI (a token from the ACA
-identity endpoint, acquired at ~05:51 and cached, never in the race window). The TOML path keeps
-the no-SDK property until it is retired.
+identity endpoint, acquired at ~05:51 and cached, never in the race window). The TOML path kept
+the no-SDK property; no job runs it since MU-19.
 
 Operator steps, once (agents must not run them):
 1. Deploy the account (the `Microsoft.DocumentDB` provider is already registered):
@@ -575,10 +584,10 @@ exactly as it reads GitHub Actions secrets in v0 — no SDK changes required.
 Example pattern (Bicep ARM body, not working code — see `compute.bicep`):
 ```
 secrets: [
-  { name: 'mb-password', keyVaultUrl: 'https://<kv>.vault.azure.net/secrets/MB-PASSWORD', identity: 'system' }
+  { name: 'twocaptcha-api-key', keyVaultUrl: 'https://<kv>.vault.azure.net/secrets/TWOCAPTCHA-API-KEY', identity: '<MI resource id>' }
 ]
 env: [
-  { name: 'MB_PASSWORD', secretRef: 'mb-password' }
+  { name: 'TWOCAPTCHA_API_KEY', secretRef: 'twocaptcha-api-key' }
 ]
 ```
 
@@ -590,11 +599,13 @@ If the managed identity does not have `Key Vault Secrets User` on the vault
 at container start time, ACA fails the job execution with a configuration
 error before the container runs. This is a fast-fail, not a silent failure.
 
-**Tenant-mode env inventory (MU-15a wiring, read by MU-16a's `tenant/wiring.py`).** Which env var
-each tenant container gets. Plain values come from Bicep params; secrets are `keyVaultUrl` refs
-as above. Nothing here exists in the default `toml` mode.
+**Job and web env inventory (MU-15a wiring, read by MU-16a's `tenant/wiring.py`).** Which env var
+each container gets. Plain values come from Bicep params; secrets are `keyVaultUrl` refs
+as above. Since MU-19 this is the WHOLE job env: the single-user vars (`MB_USERNAME`,
+`MB_PASSWORD`, `PLAYER1_EMAIL`, `PLAYER1_PHONE`, `PLAYER1_MB_MEMBER`, `TEETIME_SKIP_DATES`) are
+no longer injected.
 
-| Env var | Kind | Booking + watch jobs (tenant mode) | Migrate job (`teetime-migrate-<env>`) | Web (`teetime-web-<env>`, endpoint set) |
+| Env var | Kind | Booking + watch jobs | Migrate job (`teetime-migrate-<env>`) | Web (`teetime-web-<env>`, endpoint set) |
 |---|---|---|---|---|
 | `TENANT_COSMOS_ENDPOINT` | plain (`tenantCosmosEndpoint`) | yes | yes | yes |
 | `TENANT_COSMOS_DATABASE` | plain (= `envName`) | yes | yes | yes |
@@ -604,7 +615,8 @@ as above. Nothing here exists in the default `toml` mode.
 | `ACS_EMAIL_SENDER` | plain (`acsEmailSender`) | yes | no | yes |
 | `OPERATOR_NOTIFY_EMAIL` | secret `OPERATOR-NOTIFY-EMAIL` | yes (the booker's run summary; the watcher's per-booking operator copy, 2026-10-01) | no | no |
 | `GITHUB_ISSUES_TOKEN` / `GITHUB_ISSUES_REPO` | secret `GITHUB-ISSUES-TOKEN` / plain (`githubIssuesRepo`) | no | no | only where `githubIssuesRepo` is set (prod) |
-| `TWOCAPTCHA_API_KEY` | secret `TWOCAPTCHA-API-KEY` | yes (shared with toml) | no | no |
+| `TWOCAPTCHA_API_KEY` | secret `TWOCAPTCHA-API-KEY` | yes | no | no |
+| `TEETIME_ENV` | plain (= `envName`) | yes | yes | yes (see the web table) |
 
 **Web-only env** (`teetime-web-<env>`, always set when `deployWebApp`; README's web env table is
 the per-variable reference):
@@ -620,7 +632,7 @@ the per-variable reference):
 | `TEETIME_CANONICAL_HOST_REDIRECT` | plain (true iff `webCustomDomain` is set) | one canonical host (CLAUDE.md) |
 
 The store builder fails closed on a half-configured env: `TENANT_COSMOS_DATABASE` is always set
-in tenant mode, so a tenant job whose `tenantCosmosEndpoint` param was left empty refuses to start
+on the jobs, so a job whose `tenantCosmosEndpoint` param was left empty refuses to start
 instead of running over an empty in-memory store and exiting 0. `TENANT_COSMOS_DATABASE` is never
 defaulted in code (`dev` would be the wrong database for prod). The migrate job deliberately gets
 no Key Vault secret at all, so it cannot fail on one the operator has not created.
@@ -661,6 +673,11 @@ decrypted again (MULTIUSER_PLAN §9.2).
   sets this explicitly.
 
 ### 7.5 Skip dates — no-redeploy "don't book this day" (LEADTIME_SKIP_PLAN F2)
+
+> **Retired for the hosted jobs at MU-19 (2026-11-14).** The tenant path never read this secret
+> (people skip a date on the site, per person), and the jobs no longer reference it. Everything
+> below describes the single-user TOML path, where the same list is the `TEETIME_SKIP_DATES` env
+> var of a local run; the Portal steps are history.
 
 `TEETIME-SKIP-DATES` is a Key Vault secret whose value is a comma/space-separated ISO date
 list (e.g. `2026-06-14, 2026-06-21`). The booking job and the watcher skip those dates (and
@@ -1016,6 +1033,10 @@ az deployment group create \
   --parameters @infra/bicep/main.bicepparam.dev
 
 # 3. Populate Key Vault secrets (operator, NOT in automation)
+# HISTORY (the single-user bootstrap, 2026-05). Since MU-19 the jobs need a different set:
+# TWOCAPTCHA-API-KEY, TENANT-CREDS-KEYRING, OPERATOR-NOTIFY-EMAIL (+ ACS-EMAIL-CONNECTION, written
+# by email.bicep), plus the web secrets (§7.1, §10.7). The MB-*/PLAYER1-*/TEETIME-SKIP-DATES lines
+# below are no longer referenced by any job.
 az keyvault secret set --vault-name kv-teetime-dev --name MB-USERNAME --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name MB-PASSWORD --value "<value>"
 az keyvault secret set --vault-name kv-teetime-dev --name PLAYER1-EMAIL --value "<value>"
@@ -1088,6 +1109,7 @@ az role assignment create --assignee-object-id "$OBJ" --assignee-principal-type 
   --role "Key Vault Secrets Officer" --scope "$KVID"   # wait ~1-2 min to propagate
 
 # 6. Populate the prod Key Vault secrets (operator, REAL prod values — NOT in CI).
+#    HISTORY: the single-user set. Since MU-19 the jobs reference the §7.1 job secrets instead.
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name MB-USERNAME       --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name MB-PASSWORD       --value "<value>"
 az keyvault secret set --vault-name <kv-teetime-prod-suffix> --name PLAYER1-EMAIL     --value "<value>"
@@ -1187,6 +1209,10 @@ fast-exit; a wanted day (Sat/Sun) proceeds to the busy-wait + race lines above.
 (plural; the watcher checks the next occurrence of each wanted weekday and polls EVERY run —
 multi-day re-arch), a ranked-slots line, and a `DRY_RUN` result. A run that logs
 `Watch job is disabled` means `watcher.enabled` is false — not what we want in v1.
+
+> **Since MU-19** the job no longer injects the TOML path's env vars, so the `run --config`
+> override below fails at config load on a deployed job; `--fire-time` exists on the TOML CLI
+> only. Use it locally, or wait for a scheduled `tenant-run`.
 
 **On-demand check (no need to wait for a booking day)** — the `--fire-time` hatch makes the
 `--wait` busy-wait + DST gate reachable at any hour, refused unless `--dry-run true`:
@@ -1321,8 +1347,9 @@ database. **Dev stays `dryRun = true`.** (Prod followed at MU-18, §10.8.)
   `/healthz`; the operator signs in with Google, connects the separate dev Mangrove Bay account on
   `/accounts`, saves a ranked weekly booking; the next hourly `teetime-watch-job-dev` run and the
   next 05:50 ET `teetime-job-dev-*` run log the tenant path (dry-run: no booking POST) with exit 0.
-- **Rollback:** set `bookingMode`/`watchMode` back to `'toml'` (and `deployWebApp = false` to stop
-  the site) and merge; the jobs return to `run`/`watch` on the TOML config.
+- **Rollback (as it was at MU-17):** the two mode params went to `'toml'` again (and
+  `deployWebApp = false` to stop the site) in a merged PR. **Not available since MU-19**: the
+  params are gone, so revert the offending PR and let dev redeploy.
 
 ### 10.8 Multi-user PROD cutover (MU-18, MULTIUSER_PLAN §11 steps 5-7)
 
@@ -1362,10 +1389,20 @@ upgrade the TOML watcher made during the deploy window is recorded as owned (a r
 shows as `repoint`). Gate: the next watcher run is clean; the first tenant drop passes the §11.2
 log-line checklist.
 
-**Rollback:** set both modes back to `'toml'` and tag. TOML still has the MB credentials and
-`TEETIME-SKIP-DATES`, and the tenant path's bookings are visible to the TOML pre-book guard, so a
-rollback cannot double-book. Diff the web's rules and one-off dates against `container.toml` first
-(TOML can express only the Sat/Sun windows).
+**Rollback (since MU-19, 2026-11-14):** the mode params no longer exist, so there is no flip to
+the TOML jobs. To undo a bad release, tag the previous good commit (or revert the offending PR
+and tag): the deploy re-applies that commit's template and image. To stop booking while you
+investigate, set `enableSchedules = false` and tag (the jobs become Manual-trigger).
+
+Going all the way back to the TOML jobs means deploying a commit from before MU-19 (its param
+files still set both modes, to `tenant`; change them to `toml` on a branch off that commit) AND
+needs the six single-user Key Vault secrets (§7.1) to still exist, because that template
+references them at job-create time. Once the operator deletes those secrets, that road is closed
+without re-creating them. The tenant path's bookings are visible to the TOML pre-book guard, so
+such a rollback cannot double-book; diff the web's rules and one-off dates against
+`container.toml` first (TOML can express only the Sat/Sun windows).
+
+*Until MU-19 the rollback was a param change: both modes to `'toml'` again, then a tag.*
 
 ### 10.9 Prod custom domain (spicyteetimebooker.com, 2026-09-28)
 

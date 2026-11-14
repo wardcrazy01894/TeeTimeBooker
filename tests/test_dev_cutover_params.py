@@ -19,8 +19,11 @@ DEV_WEB = "https://teetime-web-dev.kindwave-5d7c992b.eastus2.azurecontainerapps.
 
 
 def test_dev_runs_the_tenant_booker_and_watcher() -> None:
-    assert "param bookingMode = 'tenant'" in DEV
-    assert "param watchMode = 'tenant'" in DEV
+    """The jobs run only the tenant path since MU-19 (no mode param is left to set; a leftover
+    one would fail the deploy because main.bicep no longer declares it). What dev must still
+    supply is the store they read."""
+    assert "param bookingMode" not in DEV
+    assert "param watchMode" not in DEV
     assert f"param tenantCosmosEndpoint = '{COSMOS}'" in DEV
 
 

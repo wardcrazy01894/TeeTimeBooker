@@ -4,14 +4,13 @@
 // Purge protection: EXPLICITLY ENABLED here — not on by default. Irreversible.
 // Audit logging: AuditEvent logs shipped to Log Analytics (diagnosticSettings) for forensics.
 //
-// Secret names stored here (operator must populate after deploy):
-//   MB-USERNAME, MB-PASSWORD, PLAYER1-EMAIL, PLAYER1-PHONE, PLAYER1-MB-MEMBER,
-//   TWOCAPTCHA-API-KEY, TEETIME-SKIP-DATES
-//   (plus any additional PLAYER* secrets)
-//   The last (TEETIME-SKIP-DATES, LEADTIME_SKIP_PLAN F2) MUST be pre-created (value " " = no
-//   skips; Azure rejects an empty value) BEFORE compute.bicep references it — ACA validates KV
-//   secret refs at job-CREATE time, so a missing secret FAILS the deploy. Edit later in the
-//   Portal, no redeploy.
+// Secret names the ACA jobs read from here (operator must populate BEFORE the deploy — ACA
+// validates KV secret refs at job-CREATE time, so a missing secret FAILS it):
+//   TWOCAPTCHA-API-KEY, TENANT-CREDS-KEYRING, OPERATOR-NOTIFY-EMAIL, and ACS-EMAIL-CONNECTION
+//   (written by email.bicep). The web app's secrets are listed in webapp.bicep.
+//   Since MU-19 (2026-11-14) no job reads the single-user TOML secrets MB-USERNAME, MB-PASSWORD,
+//   PLAYER1-EMAIL, PLAYER1-PHONE, PLAYER1-MB-MEMBER or TEETIME-SKIP-DATES. They may still sit in
+//   the vault (this module never declared them); the operator deletes them by hand.
 //
 // NOTE: the bot makes no authenticated Azure SDK calls at runtime (state is
 // in-process; no Blob Storage), so no storage connection string or account name

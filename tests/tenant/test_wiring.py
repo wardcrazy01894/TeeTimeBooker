@@ -74,7 +74,7 @@ def test_endpoint_without_database_fails_closed_never_defaults_to_dev() -> None:
     ],
 )
 def test_cosmos_settings_without_an_endpoint_fail_closed(env: Mapping[str, str]) -> None:
-    # compute.bicep always sets TENANT_COSMOS_DATABASE in tenant mode, so a tenant-mode job
+    # compute.bicep always sets TENANT_COSMOS_DATABASE on the jobs, so a job
     # whose `tenantCosmosEndpoint` param was left empty refuses to run on an empty in-memory
     # store (and exit 0 having watched nothing).
     with pytest.raises(TenantStoreConfigError, match="TENANT_COSMOS_ENDPOINT"):

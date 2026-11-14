@@ -16,7 +16,7 @@ MU-9a (the runner core: ``run_release_event``, ``resolve_credentials``,
 ``finish_run``, ``plan_release_event``, the §11.2 log lines, the store-call / writer bounds) are
 IMPLEMENTED; ``teetime tenant-run`` / ``tenant-plan`` (``tenant.booking_job``) run them over the
 store ``tenant.wiring.open_tenant_store`` opens (Cosmos when configured, MU-16a). Both envs'
-booking jobs run them (``bookingMode = tenant``: dev since MU-17, prod since MU-18).
+booking jobs run them (the only path the jobs have since MU-19; dev since MU-17, prod since MU-18).
 ``LeasedBookingStore`` (MU-9c, ``tenant.store``) is for the watcher/web only. The tenant
 watcher (MU-10b) lives in ``tenant.watch_runner``.
 """

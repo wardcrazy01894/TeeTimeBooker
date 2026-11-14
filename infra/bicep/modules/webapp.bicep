@@ -59,7 +59,7 @@ param acaEnvironmentId string
 @description('True when containerImage is a PUBLIC bootstrap image (deploy pass 1). Mirrors compute.bicep\'s usePublicBootstrapImage — drops the registries[] auth block so ACA pulls anonymously on the very first deploy of a new environment.')
 param usePublicBootstrapImage bool = false
 
-@description('When true (the default toml-mode value from main.bicep, effectiveEnableSchedules), the Container App serves traffic (external ingress, minReplicas up to 1). When false — either enableSchedules=false or the cost killswitch has fired (killswitchFired=true) — ingress is disabled and minReplicas is forced to 0, so no traffic reaches the app and no replica can run. This is the SAME latch that silences the ACA Jobs\' cron schedules (MULTIUSER_PLAN §10.1 SF8).')
+@description('When true (the default value from main.bicep, effectiveEnableSchedules), the Container App serves traffic (external ingress, minReplicas up to 1). When false — either enableSchedules=false or the cost killswitch has fired (killswitchFired=true) — ingress is disabled and minReplicas is forced to 0, so no traffic reaches the app and no replica can run. This is the SAME latch that silences the ACA Jobs\' cron schedules (MULTIUSER_PLAN §10.1 SF8).')
 param enableIngress bool = true
 
 @description('Replicas kept running when idle. 0 = scale to zero (a ~30 s cold start on the first request after the cooldown); 1 = always warm (idle-billed, ~$6/month at 0.25 vCPU / 0.5 GiB, East US 2 retail 2026-09). Forced to 0 when enableIngress=false (the killswitch latch).')
@@ -77,7 +77,7 @@ param operatorEmail string = ''
 @description('Permanent dry-run flag for the web app\'s cancel action (MULTIUSER_PLAN §7.8 SF2) — mirrors the ACA Jobs\' dryRun param.')
 param dryRun bool = true
 
-@description('Cosmos DB endpoint for the tenant store (main.bicep\'s tenantCosmosEndpoint, the SAME value the tenant-mode jobs get). Empty (the default) = the web runs on its in-memory store and references NO tenant Key Vault secret. Non-empty = the tenant backend below is wired (MU-16a).')
+@description('Cosmos DB endpoint for the tenant store (main.bicep\'s tenantCosmosEndpoint, the SAME value the jobs get). Empty (the default) = the web runs on its in-memory store and references NO tenant Key Vault secret. Non-empty = the tenant backend below is wired (MU-16a).')
 param tenantCosmosEndpoint string = ''
 
 @description('ACS Email sender address (plain value). Only wired with the tenant backend.')
@@ -156,11 +156,11 @@ var webEnv = [
 
 // MU-16a: the tenant backend (`teetime web` over tenant/wiring.py): the durable store, the
 // credential keyring (connect / refresh / cancel, MU-14) and ACS (user email). Gated on a
-// non-empty tenantCosmosEndpoint — the SAME param that makes the jobs' tenant mode useful — so a
+// non-empty tenantCosmosEndpoint — the SAME param the jobs' tenant store reads — so a
 // web deployed without Cosmos stays on its in-memory store and references no tenant secret.
 // When the endpoint IS set, TENANT-CREDS-KEYRING and ACS-EMAIL-CONNECTION must already exist in
 // the vault (the operator pre-creates the keyring; email.bicep writes ACS-EMAIL-CONNECTION when
-// deployAcsEmail=true) — the same prerequisites the tenant-mode jobs have (MULTIUSER_PLAN §10.1).
+// deployAcsEmail=true) — the same prerequisites the jobs have (MULTIUSER_PLAN §10.1).
 // No DB secret: Cosmos auth is the MI + a hand-created data-plane role assignment (§10.2/§10.5).
 var tenantBackend = !empty(tenantCosmosEndpoint)
 

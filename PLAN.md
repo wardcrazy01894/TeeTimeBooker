@@ -220,9 +220,10 @@ comma/space-separated ISO date list (`"2026-06-14, 2026-06-21"`). It is resolved
 (`frozenset[date]`). Unlike credential `*_env` fields, resolution is **fail-open**: an
 unset/empty/partially-malformed value yields the dates it can parse (or none) and never
 raises — a fat-fingered edit must not crash the booker/watcher (PLAN cut: no durable store,
-so the env/secret is the only runtime source). In prod the env var is injected into the ACA
-Jobs from a Key Vault secret editable in the Portal with **no redeploy** (LEADTIME_SKIP_PLAN
-§7). Both gates honor it: the **booking-day gate** refuses a skipped `today+offset`, and the
+so the env/secret is the only runtime source). Until MU-19 (2026-11-14) the ACA Jobs ran this
+path and injected the env var from a Key Vault secret editable in the Portal with **no redeploy**
+(LEADTIME_SKIP_PLAN §7); the jobs now run only the tenant path, which keeps skips in its own
+store, so this section describes the TOML CLI alone. Both gates honor it: the **booking-day gate** refuses a skipped `today+offset`, and the
 **watcher** drops skipped dates before polling AND folds the skip into the same
 `_should_stop_acting_on_date` freeze (so a skipped held date is never upgraded either —
 defense-in-depth). `watch --date <skipped>` is **refused** with a clear error (operator-intent

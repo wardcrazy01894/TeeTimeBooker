@@ -64,8 +64,9 @@ runs this engine unmodified is [`../tenant/CLAUDE.md`](../tenant/CLAUDE.md). **T
   `request.skip_dates_env` names an env var with a comma/space-separated ISO date list;
   `core/skip_dates.parse_skip_dates` resolves it into `request.skip_dates` in `load()`. Unlike
   credential `*_env` vars, unset/empty/malformed yields an empty set, so a fat-fingered Portal
-  edit can never crash the 06:00 booker. In prod it comes from a Key Vault secret editable with
-  no redeploy. It does NOT feed the RequestId.
+  edit can never crash the 06:00 booker. TOML path only: until MU-19 (2026-11-14) the ACA jobs
+  injected it from a Key Vault secret; the tenant path keeps skips in its own store. It does NOT
+  feed the RequestId.
 
 ## Double booking, idempotency and stores
 

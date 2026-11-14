@@ -43,7 +43,8 @@ course login, pick the days and times you want to play.
 >
 > **Dev** runs the same tenant path in dry-run (since MU-17) and sends no email unless its booker
 > fails (invitations excepted). The single-user TOML path (`teetime run` / `watch`) is kept for
-> local course testing and as prod's rollback.
+> local course testing only: since MU-19 (2026-11-14, in prod from the next infra tag) no Azure
+> job can run it, and a rollback is a redeploy of the previous tag.
 
 - ForeUP adapter: live bookings at Mangrove Bay since M6. TeeItUp adapter: live booking + cancel
   confirmed against Sydney Marovitz (2026-05-29).
@@ -121,7 +122,7 @@ Variable names are listed in `.env.example` and match the `*_env` defaults in
 |---------|--------------|
 | `[[request.time_windows]]` | Each window carries a `weekday`; wanted days are derived from them. Several windows may share a day (list order is preference, one booking per day) |
 | `request.booking_cutoff` | Default `{ days_before = 1, time_of_day = 16:00:00 }`: after 16:00 the day before, no new booking and no upgrade for that date |
-| `request.skip_dates_env` | Names an env var (default `TEETIME_SKIP_DATES`) holding ISO dates to skip, e.g. `"2026-06-14, 2026-06-21"`. Unset, empty or malformed means no skips; it never crashes the bot. Hosted: a Key Vault secret you edit in the Portal with no redeploy |
+| `request.skip_dates_env` | Names an env var (default `TEETIME_SKIP_DATES`) holding ISO dates to skip, e.g. `"2026-06-14, 2026-06-21"`. Unset, empty or malformed means no skips; it never crashes the bot. TOML path only: the hosted site keeps skips per person in its own store (until MU-19 the jobs read this from a Key Vault secret) |
 | `scheduler.blind_post_max_count` | Blind-POST burst size at T0, Mangrove Bay only (default `2` since 2026-10-02, was `3`; `0` disables it and uses plain search-then-book). Capped by the pre-solved CAPTCHA pool; primary course, `--wait` path only |
 | `scheduler.blind_post_stagger_ms` | Per-POST offsets from T0 (default `[-369, 0]` since 2026-10-04; was `[-400, 0]` until 2026-10-04, `[-400, -250, 0]` since 2026-09-30 and `[-500, -250, 0]` before), paired with the ranked slots. The first equals `-early_arrival_ms`, so the best slot fires at the busy-wait wake |
 | `scheduler.blind_post_fallback_token_reserve` | Spare pre-solved CAPTCHA tokens kept for the fallback search (default `2`) |
@@ -242,7 +243,7 @@ WARNING; anything half-configured refuses to start.
 |---------|---------|
 | `TENANT_COSMOS_ENDPOINT` | Cosmos endpoint (`https://<account>.documents.azure.com:443/`); unset = in memory |
 | `TENANT_COSMOS_DATABASE` | `dev` or `prod`; REQUIRED with the endpoint, never defaulted |
-| `AZURE_CLIENT_ID` | The user-assigned managed identity's client id (set by Bicep in tenant mode) |
+| `AZURE_CLIENT_ID` | The user-assigned managed identity's client id (set by Bicep on every job and the web app) |
 | `TENANT_COSMOS_CONTAINER_SUFFIX` | `-ci` selects the integration suite's CI containers (dev only); never set by a job |
 
 ### Tenant jobs
@@ -259,8 +260,8 @@ allocation with no ForeUP call.
 an opportunity, snapshot trust, vanish and adoption handling, ownership-gated upgrades.
 
 `teetime tenant-migrate` runs the ordered data migrations (v1 ships none). It requires Cosmos and is
-what the Manual `teetime-migrate-<env>` job runs; CI starts it after deploy pass 2 in an env whose
-`bookingMode`/`watchMode` is `tenant`.
+what the Manual `teetime-migrate-<env>` job runs; CI starts it after deploy pass 2 on every
+deploy.
 
 | Env var | Read by | Purpose |
 |---------|---------|---------|
@@ -288,25 +289,27 @@ docker run --rm \
   uv run teetime run --config /app/config/container.toml --dry-run true
 ```
 
-The image bakes in `config/container.toml` and reads secrets from env vars (the same names as the
-Key Vault references). It always books a foursome, but only **Player 1** (the account holder)
-needs contact details: ForeUP transmits only the player count, so guests 2–4 are name-only.
-`tests/test_container_config_parity.py` fails the build if `container.toml` references an env var
-that `compute.bicep` does not wire. The TOML path is stateless between runs and logs to stdout.
+The image bakes in `config/container.toml`, the single-user TOML config, and that path reads its
+secrets from the env vars above. It always books a foursome, but only **Player 1** (the account
+holder) needs contact details: ForeUP transmits only the player count, so guests 2–4 are name-only.
+No Azure job runs this config since MU-19 (the jobs run `tenant-run` / `tenant-watch` and no longer
+inject these env vars); `tests/test_container_config_parity.py` fails the build if `compute.bicep`
+wires one of them again. The TOML path is stateless between runs and logs to stdout.
 
 ## Azure hosting
 
 The booking and watch schedules run as **Azure Container Apps Jobs** on UTC crons, secrets live in
 **Azure Key Vault**, and the multi-user site is a **Container App** (prod keeps one replica warm,
-dev scales to zero). The TOML path makes no authenticated Azure SDK calls at runtime; the tenant
-path reads Cosmos with its managed identity. About $5/month for ACR Basic (the jobs sit in the
+dev scales to zero). The jobs run only the tenant path (MU-19), which reads Cosmos with its
+managed identity. About $5/month for ACR Basic (the jobs sit in the
 free grant), plus up to ~$6/month for prod's always-warm web replica.
 
 | | Dev | Prod |
 |---|---|---|
 | Deploy | Auto on merge to `main` | Manual approval, tagged `infra/vX.Y.Z` |
 | Mode | `dryRun = true` | `dryRun = false` |
-| Booking/watch | Tenant mode (`tenant-run` / `tenant-watch`), watcher hourly | Tenant mode since MU-18 stage B (`infra/v3.0.0`; was TOML `run` / `watch`), watcher every 10 min |
+| Booking/watch | Tenant path (`tenant-run` / `tenant-watch`), watcher hourly | Tenant path since MU-18 stage B (`infra/v3.0.0`; was TOML `run` / `watch`), watcher every 10 min |
+| TOML job wiring | Removed at MU-19 (2026-11-14) | Removed with the first infra tag after MU-19; until then the deployed template still carries the unused mode params |
 | Web app, ACS email, Cosmos | Deployed (`deployWebApp`/`deployAcsEmail = true`) | Deployed since MU-18 stage A (`infra/v2.17.0`) |
 
 - **IaC:** Bicep modules `identity`, `registry` (one shared ACR in `rg-teetime-shared`),

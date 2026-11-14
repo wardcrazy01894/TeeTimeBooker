@@ -52,7 +52,9 @@ Two paths exist side by side:
   from [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md). It runs the UNMODIFIED `Orchestrator` once per
   account. This is what **prod** runs since MU-18 stage B (`infra/v3.0.0`) and **dev** since MU-17.
 - **TOML path** (`teetime run` / `teetime watch`): single-user, configured by a TOML file. Kept for
-  local course testing and as prod's rollback (flip `bookingMode`/`watchMode` back to `toml`).
+  local course testing only. No Azure job can run it since MU-19 (2026-11-14): the
+  `bookingMode`/`watchMode` params and the single-user job secrets are gone from the Bicep, so a
+  prod rollback is a redeploy of the previous infra tag, not a mode flip.
 
 ## Current status
 
@@ -67,7 +69,8 @@ Two paths exist side by side:
 | Books | Sat + Sun, one reservation per day, 7 days ahead, nearest the window midpoint |
 
 What is live: multi-day Sat+Sun booking with per-day windows, the 16:00-day-before booking cutoff,
-Portal-editable skip-days, within-window upgrade, the race pre-warm bundle (login pre-warm,
+skip-days (per person on the site; the Portal-editable Key Vault list fed the TOML jobs only),
+within-window upgrade, the race pre-warm bundle (login pre-warm,
 multi-token CAPTCHA pool, search-sleep trim), the Mangrove Bay blind-POST burst (2 POSTs staggered
 `-369/0` ms across T0 since 2026-10-04, was `-400/0` until 2026-10-04, `-400/-250/0` since 2026-09-30 and `-500/-250/0` before; keep best, cancel extras, re-guard then fresh-search fallback), the
 watcher's duplicate-reservation crash-net, blind-POST rejection reason tagging, log redaction on
@@ -93,9 +96,13 @@ See `infra/AZURE_PLAN.md §9.2`.
 
 Plan: [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) §12 (ratified 2026-09-25) holds the per-milestone
 table; how each was actually built, deviations included: [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md).
-Every milestone MU-1 … MU-18 and MU-R1 … R3 is done (prod cutover `infra/v3.0.0`, 2026-09-27);
-**MU-19** (retire the TOML job wiring after 4 clean weekends) is open; **MU-20** (remove the
-TOML CLI) was dropped: the operator keeps it (MULTIUSER_PLAN §13 Q6).
+Every milestone MU-1 … MU-19 and MU-R1 … R3 is done (prod cutover `infra/v3.0.0`, 2026-09-27).
+**MU-19** (retire the TOML job wiring) merged 2026-11-14 after seven weeks of tenant-path prod
+runs with no rollback: `compute.bicep` has no mode left, the jobs read four Key Vault secrets
+(`TWOCAPTCHA-API-KEY`, `TENANT-CREDS-KEYRING`, `ACS-EMAIL-CONNECTION`, `OPERATOR-NOTIFY-EMAIL`),
+and the six single-user secrets are unreferenced (the operator deletes them after the prod
+release that carries MU-19). **MU-20** (remove the TOML CLI) was dropped: the operator keeps it
+(MULTIUSER_PLAN §13 Q6).
 
 ### Cut from scope
 

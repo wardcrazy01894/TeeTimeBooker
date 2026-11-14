@@ -81,8 +81,8 @@ param killswitchRbacRoleId = '3e2d5a14-96bd-4469-9f96-b9c3270aa9e6'
 // dev KV secrets TENANT-CREDS-KEYRING / WEB-SESSION-SECRET / OAUTH-GOOGLE-CLIENT-ID /
 // OAUTH-GOOGLE-CLIENT-SECRET / OPERATOR-NOTIFY-EMAIL, Key Vault Secrets Officer for the CI
 // identity (email.bicep writes ACS-EMAIL-CONNECTION), Microsoft.Communication registered.
-param bookingMode = 'tenant'
-param watchMode = 'tenant'
+// MU-19 (2026-11-14): the `bookingMode` / `watchMode` params are gone; the jobs can only run the
+// tenant path (compute.bicep), so there is no mode to set here.
 
 // Dev-only cadence change (operator directive, MU-15a): the watch job runs HOURLY instead of
 // every 10 minutes. This is a per-env PARAM (compute.bicep's watchCron), so it cannot touch
