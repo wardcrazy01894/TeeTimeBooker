@@ -10,7 +10,7 @@
 - nothing set -> today's in-memory store with a loud WARNING (local runs keep working).
 - anything in between (a database or container suffix with no endpoint, an invalid suffix) -> a
   ``TenantStoreConfigError`` before anything is opened. compute.bicep always sets
-  ``TENANT_COSMOS_DATABASE`` in tenant mode, so a tenant job whose endpoint param was left empty
+  ``TENANT_COSMOS_DATABASE`` on the jobs, so a tenant job whose endpoint param was left empty
   fails closed instead of exiting 0 over an empty store.
 
 ``user_notifier_from_env`` is the users' mail path for the watcher and the web: ACS when

@@ -5,7 +5,8 @@ Status: **RATIFIED 2026-09-25** after three adversarial review rounds (round 1 B
 > **Implementation status (2026-09-26):** MU-1 through MU-17 and MU-R1 through MU-R3 are built;
 > **the tenant path runs in prod** since MU-18 (stage A `infra/v2.17.0`, stage B `infra/v3.0.0`,
 > 2026-09-27; the operator adopted the TOML bot's live reservations with MU-16b) and in **dev**
-> (MU-17, dry-run). Row-by-row state is in §12; how each milestone was actually built,
+> (MU-17, dry-run). The TOML job wiring was retired at **MU-19** (2026-11-14): the mode params
+> described in §6.2 and §11 are gone and the jobs can only run the tenant path. Row-by-row state is in §12; how each milestone was actually built,
 > deviations included, is in [docs/MULTIUSER_AS_BUILT.md](./docs/MULTIUSER_AS_BUILT.md).
 
 Subordinate to [PLAN.md](./PLAN.md) (engine), [infra/AZURE_PLAN.md](./infra/AZURE_PLAN.md)
@@ -770,7 +771,8 @@ MU-15a), which `compute.bicep` and `killswitch.bicep` both read with `loadJsonCo
   (`jobNamePrefix`), so the cutover (§11) flips arguments on the existing resources instead of
   creating a parallel job. New events use `teetime-rel-<key>-<env>-<half>`, which is ≤ 32 chars
   (the ACA job-name limit) when key ≤ 10 chars. The parity test asserts the length.
-- **Arguments:** a per-env `bookingMode` param (`toml` | `tenant`). In toml mode the args are today's
+- **Arguments (as designed; the param and the toml branch were removed at MU-19, 2026-11-14, so
+  the jobs always pass the tenant args):** a per-env `bookingMode` param (`toml` | `tenant`). In toml mode the args are today's
   `run --config /app/config/container.toml --wait --dry-run <x>`. In tenant mode they are
   `tenant-run --event <key> --wait --dry-run <x>`. One resource per half means **one mode per env
   at a time**, which structurally rules out two paths booking for the same account.
@@ -1495,7 +1497,8 @@ pins that no Bicep module declares `sqlRoleAssignments`.
 ForeUP account, which risks a double booking; (2) neither acting on a drop morning. **Structural
 answer:** MB's booking jobs and the watch job are the **same ACA resources** in both modes. The mode
 is an argument chosen by the per-env `bookingMode` / `watchMode` params (§6.2), so in any env
-exactly one path exists. Dev is `dryRun=true` in both modes, so it never POSTs. MB drops occur only
+exactly one path exists. (Since step 9, MU-19, 2026-11-14, the params are gone: only the tenant
+path exists.) Dev is `dryRun=true` in both modes, so it never POSTs. MB drops occur only
 on **Saturday and Sunday** mornings (target = today+7 must be a wanted weekday, and there are no
 other rules in v1). **Every flip deploys Monday–Thursday, 09:00–20:00 ET.**
 
@@ -1509,7 +1512,7 @@ other rules in v1). **Every flip deploys Monday–Thursday, 09:00–20:00 ET.**
 | 6 | Prod seeding: connect the operator's MB account in **prod web**; create the rule; run `teetime tenant-seed --adopt` (one login: current live reservations matching the rule window/party are recorded as `bookings(source=adopted_owned)` **after operator confirmation on screen**, because the TOML bot made them) | the dashboard shows the next 3 weeks correct; `teetime tenant-plan --event mb0600et --date <next Sat>` (read-only: prints what the runner would claim, allocate, and fire) matches expectations. **Re-run `tenant-seed --adopt` in the flip window immediately before step 7** (the TOML watcher may have upgraded since, which changes raw ids) | delete prod tenant data |
 | 7 | **Prod cutover deploy** on a Mon–Thu: `bookingMode=tenant`, `watchMode=tenant`, `infra/v3.0.0` tag | **immediately after the deploy completes** (no TOML actor remains): run `tenant-seed --adopt` once more, so any upgrade the TOML watcher made during the deploy window is recorded as owned (otherwise the §7.5 replacement rule adopts it *unowned*, which is safe but disables upgrades for that row) (SF7); post-deploy the watcher cycle runs clean; the first tenant drop (**operator's account only**) passes the §11.2 log-line checklist | **flip both params to `toml` + tag deploy** (minutes). TOML still has MB creds + `TEETIME-SKIP-DATES`; bookings the tenant path made are visible to the TOML pre-book guard (ALREADY_BOOKED), so there is **no double booking on rollback**. **Rollback runbook (SF7):** diff the web's rules **and explicit rows** against `container.toml` (TOML can express only Sat/Sun 08:45–10:00 × 4). Copy skips into `TEETIME-SKIP-DATES`, and list every explicit date or rule TOML cannot express; those are dropped on rollback and the operator must acknowledge that. **After step 11 a rollback silently drops Turk entirely** (TOML is single-user), so a post-step-11 rollback needs Turk notified first |
 | 8 | Soak: **4 weekends** in tenant mode | no rollback used; ≥ 6/8 drops handled with expected outcomes | as step 7 |
-| 9 | **Retire the TOML job wiring** (MU-19): the `toml` mode branch removed from `compute.bicep`; `TEETIME-SKIP-DATES`, `PLAYER1-*`, and `MB-USERNAME/PASSWORD` secret refs removed from jobs (KV secrets deleted by the operator later); `booking_day_gate.py` and `skip_dates.py` are no longer called by any job | operator APPROVE | revert the PR (the TOML path is still in the image until step 10) |
+| 9 (**DONE 2026-11-14**) | **Retire the TOML job wiring** (MU-19): the `toml` mode branch removed from `compute.bicep`; `TEETIME-SKIP-DATES`, `PLAYER1-*`, and `MB-USERNAME/PASSWORD` secret refs removed from jobs (KV secrets deleted by the operator later); `booking_day_gate.py` and `skip_dates.py` are no longer called by any job | operator APPROVE | revert the PR (the TOML path is still in the image until step 10) |
 | 10 | **Remove the CLI `run`/`watch --config` commands** and `config/container.toml` (MU-20), **≥ 8 weekends after step 7**, unless the operator keeps them for local dev (§13 Q6: **kept**, so step 10 does not happen) | operator decision | git revert |
 | 11 | Turk: invite in `/admin/users` **only after ≥ 2 prod tenant drops passed the §11.2 log-line checklist**; Turk connects an account and creates a rule. **Data only** (MU-3 widened the grid) | – | disable the user |
 
@@ -1577,8 +1580,9 @@ lease was k = 3), the same reserve of 2, and the same unmodified `Orchestrator`.
 7. `tenant-run: no store/credential call inside race window [T0-121s, T0+10s]` (the runtime
    self-check that mirrors proof 1).
 
-**Rollback if any line is missing or wrong:** flip `bookingMode` and `watchMode` back to `toml` and
-deploy a tag, **Monday–Thursday** (§11 step 7). The TOML path sees any tenant-made booking via its
+**Rollback if any line is missing or wrong (the first-drop procedure, valid until MU-19 removed
+the mode params on 2026-11-14; a rollback is now a redeploy of the previous tag):** the two mode
+params went to `toml` again in a tagged deploy, **Monday–Thursday** (§11 step 7). The TOML path sees any tenant-made booking via its
 pre-book guard, so there is no double booking. If a misbehaving Saturday drop threatens Sunday's,
 the operator may choose to flip the same day, outside 05:00–06:30 ET. The flip is atomic per job
 resource.
@@ -1620,7 +1624,7 @@ once their dependencies land.
 | **MU-16b** ✅ | Adopt the TOML bot's live reservations as OWNED (only needed for the prod cutover). Built as an operator-only website action (`web/adopt.py` over `tenant/seed.py`) instead of a `tenant-seed --adopt` CLI: the site already has the managed identity, keyring and adapters, so the operator needs no local secrets and no write role on the prod database | `tenant/seed.py`, `web/adopt.py` | MU-16a | `test_seed_adopt_requires_confirmation` (+ `tests/tenant/test_seed.py`, `tests/web/test_web_adopt.py`) | AZURE_PLAN §10.8 |
 | **MU-17** | Dev cutover (params only, plus the ACS-sender derivation and the operator email from Key Vault, since the repo is public) | `main.bicepparam.dev`, `main.bicep`, `webapp.bicep` | all above | `tests/test_dev_cutover_params.py` (verification per §11 step 4) | AZURE_PLAN §10.7 runbook |
 | **MU-18** | Prod cutover in two stages (AZURE_PLAN §10.8): stage A `infra/v2.17.0` (web app, ACS, tenant store; jobs stay TOML), then the operator's connect + rule + Adopt, then stage B (both modes `tenant`). Operator chose to cut over on 2026-09-27 after one day of dev soak rather than the planned 2 weekends | `main.bicepparam.prod` | MU-17 | `tests/test_prod_cutover_params.py` | all "latest infra tag" sites, docs/RELEASES.md |
-| **MU-19** | Retire the TOML job wiring | `compute.bicep`, parity tests | MU-18 + 4 weekends | `test_no_toml_mode_remaining` | per §11.1 |
+| **MU-19** (**DONE 2026-11-14**) | Retire the TOML job wiring: `bookingMode`/`watchMode` and every mode ternary removed from the Bicep, both param files and `azure-iac.yml`; the jobs always run `tenant-run --event <key> --wait` / `tenant-watch`; the migrate job and its CI step are unconditional; the job secret refs `MB-USERNAME`, `MB-PASSWORD`, `PLAYER1-EMAIL`, `PLAYER1-PHONE`, `PLAYER1-MB-MEMBER`, `TEETIME-SKIP-DATES` dropped (the KV secrets stay until the operator deletes them). Approved by the operator after seven weeks in prod with no rollback | `compute.bicep`, `main.bicep`, both `.bicepparam` files, `azure-iac.yml`, parity tests | MU-18 + 4 weekends | `test_no_toml_mode_remaining` | per §11.1 |
 | **MU-20** ~~dropped~~ | Remove the TOML CLI — **dropped**: the operator keeps the TOML CLI (§13 Q6, resolved 2026-09-26) | `__main__`, `config/` | MU-19 + 4 weekends | – | README, CLAUDE.md |
 | **MU-R1** | Ranked options + per-course price: model, store, Cosmos mapping (§16.2, §16.5) | `tenant/models.py`, `tenant/store.py`, `tenant/in_memory_store.py`, `tenant/cosmos/**` | MU-8b, MU-14 | `test_options_rank_unique_and_contiguous`, `test_group_downgrade_edge_allowlisted`, `test_old_schema_row_reads_as_single_option`, conformance additions | CLAUDE.md tenant bullets |
 | **MU-R2** | Group floor, `achieved_rank`, `collapse_group`, cross-course upgrade (§16.3/§16.4) | `tenant/groups.py`, `tenant/runner.py`, `tenant/watch_runner.py`, `tenant/materialize.py` | MU-R1, MU-9b, MU-10b | `test_achieved_rank_matches_engine_first_match`, `test_runner_collapses_same_drop_group_post_race`, `test_watcher_collapse_retries_failed_cancel`, `test_cancelled_group_not_external_cancel`, `test_group_floor_blocks_worse_rebook` | CLAUDE.md, §16 status |
@@ -1653,7 +1657,8 @@ immediately after MU-0: MU-1, MU-2, MU-3, MU-4, MU-5, MU-7.
 5. **Sydney Marovitz:** confirm hosted TeeItUp stays out (PAN). If it ever comes in, what is the
    daily release time (Spike S-M4)?
 6. ~~TOML CLI~~. **RESOLVED 2026-09-26:** keep `run`/`watch --config` for local course testing and
-   as prod's rollback; MU-20 is dropped.
+   as prod's rollback; MU-20 is dropped. (Since MU-19, 2026-11-14, it is local-only: the jobs
+   cannot run it, and a rollback is a redeploy of the previous tag.)
 7. ~~External cancel~~. **RESOLVED 2026-09-25:** it is the expected common case. Detect it, mark
    the row cancelled(external), notify, do not re-book; the user may re-request (§7.5).
 8. **ToS escalation** (§9.6): accept a hosted multi-account footprint (≤ 8 accounts/course, ≤ 4
@@ -1667,8 +1672,8 @@ immediately after MU-0: MU-1, MU-2, MU-3, MU-4, MU-5, MU-7.
 11. Does dev's KV hold the **same** MB account as prod? (The concurrent-login evidence in §11
     depends on it.)
 12. ~~Operator notify address~~. **RESOLVED 2026-09-26:** the operator's personal address (not written here: the repo is public). KV secret
-    `OPERATOR-NOTIFY-EMAIL`, wired as `OPERATOR_NOTIFY_EMAIL` into the tenant jobs (tenant-mode
-    only, `compute.bicep`) and available for the web app's `TEETIME_OPERATOR_EMAIL` (a separate,
+    `OPERATOR-NOTIFY-EMAIL`, wired as `OPERATOR_NOTIFY_EMAIL` into the booking and watch jobs
+    (`compute.bicep`) and available for the web app's `TEETIME_OPERATOR_EMAIL` (a separate,
     plain, non-secret value — the operator's SIGN-IN identity, not the notification recipient;
     they happen to be the same address but serve different purposes, see `webapp.bicep`).
 13. ~~Is the 16:00-day-before cutoff global for all users, or will per-user cutoffs be wanted?~~

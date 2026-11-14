@@ -1,22 +1,21 @@
-"""Guard against drift between the container runtime config and the Azure infra.
+"""Guards on ``config/container.toml`` (the single-user TOML config baked into the image) and
+on what ``infra/bicep/modules/compute.bicep`` injects into the ACA jobs.
 
-These tests run in the normal (non-integration) CI job. They exist because the
-v1 Azure deploy is split across two files that MUST agree:
+Until MU-19 (2026-11-14) the ACA jobs RAN container.toml, so every ``*_env`` name it references
+had to be wired in compute.bicep (the loader raises on a missing one). The jobs now run only the
+tenant path, so that parity is gone and is pinned the other way round: compute.bicep must NOT
+supply the env vars only this file reads, because each one is a Key Vault secret ref that ACA
+validates at job-CREATE time and the operator is free to delete those secrets.
 
-  * ``config/container.toml`` — baked into the image; the bot's config loader
-    (``core/config.py``) RAISES on any ``*_env`` reference whose env var is
-    missing at container start. ACA also validates Key Vault secret refs at
-    job-CREATE time, so a missing secret fails the deployment, not just the run.
-  * ``infra/bicep/modules/compute.bicep`` — declares the Key Vault secret refs
-    and the container ``env`` block that supply those env vars.
+What still holds and is still pinned here:
 
-If someone adds a ``*_env`` to container.toml (e.g. a new player email) without
-wiring the matching secret + env var in compute.bicep, the deploy breaks with a
-cryptic ``InvalidParameterValueInContainerTemplate``. These tests turn that into
-a fast, local red test instead.
-
-They also pin the booking invariants the operator cares about (full foursome),
-so an accidental edit to the party size is caught in review.
+  * container.toml stays parseable and keeps its shape (a full foursome, the skip-dates env
+    ref, the green-fee cap): `teetime run|watch --config` still exists and the image's default
+    CMD points at this file.
+  * Its ``[scheduler]`` race knobs match ``config/example.toml``. The tenant runner's defaults
+    mirror the same values (``test_tenant_scheduler_matches_the_shipped_toml_scheduler``), so
+    this file is still the written-down reference for what prod's race path does.
+  * ``TWOCAPTCHA_API_KEY`` is wired into the jobs: the tenant commands read it too.
 """
 
 from __future__ import annotations
@@ -30,13 +29,9 @@ _CONTAINER_TOML = _REPO / "config" / "container.toml"
 _EXAMPLE_TOML = _REPO / "config" / "example.toml"
 _COMPUTE_BICEP = _REPO / "infra" / "bicep" / "modules" / "compute.bicep"
 
-# Runtime env vars the container needs that are NOT config ``*_env`` references,
-# so ``_referenced_env_vars`` can't discover them — they must be asserted by name.
-#   TWOCAPTCHA_API_KEY: read via os.environ directly in __main__ (CAPTCHA solve).
-#     Critically, its absence does NOT crash at config load, so a dropped wiring
-#     would fail SILENTLY at the 6 AM booking — the worst failure mode.
-# The bot makes no authenticated Azure SDK calls at runtime (state is in-process;
-# no Blob Storage), so no AZURE_CLIENT_ID / AZURE_STORAGE_ACCOUNT_NAME is needed.
+# Runtime env vars the ACA jobs need that both paths read straight from the environment.
+#   TWOCAPTCHA_API_KEY: read via os.environ in __main__ (`tenant-run` / `tenant-watch`, and the
+#     TOML CLI). A dropped wiring would leave the live jobs with no CAPTCHA solver.
 _REQUIRED_RUNTIME_ENV_VARS = {
     "TWOCAPTCHA_API_KEY",
 }
@@ -90,23 +85,23 @@ def test_container_config_is_parseable() -> None:
     _load(_CONTAINER_TOML)  # raises on malformed TOML
 
 
-def test_every_container_env_ref_is_wired_in_compute_bicep() -> None:
-    """The crash-the-deploy guard: no orphan *_env in container.toml.
+def test_no_container_env_ref_is_wired_in_compute_bicep() -> None:
+    """MU-19: no ACA job runs container.toml, so compute.bicep supplies NONE of the env vars
+    this file references (ForeUP credentials, Player 1 contact, skip dates).
 
-    If this fails, container.toml references an env var that compute.bicep does
-    not supply — the ACA job would fail to create (missing Key Vault secret) or
-    the container would crash at config load. Wire the secret + env var in
-    compute.bicep (jobSecrets + commonEnv) and add the Key Vault secret.
+    If this fails, a single-user secret ref came back into the job wiring: the deploy would
+    then need a Key Vault secret the operator may have deleted (ACA validates secret refs at
+    job-CREATE time), for a config no job reads.
     """
     cfg = _load(_CONTAINER_TOML)
     required = _referenced_env_vars(cfg)
+    assert required, "container.toml references no env var: the guard below would be vacuous"
     provided = _bicep_env_var_names(_COMPUTE_BICEP.read_text())
 
-    missing = required - provided
-    assert not missing, (
-        "container.toml references env var(s) not wired in compute.bicep: "
-        f"{sorted(missing)}. Add matching jobSecrets + commonEnv entries in "
-        "infra/bicep/modules/compute.bicep AND create the Key Vault secret(s)."
+    stale = required & provided
+    assert not stale, (
+        f"compute.bicep wires env var(s) only the TOML config reads: {sorted(stale)}. "
+        "The ACA jobs run the tenant path only (MULTIUSER_PLAN §11 step 9, MU-19)."
     )
 
 
@@ -117,16 +112,12 @@ def test_referenced_env_vars_scans_request_top_level() -> None:
     assert "TEETIME_SKIP_DATES" in _referenced_env_vars(cfg)
 
 
-def test_skip_dates_env_wired_in_bicep() -> None:
-    """LEADTIME_SKIP_PLAN F2: container.toml declares skip_dates_env and compute.bicep wires the
-    matching secret + env var. The KV secret TEETIME-SKIP-DATES must be pre-created or the deploy
-    fails (ACA validates secret refs at job-CREATE time)."""
+def test_skip_dates_env_declared_in_container_toml() -> None:
+    """LEADTIME_SKIP_PLAN F2: container.toml names the skip-dates env var (never a literal date
+    list), so a single-user run can skip a day with no config edit. compute.bicep no longer
+    injects it (MU-19; pinned above): the tenant path keeps skips in its own store."""
     cfg = _load(_CONTAINER_TOML)
     assert cfg["request"]["skip_dates_env"] == "TEETIME_SKIP_DATES"
-    bicep = _COMPUTE_BICEP.read_text()
-    assert "TEETIME_SKIP_DATES" in _bicep_env_var_names(bicep)  # commonEnv entry
-    assert "teetime-skip-dates" in bicep  # jobSecrets secretRef target
-    assert "secrets/TEETIME-SKIP-DATES" in bicep  # keyVaultUrl
 
 
 def test_booking_is_a_full_foursome() -> None:
@@ -140,24 +131,19 @@ def test_booking_is_a_full_foursome() -> None:
 
 
 def test_critical_runtime_env_vars_are_wired_in_compute_bicep() -> None:
-    """Non-``*_env`` runtime vars must still be wired in compute.bicep.
+    """Env vars the jobs read straight from the environment must be wired in compute.bicep.
 
-    ``_referenced_env_vars`` only finds config ``*_env`` references. Some env vars
-    the container needs are read directly (not via a config ref) — most
-    importantly ``TWOCAPTCHA_API_KEY``, which the bot reads straight from the
-    environment, so the generic guard above can't catch a missing bicep wiring.
-    If it's dropped from compute.bicep the deployed live job has no CAPTCHA solver
-    and now fails fast at startup (``_build_adapters`` raises) instead of booking.
-    Assert them by name. See ``_REQUIRED_RUNTIME_ENV_VARS``.
+    Most importantly ``TWOCAPTCHA_API_KEY``: ``tenant-run`` and ``tenant-watch`` read it from
+    the environment, so nothing else catches a missing bicep wiring. Without it a live job has
+    no CAPTCHA solver. Assert them by name. See ``_REQUIRED_RUNTIME_ENV_VARS``.
     """
     provided = _bicep_env_var_names(_COMPUTE_BICEP.read_text())
     missing = _REQUIRED_RUNTIME_ENV_VARS - provided
     assert not missing, (
         f"compute.bicep is missing critical runtime env var(s): {sorted(missing)}. "
-        "These are not config *_env refs, so the generic parity guard can't catch a "
-        "missing wiring — and the deployed live job would fail fast at startup with no "
-        "CAPTCHA solver. Re-add them to commonEnv (and the matching jobSecrets) in "
-        "infra/bicep/modules/compute.bicep."
+        "The tenant commands read them straight from the environment, and the deployed live "
+        "job would have no CAPTCHA solver. Re-add them to jobEnv (and the matching "
+        "jobSecrets) in infra/bicep/modules/compute.bicep."
     )
 
 

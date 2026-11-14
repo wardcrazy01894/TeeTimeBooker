@@ -71,21 +71,13 @@ param enableKillswitch bool = false
 @description('GUID of the pre-created "ACA Job Schedule Manager" custom role. Required when enableKillswitch=true. Must be created manually by the operator (subscription-level roleDefinitions/write required). See docs/plans/COST_KILLSWITCH_PLAN.md §2/Item4.')
 param killswitchRbacRoleId string = ''
 
-@description('Which code path the ACA booking jobs run: "toml" (default, byte-identical to pre-MU-15a) or "tenant". See compute.bicep and MULTIUSER_PLAN.md §6.2/§11. Flipped only at the cutover steps in that plan, never by a routine deploy.')
-@allowed(['toml', 'tenant'])
-param bookingMode string = 'toml'
-
-@description('Which code path the ACA watch job runs, mirroring bookingMode. See compute.bicep.')
-@allowed(['toml', 'tenant'])
-param watchMode string = 'toml'
-
 @description('Watch job cron expression (UTC). Prod stays */10 * * * * (AZURE_PLAN §5.4); dev may run hourly (operator directive, MULTIUSER_PLAN §12 MU-15a) — a per-env param, so this cannot touch prod.')
 param watchCron string = '*/10 * * * *'
 
-@description('Cosmos DB endpoint for the tenant store, wired into ACA jobs ONLY when bookingMode/watchMode == "tenant". Empty by default (toml mode never reads it); both envs set it to the shared Cosmos account (MU-15b, deployed standalone).')
+@description('Cosmos DB endpoint for the tenant store, wired into every ACA job (the jobs run only the tenant path since MU-19). Empty by default; both envs set it to the shared Cosmos account (MU-15b, deployed standalone).')
 param tenantCosmosEndpoint string = ''
 
-@description('ACS Email "from" sender address, wired ONLY when bookingMode/watchMode == "tenant". Empty by default; see email.bicep\'s mailFromSenderDomain output once deployAcsEmail=true.')
+@description('ACS Email "from" sender address, wired into the booking and watch jobs. Empty by default; see email.bicep\'s mailFromSenderDomain output once deployAcsEmail=true.')
 param acsEmailSender string = ''
 
 @description('''Deploy the `teetime-web-<env>` Container App (MULTIUSER_PLAN §8/§12 MU-15a).
@@ -223,8 +215,6 @@ module compute 'modules/compute.bicep' = {
     dryRun: dryRun
     usePublicBootstrapImage: usePublicBootstrapImage
     enableSchedules: effectiveEnableSchedules
-    bookingMode: bookingMode
-    watchMode: watchMode
     watchCron: watchCron
     tenantCosmosEndpoint: tenantCosmosEndpoint
     acsEmailSender: effectiveAcsEmailSender

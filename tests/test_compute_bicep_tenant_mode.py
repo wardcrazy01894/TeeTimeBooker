@@ -1,7 +1,9 @@
-"""MU-15a: `compute.bicep` gains a `bookingMode` / `watchMode` param (default `toml`, so the
-first deploy changes nothing) and derives its booking-job loop from `release_events.json`
-instead of two hand-written cron vars. Static text assertions — bicep is compile-validated by
-CI's `az bicep build`, not pytest-importable (see the other `test_compute_bicep_*` files).
+"""`compute.bicep`'s booking/watch job wiring. MU-15a derived the booking-job loop from
+`release_events.json` and added `bookingMode` / `watchMode` params so one set of job resources
+could run either the TOML or the tenant path; MU-19 (2026-11-14, MULTIUSER_PLAN §11 step 9)
+removed the params and the TOML wiring, so the jobs can only run the tenant path. Static text
+assertions — bicep is compile-validated by CI's `az bicep build`, not pytest-importable (see the
+other `test_compute_bicep_*` files).
 """
 
 from __future__ import annotations
@@ -29,101 +31,66 @@ def parts(bicep: str) -> tuple[str, str]:
     return booking_part, watch_part
 
 
-def test_booking_mode_param_defaults_to_toml(bicep: str) -> None:
-    m = re.search(r"param bookingMode string = '(\w+)'", bicep)
-    assert m is not None, "bookingMode param not found or has no default"
-    assert m.group(1) == "toml"
-
-
-def test_watch_mode_param_defaults_to_toml(bicep: str) -> None:
-    m = re.search(r"param watchMode string = '(\w+)'", bicep)
-    assert m is not None, "watchMode param not found or has no default"
-    assert m.group(1) == "toml"
-
-
 def test_booking_loop_reads_release_events_json(bicep: str) -> None:
     assert "loadJsonContent('../release_events.json')" in bicep
 
 
-def test_compute_default_mode_is_toml() -> None:
-    """MULTIUSER_PLAN §12 MU-15a's named test: the Bicep DEFAULT for bookingMode + watchMode is
-    'toml', so an env that sets neither keeps the TOML jobs. Both envs now set 'tenant' explicitly
-    (dev at MU-17, prod at MU-18 stage B; pinned in tests/test_{dev,prod}_cutover_params.py)."""
-    bicep = Path(__file__).resolve().parent.parent / "infra" / "bicep"
-    for path in (bicep / "modules" / "compute.bicep", bicep / "main.bicep"):
-        text = path.read_text()
-        assert "param bookingMode string = 'toml'" in text, path.name
-        assert "param watchMode string = 'toml'" in text, path.name
+def _args(text: str) -> list[str]:
+    """The entries of the first container `args: [...]` array in ``text``, inline comments
+    stripped."""
+    start = text.index("          args: [")
+    block = text[start : text.index("\n          ]", start)]
+    return [line.split(" //")[0].strip() for line in block.splitlines()[1:]]
 
 
-def test_toml_mode_booking_args_are_unchanged(parts: tuple[str, str]) -> None:
+def test_booking_jobs_run_tenant_run_with_wait(parts: tuple[str, str]) -> None:
+    """Every booking job: `teetime tenant-run --event <key> --wait --dry-run <x>`. `--wait` is
+    the race path (core/CLAUDE.md), so losing it would silently book off the release instant."""
     booking_part, _ = parts
-    assert "'run'" in booking_part
-    assert "'--config'" in booking_part
-    assert "'/app/config/container.toml'" in booking_part
-    assert "'--wait'" in booking_part
-    assert "dryRun ? 'true' : 'false'" in booking_part
+    assert _args(booking_part) == [
+        "'tenant-run'",
+        "'--event'",
+        "job.eventKey",
+        "'--wait'",
+        "'--dry-run'",
+        "dryRun ? 'true' : 'false'",
+    ]
+    assert "env: jobEnv" in booking_part
+    assert "secrets: jobSecrets" in booking_part
 
 
-def test_tenant_mode_booking_args_present(parts: tuple[str, str]) -> None:
-    booking_part, _ = parts
-    assert "'tenant-run'" in booking_part
-    assert "'--event'" in booking_part
-    assert "bookingMode == 'tenant'" in booking_part
-
-
-def test_toml_mode_watch_args_are_unchanged(parts: tuple[str, str]) -> None:
+def test_watch_job_runs_tenant_watch(parts: tuple[str, str]) -> None:
     _, watch_part = parts
-    assert "'watch'" in watch_part
-    assert "'--config'" in watch_part
+    watch_job = watch_part.split("resource migrateJob", 1)[0]
+    assert _args(watch_job) == ["'tenant-watch'", "'--dry-run'", "dryRun ? 'true' : 'false'"]
+    assert "env: jobEnv" in watch_job
+    assert "secrets: jobSecrets" in watch_job
 
 
-def test_tenant_mode_watch_args_present(parts: tuple[str, str]) -> None:
-    _, watch_part = parts
-    assert "'tenant-watch'" in watch_part
-    assert "watchMode == 'tenant'" in watch_part
-
-
-def test_toml_mode_never_references_tenant_secrets_unconditionally(bicep: str) -> None:
-    # A KV secret ref that ACA validates at job-CREATE time must never be added
-    # unconditionally, or the toml-mode (default) dev auto-deploy would fail on a Key Vault
-    # secret the operator has not created yet (TENANT-CREDS-KEYRING, ACS-EMAIL-CONNECTION,
-    # OPERATOR-NOTIFY-EMAIL do not exist until the operator pre-creates them, MULTIUSER_PLAN
-    # §10.1). The unconditional `jobSecrets` array (today's TOML secrets) must NOT contain any
-    # tenant-only secret name; the tenant secrets live in a separate array that is only ever
-    # spliced in behind a `== 'tenant'` ternary at its use sites.
-    unconditional_block_start = bicep.index("var jobSecrets = [")
-    unconditional_block_end = bicep.index("]", unconditional_block_start)
-    unconditional_block = bicep[unconditional_block_start:unconditional_block_end]
-    tenant_secret_names = ["TENANT-CREDS-KEYRING", "ACS-EMAIL-CONNECTION", "OPERATOR-NOTIFY-EMAIL"]
-    for name in tenant_secret_names:
-        assert name not in unconditional_block, f"{name} leaked into the unconditional jobSecrets"
-        assert name in bicep, f"{name} must still be wired somewhere (the tenant-mode array)"
-
-    # Every reference to the tenant-only secrets array must sit next to a `== 'tenant'` gate.
-    for marker in ("jobSecretsTenant", "tenantEnv"):
-        start = 0
-        found_use_site = False
-        while True:
-            idx = bicep.find(marker, start)
-            if idx == -1:
-                break
-            start = idx + 1
-            line_start = bicep.rfind("\n", 0, idx) + 1
-            line_end = bicep.find("\n", idx)
-            line = bicep[line_start:line_end]
-            stripped = line.strip()
-            if stripped.startswith(f"var {marker}") or stripped.startswith("//"):
-                continue  # the declaration itself, or a comment mentioning it — not a use site
-            assert "== 'tenant'" in line, f"un-gated use of {marker}: {line!r}"
-            found_use_site = True
-        assert found_use_site, f"{marker} is never used"
+def test_job_secrets_are_exactly_what_the_tenant_commands_read(bicep: str) -> None:
+    """ACA validates every KV secret ref at job-CREATE time, so the list is a deploy
+    prerequisite (MULTIUSER_PLAN §10.1): the shared 2captcha key plus the three tenant secrets.
+    A new ref needs its secret created in BOTH vaults before the deploy that adds it."""
+    start = bicep.index("var jobSecrets = [")
+    block = bicep[start : bicep.index("\n]", start)]
+    assert sorted(re.findall(r"secrets/([A-Z0-9-]+)'", block)) == [
+        "ACS-EMAIL-CONNECTION",
+        "OPERATOR-NOTIFY-EMAIL",
+        "TENANT-CREDS-KEYRING",
+        "TWOCAPTCHA-API-KEY",
+    ]
+    # Every secretRef an env entry names resolves to a declared job secret (a dangling ref
+    # fails the deploy with InvalidParameterValueInContainerTemplate).
+    declared = set(re.findall(r"\{ name: '([a-z0-9-]+)',\s+keyVaultUrl", block))
+    assert set(re.findall(r"secretRef: '([a-z0-9-]+)'", bicep)) == declared
 
 
 def test_tenant_env_refs_wired_in_compute_bicep(bicep: str) -> None:
     # Every env var name the tenant settings loaders read (booking_job.py, cosmos/store.py,
     # acs_email.py) must be wired somewhere in compute.bicep, as a secretRef or a plain value.
     required_env_vars = [
+        "TWOCAPTCHA_API_KEY",
+        "TEETIME_ENV",
         "TENANT_COSMOS_ENDPOINT",
         "TENANT_COSMOS_DATABASE",
         "AZURE_CLIENT_ID",
@@ -132,8 +99,10 @@ def test_tenant_env_refs_wired_in_compute_bicep(bicep: str) -> None:
         "ACS_EMAIL_SENDER",
         "OPERATOR_NOTIFY_EMAIL",
     ]
+    start = bicep.index("var jobEnv = [")
+    job_env = bicep[start : bicep.index("\n]", start)]
     for name in required_env_vars:
-        assert f"'{name}'" in bicep, f"{name} is not wired in compute.bicep"
+        assert f"'{name}'" in job_env, f"{name} is not wired in compute.bicep's jobEnv"
 
 
 def test_job_names_le_32_chars() -> None:
@@ -164,3 +133,52 @@ def test_job_names_le_32_chars() -> None:
     assert len(generic_name) <= 32
     too_long_name = f"teetime-rel-{'x' * 12}-prod-dst"
     assert len(too_long_name) > 32
+
+
+# --- MU-19: the TOML job wiring is retired -----------------------------------------------------
+
+_BICEP_DIR = COMPUTE_BICEP.parent.parent
+_WORKFLOW = _BICEP_DIR.parent.parent / ".github" / "workflows" / "azure-iac.yml"
+_MODE_FILES = (
+    COMPUTE_BICEP,
+    _BICEP_DIR / "main.bicep",
+    _BICEP_DIR / "main.bicepparam.dev",
+    _BICEP_DIR / "main.bicepparam.prod",
+    _WORKFLOW,
+)
+# Key Vault secrets (and the env vars they fed) that only the TOML path read. The tenant path
+# takes ForeUP credentials from the encrypted per-user store and skips from the tenant store.
+_TOML_ONLY_SECRETS = (
+    "MB-USERNAME",
+    "MB-PASSWORD",
+    "PLAYER1-EMAIL",
+    "PLAYER1-PHONE",
+    "PLAYER1-MB-MEMBER",
+    "TEETIME-SKIP-DATES",
+)
+
+
+def _code_lines(text: str) -> str:
+    """The text without full-line comments (`//` in Bicep, `#` in YAML): comments may still
+    tell the history, code may not carry the wiring."""
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith(("//", "#"))
+    )
+
+
+def test_no_toml_mode_remaining() -> None:
+    """MULTIUSER_PLAN §12 MU-19's named test: no mode param, no mode ternary and no TOML job
+    argument is left in the Bicep or the deploy workflow, so an ACA job can only run the tenant
+    path. (The TOML CLI itself stays for local course testing; MU-20 was dropped.)"""
+    for path in _MODE_FILES:
+        code = _code_lines(path.read_text())
+        for token in ("bookingMode", "watchMode", "BOOKING_MODE", "WATCH_MODE"):
+            assert token not in code, f"{path.name} still carries {token}"
+        assert "== 'tenant'" not in code, f"{path.name} still has a mode ternary"
+        assert "'toml'" not in code, f"{path.name} still names the toml mode"
+    compute = _code_lines(COMPUTE_BICEP.read_text())
+    assert "container.toml" not in compute, "a job still passes --config container.toml"
+    assert "'--config'" not in compute
+    for secret in _TOML_ONLY_SECRETS:
+        assert f"secrets/{secret}" not in compute, f"{secret} is still a job secret ref"
+        assert f"'{secret.replace('-', '_')}'" not in compute, f"{secret} env var still wired"

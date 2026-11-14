@@ -1090,7 +1090,7 @@ async def _tenant_plan_main(*, event_key: str) -> EventPlan:
 def tenant_migrate_cmd() -> None:
     """Run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2, MU-16a).
 
-    What the Manual `teetime-migrate-<env>` ACA job runs, started by CI on a tenant-mode deploy.
+    What the Manual `teetime-migrate-<env>` ACA job runs, started by CI on every deploy.
     Requires the durable store (TENANT_COSMOS_ENDPOINT + TENANT_COSMOS_DATABASE): connects,
     runs the ordered migration list idempotently (v1 ships none), logs what it did and exits 0;
     any failure exits non-zero.

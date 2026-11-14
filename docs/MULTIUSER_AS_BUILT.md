@@ -7,7 +7,7 @@
 Moved out of the root CLAUDE.md Status section on 2026-09-26 so every agent session stops loading
 it. Phrases such as "unwired" or "nothing calls it yet" record the state when that milestone
 merged; the tenant path runs in **dev** since MU-17 (dry-run) and in **prod** since MU-18 stage B
-(`infra/v3.0.0`, 2026-09-27). MU-2 (the shared CAPTCHA pool) and MU-5 (the tenant store) are described in the
+(`infra/v3.0.0`, 2026-09-27), and since MU-19 (2026-11-14) it is the only path the jobs can run. MU-2 (the shared CAPTCHA pool) and MU-5 (the tenant store) are described in the
 CLAUDE.md invariant bullets on `prepare_book` and on the two stores; MU-7 is `tenant/crypto.py`
 (AES-GCM with account-bound AAD).
 
@@ -35,6 +35,7 @@ CLAUDE.md invariant bullets on `prepare_book` and on the two stores; MU-7 is `te
 - [MU-16b: Adopt the TOML bot's reservations (prod-cutover seed)](#mu-16b-adopt-the-toml-bots-reservations-prod-cutover-seed)
 - [MU-17: Dev cutover](#mu-17-dev-cutover)
 - [MU-18: Prod cutover](#mu-18-prod-cutover)
+- [MU-19: Retire the TOML job wiring](#mu-19-retire-the-toml-job-wiring)
 - [MU-R1: Ranked options + per-course price (model, store, Cosmos)](#mu-r1-ranked-options--per-course-price-model-store-cosmos)
 - [MU-R2: Price cap, group floor, group collapse, cross-course upgrade](#mu-r2-price-cap-group-floor-group-collapse-cross-course-upgrade)
 - [MU-R3: Ranked booking form](#mu-r3-ranked-booking-form)
@@ -561,7 +562,8 @@ this PR changes NOTHING about what either env's ACA jobs run) select `run --conf
 .../container.toml` vs `tenant-run --event <key>`/`tenant-watch`, with every tenant-only
 secretRef/env var (`TENANT_CREDS_KEYRING`, `ACS_EMAIL_CONNECTION`, `OPERATOR_NOTIFY_EMAIL`,
 `TENANT_COSMOS_*`, `AZURE_CLIENT_ID`, `ACS_EMAIL_SENDER`) gated behind a `== 'tenant'` branch so the
-default toml mode never references a Key Vault secret the operator has not created. Dev's watch cron
+default toml mode never references a Key Vault secret the operator has not created (the mode
+params and the toml branch were removed at MU-19). Dev's watch cron
 moved to hourly (`0 * * * *`, operator directive — prod untouched at `*/10 * * * *`) via the new
 per-env `watchCron` param.
 
@@ -610,6 +612,7 @@ non-zero on any failure. `compute.bicep` gains the Manual `teetime-migrate-<env>
 only, no KV secret, 600 s, excluded from the killswitch — asserted), and `azure-iac.yml` starts and
 awaits it RIGHT AFTER deploy pass 2 when `BOOKING_MODE`/`WATCH_MODE` is `tenant` (a deviation from
 the plan's "before the jobs": pass 1 runs every job on the bootstrap image; readers accept N−1).
+Since MU-19 both the job and the step are unconditional.
 The prod-cutover seed is MU-16b (below). Known limit: `initialize()` maps a 404 to "not found", so a MISSING
 container is not detected by the migrate job (auth and endpoint failures are).
 
@@ -652,7 +655,45 @@ account, saved the Sat + Sun weekly booking and adopted the TOML bot's live rese
 **Stage B** (#257, `infra/v3.0.0`): `bookingMode`/`watchMode = 'tenant'`, so the booking jobs run
 `tenant-run --event mb0600et --wait` and the watcher `tenant-watch`, with the migrate job run by CI
 after pass 2; the operator adopted once more right after the deploy. The operator chose to cut over
-after one day of dev soak rather than the plan's two weekends. Rollback: both modes back to `toml`.
+after one day of dev soak rather than the plan's two weekends. The rollback at the time was both
+modes to `toml` again; MU-19 removed that lever.
+
+## MU-19: Retire the TOML job wiring
+
+(MULTIUSER_PLAN §11 step 9, §12; merged 2026-11-14.) The operator approved it after seven weeks of
+tenant-path prod runs (since `infra/v3.0.0`, 2026-09-27) with no rollback and the last 30 daily
+executions of both prod booking jobs Succeeded. Infra only; no `src/` behaviour changed.
+
+- `compute.bicep`: the `bookingMode` / `watchMode` params and every `== 'tenant'` ternary are
+  gone. Booking jobs always run `tenant-run --event <key> --wait --dry-run <x>`, the watch job
+  `tenant-watch --dry-run <x>`, and the Manual `teetime-migrate-<env>` job is unconditional. The
+  two secret arrays and two env arrays became one `jobSecrets` and one `jobEnv`.
+- Job secrets: the refs `MB-USERNAME`, `MB-PASSWORD`, `PLAYER1-EMAIL`, `PLAYER1-PHONE`,
+  `PLAYER1-MB-MEMBER` and `TEETIME-SKIP-DATES` (and their env vars) were dropped after checking
+  that no tenant command reads them: `tenant-run` / `tenant-watch` / `tenant-migrate` and
+  `src/teetime/tenant/**` read only `TWOCAPTCHA_API_KEY`, `TEETIME_ENV`, the keyring, the Cosmos
+  values, `AZURE_CLIENT_ID`, the ACS values and `OPERATOR_NOTIFY_EMAIL`; ForeUP credentials come
+  from the encrypted per-user store and skips from the tenant store. Kept: `TWOCAPTCHA-API-KEY`,
+  `TENANT-CREDS-KEYRING`, `ACS-EMAIL-CONNECTION`, `OPERATOR-NOTIFY-EMAIL`. The Key Vault secrets
+  themselves are untouched; the operator deletes the six unused ones by hand after the prod
+  release that carries this change.
+- `main.bicep`, both `.bicepparam` files and `azure-iac.yml` (inline params, the param-file parse
+  step, and the migrate step's `if:` gate) lost the two params.
+- Tests: `test_no_toml_mode_remaining` (the plan's named test) plus exact pins on the job args
+  and the secret list in `tests/test_compute_bicep_tenant_mode.py`;
+  `tests/test_container_config_parity.py` is re-scoped: `compute.bicep` must wire NONE of the env
+  vars `container.toml` references (it used to require all of them), while the config-shape and
+  race-knob pins stay; the stale-prod-claim doc guard now runs unconditionally and also rejects
+  a doc that offers the mode flip as a rollback.
+- **Kept on purpose:** the TOML CLI (`teetime run` / `watch --config`), `config/container.toml`,
+  the image's default `CMD`, `core/booking_day_gate.py` and `core/skip_dates.py` (MU-20 was
+  dropped; the operator uses the CLI for local course testing). No job calls them.
+- **Rollback** is no longer a param flip: revert the PR and redeploy, or redeploy the previous
+  infra tag (which still carries the mode params, set to `tenant`). Returning to the TOML jobs
+  would also need the six Key Vault secrets to still exist.
+- **Deploy prerequisite that changed:** the four job secrets are now referenced unconditionally,
+  so a NEW environment needs them (and `deployAcsEmail = true`, which writes
+  `ACS-EMAIL-CONNECTION`) before its first deploy. Both existing envs already have them.
 
 ## MU-R1: Ranked options + per-course price (model, store, Cosmos)
 

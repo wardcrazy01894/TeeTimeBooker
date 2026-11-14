@@ -23,13 +23,13 @@ now run as ACA Jobs defined in `compute.bicep`.
 ## Bicep location
 
 All modules are implemented (M-azure-T1 to T7, the cost killswitch, and MU-15a/15b/16a/17 for the
-multi-user site). The killswitch design record is
+multi-user site; MU-19 removed the TOML job wiring on 2026-11-14). The killswitch design record is
 [`docs/plans/COST_KILLSWITCH_PLAN.md`](../docs/plans/COST_KILLSWITCH_PLAN.md).
 
 | Param | Dev | Prod |
 |-------|-----|------|
 | `dryRun` | `true` | `false` |
-| `bookingMode` / `watchMode` | `tenant` (MU-17) | `tenant` (MU-18 stage B) |
+| job path | tenant only (no param since MU-19; `bookingMode` / `watchMode` are gone) | tenant only |
 | `watchCron` | `0 * * * *` | `*/10 * * * *` |
 | `tenantCosmosEndpoint` | shared Cosmos account | shared Cosmos account (MU-18 stage A) |
 | `deployWebApp` / `deployAcsEmail` | `true` | `true` (MU-18 stage A) |
@@ -61,12 +61,13 @@ infra/
                              #   (v1: 2 jobs, DST crons, legacy teetime-job-<env>-edt/-est names)
                              #   + 1× watch ACA Job (watchCron param: prod */10 * * * *, dev hourly)
                              #   all jobs: --dry-run passed via dryRun param
-                             #   bookingMode/watchMode params (MU-15a; dev 'tenant' since MU-17,
-                             #   prod 'tenant' since MU-18 stage B): select `run --config .../container.toml` vs `tenant-run --event
-                             #   <key>`/`tenant-watch`; tenant-only secretRefs/env vars are added
-                             #   ONLY inside a mode=='tenant' branch, so the default toml mode
-                             #   never references a KV secret the operator has not created.
-                             #   + (MU-16a, tenant mode only) the Manual teetime-migrate-<env>
+                             #   ONE path since MU-19 (2026-11-14): booking jobs run `tenant-run
+                             #   --event <key> --wait`, the watch job `tenant-watch`. No mode
+                             #   param; job secrets are TWOCAPTCHA-API-KEY, TENANT-CREDS-KEYRING,
+                             #   ACS-EMAIL-CONNECTION, OPERATOR-NOTIFY-EMAIL (all must exist
+                             #   before a deploy). The single-user MB-*/PLAYER1-*/
+                             #   TEETIME-SKIP-DATES refs are gone; no job can run the TOML CLI.
+                             #   + (MU-16a) the Manual teetime-migrate-<env>
                              #   job (`tenant-migrate`, no KV secret, NOT a killswitch target);
                              #   azure-iac.yml starts + awaits it right after deploy pass 2.
       webapp.bicep           # MU-15a: Container App teetime-web-<env> (`teetime web`),

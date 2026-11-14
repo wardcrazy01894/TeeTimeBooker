@@ -1,6 +1,7 @@
 """MU-16a: the Manual-trigger `teetime-migrate-<env>` ACA job (compute.bicep), its exclusion
-from the cost killswitch, and the CI step that starts and awaits it (azure-iac.yml) — only in
-tenant mode, so today's toml deploys are untouched (MULTIUSER_PLAN §10.1/§10.2/§10.3, §12 MU-16).
+from the cost killswitch, and the CI step that starts and awaits it (azure-iac.yml)
+(MULTIUSER_PLAN §10.1/§10.2/§10.3, §12 MU-16). Both were tenant-mode-only until MU-19 removed
+the modes (2026-11-14); they are unconditional now.
 
 Static text assertions, like the other bicep/workflow tests (bicep is compile-validated by CI's
 `az bicep build`; the workflow cannot run here).
@@ -46,11 +47,10 @@ def test_migrate_job_name_fits_the_aca_limit(compute: str) -> None:
         assert len(f"teetime-migrate-{env}") <= 32
 
 
-def test_migrate_job_deployed_only_in_tenant_mode(migrate_block: str) -> None:
-    assert (
-        "resource migrateJob 'Microsoft.App/jobs@2024-03-01' = "
-        "if (bookingMode == 'tenant' || watchMode == 'tenant')"
-    ) in migrate_block
+def test_migrate_job_is_deployed_unconditionally(migrate_block: str) -> None:
+    """MU-19: no mode is left to gate it on, and every deploy's workflow step starts it, so a
+    conditional resource would fail the deploy whenever its condition was false."""
+    assert migrate_block.startswith("resource migrateJob 'Microsoft.App/jobs@2024-03-01' = {\n")
 
 
 def test_migrate_job_is_manual_trigger_only(migrate_block: str) -> None:
@@ -90,14 +90,15 @@ def _deploy_jobs(workflow: str) -> list[str]:
     ]
 
 
-def test_workflow_runs_migrate_after_deploy_pass_2_in_tenant_mode_only(workflow: str) -> None:
+def test_workflow_runs_migrate_after_deploy_pass_2_on_every_deploy(workflow: str) -> None:
     """MULTIUSER_PLAN §12 names `test_workflow_runs_migrate_before_jobs`. With the two-pass
     deploy (pass 1 = public bootstrap image for EVERY job, pass 2 = the real image) the migrate
     job only exists on the real image once pass 2 has ALSO switched the booking/watch jobs and
     the web, so strictly-before is not achievable without a third pass. The migration runs
     immediately after pass 2 instead, which is safe because readers accept schemaVersion N and
     N-1 (§10.2). This pins what actually ships: per deploy job, exactly one migrate step, AFTER
-    pass 2, gated on a tenant mode, starting the env's migrate job and awaiting its result."""
+    pass 2, with no `if:` gate (MU-19: the job always exists), starting the env's migrate job
+    and awaiting its result."""
     jobs = _deploy_jobs(workflow)
     assert len(jobs) == 2
     for job in jobs:
@@ -108,15 +109,8 @@ def test_workflow_runs_migrate_after_deploy_pass_2_in_tenant_mode_only(workflow:
         # the migrate step comes after the LAST deploy command
         assert migrate > job.rindex(_DEPLOY)
         step = job[migrate : job.index("- name:", migrate + 1)]
-        assert "if: env.BOOKING_MODE == 'tenant' || env.WATCH_MODE == 'tenant'" in step
+        assert step.splitlines()[1].strip() == "run: |", "the migrate step must not be gated"
         assert '"teetime-migrate-${ENVNAME}"' in step
         assert "job execution show" in step
         assert "Succeeded" in step
         assert "exit 1" in step
-
-
-def test_workflow_parses_the_modes_before_the_migrate_gate(workflow: str) -> None:
-    # The gate reads BOOKING_MODE / WATCH_MODE, which the param-file parse step exports.
-    for job in _deploy_jobs(workflow):
-        assert job.index('"bookingMode": "BOOKING_MODE"') < job.index("Run tenant migrations")
-        assert job.index('"watchMode": "WATCH_MODE"') < job.index("Run tenant migrations")

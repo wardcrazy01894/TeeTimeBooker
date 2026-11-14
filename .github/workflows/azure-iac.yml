@@ -90,7 +90,7 @@ jobs:
       - name: Bicep build (lint) — advisory (real gate is ci.yml / bicep lint)
         run: az bicep build --file infra/bicep/main.bicep
       # The what-if that used to run here passed only the old core params and none of the
-      # param-file values the deploy jobs parse (bookingMode, deployWebApp, emailCustomDomain*,
+      # param-file values the deploy jobs parse (watchCron, deployWebApp, emailCustomDomain*,
       # githubIssuesRepo, ...), so it previewed template defaults, not what dev deploys: a noisy
       # diff nobody could act on. Removed (full-repo scan 2026-09-30); run a what-if by hand with
       # the deploy job's parameters when a preview matters (read-only, agents may run it).
@@ -161,7 +161,7 @@ jobs:
           # tests/test_azure_iac_killswitch_latch.py pins that each declared param is passed.
           python3 - "${PARAM_FILE}" >> "$GITHUB_ENV" <<'PY'
           import re, sys
-          names = {"bookingMode": "BOOKING_MODE", "watchMode": "WATCH_MODE", "watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL", "webMinReplicas": "WEB_MIN_REPLICAS", "webCustomDomain": "WEB_CUSTOM_DOMAIN", "emailCustomDomain": "EMAIL_CUSTOM_DOMAIN", "emailCustomDomainLinked": "EMAIL_CUSTOM_DOMAIN_LINKED", "githubIssuesRepo": "GITHUB_ISSUES_REPO"}
+          names = {"watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL", "webMinReplicas": "WEB_MIN_REPLICAS", "webCustomDomain": "WEB_CUSTOM_DOMAIN", "emailCustomDomain": "EMAIL_CUSTOM_DOMAIN", "emailCustomDomainLinked": "EMAIL_CUSTOM_DOMAIN_LINKED", "githubIssuesRepo": "GITHUB_ISSUES_REPO"}
           text = open(sys.argv[1]).read()
           for name, env in names.items():
               m = re.search(r"^param " + name + r"\s*=\s*(.+?)\s*$", text, re.M)
@@ -221,8 +221,6 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          killswitchFired="${KILLSWITCH_FIRED}" \
                          enableSchedules="${ENABLE_SCHEDULES}" \
-                         bookingMode="${BOOKING_MODE}" \
-                         watchMode="${WATCH_MODE}" \
                          watchCron="${WATCH_CRON}" \
                          tenantCosmosEndpoint="${TENANT_COSMOS_ENDPOINT}" \
                          acsEmailSender="${ACS_EMAIL_SENDER}" \
@@ -257,8 +255,6 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          killswitchFired="${KILLSWITCH_FIRED}" \
                          enableSchedules="${ENABLE_SCHEDULES}" \
-                         bookingMode="${BOOKING_MODE}" \
-                         watchMode="${WATCH_MODE}" \
                          watchCron="${WATCH_CRON}" \
                          tenantCosmosEndpoint="${TENANT_COSMOS_ENDPOINT}" \
                          acsEmailSender="${ACS_EMAIL_SENDER}" \
@@ -275,15 +271,14 @@ jobs:
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime-dev:${{ github.sha }}"
-      # MU-16a: run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2) — ONLY when this env
-      # runs a tenant mode, so today's toml deploys are untouched (compute.bicep creates the
-      # Manual `teetime-migrate-<env>` job only then). It runs right AFTER pass 2, not before the
+      # MU-16a: run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2) on every deploy
+      # (unconditional since MU-19: the jobs run only the tenant path, and compute.bicep always
+      # creates the Manual `teetime-migrate-<env>` job). It runs right AFTER pass 2, not before the
       # jobs switch image: pass 1 (when it runs, on a new env) puts EVERY job on the bootstrap image,
       # so the migration can only run the real code once pass 2 has also switched the booking/watch
       # jobs and the web. Safe because readers accept schemaVersion N and N-1 (§10.2), and v1 ships
       # no migration at all. A failed or timed-out execution fails the deploy job.
-      - name: Run tenant migrations (tenant mode only)
-        if: env.BOOKING_MODE == 'tenant' || env.WATCH_MODE == 'tenant'
+      - name: Run tenant migrations
         run: |
           JOB="teetime-migrate-${ENVNAME}"
           # A transient Azure API error (2026-09-29: "Connection reset by peer" on the start
@@ -405,7 +400,7 @@ jobs:
           # tests/test_azure_iac_killswitch_latch.py pins that each declared param is passed.
           python3 - "${PARAM_FILE}" >> "$GITHUB_ENV" <<'PY'
           import re, sys
-          names = {"bookingMode": "BOOKING_MODE", "watchMode": "WATCH_MODE", "watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL", "webMinReplicas": "WEB_MIN_REPLICAS", "webCustomDomain": "WEB_CUSTOM_DOMAIN", "emailCustomDomain": "EMAIL_CUSTOM_DOMAIN", "emailCustomDomainLinked": "EMAIL_CUSTOM_DOMAIN_LINKED", "githubIssuesRepo": "GITHUB_ISSUES_REPO"}
+          names = {"watchCron": "WATCH_CRON", "tenantCosmosEndpoint": "TENANT_COSMOS_ENDPOINT", "acsEmailSender": "ACS_EMAIL_SENDER", "deployWebApp": "DEPLOY_WEB_APP", "deployAcsEmail": "DEPLOY_ACS_EMAIL", "webPublicBaseUrl": "WEB_PUBLIC_BASE_URL", "operatorEmail": "OPERATOR_EMAIL", "webMinReplicas": "WEB_MIN_REPLICAS", "webCustomDomain": "WEB_CUSTOM_DOMAIN", "emailCustomDomain": "EMAIL_CUSTOM_DOMAIN", "emailCustomDomainLinked": "EMAIL_CUSTOM_DOMAIN_LINKED", "githubIssuesRepo": "GITHUB_ISSUES_REPO"}
           text = open(sys.argv[1]).read()
           for name, env in names.items():
               m = re.search(r"^param " + name + r"\s*=\s*(.+?)\s*$", text, re.M)
@@ -465,8 +460,6 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          killswitchFired="${KILLSWITCH_FIRED}" \
                          enableSchedules="${ENABLE_SCHEDULES}" \
-                         bookingMode="${BOOKING_MODE}" \
-                         watchMode="${WATCH_MODE}" \
                          watchCron="${WATCH_CRON}" \
                          tenantCosmosEndpoint="${TENANT_COSMOS_ENDPOINT}" \
                          acsEmailSender="${ACS_EMAIL_SENDER}" \
@@ -498,8 +491,6 @@ jobs:
                          killswitchRbacRoleId="${KILLSWITCH_RBAC_ROLE_ID}" \
                          killswitchFired="${KILLSWITCH_FIRED}" \
                          enableSchedules="${ENABLE_SCHEDULES}" \
-                         bookingMode="${BOOKING_MODE}" \
-                         watchMode="${WATCH_MODE}" \
                          watchCron="${WATCH_CRON}" \
                          tenantCosmosEndpoint="${TENANT_COSMOS_ENDPOINT}" \
                          acsEmailSender="${ACS_EMAIL_SENDER}" \
@@ -516,15 +507,14 @@ jobs:
                          sharedAcrResourceGroup="${SHARED_ACR_RG}" \
                          usePublicBootstrapImage=false \
                          containerImage="${ACR_LOGIN_SERVER}/teetime:${{ github.sha }}"
-      # MU-16a: run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2) — ONLY when this env
-      # runs a tenant mode, so today's toml deploys are untouched (compute.bicep creates the
-      # Manual `teetime-migrate-<env>` job only then). It runs right AFTER pass 2, not before the
+      # MU-16a: run the tenant data migrations (MULTIUSER_PLAN §10.1/§10.2) on every deploy
+      # (unconditional since MU-19: the jobs run only the tenant path, and compute.bicep always
+      # creates the Manual `teetime-migrate-<env>` job). It runs right AFTER pass 2, not before the
       # jobs switch image: pass 1 (when it runs, on a new env) puts EVERY job on the bootstrap image,
       # so the migration can only run the real code once pass 2 has also switched the booking/watch
       # jobs and the web. Safe because readers accept schemaVersion N and N-1 (§10.2), and v1 ships
       # no migration at all. A failed or timed-out execution fails the deploy job.
-      - name: Run tenant migrations (tenant mode only)
-        if: env.BOOKING_MODE == 'tenant' || env.WATCH_MODE == 'tenant'
+      - name: Run tenant migrations
         run: |
           JOB="teetime-migrate-${ENVNAME}"
           # A transient Azure API error (2026-09-29: "Connection reset by peer" on the start
