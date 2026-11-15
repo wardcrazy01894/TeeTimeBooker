@@ -62,7 +62,7 @@ Two paths exist side by side:
 
 | | |
 |---|---|
-| Latest infra tag | latest infra tag `infra/v3.18.0` (2026-11-06: authlib 1.9.5 for three GitHub advisories in the web sign-in library, setup-uv 10.3.3, no booking-behaviour change); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Latest infra tag | latest infra tag `infra/v3.19.0` (2026-11-14: the footer credit line and small dependency bumps, no booking-behaviour change; the Python 3.15 image and MU-19 are on `main` and in dev, NOT yet in a prod tag); history in [docs/RELEASES.md](./docs/RELEASES.md) |
 | Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
 | Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout; `tenant-run --event mb0600et --wait` since MU-18 stage B (was `run --wait`) |
 | Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout; `tenant-watch` since MU-18 stage B |
