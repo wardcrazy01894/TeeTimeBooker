@@ -62,7 +62,7 @@ Two paths exist side by side:
 
 | | |
 |---|---|
-| Latest infra tag | latest infra tag `infra/v3.19.0` (2026-11-14: the footer credit line and small dependency bumps, no booking-behaviour change; the Python 3.15 image and MU-19 are on `main` and in dev, NOT yet in a prod tag); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Latest infra tag | latest infra tag `infra/v3.20.0` (2026-11-15: the Python 3.15 image and MU-19, the jobs run only the tenant path with four Key Vault secrets; no booking-behaviour change); history in [docs/RELEASES.md](./docs/RELEASES.md) |
 | Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
 | Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout; `tenant-run --event mb0600et --wait` since MU-18 stage B (was `run --wait`) |
 | Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout; `tenant-watch` since MU-18 stage B |
@@ -100,8 +100,8 @@ Every milestone MU-1 … MU-19 and MU-R1 … R3 is done (prod cutover `infra/v3.
 **MU-19** (retire the TOML job wiring) merged 2026-11-14 after seven weeks of tenant-path prod
 runs with no rollback: `compute.bicep` has no mode left, the jobs read four Key Vault secrets
 (`TWOCAPTCHA-API-KEY`, `TENANT-CREDS-KEYRING`, `ACS-EMAIL-CONNECTION`, `OPERATOR-NOTIFY-EMAIL`),
-and the six single-user secrets are unreferenced (the operator deletes them after the prod
-release that carries MU-19). **MU-20** (remove the TOML CLI) was dropped: the operator keeps it
+and the six single-user secrets are unreferenced in both envs since `infra/v3.20.0`
+(2026-11-15; the operator deletes them by hand). **MU-20** (remove the TOML CLI) was dropped: the operator keeps it
 (MULTIUSER_PLAN §13 Q6).
 
 ### Cut from scope

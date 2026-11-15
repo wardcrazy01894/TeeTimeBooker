@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.20.0: 2026-11-15 (`main`@`573613c`)](#infrav3200-2026-11-15-main573613c)
 - [infra/v3.19.0: 2026-11-14 (`main`@`64d7b8b`)](#infrav3190-2026-11-14-main64d7b8b)
 - [infra/v3.18.0: 2026-11-06 (`main`@`b8b76b9`)](#infrav3180-2026-11-06-mainb8b76b9)
 - [infra/v3.17.0: 2026-11-04 (`main`@`1fa6ab5`)](#infrav3170-2026-11-04-main1fa6ab5)
@@ -58,6 +59,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.20.0` | 2026-11-15 | `573613c` | unchanged (interpreter + job wiring) | Python 3.15 image, CI and tooling floor (pip-api 0.0.35, markupsafe 3.0.4); MU-19: jobs run only the tenant path, six single-user secret refs dropped (#359, #363) |
 | `infra/v3.19.0` | 2026-11-14 | `64d7b8b` | unchanged (web footer + patch-level deps) | Footer credit line; pydantic 2.14.3, click 8.5.1, fastapi 0.162.2, opentelemetry-api 1.45.2; ruff 0.17.4 (#358, #360, #361, #362) |
 | `infra/v3.18.0` | 2026-11-06 | `b8b76b9` | unchanged (web sign-in dep + CI action) | authlib 1.9.2→1.9.5 for GHSA-gp2m-377p-m4j3, GHSA-9qr6-8289-9j56 (both authorization-server side, not exercised) and GHSA-f7j6-p4qx-gq99 (JOSE HMAC key handling, defence in depth for ID-token verification); setup-uv 10.3.3 (#354, #355, #356) |
 | `infra/v3.17.0` | 2026-11-04 | `1fa6ab5` | unchanged (web deps + dev tooling + CI actions) | Dependency sweep: joserfc 1.8.0 (CVE-2026-119284, web sign-in chain) + msgpack 1.2.4 (CVE-2026-114613, dev-only); fastapi 0.162.0, authlib 1.9.2, pydantic 2.14.2, python-multipart 0.0.33, azure-identity 1.27.0; pytest 9.2.0, ruff 0.17.3, mypy 2.4.1; setup-uv 10.3.2, setup-python 7.1.0 (#345, #346, #350, #351, #352) |
@@ -96,6 +98,45 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.20.0: 2026-11-15 (`main`@`573613c`)
+
+The two changes held out of `infra/v3.19.0` (#359, #363). **No booking-behaviour change**: the
+tenant commands and their arguments are what prod already ran.
+
+- **Python 3.15** (#359): the image moves `python:3.14-slim` → `3.15-slim` (digest-pinned), and CI's
+  setup-python, `requires-python`, ruff's target and mypy's version move with it so every
+  environment runs one interpreter. Two lock bumps made 3.15 work: `pip-api` 0.0.34→0.0.35
+  (0.0.34's vendored pyparsing imports `sre_constants`, gone in 3.15, so `pip-audit` crashed on
+  import; dev-only) and `markupsafe` 3.0.3→3.0.4 (3.0.3 has no cp315 wheel, so the slim image would
+  have built it from source and used the pure-Python escaper; found by the PR's reviewer).
+- **MU-19** (#363): `compute.bicep` has no `bookingMode` / `watchMode` left. Booking jobs always run
+  `tenant-run --event mb0600et --wait`, the watch job `tenant-watch`, the migrate job is
+  unconditional, and the jobs read four Key Vault secrets (`TWOCAPTCHA-API-KEY`,
+  `TENANT-CREDS-KEYRING`, `ACS-EMAIL-CONNECTION`, `OPERATOR-NOTIFY-EMAIL`). The refs to
+  `MB-USERNAME`, `MB-PASSWORD`, `PLAYER1-EMAIL`, `PLAYER1-PHONE`, `PLAYER1-MB-MEMBER` and
+  `TEETIME-SKIP-DATES` are gone. Operator approved 2026-11-14 after seven weeks of tenant-path prod
+  runs with no rollback. Rollback from here is a redeploy of the previous tag; `infra/v3.19.0` and
+  older still reference the six secrets, so they must exist (or be recovered from soft delete)
+  before such a redeploy.
+
+**Rehearsal:** dev ran `573613c` from the evening of 2026-11-14: the 05:50 ET booking job on
+2026-11-15 ran its full wait and Succeeded, as did every hourly watch run.
+
+**Day of week:** MULTIUSER_PLAN §11 says mode flips deploy Monday–Thursday. This went out on a
+Sunday afternoon at the operator's direction, after that morning's drop, which leaves six days
+before the next one (Saturday 2026-11-21).
+
+**Deploy:** tag pushed 14:21 ET (the pre-push gate passed on push); approved by Claude on the
+operator's "Can yo utake care of all of those. I give you permission for them all" (first approval
+call went through); done 14:27 ET. **Verified:** both booking jobs, the watch job and the migrate
+job run `teetime:573613c…` with the tenant arguments and exactly the four secrets above;
+`teetime-web-prod`'s ready revision (`--0000028`) is on the same image, Running; `/healthz` 200 on
+https://spicyteetimebooker.com; the 14:30 ET watch run (first on the new image, `-29912850`)
+Succeeded. No web app or job in either environment references the six retired secrets.
+
+**Not done by this release:** the six secrets still sit in both vaults. The deploy guard blocks an
+agent from deleting them, so that stays an operator step (BACKLOG).
 
 ## infra/v3.19.0: 2026-11-14 (`main`@`64d7b8b`)
 

@@ -675,8 +675,8 @@ executions of both prod booking jobs Succeeded. Infra only; no `src/` behaviour 
   values, `AZURE_CLIENT_ID`, the ACS values and `OPERATOR_NOTIFY_EMAIL`; ForeUP credentials come
   from the encrypted per-user store and skips from the tenant store. Kept: `TWOCAPTCHA-API-KEY`,
   `TENANT-CREDS-KEYRING`, `ACS-EMAIL-CONNECTION`, `OPERATOR-NOTIFY-EMAIL`. The Key Vault secrets
-  themselves are untouched; the operator deletes the six unused ones by hand after the prod
-  release that carries this change.
+  themselves are untouched; the operator deletes the six unused ones by hand now that the change
+  is in prod (`infra/v3.20.0`, 2026-11-15).
 - `main.bicep`, both `.bicepparam` files and `azure-iac.yml` (inline params, the param-file parse
   step, and the migrate step's `if:` gate) lost the two params.
 - Tests: `test_no_toml_mode_remaining` (the plan's named test) plus exact pins on the job args
