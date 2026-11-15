@@ -452,9 +452,10 @@ job-CREATE time):**
 | `GITHUB-ISSUES-TOKEN` | Fine-grained GitHub token, Issues read+write on `wardcrazy01894/TeeTimeBooker` only (created by the operator in PROD's vault, 2026-09-29) | Web env var `GITHUB_ISSUES_TOKEN`, only where `githubIssuesRepo` is set (prod): site reports become anonymized issues. Not a job secret |
 
 **Retired single-user secrets (MU-19, 2026-11-14).** The TOML jobs read these; no job references
-them any more, and no tenant command reads the matching env var. They may still exist in the
-vaults (Bicep never declared them): the operator deletes them by hand, after the prod release
-that carries MU-19. A local `teetime run|watch --config` still reads the env vars from your shell.
+them any more, and no tenant command reads the matching env var. The operator deleted
+them from both vaults on 2026-11-15, after `infra/v3.20.0` (Bicep never declared them; soft
+delete, recoverable for 90 days in prod). Every tag before `infra/v3.20.0` references them at
+job-create time, so a redeploy of one needs them recovered first. A local `teetime run|watch --config` still reads the env vars from your shell.
 
 | Secret name | Contained | Was |
 |---|---|---|
@@ -1397,8 +1398,8 @@ investigate, set `enableSchedules = false` and tag (the jobs become Manual-trigg
 Going all the way back to the TOML jobs means deploying a commit from before MU-19 (its param
 files still set both modes, to `tenant`; change them to `toml` on a branch off that commit) AND
 needs the six single-user Key Vault secrets (§7.1) to still exist, because that template
-references them at job-create time. Once the operator deletes those secrets, that road is closed
-without re-creating them. The tenant path's bookings are visible to the TOML pre-book guard, so
+references them at job-create time. The operator deleted those secrets on 2026-11-15, so that
+road is closed without recovering or re-creating them. The tenant path's bookings are visible to the TOML pre-book guard, so
 such a rollback cannot double-book; diff the web's rules and one-off dates against
 `container.toml` first (TOML can express only the Sat/Sun windows).
 

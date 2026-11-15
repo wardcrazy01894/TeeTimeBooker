@@ -675,8 +675,8 @@ executions of both prod booking jobs Succeeded. Infra only; no `src/` behaviour 
   values, `AZURE_CLIENT_ID`, the ACS values and `OPERATOR_NOTIFY_EMAIL`; ForeUP credentials come
   from the encrypted per-user store and skips from the tenant store. Kept: `TWOCAPTCHA-API-KEY`,
   `TENANT-CREDS-KEYRING`, `ACS-EMAIL-CONNECTION`, `OPERATOR-NOTIFY-EMAIL`. The Key Vault secrets
-  themselves are untouched; the operator deletes the six unused ones by hand now that the change
-  is in prod (`infra/v3.20.0`, 2026-11-15).
+  were untouched by the PR; the operator deleted the six unused ones from both vaults on
+  2026-11-15, after the change reached prod (`infra/v3.20.0`).
 - `main.bicep`, both `.bicepparam` files and `azure-iac.yml` (inline params, the param-file parse
   step, and the migrate step's `if:` gate) lost the two params.
 - Tests: `test_no_toml_mode_remaining` (the plan's named test) plus exact pins on the job args
@@ -689,8 +689,9 @@ executions of both prod booking jobs Succeeded. Infra only; no `src/` behaviour 
   the image's default `CMD`, `core/booking_day_gate.py` and `core/skip_dates.py` (MU-20 was
   dropped; the operator uses the CLI for local course testing). No job calls them.
 - **Rollback** is no longer a param flip: revert the PR and redeploy, or redeploy the previous
-  infra tag (which still carries the mode params, set to `tenant`). Returning to the TOML jobs
-  would also need the six Key Vault secrets to still exist.
+  infra tag (which still carries the mode params, set to `tenant`). Every tag before
+  `infra/v3.20.0` references the six single-user secrets at job-create time, in either mode, so
+  since their deletion (2026-11-15) such a redeploy first needs them recovered from soft delete.
 - **Deploy prerequisite that changed:** the four job secrets are now referenced unconditionally,
   so a NEW environment needs them (and `deployAcsEmail = true`, which writes
   `ACS-EMAIL-CONNECTION`) before its first deploy. Both existing envs already have them.

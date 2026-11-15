@@ -135,8 +135,9 @@ job run `teetime:573613c…` with the tenant arguments and exactly the four secr
 https://spicyteetimebooker.com; the 14:30 ET watch run (first on the new image, `-29912850`)
 Succeeded. No web app or job in either environment references the six retired secrets.
 
-**Not done by this release:** the six secrets still sit in both vaults. The deploy guard blocks an
-agent from deleting them, so that stays an operator step (BACKLOG).
+**Secret cleanup (same afternoon):** the deploy guard blocks an agent from deleting Key Vault
+secrets, so the operator deleted the six from the dev vault and then the prod vault at about
+14:48 ET (soft delete). A redeploy of `infra/v3.19.0` or older now needs them recovered first.
 
 ## infra/v3.19.0: 2026-11-14 (`main`@`64d7b8b`)
 

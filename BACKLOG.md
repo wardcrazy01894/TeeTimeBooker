@@ -86,9 +86,8 @@ delete it here when it ships.
 - **Multi-user hosted site** (BYO ForeUP accounts, rules/dates/skips, per-user email):
   RATIFIED 2026-09-25 in [MULTIUSER_PLAN.md](./MULTIUSER_PLAN.md) and built through MU-19 (live in
   prod since `infra/v3.0.0`, and in dev, dry-run). The TOML job wiring was retired at MU-19
-  (2026-11-14; MU-20 is dropped, the TOML CLI stays). Operator follow-up now that MU-19 is in prod
-  (`infra/v3.20.0`, 2026-11-15): delete the six unused Key Vault secrets (`MB-USERNAME`, `MB-PASSWORD`,
-  `PLAYER1-EMAIL`, `PLAYER1-PHONE`, `PLAYER1-MB-MEMBER`, `TEETIME-SKIP-DATES`) from both vaults. Store: Cosmos DB free tier (MULTIUSER_PLAN §10.2).
+  (2026-11-14, in prod since `infra/v3.20.0`; MU-20 is dropped, the TOML CLI stays), and the
+  operator deleted the six unused Key Vault secrets from both vaults on 2026-11-15. Store: Cosmos DB free tier (MULTIUSER_PLAN §10.2).
 
 ---
 
