@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.19.0: 2026-11-14 (`main`@`64d7b8b`)](#infrav3190-2026-11-14-main64d7b8b)
 - [infra/v3.18.0: 2026-11-06 (`main`@`b8b76b9`)](#infrav3180-2026-11-06-mainb8b76b9)
 - [infra/v3.17.0: 2026-11-04 (`main`@`1fa6ab5`)](#infrav3170-2026-11-04-main1fa6ab5)
 - [infra/v3.16.0: 2026-10-24 (`main`@`441c69e`)](#infrav3160-2026-10-24-main441c69e)
@@ -57,6 +58,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.19.0` | 2026-11-14 | `64d7b8b` | unchanged (web footer + patch-level deps) | Footer credit line; pydantic 2.14.3, click 8.5.1, fastapi 0.162.2, opentelemetry-api 1.45.2; ruff 0.17.4 (#358, #360, #361, #362) |
 | `infra/v3.18.0` | 2026-11-06 | `b8b76b9` | unchanged (web sign-in dep + CI action) | authlib 1.9.2→1.9.5 for GHSA-gp2m-377p-m4j3, GHSA-9qr6-8289-9j56 (both authorization-server side, not exercised) and GHSA-f7j6-p4qx-gq99 (JOSE HMAC key handling, defence in depth for ID-token verification); setup-uv 10.3.3 (#354, #355, #356) |
 | `infra/v3.17.0` | 2026-11-04 | `1fa6ab5` | unchanged (web deps + dev tooling + CI actions) | Dependency sweep: joserfc 1.8.0 (CVE-2026-119284, web sign-in chain) + msgpack 1.2.4 (CVE-2026-114613, dev-only); fastapi 0.162.0, authlib 1.9.2, pydantic 2.14.2, python-multipart 0.0.33, azure-identity 1.27.0; pytest 9.2.0, ruff 0.17.3, mypy 2.4.1; setup-uv 10.3.2, setup-python 7.1.0 (#345, #346, #350, #351, #352) |
 | `infra/v3.16.0` | 2026-10-24 | `441c69e` | unchanged (web deps + dev tooling) | Dependency sweep: fastapi 0.151.0 + authlib 1.9.1 (web only); filelock 4.2.4 for three same-day CVEs (dev-only, `pip-audit`'s cache); ruff 0.17.1 (#338, #339, #342) |
@@ -94,6 +96,30 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.19.0: 2026-11-14 (`main`@`64d7b8b`)
+
+A small catch-up release (#358, #360, #361, #362). **No booking-behaviour change.**
+
+- **Web footer** (#358): the "Spicy Al" credit line on every page.
+- **Runtime dependencies** (#360, #362, Dependabot): `pydantic` 2.14.2→2.14.3, `click` 8.5.0→8.5.1,
+  `fastapi` 0.162.0→0.162.2, `opentelemetry-api` 1.45.1→1.45.2. All patch releases; none is a
+  security fix.
+- **Dev tooling** (#361): `ruff` 0.17.3→0.17.4. Not in the image.
+
+**Deliberately NOT in this tag.** The tag sits on `64d7b8b`, two commits behind `main` at release
+time. The Python 3.15 move (#359: image, CI, `requires-python`, plus `pip-api` 0.0.35 and
+`markupsafe` 3.0.4 in the lock) and MU-19 (#363: the TOML job wiring removed from the Bicep) merged
+the same evening and run in dev only. They wait for dev to rehearse an 05:50 ET drop on the new
+interpreter, and ship in a later tag on a weekday. Until that tag, prod's jobs still carry the
+`bookingMode` / `watchMode` wiring and the six single-user secret refs that `main` no longer has.
+
+**Deploy:** dev deployed `64d7b8b` first (auto, 18:14 ET); tag pushed 18:53 ET (the pre-push
+gate passed on push: ruff, format, mypy, tests, `pip-audit` clean); approved by Claude on the
+operator's "Can you take care of all these things?" (first approval call went through); done 19:00 ET.
+**Verified:** both booking jobs, the watch job and the migrate job run `teetime:64d7b8b…`;
+`teetime-web-prod`'s ready revision (`--0000027`) is on the same image, Running; `/healthz` 200 on https://spicyteetimebooker.com; the 19:00 ET watch run
+(first on the new image) Succeeded.
 
 ## infra/v3.18.0: 2026-11-06 (`main`@`b8b76b9`)
 
