@@ -9,8 +9,8 @@
 //   TWOCAPTCHA-API-KEY, TENANT-CREDS-KEYRING, OPERATOR-NOTIFY-EMAIL, and ACS-EMAIL-CONNECTION
 //   (written by email.bicep). The web app's secrets are listed in webapp.bicep.
 //   Since MU-19 (2026-11-14) no job reads the single-user TOML secrets MB-USERNAME, MB-PASSWORD,
-//   PLAYER1-EMAIL, PLAYER1-PHONE, PLAYER1-MB-MEMBER or TEETIME-SKIP-DATES. They may still sit in
-//   the vault (this module never declared them); the operator deletes them by hand.
+//   PLAYER1-EMAIL, PLAYER1-PHONE, PLAYER1-MB-MEMBER or TEETIME-SKIP-DATES. This module never
+//   declared them; the operator deleted them from both vaults on 2026-11-15.
 //
 // NOTE: the bot makes no authenticated Azure SDK calls at runtime (state is
 // in-process; no Blob Storage), so no storage connection string or account name

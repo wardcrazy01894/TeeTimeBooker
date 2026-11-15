@@ -100,8 +100,8 @@ Every milestone MU-1 … MU-19 and MU-R1 … R3 is done (prod cutover `infra/v3.
 **MU-19** (retire the TOML job wiring) merged 2026-11-14 after seven weeks of tenant-path prod
 runs with no rollback: `compute.bicep` has no mode left, the jobs read four Key Vault secrets
 (`TWOCAPTCHA-API-KEY`, `TENANT-CREDS-KEYRING`, `ACS-EMAIL-CONNECTION`, `OPERATOR-NOTIFY-EMAIL`),
-and the six single-user secrets are unreferenced in both envs since `infra/v3.20.0`
-(2026-11-15; the operator deletes them by hand). **MU-20** (remove the TOML CLI) was dropped: the operator keeps it
+and the six single-user secrets were deleted from both vaults on 2026-11-15, after
+`infra/v3.20.0` (soft delete; a redeploy of `infra/v3.19.0` or older needs them recovered first). **MU-20** (remove the TOML CLI) was dropped: the operator keeps it
 (MULTIUSER_PLAN §13 Q6).
 
 ### Cut from scope
