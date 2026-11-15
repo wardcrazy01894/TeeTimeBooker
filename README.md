@@ -38,12 +38,12 @@ course login, pick the days and times you want to play.
 ## Status
 
 > **Prod is live** (`dryRun=false`) on the multi-user tenant path at the
-> latest infra tag `infra/v3.19.0` (2026-11-14; the site is https://spicyteetimebooker.com; the tenant path since MU-18 stage B, `infra/v3.0.0`): tenant booker and watcher over Cosmos, the invite-only
+> latest infra tag `infra/v3.20.0` (2026-11-15; the site is https://spicyteetimebooker.com; the tenant path since MU-18 stage B, `infra/v3.0.0`): tenant booker and watcher over Cosmos, the invite-only
 > web app, and ACS email. Release history: [docs/RELEASES.md](./docs/RELEASES.md).
 >
 > **Dev** runs the same tenant path in dry-run (since MU-17) and sends no email unless its booker
 > fails (invitations excepted). The single-user TOML path (`teetime run` / `watch`) is kept for
-> local course testing only: since MU-19 (2026-11-14, in prod from the next infra tag) no Azure
+> local course testing only: since MU-19 (2026-11-14, in prod since `infra/v3.20.0`) no Azure
 > job can run it, and a rollback is a redeploy of the previous tag.
 
 - ForeUP adapter: live bookings at Mangrove Bay since M6. TeeItUp adapter: live booking + cancel
@@ -309,7 +309,7 @@ free grant), plus up to ~$6/month for prod's always-warm web replica.
 | Deploy | Auto on merge to `main` | Manual approval, tagged `infra/vX.Y.Z` |
 | Mode | `dryRun = true` | `dryRun = false` |
 | Booking/watch | Tenant path (`tenant-run` / `tenant-watch`), watcher hourly | Tenant path since MU-18 stage B (`infra/v3.0.0`; was TOML `run` / `watch`), watcher every 10 min |
-| TOML job wiring | Removed at MU-19 (2026-11-14) | Removed with the first infra tag after MU-19; until then the deployed template still carries the unused mode params |
+| TOML job wiring | Removed at MU-19 (2026-11-14) | Removed in prod since `infra/v3.20.0` (2026-11-15) |
 | Web app, ACS email, Cosmos | Deployed (`deployWebApp`/`deployAcsEmail = true`) | Deployed since MU-18 stage A (`infra/v2.17.0`) |
 
 - **IaC:** Bicep modules `identity`, `registry` (one shared ACR in `rg-teetime-shared`),
