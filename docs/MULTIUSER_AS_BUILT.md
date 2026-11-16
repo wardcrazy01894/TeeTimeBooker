@@ -1058,9 +1058,17 @@ keeping rows whose date is before today in the COURSE timezone (the dashboard st
 so the two never overlap) and whose status the dashboard would list (`_VISIBLE`: a withdrawn or
 superseded row is a request taken back or replaced, not an outcome), newest first. A
 `HistoryRow` carries the course-local tee time for a BOOKED or CANCELLED row, the booked option
-rank, and `show_year` for a date in an earlier year. It reads no snapshot or ledger and never
-logs in to a course, so it does not say HOW a date was booked (drop, watcher or upgrade) or list
-upgrades along the way: that is in the ownership ledger, one read per date, left out on purpose.
+rank, `show_year` for a date in an earlier year, and `how`.
+
+**How** (the same day, a second PR): for a BOOKED or CANCELLED row, the `source` of the
+ownership ledger entry whose raw id is the row's `booked_raw_id` (`_HOW_BOOKED`): blind / search
+"when tee times opened", watch "found later", upgrade "upgraded to a better time",
+adopted_reconcile "confirmed later", adopted_owned "adopted"; no entry (a reservation the bot
+found on the date and never owned) "not booked by the bot". It names the reservation the row
+ended with, so an upgraded date says "upgraded" and not how its first booking was made. The
+cost is one `list_owned_bookings` read per (account, date) that held a reservation, run
+concurrently (`_booking_sources`); the page still reads no snapshot and never logs in to a
+course.
 
 Pages: `/history` (`ROUTES`, user, GET only; top-bar "History", a "Past dates" button on the
 dashboard) with a count per outcome (`history_summary`), and a "Past dates" section on the
