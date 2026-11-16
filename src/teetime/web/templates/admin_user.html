@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import nice_date, status, windows %}
+{% from "_macros.html" import nice_date, status, windows, history_table with context %}
 {% set u = person.user %}
 {% block title %}{{ u.display_name or u.email }} · Users · TeeTimeBooker{% endblock %}
 {% block content %}
@@ -88,6 +88,15 @@
   </div>
   {% else %}
   <p class="placeholder">No dates in the next 21 days.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Past dates</h2>
+  {% if person.history %}
+  {{ history_table(person.history, status_labels) }}
+  {% else %}
+  <p class="placeholder">No past dates yet.</p>
   {% endif %}
   <p class="hint">Everything here comes from the site's records, as the person sees it on their own pages; this page never logs in to a course.</p>
 </section>

@@ -1117,12 +1117,13 @@ account.
 | POST | `/bookings/date`, `/bookings/weekly` | user | yes | the ranked booking form: one date, or a weekly rule (MU-R3); since 2026-10-08 with the booking's own cutoff (`cutoff_days_before` blank = the person's, else + `cutoff_time`; `StandingRule.booking_cutoff` on every rule of the group, `RequestRow.booking_cutoff` on every one-off) |
 | GET/POST | `/rules`, `/rules/{id}` | user | yes | create/edit/deactivate standing rules (materializes synchronously); a single-window rule's edit form carries its own cutoff (2026-10-08), and an edit that changes it moves the rule's live rows (`rewrite_rule_cutoff`) |
 | GET | `/dates` | user | – | the dated-row list with its actions (the dashboard's read model) |
+| GET | `/history` | user | – | past dates (before today in the course timezone, at most 365 days back; the dashboard's visible statuses) with what became of each and the tee time a booked or cancelled one had; read-only, one user-scoped rows read (2026-11-16) |
 | POST | `/rows` | user | yes | create an explicit dated row |
 | POST | `/rows/{id}/skip`, `/rows/{id}/unskip` | user | yes | state-machine transitions |
 | POST | `/rows/{id}/withdraw` | user | yes | delete an explicit pending row |
 | POST | `/rows/{id}/cancel` | user | yes | managed cancel (§8.5) |
 | GET/POST | `/feedback` | user | POST | Report a bug / Request a course: one form that emails the operator and, in prod, files an anonymized public GitHub issue (2026-09-29; `web/feedback.py`, `web/github_issues.py`) |
-| GET | `/admin/users/{id}` | operator | – | one person's page: sign-in, connected courses (status, login, snapshot age), weekly bookings, the next 21 days' dates with status + booked tee time; read-only, never a course login (2026-10-02) |
+| GET | `/admin/users/{id}` | operator | – | one person's page: sign-in, connected courses (status, login, snapshot age), weekly bookings, the next 21 days' dates with status + booked tee time, and their past dates (the `/history` read, 2026-11-16); read-only, never a course login (2026-10-02) |
 | GET/POST | `/admin/users` | operator | yes | invite (emails an invitation, best-effort; Resend and Uninvite for still-invited users) / disable users (allowlist); lists every user (`TenantStore.list_users`) and the uninvited sign-in attempts with an Invite button (`list_rejected_signins`), 2026-09-29 |
 
 Every data query is scoped by the session's `user_id`. There is an IDOR test per route
