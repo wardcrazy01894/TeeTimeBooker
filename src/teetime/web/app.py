@@ -57,6 +57,7 @@ from ..tenant.models import User, UserId, UserRole, UserStatus
 from ..tenant.notify import EmailMessage, EmailSender, UserNotifier, render_invitation
 from ..tenant.runner import AdapterFactory
 from ..tenant.store import TenantStore
+from . import admin_bookings as admin_bookings_view
 from . import admin_users as admin_users_view
 from . import auth
 from .auth import ForbiddenError
@@ -667,6 +668,27 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
                 "user": operator,
                 "is_operator": True,
                 "person": detail,
+                "status_labels": STATUS_LABELS,
+            },
+        )
+
+    @app.get("/admin/bookings", response_class=HTMLResponse)
+    async def admin_bookings(request: Request, operator: Operator) -> Response:
+        # Both parameters are checked against fixed values: nothing from the query is rendered.
+        report = await admin_bookings_view.usage_report(
+            ctx.store,
+            clock=ctx.clock,
+            window=request.query_params.get("window", admin_bookings_view.DEFAULT_WINDOW),
+            include_cancelled=request.query_params.get("cancelled") == "1",
+        )
+        return ctx.page(
+            request,
+            "admin_bookings.html",
+            {
+                "user": operator,
+                "is_operator": True,
+                "report": report,
+                "windows": admin_bookings_view.WINDOWS,
                 "status_labels": STATUS_LABELS,
             },
         )

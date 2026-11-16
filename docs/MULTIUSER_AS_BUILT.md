@@ -1078,6 +1078,37 @@ dashboard's (`STATUS_LABELS`), so a date reads the same the day after as the day
 PENDING row the watcher has not finalized yet shows as pending until `finalize_lost` marks it.
 Tests: `tests/web/test_web_history.py`.
 
+### Tee times used, for the operator (2026-11-16)
+
+Operator request the same day: "I might start charging people for the tee times they use, and I
+want a way to easily just go see what was booked and used", on ONE page, not person by person.
+`/admin/bookings` (`web/admin_bookings.py::usage_report`, operator-gated, linked from Users)
+runs `services.history` once per signed-in person, narrowed by its new `first` / `last`
+arguments, so the report and a person's own `/history` cannot disagree.
+
+- **Used** = a BOOKED row whose date has passed and whose reservation the bot booked. A
+  CANCELLED row is counted per person (`PersonTotal.cancelled`) and listed only with
+  `?cancelled=1`; it is never used. A held reservation with no ledger entry
+  (`services.HOW_NOT_OURS`) is listed, greyed and counted apart (`not_ours`): the person made
+  it themselves, so it is not the site's to charge for. A date whose ledger read failed (How
+  blank) still counts as used, since the row says the bot's run booked it, and so does a
+  BOOKED row whose reservation id was never learned (`booked_raw_id` None: How blank, not
+  "not booked by the bot"). One ranked request is charged once: of several held rows sharing a
+  `group_id` on a date (a group collapse whose cancel failed until the date passed), the
+  best-ranked is used and the rest are flagged "extra booking" (`duplicates`). LOST, SKIPPED
+  and PENDING rows never appear.
+- **Windows** (`WINDOWS`, `window_dates`): `30d` (default), `90d`, `365d`, `this-month`,
+  `last-month`. A day window ends yesterday; months are calendar months (on the 1st, this month is empty); "today" is Eastern
+  (the operator's clock, like the attempt times on Users). An unknown key is the default. The
+  365-day bound of `history` still applies.
+- **By person**: used tee times, their players summed (a per-player charge needs no second
+  page), cancelled, not booked by the bot; most used first. People with nothing in the window
+  are left out.
+- The page has no form: the window and the toggle are links whose query values are checked
+  against fixed lists and never rendered back.
+
+Tests: `tests/web/test_web_admin_bookings.py`.
+
 ## Uninvited sign-in attempts on /admin/users (2026-09-29)
 
 Operator request; retention chosen by the operator (90 days). `_complete_signin` records every

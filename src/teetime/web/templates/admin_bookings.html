@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% from "_macros.html" import nice_date, status %}
+{% block title %}Tee times used · Users · TeeTimeBooker{% endblock %}
+{% block content %}
+{# Operator request 2026-11-16: one page for what every person booked and used, to charge by.
+   Read-only, links only (no form): the window and the cancelled toggle are query parameters
+   checked against a fixed list. #}
+<p class="hint"><a href="/admin/users">← All users</a></p>
+<div class="page-head">
+  <h1>Tee times used</h1>
+  <p class="muted">{{ report.label }}: {{ report.first.strftime('%b') }} {{ report.first.day }}, {{ report.first.year }} to {{ report.last.strftime('%b') }} {{ report.last.day }}, {{ report.last.year }} · <strong>{{ report.used }} tee time{% if report.used != 1 %}s{% endif %} used</strong></p>
+</div>
+{% set cancelled_arg = "&amp;cancelled=1" | safe if report.include_cancelled else "" %}
+<p class="actions">
+  {% for key, label in windows.items() %}<a class="button small" href="/admin/bookings?window={{ key }}{{ cancelled_arg }}"{% if key == report.window %} aria-current="page"{% endif %}>{{ label }}</a> {% endfor %}
+  {% if report.include_cancelled %}<a class="button small" href="/admin/bookings?window={{ report.window }}">Hide cancelled</a>
+  {% else %}<a class="button small" href="/admin/bookings?window={{ report.window }}&amp;cancelled=1">Show cancelled</a>{% endif %}
+</p>
+
+<section>
+  <h2>By person</h2>
+  {% if report.totals %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Person</th><th>Tee times used</th><th>Players</th><th>Cancelled</th><th>Not booked by the bot</th><th>Extra bookings</th></tr></thead>
+      <tbody>
+        {% for t in report.totals %}
+        <tr>
+          <td><a href="/admin/users/{{ t.user.id }}">{{ t.user.display_name or t.user.email }}</a> <span class="hint">{{ t.user.email }}</span></td>
+          <td class="num"><strong>{{ t.used }}</strong></td>
+          <td class="num">{{ t.players }}</td>
+          <td class="num muted">{{ t.cancelled }}</td>
+          <td class="num muted">{{ t.not_ours }}</td>
+          <td class="num muted">{{ t.duplicates }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="placeholder">No tee times used in this window.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Tee times</h2>
+  {% if report.bookings %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Person</th><th>Course</th><th>Tee time</th><th>Players</th><th>How</th><th>Outcome</th></tr></thead>
+      <tbody>
+        {% for b in report.bookings %}
+        {% set r = b.entry %}
+        <tr{% if not b.billable %} class="inactive"{% endif %}>
+          <td class="date">{{ nice_date(r.row.target_date, r.show_year) }}</td>
+          <td><a href="/admin/users/{{ b.user.id }}">{{ b.user.display_name or b.user.email }}</a> <span class="hint">{{ b.user.email }}</span></td>
+          <td>{{ r.row.course_id | course_name }}</td>
+          <td class="tabular">{% if r.tee_time_local %}{{ r.tee_time_local }}{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td class="num">{{ r.row.party_size }}</td>
+          <td class="muted">{% if r.how %}{{ r.how }}{% else %}—{% endif %}</td>
+          <td><span class="status status-{{ r.row.status.value }}">{% if b.billable %}used{% elif b.duplicate %}extra booking{% else %}{{ status(r, status_labels) }}{% endif %}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% elif report.totals %}
+  <p class="placeholder">Nothing to list: only cancelled tee times in this window. Show cancelled to see them.</p>
+  {% endif %}
+  <p class="hint">A tee time counts as used once its date has passed and it was still booked. Cancelled ones are counted per person but never as used. One the bot did not book (the person made it themselves) is listed in grey and not counted, and so is an extra booking: a second tee time held for one ranked request, which is charged once. From the site's records; this page never logs in to a course.</p>
+</section>
+{% endblock %}

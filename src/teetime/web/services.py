@@ -160,7 +160,7 @@ _HOW_BOOKED = {
 }
 # A held reservation with no ledger entry: one the person (or the course) made, which the bot
 # found on the date and never owned.
-_HOW_NOT_OURS = "not booked by the bot"
+HOW_NOT_OURS = "not booked by the bot"
 # History's ledger reads run concurrently, this many at a time (Cosmos free tier: 1000 RU/s).
 _LEDGER_READS_AT_ONCE = 8
 
@@ -642,13 +642,23 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
     return out
 
 
-async def history(store: TenantStore, *, user_id: UserId, clock: Clock) -> list[HistoryRow]:
+async def history(
+    store: TenantStore,
+    *,
+    user_id: UserId,
+    clock: Clock,
+    first: date | None = None,
+    last: date | None = None,
+) -> list[HistoryRow]:
     """The person's PAST dates, newest first: every row the dashboard would have listed
     (``_VISIBLE``: a withdrawn or superseded row is a request taken back or replaced, not an
     outcome) whose date is before today in the COURSE timezone and at most ``HISTORY_DAYS``
     back. The complement of ``dashboard``, which starts at today. ONE user-scoped rows read,
     plus the ownership ledger of each date that held a reservation (concurrently, one read per
-    (account, date)) for the How column; never a snapshot or a course login."""
+    (account, date)) for the How column; never a snapshot or a course login.
+    ``first`` / ``last`` narrow it to dates in that inclusive range (the operator's
+    used-tee-times report), still inside the ``HISTORY_DAYS`` bound and still only past
+    dates."""
     now = clock.now_utc()
     rows = await store.list_rows_for_user(
         user_id,
@@ -658,8 +668,12 @@ async def history(store: TenantStore, *, user_id: UserId, clock: Clock) -> list[
     shown: list[tuple[RequestRow, date]] = []
     for row in sorted(rows, key=lambda r: (r.target_date, str(r.id)), reverse=True):
         local_today = now.astimezone(ZoneInfo(row.timezone)).date()
-        first = local_today - timedelta(days=HISTORY_DAYS)
-        if row.status in _VISIBLE and first <= row.target_date < local_today:
+        oldest = local_today - timedelta(days=HISTORY_DAYS)
+        if row.status not in _VISIBLE or not oldest <= row.target_date < local_today:
+            continue
+        if (first is None or first <= row.target_date) and (
+            last is None or row.target_date <= last
+        ):
             shown.append((row, local_today))
     sources = await _booking_sources(store, [row for row, _ in shown if _held(row)])
     out: list[HistoryRow] = []
@@ -669,9 +683,11 @@ async def history(store: TenantStore, *, user_id: UserId, clock: Clock) -> list[
             local = row_local_tee_time(row)
             tee = local.strftime("%H:%M") if local is not None else None
             ledger = sources[(row.course_account_id, row.target_date)]
-            if ledger is not None:  # None: the read failed, so say nothing rather than guess
-                source = ledger.get(row.booked_raw_id or "")
-                how = _HOW_BOOKED[source] if source is not None else _HOW_NOT_OURS
+            # A failed read, or a row whose reservation id was never learned: say nothing
+            # rather than guess "not booked by the bot" (the operator's report charges by it).
+            if ledger is not None and row.booked_raw_id is not None:
+                source = ledger.get(row.booked_raw_id)
+                how = _HOW_BOOKED[source] if source is not None else HOW_NOT_OURS
         out.append(
             HistoryRow(
                 row=row,

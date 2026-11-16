@@ -1123,6 +1123,7 @@ account.
 | POST | `/rows/{id}/withdraw` | user | yes | delete an explicit pending row |
 | POST | `/rows/{id}/cancel` | user | yes | managed cancel (§8.5) |
 | GET/POST | `/feedback` | user | POST | Report a bug / Request a course: one form that emails the operator and, in prod, files an anonymized public GitHub issue (2026-09-29; `web/feedback.py`, `web/github_issues.py`) |
+| GET | `/admin/bookings` | operator | – | every person's used tee times (a past date still BOOKED, booked by the bot) in a window (`?window=30d\|90d\|365d\|this-month\|last-month`, default 30d; unknown = default), counted per person; `?cancelled=1` also lists booked-then-cancelled dates; read-only, built on each person's `/history` read (2026-11-16) |
 | GET | `/admin/users/{id}` | operator | – | one person's page: sign-in, connected courses (status, login, snapshot age), weekly bookings, the next 21 days' dates with status + booked tee time, and their past dates (the `/history` read, 2026-11-16); read-only, never a course login (2026-10-02) |
 | GET/POST | `/admin/users` | operator | yes | invite (emails an invitation, best-effort; Resend and Uninvite for still-invited users) / disable users (allowlist); lists every user (`TenantStore.list_users`) and the uninvited sign-in attempts with an Invite button (`list_rejected_signins`), 2026-09-29 |
 
