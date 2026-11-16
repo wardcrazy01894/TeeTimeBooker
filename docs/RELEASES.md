@@ -12,6 +12,8 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.22.0: 2026-11-16 (`main`@`ed1f4be`)](#infrav3220-2026-11-16-mained1f4be)
+- [infra/v3.21.0: 2026-11-16 (`main`@`303ced5`)](#infrav3210-2026-11-16-main303ced5)
 - [infra/v3.20.0: 2026-11-15 (`main`@`573613c`)](#infrav3200-2026-11-15-main573613c)
 - [infra/v3.19.0: 2026-11-14 (`main`@`64d7b8b`)](#infrav3190-2026-11-14-main64d7b8b)
 - [infra/v3.18.0: 2026-11-06 (`main`@`b8b76b9`)](#infrav3180-2026-11-06-mainb8b76b9)
@@ -59,6 +61,8 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.22.0` | 2026-11-16 | `ed1f4be` | unchanged (web only) | The operator's tee-times-used report: `/admin/bookings` lists every person's past dates that still held a tee time in a chosen window, counted per person; cancelled ones behind a toggle (#369) |
+| `infra/v3.21.0` | 2026-11-16 | `303ced5` | unchanged (web only) | Booking history: `/history` lists a person's past dates with what became of each, the tee time and how it was booked; the operator's page per person shows the same (#367, #368) |
 | `infra/v3.20.0` | 2026-11-15 | `573613c` | unchanged (interpreter + job wiring) | Python 3.15 image, CI and tooling floor (pip-api 0.0.35, markupsafe 3.0.4); MU-19: jobs run only the tenant path, six single-user secret refs dropped (#359, #363) |
 | `infra/v3.19.0` | 2026-11-14 | `64d7b8b` | unchanged (web footer + patch-level deps) | Footer credit line; pydantic 2.14.3, click 8.5.1, fastapi 0.162.2, opentelemetry-api 1.45.2; ruff 0.17.4 (#358, #360, #361, #362) |
 | `infra/v3.18.0` | 2026-11-06 | `b8b76b9` | unchanged (web sign-in dep + CI action) | authlib 1.9.2→1.9.5 for GHSA-gp2m-377p-m4j3, GHSA-9qr6-8289-9j56 (both authorization-server side, not exercised) and GHSA-f7j6-p4qx-gq99 (JOSE HMAC key handling, defence in depth for ID-token verification); setup-uv 10.3.3 (#354, #355, #356) |
@@ -98,6 +102,41 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.22.0: 2026-11-16 (`main`@`ed1f4be`)
+
+Operator request: one page to see what everyone booked and used, to charge by (#369). **No
+booking-behaviour change**: one operator-only web page, no store, schema, job or infra change.
+
+- **Tee times used** (`/admin/bookings`, linked from Users): every person's past dates that
+  still held a tee time, in a window (last 30 / 90 / 365 days, this month, last month), with a
+  count per person (tee times and players) and each tee time's date, course, time, players and
+  how it was booked.
+- **What counts**: a tee time is used once its date has passed and it was still booked by the
+  bot. Booked-then-cancelled dates are counted apart and listed only with Show cancelled. A
+  reservation the bot did not make, and a second tee time still held for one ranked request,
+  are listed in grey and not counted.
+- Built on each person's own `/history` read (`infra/v3.21.0`), so the two cannot disagree.
+
+Details: [MULTIUSER_AS_BUILT.md](./MULTIUSER_AS_BUILT.md) "Tee times used, for the operator".
+
+## infra/v3.21.0: 2026-11-16 (`main`@`303ced5`)
+
+Operator request: see past bookings per person (#367, #368). **No booking-behaviour change**: web
+pages only, no store, schema, job or infra change.
+
+- **History** (`/history`, top-bar link and a "Past dates" button on the dashboard): a person's
+  past dates from the last 365 days, newest first, with what they asked for and what became of
+  each: booked (tee time and ranked option), cancelled by them or at the course (the tee time it
+  had is kept), lost or skipped, with a count per outcome. Until now a date left the site the day
+  after it.
+- **How** column: for a date that held a tee time, how the reservation came to be, from its
+  ownership ledger entry: when tee times opened, found later, upgraded to a better time,
+  confirmed later, adopted, or not booked by the bot. One ledger read per such date, eight at a
+  time; a failed read blanks that date's How and never the page.
+- **Operator**: `/admin/users/{id}` shows the same table as "Past dates".
+
+Details: [MULTIUSER_AS_BUILT.md](./MULTIUSER_AS_BUILT.md) "Booking history".
 
 ## infra/v3.20.0: 2026-11-15 (`main`@`573613c`)
 
