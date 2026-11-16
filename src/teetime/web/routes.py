@@ -76,4 +76,6 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("POST", "/admin/users", "admin_users_action", AuthLevel.OPERATOR, True, "MU-12"),
     # 2026-10-02: a page per person (courses, weekly bookings, upcoming dates with tee times).
     RouteSpec("GET", "/admin/users/{id}", "admin_user", AuthLevel.OPERATOR, False, "OPS"),
+    # 2026-11-16: every person's used tee times in a window, counted per person (to charge by).
+    RouteSpec("GET", "/admin/bookings", "admin_bookings", AuthLevel.OPERATOR, False, "OPS"),
 )
