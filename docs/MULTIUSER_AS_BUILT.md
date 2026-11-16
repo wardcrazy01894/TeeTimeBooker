@@ -1047,6 +1047,28 @@ Disable/Enable button that posts the existing provider + subject form. Operator-
 rest of the page; the only unscoped listing the web makes. Tests:
 `tests/web/test_web_admin_users_list.py`.
 
+## Booking history (2026-11-16)
+
+Operator request: see what became of past dates (booked, cancelled, and so on), per person. No
+new data and no store change: dated rows are never deleted (the `tenant` container has no TTL),
+a row's status + `status_reason` already say what happened, and a CANCELLED row keeps its
+`booked_*` fields. `web/services.py::history` is ONE `list_rows_for_user` read (per account
+partition in Cosmos, on the already-indexed `targetDate`) over the last `HISTORY_DAYS` (365),
+keeping rows whose date is before today in the COURSE timezone (the dashboard starts at today,
+so the two never overlap) and whose status the dashboard would list (`_VISIBLE`: a withdrawn or
+superseded row is a request taken back or replaced, not an outcome), newest first. A
+`HistoryRow` carries the course-local tee time for a BOOKED or CANCELLED row, the booked option
+rank, and `show_year` for a date in an earlier year. It reads no snapshot or ledger and never
+logs in to a course, so it does not say HOW a date was booked (drop, watcher or upgrade) or list
+upgrades along the way: that is in the ownership ledger, one read per date, left out on purpose.
+
+Pages: `/history` (`ROUTES`, user, GET only; top-bar "History", a "Past dates" button on the
+dashboard) with a count per outcome (`history_summary`), and a "Past dates" section on the
+operator's `/admin/users/{id}`; both render `_macros.history_table`. The labels are the
+dashboard's (`STATUS_LABELS`), so a date reads the same the day after as the day of. A frozen
+PENDING row the watcher has not finalized yet shows as pending until `finalize_lost` marks it.
+Tests: `tests/web/test_web_history.py`.
+
 ## Uninvited sign-in attempts on /admin/users (2026-09-29)
 
 Operator request; retention chosen by the operator (90 days). `_complete_signin` records every

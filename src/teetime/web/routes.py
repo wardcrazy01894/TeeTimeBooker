@@ -54,6 +54,8 @@ ROUTES: tuple[RouteSpec, ...] = (
     RouteSpec("POST", "/rules/{id}", "edit_rule", AuthLevel.USER, True, "MU-13"),
     # the dated-row list with its actions; the same read model as the dashboard
     RouteSpec("GET", "/dates", "dashboard", AuthLevel.USER, False, "MU-13"),
+    # 2026-11-16: past dates and what became of each (booked, cancelled, lost, skipped). Read-only.
+    RouteSpec("GET", "/history", "history", AuthLevel.USER, False, "OPS"),
     # a one-off date; also "Re-request this date" and "add it as a one-off instead"
     RouteSpec("POST", "/rows", "create_one_off", AuthLevel.USER, True, "MU-13"),
     RouteSpec("POST", "/rows/{id}/skip", "skip_row", AuthLevel.USER, True, "MU-13"),

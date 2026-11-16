@@ -157,6 +157,16 @@ class _Pages:
         context["error"], context["one_off"] = error, one_off
         return ctx.page(request, "dates.html", context, status_code=status_code)
 
+    async def history(self, request: Request, user: User) -> Response:
+        """Past dates and what became of each (2026-11-16). Read-only."""
+        ctx = self.ctx
+        context = self.base_context(request, user)
+        rows = await services.history(ctx.store, user_id=user.id, clock=ctx.clock)
+        context["history"] = rows
+        context["summary"] = services.history_summary(rows)
+        context["history_days"] = services.HISTORY_DAYS
+        return ctx.page(request, "history.html", context)
+
     async def rules(
         self,
         request: Request,
@@ -275,6 +285,10 @@ def _register_read_routes(app: FastAPI, pages: _Pages, *, current_user: _Depende
     @app.get("/dates", response_class=HTMLResponse)
     async def list_dates(request: Request, user: CurrentUser) -> Response:
         return await pages.dates(request, user)
+
+    @app.get("/history", response_class=HTMLResponse)
+    async def history(request: Request, user: CurrentUser) -> Response:
+        return await pages.history(request, user)
 
     @app.get("/rules", response_class=HTMLResponse)
     async def list_rules(request: Request, user: CurrentUser) -> Response:

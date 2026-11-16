@@ -137,6 +137,16 @@ _MINUTES_LABEL_LIMIT = 120
 _VISIBLE = frozenset(
     {RowStatus.PENDING, RowStatus.BOOKED, RowStatus.SKIPPED, RowStatus.CANCELLED, RowStatus.LOST}
 )
+# How far back /history reads (2026-11-16). Rows are never deleted, so this only bounds the page.
+HISTORY_DAYS = 365
+# The order the history summary counts statuses in.
+_HISTORY_SUMMARY_ORDER = (
+    RowStatus.BOOKED,
+    RowStatus.CANCELLED,
+    RowStatus.LOST,
+    RowStatus.SKIPPED,
+    RowStatus.PENDING,
+)
 
 
 class WebNotFoundError(LookupError):
@@ -213,6 +223,19 @@ class DashboardRow:
     owned: bool = False
     # MU-R3 (§16.2): the rank of the option a BOOKED row got in the user's ranked list.
     booked_rank: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRow:
+    """One PAST date as /history and the operator's per-person page render it: the stored row
+    (its status and reason say what became of it) and the tee time it had."""
+
+    row: RequestRow
+    # "09:30", course-local, for a BOOKED row and for a CANCELLED one (the row keeps the tee
+    # time it held when it was cancelled); None for a date that never booked.
+    tee_time_local: str | None
+    booked_rank: int | None  # which ranked option a BOOKED row got
+    show_year: bool  # the date is in an earlier year than the course's today
 
 
 @dataclass(frozen=True, slots=True)
@@ -598,6 +621,48 @@ async def dashboard(store: TenantStore, *, user_id: UserId, clock: Clock) -> lis
             )
         )
     return out
+
+
+async def history(store: TenantStore, *, user_id: UserId, clock: Clock) -> list[HistoryRow]:
+    """The person's PAST dates, newest first: every row the dashboard would have listed
+    (``_VISIBLE``: a withdrawn or superseded row is a request taken back or replaced, not an
+    outcome) whose date is before today in the COURSE timezone and at most ``HISTORY_DAYS``
+    back. The complement of ``dashboard``, which starts at today. ONE user-scoped rows read;
+    never a snapshot, ledger or course login."""
+    now = clock.now_utc()
+    rows = await store.list_rows_for_user(
+        user_id,
+        from_date=now.date() - timedelta(days=HISTORY_DAYS + 1),
+        to_date=now.date() + timedelta(days=1),
+    )
+    out: list[HistoryRow] = []
+    for row in sorted(rows, key=lambda r: (r.target_date, str(r.id)), reverse=True):
+        local_today = now.astimezone(ZoneInfo(row.timezone)).date()
+        first = local_today - timedelta(days=HISTORY_DAYS)
+        if row.status not in _VISIBLE or not first <= row.target_date < local_today:
+            continue
+        tee = None
+        if row.status in (RowStatus.BOOKED, RowStatus.CANCELLED):
+            local = row_local_tee_time(row)
+            tee = local.strftime("%H:%M") if local is not None else None
+        out.append(
+            HistoryRow(
+                row=row,
+                tee_time_local=tee,
+                booked_rank=booked_rank(row),
+                show_year=row.target_date.year != local_today.year,
+            )
+        )
+    return out
+
+
+def history_summary(rows: Sequence[HistoryRow]) -> tuple[tuple[str, int], ...]:
+    """("booked", 12), ("cancelled", 2), ...: the non-zero status counts of ``rows``."""
+    return tuple(
+        (status.value, n)
+        for status in _HISTORY_SUMMARY_ORDER
+        if (n := sum(1 for r in rows if r.row.status is status))
+    )
 
 
 def earliest_bookable_date(

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% from "_macros.html" import history_table with context %}
+{% block title %}History · TeeTimeBooker{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>History</h1>
+  {% if summary %}<p class="muted">{% for name, n in summary %}{{ n }} {{ name }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+</div>
+
+<section>
+  <h2>Past dates</h2>
+  {% if history %}
+  {{ history_table(history, status_labels) }}
+  <p class="hint">Dates from the last {{ history_days }} days, newest first, from the bot's records. A cancelled date keeps the tee time it had. Today and later are on the <a href="/">dashboard</a>.</p>
+  {% else %}
+  <p class="placeholder">No past dates yet. Upcoming ones are on the <a href="/">dashboard</a>.</p>
+  {% endif %}
+</section>
+{% endblock %}

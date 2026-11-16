@@ -4,9 +4,10 @@ One row per user in any status: whether the invite has been used (INVITED = neve
 the sign-in provider, the connected courses, active weekly bookings and the next 21 days' dated
 rows by status (counted from the same ``services.dashboard`` read the person's own dashboard
 uses). Each signed-in person links to their own page, ``/admin/users/{id}`` (``user_detail``,
-operator request 2026-10-02): sign-in, connected courses, weekly bookings and the next 21 days'
-dates with status and booked tee time. Read-only and NEVER logs in to a course. The routes are
-operator-gated; this is the only place the web lists users at all (``TenantStore.list_users``).
+operator request 2026-10-02): sign-in, connected courses, weekly bookings, the next 21 days'
+dates with status and booked tee time and, since 2026-11-16, their past dates
+(``services.history``). Read-only and NEVER logs in to a course. The routes are operator-gated;
+this is the only place the web lists users at all (``TenantStore.list_users``).
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from ..core.release_policy import ReleasePolicy
 from ..tenant.models import RejectedSignin, RowStatus, User, UserId
 from ..tenant.store import TenantStore
 from . import services
-from .services import AccountView, DashboardRow, RuleView
+from .services import AccountView, DashboardRow, HistoryRow, RuleView
 
 # The statuses counted in the "next 21 days" column, in display order.
 _COUNTED = (RowStatus.BOOKED, RowStatus.PENDING)
@@ -52,6 +53,8 @@ class UserDetail:
     accounts: tuple[AccountView, ...]
     rules: tuple[RuleView, ...]
     dates: tuple[DashboardRow, ...]
+    # Past dates, newest first: the person's own /history (2026-11-16).
+    history: tuple[HistoryRow, ...] = ()
 
 
 async def user_detail(
@@ -62,8 +65,8 @@ async def user_detail(
     policies: Mapping[str, ReleasePolicy],
 ) -> UserDetail | None:
     """The person's page, or None for an unknown id. The same user-scoped reads the person's own
-    pages make (``account_views``, ``list_rules``, ``dashboard``): nothing an operator sees here
-    is hidden from the person, and nothing logs in to a course."""
+    pages make (``account_views``, ``list_rules``, ``dashboard``, ``history``): nothing an
+    operator sees here is hidden from the person, and nothing logs in to a course."""
     user = await store.get_user_unscoped(user_id)
     if user is None:
         return None
@@ -76,6 +79,7 @@ async def user_detail(
         ),
         rules=tuple(await services.list_rules(store, user_id=user.id)),
         dates=tuple(await services.dashboard(store, user_id=user.id, clock=clock)),
+        history=tuple(await services.history(store, user_id=user.id, clock=clock)),
     )
 
 

@@ -9,8 +9,9 @@
 <select name="{{ name }}" class="timepick" aria-label="{{ label }}" required>{% for t in times %}<option value="{{ t.strftime('%H:%M') }}"{% if t.strftime('%H:%M') == value %} selected{% endif %}>{{ t | time_label }}</option>{% endfor %}</select>
 {%- endmacro %}
 
-{# A date as a reader wants it ("Sat Oct 3"); the ISO date stays machine-readable. #}
-{% macro nice_date(d) %}<time datetime="{{ d.isoformat() }}"><span class="dow">{{ d.strftime('%a') }}</span>{{ d.strftime('%b') }} {{ d.day }}</time>{% endmacro %}
+{# A date as a reader wants it ("Sat Oct 3"; `year` adds ", 2026" for a past year's date on
+   the history table); the ISO date stays machine-readable. #}
+{% macro nice_date(d, year=false) %}<time datetime="{{ d.isoformat() }}"><span class="dow">{{ d.strftime('%a') }}</span>{{ d.strftime('%b') }} {{ d.day }}{% if year %}, {{ d.year }}{% endif %}</time>{% endmacro %}
 
 {# A row's or rule's ranked options (§16.2), best first. #}
 {% macro windows(options) %}{% for o in options %}{{ o.earliest.strftime('%H:%M') }}–{{ o.latest.strftime('%H:%M') }}{% if not loop.last %}, {% endif %}{% endfor %}{% endmacro %}
@@ -29,6 +30,28 @@
 {% macro status(r, status_labels) -%}
 {{ status_labels.get((r.row.status.value, r.row.status_reason), r.row.status.value) }}
 {%- endmacro %}
+
+{# Past dates, newest first (services.history): what was asked for and what became of it. Shared
+   by /history and the operator's per-person page. Read-only: no form. #}
+{% macro history_table(rows, status_labels) %}
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Date</th><th>Course</th><th>Asked for</th><th>From</th><th>Outcome</th><th>Tee time</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="date">{{ nice_date(r.row.target_date, r.show_year) }}</td>
+        <td>{{ r.row.course_id | course_name }}</td>
+        <td class="tabular">{{ windows(r.row.options) }} · {{ r.row.party_size }} player{% if r.row.party_size != 1 %}s{% endif %}</td>
+        <td class="muted">{{ "weekly" if r.row.source.value == "rule" else "one-off" }}</td>
+        <td><span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span></td>
+        <td class="tabular">{% if r.tee_time_local %}{{ r.tee_time_local }}{% if r.booked_rank %} <span class="hint">option {{ r.booked_rank }}</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
 
 {# A plain POST form with the CSRF token and the one-off fields as hidden inputs. #}
 {# `own_cutoff`: the booking's own cutoff to carry onto the one-off (2026-10-08), or none. #}
