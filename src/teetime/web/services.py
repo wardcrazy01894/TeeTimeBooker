@@ -683,8 +683,10 @@ async def history(
             local = row_local_tee_time(row)
             tee = local.strftime("%H:%M") if local is not None else None
             ledger = sources[(row.course_account_id, row.target_date)]
-            if ledger is not None:  # None: the read failed, so say nothing rather than guess
-                source = ledger.get(row.booked_raw_id or "")
+            # A failed read, or a row whose reservation id was never learned: say nothing
+            # rather than guess "not booked by the bot" (the operator's report charges by it).
+            if ledger is not None and row.booked_raw_id is not None:
+                source = ledger.get(row.booked_raw_id)
                 how = _HOW_BOOKED[source] if source is not None else HOW_NOT_OURS
         out.append(
             HistoryRow(

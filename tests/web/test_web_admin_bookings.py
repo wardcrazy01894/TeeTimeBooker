@@ -10,7 +10,9 @@ Oct 17 lost), seen from Tue Oct 20 2026 12:00 EDT unless a test moves it.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -20,12 +22,14 @@ from starlette.routing import Route
 
 from teetime.core.clock import FakeClock
 from teetime.tenant.in_memory_store import InMemoryTenantStore
+from teetime.tenant.models import RowId
 from teetime.web import admin_bookings
 from teetime.web.routes import ROUTES, AuthLevel
 
 from .conftest import sign_in
 from .test_web_admin_csrf import _sign_in_operator
 from .test_web_history import (
+    OCT20_NOON,
     TEE_OCT3,
     _a_month_of_golf,
     _book,
@@ -183,3 +187,65 @@ async def test_a_member_session_cannot_reach_it_after_signing_in_again(
 ) -> None:
     assert (await sign_in(client)).status_code == 303
     assert (await client.get("/admin/bookings?window=365d&cancelled=1")).status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("today", "window", "first", "last"),
+    [
+        # The 1st: this month has no past day yet (an empty window, never a backwards one).
+        (date(2026, 11, 1), "this-month", date(2026, 11, 1), date(2026, 11, 1)),
+        (date(2026, 11, 1), "last-month", date(2026, 10, 1), date(2026, 10, 31)),
+        (date(2027, 1, 9), "last-month", date(2026, 12, 1), date(2026, 12, 31)),  # across a year
+        (date(2028, 3, 1), "last-month", date(2028, 2, 1), date(2028, 2, 29)),  # a leap February
+        (date(2028, 2, 29), "365d", date(2027, 3, 1), date(2028, 2, 28)),
+    ],
+)
+def test_window_edges(today: date, window: str, first: date, last: date) -> None:
+    assert admin_bookings.window_dates(window, today=today) == (first, last)
+
+
+async def test_a_booked_row_with_no_reservation_id_still_counts_as_used(
+    store: InMemoryTenantStore, member: Member, clock: FakeClock
+) -> None:
+    """A BOOKED row the bot's own run wrote but whose reservation id was never learned must
+    not slide into "not booked by the bot" and go uncharged: How is blank, the count is 1."""
+    rule = await _seed_rule(store, member)
+    row = await _row_for(store, member, rule, OCT3)
+    await _book(store, row, TEE_OCT3)
+    booked = store._rows[row.id]
+    store._rows[row.id] = replace(booked, booked_raw_id=None)
+    await _move_clock_to(clock, OCT20_NOON)
+    report = await admin_bookings.usage_report(
+        store, clock=clock, window="30d", include_cancelled=False
+    )
+    (booking,) = report.bookings
+    assert (booking.entry.how, booking.billable, report.used) == (None, True, 1)
+
+
+async def test_two_bookings_of_one_ranked_request_are_charged_once(
+    store: InMemoryTenantStore, member: Member, clock: FakeClock
+) -> None:
+    """One ranked request (a group) is one tee time. If its collapse failed and the date passed
+    with two courses still booked, the report counts the best-ranked one and flags the other."""
+    rule = await _seed_rule(store, member)
+    row = await _row_for(store, member, rule, OCT3)
+    await _book(store, row, TEE_OCT3)
+    group = uuid4()
+    first_choice = replace(store._rows[row.id], group_id=group, group_rank=1)
+    store._rows[row.id] = first_choice
+    other = replace(first_choice, id=RowId(uuid4()), group_rank=2, booked_raw_id="other-1")
+    store._rows[other.id] = other
+    store._ledger[(other.course_account_id, other.course_id, "other-1")] = replace(
+        next(iter(store._ledger.values())), row_id=other.id, raw_reservation_id="other-1"
+    )
+    await _move_clock_to(clock, OCT20_NOON)
+    report = await admin_bookings.usage_report(
+        store, clock=clock, window="30d", include_cancelled=False
+    )
+    assert report.used == 1
+    assert {b.entry.row.id: (b.billable, b.duplicate) for b in report.bookings} == {
+        row.id: (True, False),
+        other.id: (False, True),
+    }
+    (total,) = report.totals
+    assert (total.used, total.duplicates) == (1, 1)

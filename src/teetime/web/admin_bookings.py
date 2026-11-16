@@ -41,7 +41,8 @@ def window_dates(window: str, *, today: date) -> tuple[date, date]:
     """The inclusive (first, last) dates of a ``WINDOWS`` key as seen on ``today``."""
     yesterday = today - timedelta(days=1)
     if window == "this-month":
-        return today.replace(day=1), yesterday
+        first = today.replace(day=1)
+        return first, max(first, yesterday)  # on the 1st: empty (today is never a past date)
     if window == "last-month":
         end = today.replace(day=1) - timedelta(days=1)
         return end.replace(day=1), end
@@ -54,6 +55,9 @@ class UsedBooking:
     entry: HistoryRow
     # A tee time the bot booked that was still held when its date passed: what a charge is for.
     billable: bool
+    # A second booking of ONE ranked request (same group and date) that was still held: the
+    # group collapse did not cancel it in time. Listed and flagged, never billable.
+    duplicate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +67,7 @@ class PersonTotal:
     players: int  # their party sizes, summed
     cancelled: int  # booked, then cancelled (by the person or at the course)
     not_ours: int  # held on the date but never booked by the bot
+    duplicates: int = 0  # extra bookings of one ranked request (see ``UsedBooking.duplicate``)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +89,29 @@ class UsageReport:
         return sum(t.used for t in self.totals)
 
 
+def _one_per_request(entries: list[HistoryRow]) -> list[HistoryRow]:
+    """``entries`` with at most one per ranked request: of several held rows sharing a
+    ``group_id`` on one date (the group invariant is one, ``tenant/groups.py``; two means a
+    collapse cancel failed until the date passed), keep the best-ranked. Ungrouped rows all
+    stay."""
+    best: dict[tuple[object, date], HistoryRow] = {}
+    for e in entries:
+        if e.row.group_id is None:
+            continue
+        key = (e.row.group_id, e.row.target_date)
+        if key not in best or _rank(e) < _rank(best[key]):
+            best[key] = e
+    return [
+        e for e in entries if e.row.group_id is None or best[e.row.group_id, e.row.target_date] is e
+    ]
+
+
+def _rank(entry: HistoryRow) -> tuple[int, int, str]:
+    unranked = 1_000_000
+    row = entry.row
+    return (entry.booked_rank or unranked, row.group_rank or unranked, str(row.id))
+
+
 async def usage_report(
     store: TenantStore, *, clock: Clock, window: str, include_cancelled: bool
 ) -> UsageReport:
@@ -102,7 +130,8 @@ async def usage_report(
         )
         held = [e for e in entries if e.row.status is RowStatus.BOOKED]
         cancelled = [e for e in entries if e.row.status is RowStatus.CANCELLED]
-        used = [e for e in held if e.how != services.HOW_NOT_OURS]
+        ours = [e for e in held if e.how != services.HOW_NOT_OURS]
+        used = _one_per_request(ours)
         if not held and not cancelled:
             continue
         totals.append(
@@ -111,11 +140,17 @@ async def usage_report(
                 used=len(used),
                 players=sum(e.row.party_size for e in used),
                 cancelled=len(cancelled),
-                not_ours=len(held) - len(used),
+                not_ours=len(held) - len(ours),
+                duplicates=len(ours) - len(used),
             )
         )
         listed = held + cancelled if include_cancelled else held
-        bookings += [UsedBooking(user=user, entry=e, billable=e in used) for e in listed]
+        bookings += [
+            UsedBooking(
+                user=user, entry=e, billable=e in used, duplicate=e in ours and e not in used
+            )
+            for e in listed
+        ]
     bookings.sort(key=lambda b: b.user.email.casefold())
     bookings.sort(key=lambda b: b.entry.row.target_date, reverse=True)
     totals.sort(key=lambda t: (-t.used, t.user.email.casefold()))
