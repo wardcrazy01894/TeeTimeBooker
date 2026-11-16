@@ -210,8 +210,13 @@ async def test_history_shows_only_my_rows(
     mallory: Member,
     clock: FakeClock,
 ) -> None:
+    mine = await _seed_rule(store, member)
+    await _book(store, await _row_for(store, member, mine, OCT3), TEE_OCT3)
     await _a_month_of_golf(store, mallory, clock)
-    assert "No past dates yet" in _main((await _history(client)).text)
+    text = _main((await _history(client)).text)
+    assert "Oct 3" in text and "1 booked" in text  # mine shows
+    assert "Oct 10" not in text and "Oct 17" not in text  # Mallory's dates
+    assert "08:15" not in text and "lost" not in text  # her tee time, her miss
 
 
 async def test_history_needs_a_sign_in(client: httpx.AsyncClient) -> None:
