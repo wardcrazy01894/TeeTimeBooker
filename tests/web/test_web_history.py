@@ -25,6 +25,7 @@ from teetime.tenant.models import (
     Actor,
     BookingSource,
     BookingState,
+    CourseAccountId,
     OwnedBooking,
     OwnedBookingId,
     RequestRow,
@@ -243,6 +244,30 @@ async def test_a_reservation_the_bot_did_not_make_says_so(
     await _move_clock_to(clock, OCT20_NOON)
     (entry,) = await services.history(store, user_id=member.user.id, clock=clock)
     assert entry.how == "not booked by the bot"
+
+
+async def test_a_failed_ledger_read_blanks_that_dates_how_and_nothing_else(
+    store: InMemoryTenantStore,
+    member: Member,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The How column is one ledger read per date: one of them failing must cost that date
+    its How (shown as a dash, never the false "not booked by the bot"), not the page."""
+    await _a_month_of_golf(store, member, clock)
+    real = store.list_owned_bookings
+
+    async def flaky(account_id: CourseAccountId, *, target_date: date) -> list[OwnedBooking]:
+        if target_date == OCT10:
+            raise RuntimeError("cosmos blip")
+        return await real(account_id, target_date=target_date)
+
+    monkeypatch.setattr(store, "list_owned_bookings", flaky)
+    _, cancelled, booked = await services.history(store, user_id=member.user.id, clock=clock)
+    assert cancelled.how is None and cancelled.tee_time_local == "08:15"
+    assert booked.how == "when tee times opened"
+    assert "history: ledger read failed" in caplog.text
 
 
 async def test_history_is_reachable_from_the_top_bar_and_the_dashboard(

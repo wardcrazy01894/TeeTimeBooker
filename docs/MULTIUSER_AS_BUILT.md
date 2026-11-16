@@ -1067,7 +1067,8 @@ adopted_reconcile "confirmed later", adopted_owned "adopted"; no entry (a reserv
 found on the date and never owned) "not booked by the bot". It names the reservation the row
 ended with, so an upgraded date says "upgraded" and not how its first booking was made. The
 cost is one `list_owned_bookings` read per (account, date) that held a reservation, run
-concurrently (`_booking_sources`); the page still reads no snapshot and never logs in to a
+concurrently, eight at a time (`_booking_sources`); a read that fails is logged and leaves that
+date's How blank, never the page a 500. The page still reads no snapshot and never logs in to a
 course.
 
 Pages: `/history` (`ROUTES`, user, GET only; top-bar "History", a "Past dates" button on the
