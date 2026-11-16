@@ -23,6 +23,7 @@ is never persisted) and the managed cancel of a BOOKED row (§8.5: dry-run refus
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import unicodedata
@@ -69,6 +70,7 @@ from ..tenant.models import (
     AccountProvenance,
     AccountStatus,
     Actor,
+    BookingSource,
     BookingState,
     CourseAccount,
     CourseAccountId,
@@ -147,6 +149,20 @@ _HISTORY_SUMMARY_ORDER = (
     RowStatus.SKIPPED,
     RowStatus.PENDING,
 )
+# The history page's "How" column, by the ledger entry of the reservation a row holds.
+_HOW_BOOKED = {
+    BookingSource.BLIND: "when tee times opened",
+    BookingSource.SEARCH: "when tee times opened",
+    BookingSource.WATCH: "found later",
+    BookingSource.UPGRADE: "upgraded to a better time",
+    BookingSource.ADOPTED_RECONCILE: "confirmed later",
+    BookingSource.ADOPTED_OWNED: "adopted",
+}
+# A held reservation with no ledger entry: one the person (or the course) made, which the bot
+# found on the date and never owned.
+_HOW_NOT_OURS = "not booked by the bot"
+# History's ledger reads run concurrently, this many at a time (Cosmos free tier: 1000 RU/s).
+_LEDGER_READS_AT_ONCE = 8
 
 
 class WebNotFoundError(LookupError):
@@ -236,6 +252,9 @@ class HistoryRow:
     tee_time_local: str | None
     booked_rank: int | None  # which ranked option a BOOKED row got
     show_year: bool  # the date is in an earlier year than the course's today
+    # How the reservation came to be (``_HOW_BOOKED``, from its ownership ledger entry), for a
+    # BOOKED or CANCELLED row; None for a date that never held one, or whose ledger read failed.
+    how: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -627,33 +646,69 @@ async def history(store: TenantStore, *, user_id: UserId, clock: Clock) -> list[
     """The person's PAST dates, newest first: every row the dashboard would have listed
     (``_VISIBLE``: a withdrawn or superseded row is a request taken back or replaced, not an
     outcome) whose date is before today in the COURSE timezone and at most ``HISTORY_DAYS``
-    back. The complement of ``dashboard``, which starts at today. ONE user-scoped rows read;
-    never a snapshot, ledger or course login."""
+    back. The complement of ``dashboard``, which starts at today. ONE user-scoped rows read,
+    plus the ownership ledger of each date that held a reservation (concurrently, one read per
+    (account, date)) for the How column; never a snapshot or a course login."""
     now = clock.now_utc()
     rows = await store.list_rows_for_user(
         user_id,
         from_date=now.date() - timedelta(days=HISTORY_DAYS + 1),
         to_date=now.date() + timedelta(days=1),
     )
-    out: list[HistoryRow] = []
+    shown: list[tuple[RequestRow, date]] = []
     for row in sorted(rows, key=lambda r: (r.target_date, str(r.id)), reverse=True):
         local_today = now.astimezone(ZoneInfo(row.timezone)).date()
         first = local_today - timedelta(days=HISTORY_DAYS)
-        if row.status not in _VISIBLE or not first <= row.target_date < local_today:
-            continue
-        tee = None
-        if row.status in (RowStatus.BOOKED, RowStatus.CANCELLED):
+        if row.status in _VISIBLE and first <= row.target_date < local_today:
+            shown.append((row, local_today))
+    sources = await _booking_sources(store, [row for row, _ in shown if _held(row)])
+    out: list[HistoryRow] = []
+    for row, local_today in shown:
+        tee = how = None
+        if _held(row):
             local = row_local_tee_time(row)
             tee = local.strftime("%H:%M") if local is not None else None
+            ledger = sources[(row.course_account_id, row.target_date)]
+            if ledger is not None:  # None: the read failed, so say nothing rather than guess
+                source = ledger.get(row.booked_raw_id or "")
+                how = _HOW_BOOKED[source] if source is not None else _HOW_NOT_OURS
         out.append(
             HistoryRow(
                 row=row,
                 tee_time_local=tee,
                 booked_rank=booked_rank(row),
                 show_year=row.target_date.year != local_today.year,
+                how=how,
             )
         )
     return out
+
+
+def _held(row: RequestRow) -> bool:
+    """A row that holds, or held until it was cancelled, a reservation."""
+    return row.status in (RowStatus.BOOKED, RowStatus.CANCELLED)
+
+
+async def _booking_sources(
+    store: TenantStore, rows: Sequence[RequestRow]
+) -> dict[tuple[CourseAccountId, date], dict[str, BookingSource] | None]:
+    """(account, date) -> {raw reservation id: the ledger entry's source}, for the dates of
+    ``rows``; None for a date whose ledger read FAILED. A year of history is a ledger read per
+    booked date, so they run concurrently, at most ``_LEDGER_READS_AT_ONCE`` at a time, and a
+    failed one is logged and costs only that date its How: the column is not worth the page."""
+    gate = asyncio.Semaphore(_LEDGER_READS_AT_ONCE)
+
+    async def read(account_id: CourseAccountId, day: date) -> dict[str, BookingSource] | None:
+        async with gate:
+            try:
+                ledger = await store.list_owned_bookings(account_id, target_date=day)
+            except Exception:
+                log.warning("history: ledger read failed for %s", day, exc_info=True)
+                return None
+        return {entry.raw_reservation_id: entry.source for entry in ledger}
+
+    keys = sorted({(r.course_account_id, r.target_date) for r in rows}, key=str)
+    return dict(zip(keys, await asyncio.gather(*(read(a, d) for a, d in keys)), strict=True))
 
 
 def history_summary(rows: Sequence[HistoryRow]) -> tuple[tuple[str, int], ...]:

@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import httpx
+import pytest
 import respx
 from fastapi import FastAPI
 from starlette.routing import Route
@@ -24,6 +25,7 @@ from teetime.tenant.models import (
     Actor,
     BookingSource,
     BookingState,
+    CourseAccountId,
     OwnedBooking,
     OwnedBookingId,
     RequestRow,
@@ -78,7 +80,13 @@ async def _row_for(
     return row
 
 
-async def _book(store: InMemoryTenantStore, row: RequestRow, tee: datetime) -> None:
+async def _book(
+    store: InMemoryTenantStore,
+    row: RequestRow,
+    tee: datetime,
+    *,
+    source: BookingSource = BookingSource.BLIND,
+) -> None:
     """pending -> booked through the leased runner path (WRITE #2)."""
     owner = "booker:test"
     assert await store.claim_rows(
@@ -113,7 +121,7 @@ async def _book(store: InMemoryTenantStore, row: RequestRow, tee: datetime) -> N
                     raw_reservation_id=raw_id,
                     tee_time=tee,
                     party_size=row.party_size,
-                    source=BookingSource.BLIND,
+                    source=source,
                     state=BookingState.HELD,
                 ),
                 release_lease_owner=owner,
@@ -184,6 +192,82 @@ async def test_history_lists_past_dates_newest_first_with_what_became_of_each(
     assert "1 booked" in text and "1 cancelled" in text and "1 lost" in text
     # Read-only: the only form on the page is the top bar's Sign out.
     assert page.text.count("<form") == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "how"),
+    [
+        (BookingSource.BLIND, "when tee times opened"),
+        (BookingSource.SEARCH, "when tee times opened"),
+        (BookingSource.WATCH, "found later"),
+        (BookingSource.UPGRADE, "upgraded to a better time"),
+        (BookingSource.ADOPTED_RECONCILE, "confirmed later"),
+        (BookingSource.ADOPTED_OWNED, "adopted"),
+    ],
+)
+async def test_history_says_how_a_date_was_booked(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    member: Member,
+    clock: FakeClock,
+    source: BookingSource,
+    how: str,
+) -> None:
+    """The How column comes from the ownership ledger entry of the reservation the row holds."""
+    rule = await _seed_rule(store, member)
+    await _book(store, await _row_for(store, member, rule, OCT3), TEE_OCT3, source=source)
+    await _move_clock_to(clock, OCT20_NOON)
+    text = _main((await _history(client)).text)
+    assert "<th>How</th>" in (await client.get("/history")).text
+    assert how in text[text.index("Oct 3") :]
+
+
+async def test_a_cancelled_date_still_says_how_it_was_booked_and_a_lost_one_says_nothing(
+    store: InMemoryTenantStore, member: Member, clock: FakeClock
+) -> None:
+    await _a_month_of_golf(store, member, clock)
+    lost, cancelled, booked = await services.history(store, user_id=member.user.id, clock=clock)
+    assert (lost.row.status, lost.how) == (RowStatus.LOST, None)
+    assert (cancelled.row.status, cancelled.how) == (RowStatus.CANCELLED, "when tee times opened")
+    assert booked.how == "when tee times opened"
+
+
+async def test_a_reservation_the_bot_did_not_make_says_so(
+    store: InMemoryTenantStore, member: Member, clock: FakeClock
+) -> None:
+    """A BOOKED row whose reservation is not in the ledger (a manual booking the bot found on
+    the date) is not the bot's work, and history must not claim it."""
+    rule = await _seed_rule(store, member)
+    row = await _row_for(store, member, rule, OCT3)
+    await _book(store, row, TEE_OCT3)
+    store._ledger.clear()  # the same row, with no ownership record behind it
+    await _move_clock_to(clock, OCT20_NOON)
+    (entry,) = await services.history(store, user_id=member.user.id, clock=clock)
+    assert entry.how == "not booked by the bot"
+
+
+async def test_a_failed_ledger_read_blanks_that_dates_how_and_nothing_else(
+    store: InMemoryTenantStore,
+    member: Member,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The How column is one ledger read per date: one of them failing must cost that date
+    its How (shown as a dash, never the false "not booked by the bot"), not the page."""
+    await _a_month_of_golf(store, member, clock)
+    real = store.list_owned_bookings
+
+    async def flaky(account_id: CourseAccountId, *, target_date: date) -> list[OwnedBooking]:
+        if target_date == OCT10:
+            raise RuntimeError("cosmos blip")
+        return await real(account_id, target_date=target_date)
+
+    monkeypatch.setattr(store, "list_owned_bookings", flaky)
+    _, cancelled, booked = await services.history(store, user_id=member.user.id, clock=clock)
+    assert cancelled.how is None and cancelled.tee_time_local == "08:15"
+    assert booked.how == "when tee times opened"
+    assert "history: ledger read failed" in caplog.text
 
 
 async def test_history_is_reachable_from_the_top_bar_and_the_dashboard(

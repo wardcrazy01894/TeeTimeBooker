@@ -36,7 +36,7 @@
 {% macro history_table(rows, status_labels) %}
 <div class="table-wrap">
   <table>
-    <thead><tr><th>Date</th><th>Course</th><th>Asked for</th><th>From</th><th>Outcome</th><th>Tee time</th></tr></thead>
+    <thead><tr><th>Date</th><th>Course</th><th>Asked for</th><th>From</th><th>Outcome</th><th>Tee time</th><th>How</th></tr></thead>
     <tbody>
       {% for r in rows %}
       <tr>
@@ -46,6 +46,7 @@
         <td class="muted">{{ "weekly" if r.row.source.value == "rule" else "one-off" }}</td>
         <td><span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span></td>
         <td class="tabular">{% if r.tee_time_local %}{{ r.tee_time_local }}{% if r.booked_rank %} <span class="hint">option {{ r.booked_rank }}</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td class="muted">{% if r.how %}{{ r.how }}{% else %}—{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>

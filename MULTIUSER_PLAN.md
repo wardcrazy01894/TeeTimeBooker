@@ -1117,7 +1117,7 @@ account.
 | POST | `/bookings/date`, `/bookings/weekly` | user | yes | the ranked booking form: one date, or a weekly rule (MU-R3); since 2026-10-08 with the booking's own cutoff (`cutoff_days_before` blank = the person's, else + `cutoff_time`; `StandingRule.booking_cutoff` on every rule of the group, `RequestRow.booking_cutoff` on every one-off) |
 | GET/POST | `/rules`, `/rules/{id}` | user | yes | create/edit/deactivate standing rules (materializes synchronously); a single-window rule's edit form carries its own cutoff (2026-10-08), and an edit that changes it moves the rule's live rows (`rewrite_rule_cutoff`) |
 | GET | `/dates` | user | – | the dated-row list with its actions (the dashboard's read model) |
-| GET | `/history` | user | – | past dates (before today in the course timezone, at most 365 days back; the dashboard's visible statuses) with what became of each and the tee time a booked or cancelled one had; read-only, one user-scoped rows read (2026-11-16) |
+| GET | `/history` | user | – | past dates (before today in the course timezone, at most 365 days back; the dashboard's visible statuses) with what became of each and the tee time a booked or cancelled one had; and how it was booked (the ownership ledger entry's source); read-only, one user-scoped rows read plus a ledger read per date that held a reservation (2026-11-16) |
 | POST | `/rows` | user | yes | create an explicit dated row |
 | POST | `/rows/{id}/skip`, `/rows/{id}/unskip` | user | yes | state-machine transitions |
 | POST | `/rows/{id}/withdraw` | user | yes | delete an explicit pending row |
