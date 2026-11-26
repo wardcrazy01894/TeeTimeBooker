@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.23.0: 2026-11-26 (`main`@`16e5c5b`)](#infrav3230-2026-11-26-main16e5c5b)
 - [infra/v3.22.0: 2026-11-16 (`main`@`ed1f4be`)](#infrav3220-2026-11-16-mained1f4be)
 - [infra/v3.21.0: 2026-11-16 (`main`@`303ced5`)](#infrav3210-2026-11-16-main303ced5)
 - [infra/v3.20.0: 2026-11-15 (`main`@`573613c`)](#infrav3200-2026-11-15-main573613c)
@@ -61,6 +62,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.23.0` | 2026-11-26 | `16e5c5b` | unchanged (web only + web deps) | The operator's upcoming-tee-times page: `/admin/upcoming` lists every person's booked tee times for the next 21 days, soonest first, and the dates still being looked for; fastapi 0.163.1, authlib 1.9.8, python-multipart 0.0.34; pytest-asyncio 1.5.0, ruff 0.17.5 (#371, #372, #373) |
 | `infra/v3.22.0` | 2026-11-16 | `ed1f4be` | unchanged (web only) | The operator's tee-times-used report: `/admin/bookings` lists every person's past dates that still held a tee time in a chosen window, counted per person; cancelled ones behind a toggle (#369) |
 | `infra/v3.21.0` | 2026-11-16 | `303ced5` | unchanged (web only) | Booking history: `/history` lists a person's past dates with what became of each, the tee time and how it was booked; the operator's page per person shows the same (#367, #368) |
 | `infra/v3.20.0` | 2026-11-15 | `573613c` | unchanged (interpreter + job wiring) | Python 3.15 image, CI and tooling floor (pip-api 0.0.35, markupsafe 3.0.4); MU-19: jobs run only the tenant path, six single-user secret refs dropped (#359, #363) |
@@ -102,6 +104,26 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.23.0: 2026-11-26 (`main`@`16e5c5b`)
+
+Operator request: one page to see every upcoming booking across all accounts, like the one for
+past ones (#373), plus the week's Dependabot groups (#371, #372). **No booking-behaviour
+change**: one operator-only web page and web-side dependencies; no store, schema, job or infra
+change.
+
+- **Upcoming tee times** (`/admin/upcoming`, linked from Users and from Tee times used): every
+  person's dates for today and the next 21 days. **Booked** lists each tee time soonest first
+  (date, tee time and ranked option, person, course, players, what was asked for, and until
+  when the bot still upgrades it); **Still looking** lists the dates with no tee time yet.
+  Skipped, cancelled and lost dates are left out.
+- Built on each person's own dashboard read, so the two cannot disagree and the span is the
+  dashboard's. A ranked request across several courses is a line per course under Still
+  looking and one date in the heading's count.
+- **Dependencies**: fastapi 0.162.2 to 0.163.1, authlib 1.9.5 to 1.9.8, python-multipart 0.0.33
+  to 0.0.34 (#371, web only); pytest-asyncio 1.5.0 and ruff 0.17.5 (#372, tooling only).
+
+Details: [MULTIUSER_AS_BUILT.md](./MULTIUSER_AS_BUILT.md) "Upcoming tee times, for the operator".
 
 ## infra/v3.22.0: 2026-11-16 (`main`@`ed1f4be`)
 
