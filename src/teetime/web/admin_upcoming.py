@@ -41,6 +41,12 @@ class UpcomingReport:
         """The booked tee times' party sizes, summed."""
         return sum(b.entry.row.party_size for b in self.booked)
 
+    @property
+    def open_dates(self) -> int:
+        """Distinct (person, date) pairs still being looked for: a ranked request across
+        several courses is a PENDING row per course but ONE date."""
+        return len({(b.user.id, b.entry.row.target_date) for b in self.pending})
+
 
 def _order(b: UpcomingBooking) -> tuple[object, ...]:
     row = b.entry.row

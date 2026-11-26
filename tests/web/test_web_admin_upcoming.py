@@ -9,7 +9,9 @@ Clock: T0 = Sat 2026-09-26 08:00 EDT, so OCT3 / OCT10 / OCT17 are all ahead.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import httpx
 import respx
@@ -18,6 +20,7 @@ from starlette.routing import Route
 
 from teetime.core.clock import FakeClock
 from teetime.tenant.in_memory_store import InMemoryTenantStore
+from teetime.tenant.models import RowId
 from teetime.web import admin_upcoming, services
 from teetime.web.routes import ROUTES, AuthLevel
 
@@ -104,6 +107,22 @@ async def test_the_report_is_soonest_first_then_by_tee_time_then_by_person(
         ("turk@example.test", OCT17)
     ]
     assert report.players == 6
+
+
+async def test_one_ranked_request_across_two_courses_is_one_open_date(
+    store: InMemoryTenantStore, member: Member, mallory: Member, clock: FakeClock
+) -> None:
+    """A ranked request stores a row per course: two lines under Still looking, ONE date in
+    the heading's count."""
+    await _two_people(store, member, mallory)
+    (pending,) = (await admin_upcoming.upcoming_report(store, clock=clock)).pending
+    group = uuid4()
+    first = replace(pending.entry.row, group_id=group, group_rank=1)
+    store._rows[first.id] = first
+    second = replace(first, id=RowId(uuid4()), group_rank=2)
+    store._rows[second.id] = second
+    report = await admin_upcoming.upcoming_report(store, clock=clock)
+    assert (len(report.pending), report.open_dates) == (2, 1)
 
 
 async def test_a_date_that_has_passed_is_no_longer_upcoming(

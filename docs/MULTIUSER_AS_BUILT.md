@@ -1123,7 +1123,8 @@ today and the next 21 days in each course's local date.
   for, and until when the bot still upgrades it ("final" once frozen), with the dashboard's
   snapshot mismatch badge. The heading counts tee times and their players.
 - **Still looking**: every PENDING row, the same order, with its cutoff. A ranked request across
-  several courses is a row per course, as stored.
+  several courses is a row per course, as stored; the heading counts it once
+  (`UpcomingReport.open_dates`: distinct person + date).
 - SKIPPED, CANCELLED and LOST rows are left out: they hold no tee time and the bot is not
   looking for one; the per-person page still lists them.
 - No form and no query parameter; one dashboard read per person, like `/admin/users`.

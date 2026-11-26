@@ -5,7 +5,7 @@
 {# Operator request 2026-11-26: every person's upcoming tee times on one page, the
    forward-looking sibling of Tee times used. Read-only: links only, no form. #}
 {% set n = report.booked | length %}
-{% set open = report.pending | length %}
+{% set open = report.open_dates %}
 <p class="hint"><a href="/admin/users">← All users</a></p>
 <div class="page-head">
   <h1>Upcoming tee times</h1>
