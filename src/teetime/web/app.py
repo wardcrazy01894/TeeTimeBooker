@@ -58,6 +58,7 @@ from ..tenant.notify import EmailMessage, EmailSender, UserNotifier, render_invi
 from ..tenant.runner import AdapterFactory
 from ..tenant.store import TenantStore
 from . import admin_bookings as admin_bookings_view
+from . import admin_upcoming as admin_upcoming_view
 from . import admin_users as admin_users_view
 from . import auth
 from .auth import ForbiddenError
@@ -691,6 +692,15 @@ def _register_user_routes(app: FastAPI, ctx: _Ctx, *, current_user: _Dependency)
                 "windows": admin_bookings_view.WINDOWS,
                 "status_labels": STATUS_LABELS,
             },
+        )
+
+    @app.get("/admin/upcoming", response_class=HTMLResponse)
+    async def admin_upcoming(request: Request, operator: Operator) -> Response:
+        report = await admin_upcoming_view.upcoming_report(ctx.store, clock=ctx.clock)
+        return ctx.page(
+            request,
+            "admin_upcoming.html",
+            {"user": operator, "is_operator": True, "report": report},
         )
 
     @app.post("/admin/users")

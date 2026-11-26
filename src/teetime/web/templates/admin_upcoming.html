@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% from "_macros.html" import nice_date, windows %}
+{% block title %}Upcoming tee times · Users · TeeTimeBooker{% endblock %}
+{% block content %}
+{# Operator request 2026-11-26: every person's upcoming tee times on one page, the
+   forward-looking sibling of Tee times used. Read-only: links only, no form. #}
+{% set n = report.booked | length %}
+{% set open = report.open_dates %}
+<p class="hint"><a href="/admin/users">← All users</a></p>
+<div class="page-head">
+  <h1>Upcoming tee times</h1>
+  <p class="muted">Today and the next 21 days · <strong>{{ n }} tee time{% if n != 1 %}s{% endif %} booked</strong>{% if n %} for {{ report.players }} player{% if report.players != 1 %}s{% endif %}{% endif %} · {{ open }} date{% if open != 1 %}s{% endif %} still open</p>
+</div>
+<p class="actions"><a class="button small" href="/admin/bookings">Tee times used</a></p>
+
+<section>
+  <h2>Booked</h2>
+  {% if report.booked %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Tee time</th><th>Person</th><th>Course</th><th>Players</th><th>Asked for</th><th>Still upgrading until</th></tr></thead>
+      <tbody>
+        {% for b in report.booked %}
+        {% set r = b.entry %}
+        <tr>
+          <td class="date">{{ nice_date(r.row.target_date) }}</td>
+          <td class="tabular">{% if r.booked_tee_time_local %}<strong>{{ r.booked_tee_time_local }}</strong>{% if r.booked_rank %} <span class="hint">option {{ r.booked_rank }}</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td><a href="/admin/users/{{ b.user.id }}">{{ b.user.display_name or b.user.email }}</a> <span class="hint">{{ b.user.email }}</span></td>
+          <td>{{ r.row.course_id | course_name }}</td>
+          <td class="num">{{ r.row.party_size }}</td>
+          <td class="tabular muted">{{ windows(r.row.options) }}</td>
+          <td class="muted">{% if r.frozen %}final{% else %}{{ r.cutoff_local }}{% endif %}{% if r.mismatch %} <span class="hint">{{ r.mismatch | replace("_", " ") }}</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="placeholder">No tee times booked for the next 21 days.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Still looking</h2>
+  {% if report.pending %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Person</th><th>Course</th><th>Players</th><th>Asked for</th><th>Looking until</th></tr></thead>
+      <tbody>
+        {% for b in report.pending %}
+        {% set r = b.entry %}
+        <tr>
+          <td class="date">{{ nice_date(r.row.target_date) }}</td>
+          <td><a href="/admin/users/{{ b.user.id }}">{{ b.user.display_name or b.user.email }}</a> <span class="hint">{{ b.user.email }}</span></td>
+          <td>{{ r.row.course_id | course_name }}</td>
+          <td class="num">{{ r.row.party_size }}</td>
+          <td class="tabular">{{ windows(r.row.options) }}</td>
+          <td class="muted">{% if r.frozen %}cutoff passed{% else %}{{ r.cutoff_local }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="placeholder">Nothing still open: no date is waiting for a tee time.</p>
+  {% endif %}
+  <p class="hint">Booked tee times are soonest first. Still looking lists the dates people asked for that have no tee time yet; one request across several courses shows a line per course. Skipped and cancelled dates are left out (each person's page has them). From the site's records, as each person sees them on their own dashboard; this page never logs in to a course.</p>
+</section>
+{% endblock %}
