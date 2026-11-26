@@ -5,7 +5,7 @@
 {# Operator request 2026-11-16: one page for what every person booked and used, to charge by.
    Read-only, links only (no form): the window and the cancelled toggle are query parameters
    checked against a fixed list. #}
-<p class="hint"><a href="/admin/users">← All users</a></p>
+<p class="hint"><a href="/admin/users">← All users</a> · <a href="/admin/upcoming">Upcoming tee times</a></p>
 <div class="page-head">
   <h1>Tee times used</h1>
   <p class="muted">{{ report.label }}: {{ report.first.strftime('%b') }} {{ report.first.day }}, {{ report.first.year }} to {{ report.last.strftime('%b') }} {{ report.last.day }}, {{ report.last.year }} · <strong>{{ report.used }} tee time{% if report.used != 1 %}s{% endif %} used</strong></p>

@@ -1109,6 +1109,27 @@ arguments, so the report and a person's own `/history` cannot disagree.
 
 Tests: `tests/web/test_web_admin_bookings.py`.
 
+### Upcoming tee times, for the operator (2026-11-26)
+
+Operator request: "a page I can go to (as the admin) to see all upcoming bookings across all
+accounts. Similar to how I can see all historical ones." `/admin/upcoming`
+(`web/admin_upcoming.py::upcoming_report`, operator-gated, linked from Users and from Tee times
+used) runs `services.dashboard` once per signed-in person, the read each person's own dashboard
+makes, so the page and a person's dashboard cannot disagree and its span is the dashboard's:
+today and the next 21 days in each course's local date.
+
+- **Booked**: every BOOKED row, soonest first (date, then tee time, then email): date, tee time
+  with the ranked option it got, person (linked to their page), course, players, what was asked
+  for, and until when the bot still upgrades it ("final" once frozen), with the dashboard's
+  snapshot mismatch badge. The heading counts tee times and their players.
+- **Still looking**: every PENDING row, the same order, with its cutoff. A ranked request across
+  several courses is a row per course, as stored.
+- SKIPPED, CANCELLED and LOST rows are left out: they hold no tee time and the bot is not
+  looking for one; the per-person page still lists them.
+- No form and no query parameter; one dashboard read per person, like `/admin/users`.
+
+Tests: `tests/web/test_web_admin_upcoming.py`.
+
 ## Uninvited sign-in attempts on /admin/users (2026-09-29)
 
 Operator request; retention chosen by the operator (90 days). `_complete_signin` records every
