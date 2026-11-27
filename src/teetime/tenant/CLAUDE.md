@@ -88,6 +88,17 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](../../../docs/MULTIUSER_AS_B
   `_try_upgrade`: it pre-seeds a `TTB:` terminal only for an owned BOOKED row
   (`seeded_terminal`) and hands the upgrade policy only to such rows, and passes
   `reconcile_eligible` = owned. A manual reservation is never upgraded or cancelled by the bot.
+- **A reservation missing from the course's list on its own date is PLAYED, never cancelled**
+  (2026-11-27). ForeUP lists upcoming reservations only and drops one at check-in or after its
+  tee time, so the watcher wrote five played tee times `cancelled(external)`, emailed each
+  person "cancelled at the course", and the operator's used-tee-times report left them out.
+  `classify_missing_booking` returns `PLAY_DAY` when the older of its two counted misses was
+  observed on the row's date or later (course-local): the row stays BOOKED, no write, no email.
+  A miss first seen before the date is still an external cancel. Rows written the old way are
+  read as booked by `models.left_the_list_on_play_day` (history, the report); the dashboard's
+  "not seen at course" badge is off from the date on for the same reason. Pinned by
+  `test_a_reservation_that_leaves_the_list_on_the_day_of_play_is_not_a_cancel` and
+  `test_watch_a_reservation_gone_on_the_day_of_play_stays_booked`.
 - **Dry-run environments never mutate reservations** (§7.8): no upgrade, no reconcile-cancel, no
   `cancelled(external)` write, and the web refuses cancel. **And send NO email unless the BOOKER
   fails** (operator, 2026-10-04; the day before, dev's watcher had emailed a real inbox "No tee

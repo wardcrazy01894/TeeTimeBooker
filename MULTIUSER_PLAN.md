@@ -866,8 +866,9 @@ scale with distinct (date, party_size), not with N.
 Every watcher login upserts the account's `snapshot` doc (`observed_at`, `trusted`, entries) in its `tenant` partition. The
 dashboard shows DB row status **plus** the snapshot with its age ("as of 7 min ago"). The site
 therefore stays at most ~one cadence stale with **zero extra ForeUP calls**. Mismatch badges: row
-booked but not in a trusted snapshot means "not seen at course"; snapshot shows a reservation with
-no owned booking means "manual reservation".
+booked but not in a trusted snapshot means "not seen at course" (never from the row's own date
+on: the course drops a reservation from its upcoming list at check-in, §7.5); snapshot shows a
+reservation with no owned booking means "manual reservation".
 
 ### 7.5 Snapshot trust (a failure mode the engine had not surfaced)
 
@@ -886,6 +887,17 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
 - (b) and (c) are detected by the new `ReservationSnapshotHealth.snapshot_trusted` (E6). ForeUP sets it
   false on the non-JSON branch **and** when `reservations` is absent or not a list. The snapshot is persisted with `trusted=false` and never used for
   vanish inference or adoption.
+- **A reservation gone ON its own date is played, not cancelled** (2026-11-27). ForeUP lists
+  UPCOMING reservations only and drops one at check-in or once its tee time has gone (seen in prod
+  from 70 minutes before the tee time to within the hour after it), so from the row's date on (course-local)
+  the list cannot tell a cancel from a round of golf. When the OLDER of the two counted misses was
+  observed on the date or later the verdict is `PLAY_DAY`: the row stays BOOKED and nothing is
+  written or mailed. Until then five played tee times (2026-11-01 to 2026-11-27) were written
+  cancelled(external), each with a "cancelled at the course" email; history and the operator's
+  report read those rows as booked (`models.left_the_list_on_play_day`). Accepted cost: a real
+  cancel made on the day itself also stays BOOKED. Pinned by
+  `test_a_reservation_that_leaves_the_list_on_the_day_of_play_is_not_a_cancel` and
+  `test_watch_a_reservation_gone_on_the_day_of_play_stays_booked`.
 - **Vanish** needs the reservation absent from **two consecutive trusted** snapshots taken ≥ 10 min
   apart, **and** all of the following:
   - `upgrade_started_at` is NULL (no bot upgrade in flight or crashed; otherwise pending + `needs_reconcile`);

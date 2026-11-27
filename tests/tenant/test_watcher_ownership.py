@@ -209,6 +209,44 @@ def test_watch_vanish_needs_two_trusted_snapshots() -> None:
     )
 
 
+def test_a_reservation_that_leaves_the_list_on_the_day_of_play_is_not_a_cancel() -> None:
+    """ForeUP lists UPCOMING reservations only: one drops off at check-in or once its tee time
+    has gone (prod, 2026-11-27: a played 08:30 was marked cancelled at 10:10). Two misses both
+    seen on the date itself therefore say "played", never "cancelled"."""
+    r = _booked()
+    day = r.target_date
+    on_the_day = [_miss(local(day, time(9, 50))), _miss(local(day, time(8, 50)))]
+    assert (
+        classify_missing_booking(r, snapshots=on_the_day, owned=[])
+        is MissingBookingVerdict.PLAY_DAY
+    )
+    # Gone before the day began (the older miss is the evening before): a real cancel.
+    eve = local(day - timedelta(days=1), time(23, 40))
+    overnight = [_miss(local(day, time(0, 10))), _miss(eve)]
+    assert (
+        classify_missing_booking(r, snapshots=overnight, owned=[])
+        is MissingBookingVerdict.EXTERNAL_CANCEL
+    )
+    # The M2 exclusions still come first, and one miss is still not evidence.
+    marked = _booked(upgrade_started_at=local(day, time(8, 0)))
+    assert (
+        classify_missing_booking(marked, snapshots=on_the_day, owned=[])
+        is MissingBookingVerdict.BOT_CAUSED
+    )
+    replaced = [
+        _miss(local(day, time(9, 50)), entries=(entry("R2", time(11, 0)),)),
+        _miss(local(day, time(8, 50))),
+    ]
+    assert (
+        classify_missing_booking(r, snapshots=replaced, owned=[])
+        is MissingBookingVerdict.ADOPT_REPLACEMENT
+    )
+    assert (
+        classify_missing_booking(r, snapshots=on_the_day[:1], owned=[])
+        is MissingBookingVerdict.NOT_YET
+    )
+
+
 def test_watch_soft_auth_not_persisted() -> None:
     """An UNTRUSTED snapshot (soft login / non-JSON / no list — the E6 flag) never counts: it is
     neither a miss nor a sighting. Only the trusted subsequence feeds the vanish rule."""

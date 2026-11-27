@@ -1086,6 +1086,18 @@ want a way to easily just go see what was booked and used", on ONE page, not per
 runs `services.history` once per signed-in person, narrowed by its new `first` / `last`
 arguments, so the report and a person's own `/history` cannot disagree.
 
+- **A tee time that left the course's list on its own day is used** (2026-11-27, operator: "I'm
+  pretty sure brad used his tee time this morning"; the report had it cancelled). ForeUP drops a
+  reservation from the upcoming list at check-in or after its tee time, and the watcher read that
+  as a cancel at the course: five played tee times since 2026-11-01 (two more rows in those
+  weeks went missing the evening BEFORE their date and are real cancels). The watcher no longer does
+  (`MissingBookingVerdict.PLAY_DAY`, MULTIUSER_PLAN §7.5), and a row already written
+  CANCELLED(external) on its date or later is `HistoryRow.played`: `HistoryRow.outcome` is
+  BOOKED, which is what `/history`, its summary and this report show and count. A cancel seen
+  before the date is still cancelled. Tests:
+  `test_a_tee_time_the_course_dropped_from_its_list_on_the_day_counts_as_used`,
+  `test_a_tee_time_dropped_from_the_courses_list_on_its_own_day_reads_as_booked`,
+  `test_the_dashboard_does_not_flag_a_tee_time_missing_from_the_list_on_its_own_day`.
 - **Used** = a BOOKED row whose date has passed and whose reservation the bot booked. A
   CANCELLED row is counted per person (`PersonTotal.cancelled`) and listed only with
   `?cancelled=1`; it is never used. A held reservation with no ledger entry

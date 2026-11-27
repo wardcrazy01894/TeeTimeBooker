@@ -22,6 +22,7 @@ One run, in order (§7.1):
      engine is NOT run, so a missing booking is never "upgraded" or re-booked); BOT_CAUSED ->
      PENDING + ``needs_reconcile``; ADOPT_REPLACEMENT -> the replacement is adopted;
      EXTERNAL_CANCEL -> CANCELLED(external) + an email, never re-booked (dry-run: logged only);
+     PLAY_DAY (missing on the row's own date: checked in or played) -> nothing, it stays BOOKED;
    - a PENDING row whose trusted snapshot shows a same-(date, party) reservation is ADOPTED
      (§7.6): owned iff ledgered (or an exact recorded-UNCERTAIN slot), else unowned;
    - otherwise, if the row had a login reason, the UNMODIFIED ``WatchOrchestrator`` runs for it
@@ -317,6 +318,7 @@ _VERDICT_PRE: dict[MissingBookingVerdict, _Pre] = {
     MissingBookingVerdict.BOT_CAUSED: _Pre.BOT_CAUSED,
     MissingBookingVerdict.ADOPT_REPLACEMENT: _Pre.ADOPT_REPLACEMENT,
     MissingBookingVerdict.EXTERNAL_CANCEL: _Pre.EXTERNAL_CANCEL,
+    MissingBookingVerdict.PLAY_DAY: _Pre.WAIT,  # played or checked in: the row stays BOOKED
 }
 
 
@@ -838,6 +840,13 @@ class _Run:
             log.info(
                 "tenant-watch: row %s: reservation %s missing from one trusted snapshot; waiting "
                 "for a second one before inferring anything",
+                row.id,
+                raw,
+            )
+        elif verdict is MissingBookingVerdict.PLAY_DAY:
+            log.info(
+                "tenant-watch: row %s: reservation %s left the course's list on the day of "
+                "play (checked in or played); left BOOKED",
                 row.id,
                 raw,
             )
