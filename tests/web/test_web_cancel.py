@@ -399,6 +399,21 @@ async def test_cancel_refused_by_course_changes_nothing(store: SpyStore, clock: 
     assert store.batches == []
 
 
+async def test_cancel_refuses_a_tee_time_that_has_already_started(
+    store: SpyStore, clock: FakeClock
+) -> None:
+    """A played tee time stays BOOKED (the watcher no longer writes it cancelled when the course
+    drops it from its list), so a hand-made cancel POST could reach it: it would write the row
+    CANCELLED(already_gone) and mail "cancelled". Refused before any login."""
+    account, row = await _booked(store)
+    await clock.sleep((TEE - clock.now_utc()).total_seconds())
+    factory = ProbeFactory(adapter=_live_adapter())
+    with pytest.raises(CancelRefusedError, match="already started"):
+        await _cancel(store, clock, factory, account=account, row=row)
+    assert factory.calls == [] and store.batches == []
+    assert (await _row(store, account, row)).status is RowStatus.BOOKED
+
+
 async def test_cancel_refuses_a_row_that_is_not_booked(store: SpyStore, clock: FakeClock) -> None:
     account, row = await _booked(store)
     await _cancel(store, clock, ProbeFactory(adapter=_live_adapter(RAW)), account=account, row=row)

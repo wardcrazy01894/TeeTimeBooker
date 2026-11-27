@@ -22,7 +22,8 @@ One run, in order (§7.1):
      engine is NOT run, so a missing booking is never "upgraded" or re-booked); BOT_CAUSED ->
      PENDING + ``needs_reconcile``; ADOPT_REPLACEMENT -> the replacement is adopted;
      EXTERNAL_CANCEL -> CANCELLED(external) + an email, never re-booked (dry-run: logged only);
-     PLAY_DAY (missing on the row's own date: checked in or played) -> nothing, it stays BOOKED;
+     PLAY_DAY (first missing within the hour before its tee time, or later: checked in or
+     played) -> nothing, it stays BOOKED;
    - a PENDING row whose trusted snapshot shows a same-(date, party) reservation is ADOPTED
      (§7.6): owned iff ledgered (or an exact recorded-UNCERTAIN slot), else unowned;
    - otherwise, if the row had a login reason, the UNMODIFIED ``WatchOrchestrator`` runs for it
@@ -845,8 +846,8 @@ class _Run:
             )
         elif verdict is MissingBookingVerdict.PLAY_DAY:
             log.info(
-                "tenant-watch: row %s: reservation %s left the course's list on the day of "
-                "play (checked in or played); left BOOKED",
+                "tenant-watch: row %s: reservation %s left the course's list around its tee "
+                "time (checked in or played); left BOOKED",
                 row.id,
                 raw,
             )
