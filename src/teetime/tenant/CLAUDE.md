@@ -90,7 +90,7 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](../../../docs/MULTIUSER_AS_B
   `reconcile_eligible` = owned. A manual reservation is never upgraded or cancelled by the bot.
 - **A reservation missing from the course's list on its own date is PLAYED, never cancelled**
   (2026-11-27). ForeUP lists upcoming reservations only and drops one at check-in or after its
-  tee time, so the watcher wrote seven played tee times `cancelled(external)`, emailed each
+  tee time, so the watcher wrote five played tee times `cancelled(external)`, emailed each
   person "cancelled at the course", and the operator's used-tee-times report left them out.
   `classify_missing_booking` returns `PLAY_DAY` when the older of its two counted misses was
   observed on the row's date or later (course-local): the row stays BOOKED, no write, no email.

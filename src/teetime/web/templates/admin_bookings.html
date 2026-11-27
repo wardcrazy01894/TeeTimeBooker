@@ -67,6 +67,6 @@
   {% elif report.totals %}
   <p class="placeholder">Nothing to list: only cancelled tee times in this window. Show cancelled to see them.</p>
   {% endif %}
-  <p class="hint">A tee time counts as used once its date has passed and it was still booked when its day began. One cancelled before its day is counted per person but never as used; one that left the course's list on the day itself (the course drops it at check-in) is used. One the bot did not book (the person made it themselves) is listed in grey and not counted, and so is an extra booking: a second tee time held for one ranked request, which is charged once. From the site's records; this page never logs in to a course.</p>
+  <p class="hint">A tee time counts as used once its date has passed and the course still listed it when the site last looked before its day. One seen cancelled before its day is counted per person but never as used; one that left the course's list on the day itself (the course drops it at check-in) is used. One the bot did not book (the person made it themselves) is listed in grey and not counted, and so is an extra booking: a second tee time held for one ranked request, which is charged once. From the site's records; this page never logs in to a course.</p>
 </section>
 {% endblock %}

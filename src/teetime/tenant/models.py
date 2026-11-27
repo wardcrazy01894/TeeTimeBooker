@@ -496,7 +496,7 @@ def on_or_after_play_day(row: RequestRow, at: datetime) -> bool:
 
 def left_the_list_on_play_day(row: RequestRow) -> bool:
     """A row the watcher wrote CANCELLED(external) on its own date or later: written before the
-    play-day rule existed (seven in prod, 2026-10-31 to 2026-11-27). Its tee time was held to
+    play-day rule existed (five in prod, 2026-11-01 to 2026-11-27). Its tee time was held to
     the day, so history and the operator's report read it as booked, not cancelled."""
     return (
         row.status is RowStatus.CANCELLED

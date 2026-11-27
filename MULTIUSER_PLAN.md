@@ -889,10 +889,10 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
   vanish inference or adoption.
 - **A reservation gone ON its own date is played, not cancelled** (2026-11-27). ForeUP lists
   UPCOMING reservations only and drops one at check-in or once its tee time has gone (seen in prod
-  from 70 minutes before the tee time to that evening), so from the row's date on (course-local)
+  from 70 minutes before the tee time to within the hour after it), so from the row's date on (course-local)
   the list cannot tell a cancel from a round of golf. When the OLDER of the two counted misses was
   observed on the date or later the verdict is `PLAY_DAY`: the row stays BOOKED and nothing is
-  written or mailed. Until then seven played tee times (2026-10-31 to 2026-11-27) were written
+  written or mailed. Until then five played tee times (2026-11-01 to 2026-11-27) were written
   cancelled(external), each with a "cancelled at the course" email; history and the operator's
   report read those rows as booked (`models.left_the_list_on_play_day`). Accepted cost: a real
   cancel made on the day itself also stays BOOKED. Pinned by

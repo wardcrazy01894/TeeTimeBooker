@@ -1089,7 +1089,8 @@ arguments, so the report and a person's own `/history` cannot disagree.
 - **A tee time that left the course's list on its own day is used** (2026-11-27, operator: "I'm
   pretty sure brad used his tee time this morning"; the report had it cancelled). ForeUP drops a
   reservation from the upcoming list at check-in or after its tee time, and the watcher read that
-  as a cancel at the course: seven played tee times since 2026-10-31. The watcher no longer does
+  as a cancel at the course: five played tee times since 2026-11-01 (two more rows in those
+  weeks went missing the evening BEFORE their date and are real cancels). The watcher no longer does
   (`MissingBookingVerdict.PLAY_DAY`, MULTIUSER_PLAN §7.5), and a row already written
   CANCELLED(external) on its date or later is `HistoryRow.played`: `HistoryRow.outcome` is
   BOOKED, which is what `/history`, its summary and this report show and count. A cancel seen

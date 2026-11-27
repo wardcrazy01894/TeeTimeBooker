@@ -364,7 +364,7 @@ async def test_the_operators_page_for_a_person_shows_their_past_dates(
 async def test_a_tee_time_dropped_from_the_courses_list_on_its_own_day_reads_as_booked(
     client: httpx.AsyncClient, store: InMemoryTenantStore, member: Member, clock: FakeClock
 ) -> None:
-    """Prod, 2026-10-31 to 2026-11-27: the watcher wrote seven PLAYED tee times
+    """Prod, 2026-11-01 to 2026-11-27: the watcher wrote five PLAYED tee times
     CANCELLED(external), because the course drops a reservation from the upcoming list at
     check-in. A row cancelled that way on its own date was held to the day: history says
     booked. One cancelled before its date (Oct 10, in ``_a_month_of_golf``) stays cancelled."""
