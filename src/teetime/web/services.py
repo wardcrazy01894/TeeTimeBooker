@@ -89,7 +89,9 @@ from ..tenant.models import (
     TransitionRefusedError,
     User,
     UserId,
+    could_be_checked_in,
     derive_account_id,
+    left_the_list_on_play_day,
     row_is_frozen,
     row_local_tee_time,
 )
@@ -255,6 +257,16 @@ class HistoryRow:
     # How the reservation came to be (``_HOW_BOOKED``, from its ownership ledger entry), for a
     # BOOKED or CANCELLED row; None for a date that never held one, or whose ledger read failed.
     how: str | None = None
+    # A row written CANCELLED(external) at or after its tee time
+    # (``left_the_list_on_play_day``): the course dropped the reservation from its upcoming
+    # list at check-in, so it reads as booked.
+    played: bool = False
+
+    @property
+    def outcome(self) -> RowStatus:
+        """What became of the date, as shown and counted: the row's status, except that a
+        ``played`` row is BOOKED."""
+        return RowStatus.BOOKED if self.played else self.row.status
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,7 +592,9 @@ class _DashboardReader:
         if row.status is RowStatus.BOOKED and row.booked_raw_id not in {
             e.raw_id for e in snap.entries
         }:
-            return "not_seen_at_course"
+            # From an hour before the tee time the course's list no longer says anything: it
+            # drops a reservation at check-in, so every played tee time would carry the badge.
+            return None if could_be_checked_in(row, snap.observed_at) else "not_seen_at_course"
         tz = ZoneInfo(row.timezone)
         on_date = {
             e.raw_id for e in snap.entries if e.tee_time.astimezone(tz).date() == row.target_date
@@ -649,6 +663,7 @@ async def history(
     clock: Clock,
     first: date | None = None,
     last: date | None = None,
+    started_today: bool = False,
 ) -> list[HistoryRow]:
     """The person's PAST dates, newest first: every row the dashboard would have listed
     (``_VISIBLE``: a withdrawn or superseded row is a request taken back or replaced, not an
@@ -658,7 +673,9 @@ async def history(
     (account, date)) for the How column; never a snapshot or a course login.
     ``first`` / ``last`` narrow it to dates in that inclusive range (the operator's
     used-tee-times report), still inside the ``HISTORY_DAYS`` bound and still only past
-    dates."""
+    dates. ``started_today`` (that report only) adds TODAY's rows that held a reservation
+    whose tee time has started, so a tee time is "used" from its tee time on, not from the
+    next midnight; /history itself never passes it (today is on the dashboard)."""
     now = clock.now_utc()
     rows = await store.list_rows_for_user(
         user_id,
@@ -669,7 +686,10 @@ async def history(
     for row in sorted(rows, key=lambda r: (r.target_date, str(r.id)), reverse=True):
         local_today = now.astimezone(ZoneInfo(row.timezone)).date()
         oldest = local_today - timedelta(days=HISTORY_DAYS)
-        if row.status not in _VISIBLE or not oldest <= row.target_date < local_today:
+        past = oldest <= row.target_date < local_today
+        if started_today and row.target_date == local_today:
+            past = _held(row) and row.booked_tee_time is not None and row.booked_tee_time <= now
+        if row.status not in _VISIBLE or not past:
             continue
         if (first is None or first <= row.target_date) and (
             last is None or row.target_date <= last
@@ -695,6 +715,7 @@ async def history(
                 booked_rank=booked_rank(row),
                 show_year=row.target_date.year != local_today.year,
                 how=how,
+                played=left_the_list_on_play_day(row),
             )
         )
     return out
@@ -732,7 +753,7 @@ def history_summary(rows: Sequence[HistoryRow]) -> tuple[tuple[str, int], ...]:
     return tuple(
         (status.value, n)
         for status in _HISTORY_SUMMARY_ORDER
-        if (n := sum(1 for r in rows if r.row.status is status))
+        if (n := sum(1 for r in rows if r.outcome is status))
     )
 
 
@@ -1612,6 +1633,20 @@ def _booked_row(row: RequestRow) -> str:
     return row.booked_raw_id
 
 
+def _not_started(row: RequestRow, *, now: datetime) -> None:
+    """A tee time that has begun (no tee time on record: whose date has passed) has nothing
+    left to cancel. Its row stays BOOKED after the course drops the reservation from its list,
+    so without this a cancel would find it "already gone", write CANCELLED and mail it."""
+    if row.booked_tee_time is not None:
+        started = now >= row.booked_tee_time
+    else:
+        started = now.astimezone(ZoneInfo(row.timezone)).date() > row.target_date
+    if started:
+        raise CancelRefusedError(
+            "This tee time has already started, so there is nothing to cancel."
+        )
+
+
 async def _owned_entry(store: TenantStore, row: RequestRow, raw_id: str) -> OwnedBooking | None:
     for entry in await store.list_owned_bookings(
         row.course_account_id, target_date=row.target_date
@@ -1732,6 +1767,7 @@ async def cancel_row(
             "Cancelling is switched off in this dry-run environment: nothing was cancelled."
         )
     raw_id = _booked_row(row)
+    _not_started(row, now=clock.now_utc())
     entry = await _owned_entry(store, row, raw_id)
     if entry is None and not confirm_unowned:
         raise CancelRefusedError(_UNOWNED)

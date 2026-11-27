@@ -1086,7 +1086,23 @@ want a way to easily just go see what was booked and used", on ONE page, not per
 runs `services.history` once per signed-in person, narrowed by its new `first` / `last`
 arguments, so the report and a person's own `/history` cannot disagree.
 
-- **Used** = a BOOKED row whose date has passed and whose reservation the bot booked. A
+- **A tee time that left the course's list around its tee time is used** (2026-11-27, operator:
+  "I'm pretty sure brad used his tee time this morning"; the report had it cancelled). ForeUP
+  drops a reservation from the upcoming list at check-in or after its tee time, and the watcher
+  read that as a cancel at the course: three or four played tee times since 2026-11-01 (the logs do not name the fourth's tee time). The watcher no
+  longer does (`MissingBookingVerdict.PLAY_DAY`, MULTIUSER_PLAN §7.5), and a row already written
+  CANCELLED(external) at or after its tee time is `HistoryRow.played`: `HistoryRow.outcome` is
+  BOOKED, which is what `/history`, its summary and this report show and count. A reservation
+  first seen missing more than an hour before its tee time is still cancelled, on the day
+  itself too (three rows in those weeks: two gone the day before, one that morning). The web
+  cancel refuses a tee time that has started. Tests:
+  `test_a_tee_time_the_course_dropped_from_its_list_on_the_day_counts_as_used`,
+  `test_a_tee_time_cancelled_on_its_day_before_it_started_is_not_used`,
+  `test_a_tee_time_dropped_from_the_courses_list_on_its_own_day_reads_as_booked`,
+  `test_the_dashboard_does_not_flag_a_tee_time_missing_from_the_list_on_its_own_day`,
+  `test_cancel_refuses_a_tee_time_that_has_already_started`.
+- **Used** = a BOOKED row whose tee time has passed (today's included; a row with no tee time
+  on record counts once its date has passed) and whose reservation the bot booked. A
   CANCELLED row is counted per person (`PersonTotal.cancelled`) and listed only with
   `?cancelled=1`; it is never used. A held reservation with no ledger entry
   (`services.HOW_NOT_OURS`) is listed, greyed and counted apart (`not_ours`): the person made
@@ -1098,7 +1114,10 @@ arguments, so the report and a person's own `/history` cannot disagree.
   best-ranked is used and the rest are flagged "extra booking" (`duplicates`). LOST, SKIPPED
   and PENDING rows never appear.
 - **Windows** (`WINDOWS`, `window_dates`): `30d` (default), `90d`, `365d`, `this-month`,
-  `last-month`. A day window ends yesterday; months are calendar months (on the 1st, this month is empty); "today" is Eastern
+  `last-month`. A day window and this month end TODAY (2026-11-27, operator: "we shouldn't need
+  to wait til the next day"): a held tee time is used from its tee time on, via
+  `services.history(started_today=True)`, which /history itself never passes; months are
+  calendar months; "today" is Eastern
   (the operator's clock, like the attempt times on Users). An unknown key is the default. The
   365-day bound of `history` still applies.
 - **By person**: used tee times, their players summed (a per-player charge needs no second

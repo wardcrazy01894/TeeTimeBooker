@@ -27,8 +27,9 @@
 </fieldset>
 {% endmacro %}
 
+{# `r.played` (history only): cancelled(external) on its own date reads as booked. #}
 {% macro status(r, status_labels) -%}
-{{ status_labels.get((r.row.status.value, r.row.status_reason), r.row.status.value) }}
+{% if r.played %}booked{% else %}{{ status_labels.get((r.row.status.value, r.row.status_reason), r.row.status.value) }}{% endif %}
 {%- endmacro %}
 
 {# Past dates, newest first (services.history): what was asked for and what became of it. Shared
@@ -44,7 +45,7 @@
         <td>{{ r.row.course_id | course_name }}</td>
         <td class="tabular">{{ windows(r.row.options) }} · {{ r.row.party_size }} player{% if r.row.party_size != 1 %}s{% endif %}</td>
         <td class="muted">{{ "weekly" if r.row.source.value == "rule" else "one-off" }}</td>
-        <td><span class="status status-{{ r.row.status.value }}">{{ status(r, status_labels) }}</span></td>
+        <td><span class="status status-{{ r.outcome.value }}">{{ status(r, status_labels) }}</span></td>
         <td class="tabular">{% if r.tee_time_local %}{{ r.tee_time_local }}{% if r.booked_rank %} <span class="hint">option {{ r.booked_rank }}</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
         <td class="muted">{% if r.how %}{{ r.how }}{% else %}—{% endif %}</td>
       </tr>
