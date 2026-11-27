@@ -866,8 +866,8 @@ scale with distinct (date, party_size), not with N.
 Every watcher login upserts the account's `snapshot` doc (`observed_at`, `trusted`, entries) in its `tenant` partition. The
 dashboard shows DB row status **plus** the snapshot with its age ("as of 7 min ago"). The site
 therefore stays at most ~one cadence stale with **zero extra ForeUP calls**. Mismatch badges: row
-booked but not in a trusted snapshot means "not seen at course" (never from the row's own date
-on: the course drops a reservation from its upcoming list at check-in, §7.5); snapshot shows a
+booked but not in a trusted snapshot means "not seen at course" (never from an hour before the
+row's tee time on: the course drops a reservation from its upcoming list at check-in, §7.5); snapshot shows a
 reservation with no owned booking means "manual reservation".
 
 ### 7.5 Snapshot trust (a failure mode the engine had not surfaced)
@@ -887,17 +887,24 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
 - (b) and (c) are detected by the new `ReservationSnapshotHealth.snapshot_trusted` (E6). ForeUP sets it
   false on the non-JSON branch **and** when `reservations` is absent or not a list. The snapshot is persisted with `trusted=false` and never used for
   vanish inference or adoption.
-- **A reservation gone ON its own date is played, not cancelled** (2026-11-27). ForeUP lists
-  UPCOMING reservations only and drops one at check-in or once its tee time has gone (seen in prod
-  from 70 minutes before the tee time to within the hour after it), so from the row's date on (course-local)
-  the list cannot tell a cancel from a round of golf. When the OLDER of the two counted misses was
-  observed on the date or later the verdict is `PLAY_DAY`: the row stays BOOKED and nothing is
-  written or mailed. Until then five played tee times (2026-11-01 to 2026-11-27) were written
-  cancelled(external), each with a "cancelled at the course" email; history and the operator's
-  report read those rows as booked (`models.left_the_list_on_play_day`). Accepted cost: a real
-  cancel made on the day itself also stays BOOKED. Pinned by
-  `test_a_reservation_that_leaves_the_list_on_the_day_of_play_is_not_a_cancel` and
-  `test_watch_a_reservation_gone_on_the_day_of_play_stays_booked`.
+- **A reservation gone around its tee time is played, not cancelled** (2026-11-27). ForeUP lists
+  UPCOMING reservations only and drops one at check-in or once its tee time has gone, so from then
+  on the list cannot tell a cancel from a round of golf. When the OLDER of the two counted misses
+  was observed within `CHECK_IN_WINDOW` (60 min) before the row's tee time, or later, the verdict
+  is `PLAY_DAY`: the row stays BOOKED and nothing is written or mailed
+  (`models.could_be_checked_in`; a row with no tee time on record goes by its date). A miss first
+  seen earlier, the same morning included, is still an external cancel. Why 60 minutes: the
+  watcher logs in about hourly, and the played tee times it had written cancelled(external)
+  (2026-11-01 to 2026-11-27, each with a "cancelled at the course" email; three whose tee time
+  the logs name, and probably a fourth) were first missed between 17 minutes before the tee time
+  and an hour after it. History and the
+  operator's report read those rows as booked (`models.left_the_list_on_play_day`: written at or
+  after the tee time, i.e. first missed inside the window). Accepted cost: a real cancel in the
+  last hour before the tee time also stays BOOKED. The web cancel refuses a tee time that has
+  started, since its row is still BOOKED. Pinned by
+  `test_a_reservation_that_leaves_the_list_on_the_day_of_play_is_not_a_cancel`,
+  `test_watch_a_reservation_gone_on_the_day_of_play_stays_booked` and
+  `test_watch_a_reservation_gone_well_before_its_tee_time_is_still_a_cancel`.
 - **Vanish** needs the reservation absent from **two consecutive trusted** snapshots taken ≥ 10 min
   apart, **and** all of the following:
   - `upgrade_started_at` is NULL (no bot upgrade in flight or crashed; otherwise pending + `needs_reconcile`);
@@ -1178,7 +1185,9 @@ Row transitions map store errors to responses: `RowLeaseError` → 409 "booking 
 
 ### 8.5 Cancel (the managed-cancel path, FRONTEND_PLAN §2/§3, adapted)
 
-0. In a dry-run environment, refuse (§7.8).
+0. In a dry-run environment, refuse (§7.8). Refuse a tee time that has already started
+   (2026-11-27): its row stays BOOKED after the course drops the reservation at check-in (§7.5),
+   and a cancel would find it "already gone" and write CANCELLED.
 1. Acquire the row lease (60 s), revalidating the row fingerprint (M5). If the booker holds it,
    respond "booking in progress; try after 06:20".
 2. Decrypt the credentials and build the adapter. Run `authenticate` and require `is_authenticated`

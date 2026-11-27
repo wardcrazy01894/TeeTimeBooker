@@ -45,7 +45,7 @@ from .models import (
     ReservationSnapshot,
     RowStatus,
     achieved_rank,
-    on_or_after_play_day,
+    could_be_checked_in,
     options_time_windows,
     row_max_price,
 )
@@ -305,8 +305,9 @@ class MissingBookingVerdict(StrEnum):
     NOT_YET = "not_yet"  # fewer than VANISH_CONSECUTIVE_TRUSTED_SNAPSHOTS trusted misses
     BOT_CAUSED = "bot_caused"  # upgrade marker set, or ledgered cancelled_upgrade/extra
     ADOPT_REPLACEMENT = "adopt_replacement"  # a same-(date, party) reservation exists
-    # Gone from the list ON the date itself: the course lists upcoming reservations only, so it
-    # drops one at check-in or once its tee time has gone. Played, not cancelled: nothing written.
+    # Gone from the list within the hour before its tee time, or later: the course lists
+    # upcoming reservations only, so it drops one at check-in or once its tee time has gone.
+    # Played, not cancelled: nothing written (``models.could_be_checked_in``).
     PLAY_DAY = "play_day"
     EXTERNAL_CANCEL = "external_cancel"  # the expected common case: mark, notify, never re-book
 
@@ -320,10 +321,10 @@ def classify_missing_booking(
     """Pure (round-1 M2 exclusions + operator decision Q7). Only TRUSTED snapshots count (an
     untrusted one is neither a miss nor a sighting); they are ordered by ``observed_at`` here, so
     input order does not matter. BOT_CAUSED -> PENDING + needs_reconcile; EXTERNAL_CANCEL ->
-    CANCELLED(external) + slot freed + email; PLAY_DAY (every counted miss was seen on the
-    row's own date, course-local) -> the row stays BOOKED. Raises ``ValueError`` for a
-    non-BOOKED row or a snapshot of another account; a BOOKED row with no raw id is NOT_YET
-    (adoption resolves it)."""
+    CANCELLED(external) + slot freed + email; PLAY_DAY (every counted miss was seen within
+    ``CHECK_IN_WINDOW`` before the tee time, or later) -> the row stays BOOKED. Raises
+    ``ValueError`` for a non-BOOKED row or a snapshot of another account; a BOOKED row with no
+    raw id is NOT_YET (adoption resolves it)."""
     if row.status is not RowStatus.BOOKED:
         raise ValueError(f"classify_missing_booking needs a BOOKED row, got {row.status}")
     if any(s.course_account_id != row.course_account_id for s in snapshots):
@@ -349,9 +350,9 @@ def classify_missing_booking(
     legs: tuple[tuple[bool, MissingBookingVerdict], ...] = (
         (row.upgrade_started_at is not None or cancelled_by_us, MissingBookingVerdict.BOT_CAUSED),
         (replaced, MissingBookingVerdict.ADOPT_REPLACEMENT),
-        # The OLDEST counted miss decides: a reservation already gone the evening before was
-        # cancelled, whatever day the second look fell on.
-        (on_or_after_play_day(row, oldest.observed_at), MissingBookingVerdict.PLAY_DAY),
+        # The OLDEST counted miss decides: a reservation already gone hours before its tee time
+        # was cancelled, however late the second look fell.
+        (could_be_checked_in(row, oldest.observed_at), MissingBookingVerdict.PLAY_DAY),
     )
     return next((verdict for hit, verdict in legs if hit), MissingBookingVerdict.EXTERNAL_CANCEL)
 

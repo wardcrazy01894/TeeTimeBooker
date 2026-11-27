@@ -89,9 +89,9 @@ from ..tenant.models import (
     TransitionRefusedError,
     User,
     UserId,
+    could_be_checked_in,
     derive_account_id,
     left_the_list_on_play_day,
-    on_or_after_play_day,
     row_is_frozen,
     row_local_tee_time,
 )
@@ -257,8 +257,9 @@ class HistoryRow:
     # How the reservation came to be (``_HOW_BOOKED``, from its ownership ledger entry), for a
     # BOOKED or CANCELLED row; None for a date that never held one, or whose ledger read failed.
     how: str | None = None
-    # A row written CANCELLED(external) on its own date (``left_the_list_on_play_day``): the
-    # course dropped the reservation from its upcoming list at check-in, so it reads as booked.
+    # A row written CANCELLED(external) at or after its tee time
+    # (``left_the_list_on_play_day``): the course dropped the reservation from its upcoming
+    # list at check-in, so it reads as booked.
     played: bool = False
 
     @property
@@ -591,9 +592,9 @@ class _DashboardReader:
         if row.status is RowStatus.BOOKED and row.booked_raw_id not in {
             e.raw_id for e in snap.entries
         }:
-            # From the date itself the course's list no longer says anything: it drops a
-            # reservation at check-in, so every played tee time would carry the badge.
-            return None if on_or_after_play_day(row, snap.observed_at) else "not_seen_at_course"
+            # From an hour before the tee time the course's list no longer says anything: it
+            # drops a reservation at check-in, so every played tee time would carry the badge.
+            return None if could_be_checked_in(row, snap.observed_at) else "not_seen_at_course"
         tz = ZoneInfo(row.timezone)
         on_date = {
             e.raw_id for e in snap.entries if e.tee_time.astimezone(tz).date() == row.target_date
@@ -1626,6 +1627,20 @@ def _booked_row(row: RequestRow) -> str:
     return row.booked_raw_id
 
 
+def _not_started(row: RequestRow, *, now: datetime) -> None:
+    """A tee time that has begun (no tee time on record: whose date has passed) has nothing
+    left to cancel. Its row stays BOOKED after the course drops the reservation from its list,
+    so without this a cancel would find it "already gone", write CANCELLED and mail it."""
+    if row.booked_tee_time is not None:
+        started = now >= row.booked_tee_time
+    else:
+        started = now.astimezone(ZoneInfo(row.timezone)).date() > row.target_date
+    if started:
+        raise CancelRefusedError(
+            "This tee time has already started, so there is nothing to cancel."
+        )
+
+
 async def _owned_entry(store: TenantStore, row: RequestRow, raw_id: str) -> OwnedBooking | None:
     for entry in await store.list_owned_bookings(
         row.course_account_id, target_date=row.target_date
@@ -1746,6 +1761,7 @@ async def cancel_row(
             "Cancelling is switched off in this dry-run environment: nothing was cancelled."
         )
     raw_id = _booked_row(row)
+    _not_started(row, now=clock.now_utc())
     entry = await _owned_entry(store, row, raw_id)
     if entry is None and not confirm_unowned:
         raise CancelRefusedError(_UNOWNED)

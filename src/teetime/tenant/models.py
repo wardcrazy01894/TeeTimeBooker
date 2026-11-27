@@ -487,23 +487,39 @@ def row_is_frozen(row: RequestRow, *, now: datetime) -> bool:
     return row.target_date < now.astimezone(ZoneInfo(row.timezone)).date()
 
 
-def on_or_after_play_day(row: RequestRow, at: datetime) -> bool:
-    """True iff ``at`` falls on ``row``'s target date or later, in its COURSE timezone. A course
-    lists UPCOMING reservations only, so from the date itself a reservation missing from the list
-    was checked in or played, not cancelled (prod 2026-11-27)."""
-    return at.astimezone(ZoneInfo(row.timezone)).date() >= row.target_date
+# How long before its tee time a reservation may leave the course's list and still be a
+# check-in. The watcher logs in about hourly, so a first miss is up to an hour after the fact;
+# every check-in seen in prod was first missed inside this window, and nobody checks in earlier.
+CHECK_IN_WINDOW = timedelta(minutes=60)
+
+
+def could_be_checked_in(row: RequestRow, at: datetime) -> bool:
+    """True iff a reservation of ``row`` missing from the course's list at ``at`` may simply be
+    checked in or played: ``at`` is within ``CHECK_IN_WINDOW`` before its tee time, or later. A
+    course lists UPCOMING reservations only and drops one at check-in (prod 2026-11-27), so from
+    then on a miss is not a cancel; one seen missing EARLIER was cancelled. A row with no tee
+    time on record falls back to its date (course-local)."""
+    if row.booked_tee_time is None:
+        return at.astimezone(ZoneInfo(row.timezone)).date() >= row.target_date
+    return at >= row.booked_tee_time - CHECK_IN_WINDOW
 
 
 def left_the_list_on_play_day(row: RequestRow) -> bool:
-    """A row the watcher wrote CANCELLED(external) on its own date or later: written before the
-    play-day rule existed (five in prod, 2026-11-01 to 2026-11-27). Its tee time was held to
-    the day, so history and the operator's report read it as booked, not cancelled."""
-    return (
-        row.status is RowStatus.CANCELLED
-        and row.status_reason == "external"
-        and row.last_outcome_at is not None
-        and on_or_after_play_day(row, row.last_outcome_at)
-    )
+    """A row the watcher wrote CANCELLED(external) at or after its tee time: written before the
+    check-in rule existed (three or four in prod, 2026-11-01 to 2026-11-27). Its tee time was
+    played, so history and the operator's report read it as booked, not cancelled. That write
+    came at the SECOND miss, about an hour after the first, so "at or after the tee time" here
+    is the same line ``could_be_checked_in`` draws at the first. No tee time on record: its
+    date decides."""
+    if (
+        row.status is not RowStatus.CANCELLED
+        or row.status_reason != "external"
+        or row.last_outcome_at is None
+    ):
+        return False
+    if row.booked_tee_time is None:
+        return row.last_outcome_at.astimezone(ZoneInfo(row.timezone)).date() >= row.target_date
+    return row.last_outcome_at >= row.booked_tee_time
 
 
 def lease_held(row: RequestRow, *, now: datetime) -> bool:

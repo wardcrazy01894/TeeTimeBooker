@@ -100,6 +100,22 @@ async def test_cancelled_tee_times_are_there_when_asked_for_and_lost_dates_never
     assert "1 tee time used" in text  # a cancelled one is listed, never counted as used
 
 
+async def test_a_tee_time_cancelled_on_its_day_before_it_started_is_not_used(
+    store: InMemoryTenantStore, member: Member, clock: FakeClock
+) -> None:
+    """A row the watcher wrote cancelled BEFORE the tee time (09:30) was a cancel, even on the
+    day itself; only one written at or after the tee time was a check-in."""
+    await _a_month_of_golf(store, member, clock)
+    (oct3,) = await store.list_rows_for_user(member.user.id, from_date=OCT3, to_date=OCT3)
+    await _cancel_at_course(store, oct3, at=TEE_OCT3 - timedelta(minutes=1))
+    report = await admin_bookings.usage_report(
+        store, clock=clock, window="30d", include_cancelled=True
+    )
+    assert [b.billable for b in report.bookings] == [False, False]
+    (total,) = report.totals
+    assert (total.used, total.cancelled) == (0, 2)
+
+
 async def test_a_tee_time_the_course_dropped_from_its_list_on_the_day_counts_as_used(
     client: httpx.AsyncClient,
     store: InMemoryTenantStore,
