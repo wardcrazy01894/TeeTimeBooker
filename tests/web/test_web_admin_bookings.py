@@ -23,7 +23,7 @@ from starlette.routing import Route
 from teetime.core.clock import FakeClock
 from teetime.tenant.in_memory_store import InMemoryTenantStore
 from teetime.tenant.models import RowId
-from teetime.web import admin_bookings
+from teetime.web import admin_bookings, services
 from teetime.web.routes import ROUTES, AuthLevel
 
 from .conftest import sign_in
@@ -73,7 +73,7 @@ async def test_the_report_lists_used_tee_times_and_counts_them_per_person(
     page = await _as_operator(client, provider_mock, "/admin/bookings")
     assert page.status_code == 200
     text = _main(page.text)
-    assert "Last 30 days" in text and "Sep 20" in text and "Oct 19" in text  # the window, dated
+    assert "Last 30 days" in text and "Sep 20" in text and "Oct 20" in text  # the window, dated
     # The used one: who, when, what time, how many, how.
     used = text[text.index("Oct 3") :]
     assert "turk@example.test" in used and "09:30" in used and "when tee times opened" in used
@@ -98,6 +98,29 @@ async def test_cancelled_tee_times_are_there_when_asked_for_and_lost_dates_never
     assert "cancelled at the course" in cancelled and "08:15" in cancelled
     assert "Oct 17" not in text
     assert "1 tee time used" in text  # a cancelled one is listed, never counted as used
+
+
+async def test_a_tee_time_counts_as_used_from_its_tee_time_on_the_same_day(
+    store: InMemoryTenantStore, member: Member, clock: FakeClock
+) -> None:
+    """Operator, 2026-11-27: "we shouldn't need to wait til the next day". A tee time still
+    held when it starts is used from that minute; a minute earlier it is still to come."""
+    rule = await _seed_rule(store, member)
+    await _book(store, await _row_for(store, member, rule, OCT3), TEE_OCT3)
+    await _move_clock_to(clock, TEE_OCT3 - timedelta(minutes=1))
+    early = await admin_bookings.usage_report(
+        store, clock=clock, window="30d", include_cancelled=True
+    )
+    assert (early.last, early.used, early.bookings) == (OCT3, 0, ())
+    await _move_clock_to(clock, TEE_OCT3)
+    for window in ("30d", "this-month"):
+        report = await admin_bookings.usage_report(
+            store, clock=clock, window=window, include_cancelled=False
+        )
+        assert (report.last, report.used) == (OCT3, 1)
+        assert [(b.entry.row.target_date, b.billable) for b in report.bookings] == [(OCT3, True)]
+    # The person's own /history still starts yesterday: today is on their dashboard.
+    assert await services.history(store, user_id=member.user.id, clock=clock) == []
 
 
 async def test_a_tee_time_cancelled_on_its_day_before_it_started_is_not_used(
@@ -146,12 +169,12 @@ async def test_a_tee_time_the_course_dropped_from_its_list_on_the_day_counts_as_
 @pytest.mark.parametrize(
     ("window", "first", "last", "has_oct3"),
     [
-        ("30d", date(2026, 10, 6), date(2026, 11, 4), False),
-        ("90d", date(2026, 8, 7), date(2026, 11, 4), True),
-        ("365d", date(2025, 11, 5), date(2026, 11, 4), True),
-        ("this-month", date(2026, 11, 1), date(2026, 11, 4), False),
+        ("30d", date(2026, 10, 6), date(2026, 11, 5), False),
+        ("90d", date(2026, 8, 7), date(2026, 11, 5), True),
+        ("365d", date(2025, 11, 5), date(2026, 11, 5), True),
+        ("this-month", date(2026, 11, 1), date(2026, 11, 5), False),
         ("last-month", date(2026, 10, 1), date(2026, 10, 31), True),
-        ("garbage", date(2026, 10, 6), date(2026, 11, 4), False),  # unknown: the default
+        ("garbage", date(2026, 10, 6), date(2026, 11, 5), False),  # unknown: the default
     ],
 )
 async def test_each_window_covers_its_dates(
@@ -163,8 +186,8 @@ async def test_each_window_covers_its_dates(
     last: date,
     has_oct3: bool,
 ) -> None:
-    """Seen from Thu Nov 5: windows end YESTERDAY (a tee time counts once its date has passed)
-    and months are calendar months on the operator's (Eastern) clock."""
+    """Seen from Thu Nov 5: day windows and this month end TODAY (a tee time counts from its
+    tee time on, the same day) and months are calendar months on the operator's (Eastern) clock."""
     await _a_month_of_golf(store, member, clock)
     await _move_clock_to(clock, NOV5_NOON)
     report = await admin_bookings.usage_report(
@@ -236,12 +259,12 @@ async def test_a_member_session_cannot_reach_it_after_signing_in_again(
 @pytest.mark.parametrize(
     ("today", "window", "first", "last"),
     [
-        # The 1st: this month has no past day yet (an empty window, never a backwards one).
+        # The 1st: this month is that one day.
         (date(2026, 11, 1), "this-month", date(2026, 11, 1), date(2026, 11, 1)),
         (date(2026, 11, 1), "last-month", date(2026, 10, 1), date(2026, 10, 31)),
         (date(2027, 1, 9), "last-month", date(2026, 12, 1), date(2026, 12, 31)),  # across a year
         (date(2028, 3, 1), "last-month", date(2028, 2, 1), date(2028, 2, 29)),  # a leap February
-        (date(2028, 2, 29), "365d", date(2027, 3, 1), date(2028, 2, 28)),
+        (date(2028, 2, 29), "365d", date(2027, 3, 1), date(2028, 2, 29)),
     ],
 )
 def test_window_edges(today: date, window: str, first: date, last: date) -> None:
