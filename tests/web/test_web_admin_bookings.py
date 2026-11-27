@@ -11,7 +11,7 @@ Oct 17 lost), seen from Tue Oct 20 2026 12:00 EDT unless a test moves it.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import httpx
@@ -33,6 +33,7 @@ from .test_web_history import (
     TEE_OCT3,
     _a_month_of_golf,
     _book,
+    _cancel_at_course,
     _main,
     _move_clock_to,
     _row_for,
@@ -97,6 +98,33 @@ async def test_cancelled_tee_times_are_there_when_asked_for_and_lost_dates_never
     assert "cancelled at the course" in cancelled and "08:15" in cancelled
     assert "Oct 17" not in text
     assert "1 tee time used" in text  # a cancelled one is listed, never counted as used
+
+
+async def test_a_tee_time_the_course_dropped_from_its_list_on_the_day_counts_as_used(
+    client: httpx.AsyncClient,
+    store: InMemoryTenantStore,
+    member: Member,
+    clock: FakeClock,
+    provider_mock: respx.MockRouter,
+) -> None:
+    """Operator, 2026-11-27: "I'm pretty sure brad used his tee time this morning", and the
+    report had it cancelled. The course drops a reservation from the upcoming list at check-in,
+    which the watcher wrote CANCELLED(external) on the day; that is a used tee time. Oct 10,
+    cancelled before its date, is still not."""
+    await _a_month_of_golf(store, member, clock)
+    (oct3,) = await store.list_rows_for_user(member.user.id, from_date=OCT3, to_date=OCT3)
+    await _cancel_at_course(store, oct3, at=TEE_OCT3 + timedelta(minutes=40))
+    report = await admin_bookings.usage_report(
+        store, clock=clock, window="30d", include_cancelled=True
+    )
+    assert {b.entry.row.target_date: b.billable for b in report.bookings} == {
+        OCT10: False,
+        OCT3: True,
+    }
+    (total,) = report.totals
+    assert (total.used, total.players, total.cancelled) == (1, 2, 1)
+    text = _main((await _as_operator(client, provider_mock, "/admin/bookings")).text)
+    assert "1 tee time used" in text and "Oct 3" in text and "Oct 10" not in text
 
 
 @pytest.mark.parametrize(

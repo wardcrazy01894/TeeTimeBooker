@@ -90,6 +90,8 @@ from ..tenant.models import (
     User,
     UserId,
     derive_account_id,
+    left_the_list_on_play_day,
+    on_or_after_play_day,
     row_is_frozen,
     row_local_tee_time,
 )
@@ -255,6 +257,15 @@ class HistoryRow:
     # How the reservation came to be (``_HOW_BOOKED``, from its ownership ledger entry), for a
     # BOOKED or CANCELLED row; None for a date that never held one, or whose ledger read failed.
     how: str | None = None
+    # A row written CANCELLED(external) on its own date (``left_the_list_on_play_day``): the
+    # course dropped the reservation from its upcoming list at check-in, so it reads as booked.
+    played: bool = False
+
+    @property
+    def outcome(self) -> RowStatus:
+        """What became of the date, as shown and counted: the row's status, except that a
+        ``played`` row is BOOKED."""
+        return RowStatus.BOOKED if self.played else self.row.status
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,7 +591,9 @@ class _DashboardReader:
         if row.status is RowStatus.BOOKED and row.booked_raw_id not in {
             e.raw_id for e in snap.entries
         }:
-            return "not_seen_at_course"
+            # From the date itself the course's list no longer says anything: it drops a
+            # reservation at check-in, so every played tee time would carry the badge.
+            return None if on_or_after_play_day(row, snap.observed_at) else "not_seen_at_course"
         tz = ZoneInfo(row.timezone)
         on_date = {
             e.raw_id for e in snap.entries if e.tee_time.astimezone(tz).date() == row.target_date
@@ -695,6 +708,7 @@ async def history(
                 booked_rank=booked_rank(row),
                 show_year=row.target_date.year != local_today.year,
                 how=how,
+                played=left_the_list_on_play_day(row),
             )
         )
     return out
@@ -732,7 +746,7 @@ def history_summary(rows: Sequence[HistoryRow]) -> tuple[tuple[str, int], ...]:
     return tuple(
         (status.value, n)
         for status in _HISTORY_SUMMARY_ORDER
-        if (n := sum(1 for r in rows if r.row.status is status))
+        if (n := sum(1 for r in rows if r.outcome is status))
     )
 
 

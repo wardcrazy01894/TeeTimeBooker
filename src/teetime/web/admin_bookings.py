@@ -3,7 +3,9 @@ might start charging people for the tee times they use").
 
 Every signed-in person's PAST dates that still hold a tee time (a BOOKED row whose date has
 passed), in a chosen window, newest first, with a count per person. A booked-then-cancelled
-date is not "used": it is counted per person but listed only when asked for. A reservation the
+date is not "used": it is counted per person but listed only when asked for. "Still held" is
+``HistoryRow.outcome``, so a reservation the course dropped from its upcoming list on the day
+of play (check-in; the watcher once wrote those cancelled) is used, not cancelled. A reservation the
 bot never owned (``services.HOW_NOT_OURS``: one the person made themselves, found on the date)
 is listed, flagged and NOT counted, since it is not the site's work to charge for.
 
@@ -128,8 +130,8 @@ async def usage_report(
         entries = await services.history(
             store, user_id=user.id, clock=clock, first=first, last=last
         )
-        held = [e for e in entries if e.row.status is RowStatus.BOOKED]
-        cancelled = [e for e in entries if e.row.status is RowStatus.CANCELLED]
+        held = [e for e in entries if e.outcome is RowStatus.BOOKED]
+        cancelled = [e for e in entries if e.outcome is RowStatus.CANCELLED]
         ours = [e for e in held if e.how != services.HOW_NOT_OURS]
         used = _one_per_request(ours)
         if not held and not cancelled:
