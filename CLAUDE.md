@@ -62,7 +62,7 @@ Two paths exist side by side:
 
 | | |
 |---|---|
-| Latest infra tag | latest infra tag `infra/v3.24.0` (2026-11-27: the watcher no longer writes a tee time that left the course's list on its own day `cancelled(external)`, and the used-tee-times report counts the five it had; no booking-behaviour change); history in [docs/RELEASES.md](./docs/RELEASES.md) |
+| Latest infra tag | latest infra tag `infra/v3.25.0` (2026-11-27: a reservation gone from the course's list around its tee time is played, one gone over an hour earlier is cancelled; the used-tee-times report counts a tee time from its tee time on, the same day; the web cancel refuses a started tee time; fastapi 0.165.0, authlib 1.9.10, pydantic 2.14.4; no booking-behaviour change); history in [docs/RELEASES.md](./docs/RELEASES.md) |
 | Mode | `dryRun=false`, `killswitchFired=false`, `enableSchedules=true` |
 | Booking jobs | `teetime-job-prod-edt` `50 9 * * *` and `teetime-job-prod-est` `50 10 * * *` (05:50 ET, one per DST half), 1200 s timeout; `tenant-run --event mb0600et --wait` since MU-18 stage B (was `run --wait`) |
 | Watch job | `teetime-watch-job-prod` `*/10 * * * *`, 300 s timeout; `tenant-watch` since MU-18 stage B |
