@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.25.0: 2026-11-27 (`main`@`38b3186`)](#infrav3250-2026-11-27-main38b3186)
 - [infra/v3.24.0: 2026-11-27 (`main`@`58f7753`)](#infrav3240-2026-11-27-main58f7753)
 - [infra/v3.23.0: 2026-11-26 (`main`@`16e5c5b`)](#infrav3230-2026-11-26-main16e5c5b)
 - [infra/v3.22.0: 2026-11-16 (`main`@`ed1f4be`)](#infrav3220-2026-11-16-mained1f4be)
@@ -63,6 +64,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.25.0` | 2026-11-27 | `38b3186` | unchanged (watcher bookkeeping + web + deps) | The check-in rule turns on the tee time: gone within the hour before it, or later, is played; gone earlier is cancelled. Tee times count as used the same day; the web cancel refuses a started tee time; fastapi 0.165.0, authlib 1.9.10, pydantic 2.14.4, ruff 0.17.6, setup-uv 10.4.0 (#375, #376, #377, #380, #382) |
 | `infra/v3.24.0` | 2026-11-27 | `58f7753` | unchanged (watcher bookkeeping + web) | A reservation gone from the course's list on its own day is played, not cancelled: the watcher leaves the row booked and sends no "cancelled at the course" email, and the used-tee-times report counts the five it had written cancelled; footer credit links to spicyals.com (#378, #379) |
 | `infra/v3.23.0` | 2026-11-26 | `16e5c5b` | unchanged (web only + web deps) | The operator's upcoming-tee-times page: `/admin/upcoming` lists every person's booked tee times for the next 21 days, soonest first, and the dates still being looked for; fastapi 0.163.1, authlib 1.9.8, python-multipart 0.0.34; pytest-asyncio 1.5.0, ruff 0.17.5 (#371, #372, #373) |
 | `infra/v3.22.0` | 2026-11-16 | `ed1f4be` | unchanged (web only) | The operator's tee-times-used report: `/admin/bookings` lists every person's past dates that still held a tee time in a chosen window, counted per person; cancelled ones behind a toggle (#369) |
@@ -106,6 +108,32 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.25.0: 2026-11-27 (`main`@`38b3186`)
+
+The same afternoon as v3.24.0, three operator follow-ups and the week's Dependabot PRs. **No
+booking-behaviour change**: the race, the search and the upgrade are untouched.
+
+- **A cancel before the tee time is a cancel** (#380; operator: "if a cancel is made before the
+  tee time we should know that it's cancelled not used"). v3.24.0 read any reservation gone on
+  its own date as played. The rule now turns on the tee time: first seen missing within 60
+  minutes before it (`models.CHECK_IN_WINDOW`), or later, is a check-in and the row stays
+  booked; first seen missing earlier, the same morning included, is `cancelled(external)` as
+  before. Accepted both ways: a cancel in the last hour looks like a check-in, and a check-in
+  more than an hour early is written cancelled.
+- **Rows v3.24.0 read as played** now need to have been written at or after their tee time.
+  Sun 11/15 (gone 70 minutes before a ~09:00 tee time) reads as cancelled again.
+- **Used the same day** (#382; operator: "we shouldn't need to wait til the next day"). Tee
+  times used counts a tee time from its tee time on; day windows and this month end today.
+  A person's own `/history` still starts yesterday.
+- **The web cancel refuses a tee time that has started** (#380, a review finding on #379): its
+  row is still booked, and a cancel would have found the reservation "already gone".
+- **Dependencies**: fastapi 0.163.1 to 0.165.0 (two opt-in limit settings, off by default),
+  authlib 1.9.8 to 1.9.10, pydantic 2.14.3 to 2.14.4 (#376, web and config); ruff 0.17.6 (#377)
+  and setup-uv 10.4.0 (#375), tooling only.
+
+Details: MULTIUSER_PLAN §7.5 and §8.5; [MULTIUSER_AS_BUILT.md](./MULTIUSER_AS_BUILT.md) "Tee
+times used, for the operator".
 
 ## infra/v3.24.0: 2026-11-27 (`main`@`58f7753`)
 
