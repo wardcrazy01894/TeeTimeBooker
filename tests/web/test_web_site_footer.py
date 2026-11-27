@@ -19,8 +19,9 @@ CREDIT = "A Spicy Al Software Solution"
 # The footer is the LAST element of the page: after </main>, nothing but </body></html> follows.
 _PAGE_END = re.compile(
     r"</main>\s*<footer class=\"site-footer\">\s*<p>"
+    r"<a class=\"studio-credit\" href=\"https://spicyals\.com\" target=\"_blank\" rel=\"noopener\">"
     + re.escape(CREDIT)
-    + r"</p>\s*</footer>\s*</body>\s*</html>\s*\Z"
+    + r"</a></p>\s*</footer>\s*</body>\s*</html>\s*\Z"
 )
 
 

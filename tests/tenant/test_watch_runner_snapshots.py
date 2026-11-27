@@ -202,6 +202,47 @@ async def test_watch_vanish_needs_two_trusted_snapshots() -> None:
     assert fake.book_call_count == 0
 
 
+async def test_watch_a_reservation_gone_on_the_day_of_play_stays_booked() -> None:
+    """Prod 2026-11-27: the course drops a reservation from the upcoming list at check-in, and
+    the watcher wrote the played tee time CANCELLED(external) and emailed "cancelled at the
+    course". On the date itself a missing reservation is left BOOKED, with no email."""
+    store = new_store()
+    fake = WatchFake(slots=[])
+    s, factory = await _owned_booking(store, fake=fake, live=False)
+    notifier = RecordingNotifier()
+    morning = datetime.combine(TARGET, time(9, 0), tzinfo=ZoneInfo("America/New_York"))
+    first_at = now_with_cadence(s.account, base=morning.astimezone(UTC))
+
+    first = await _watch(store, factory, now=first_at, notifier=notifier)
+    second = await _watch(store, factory, now=first_at + timedelta(hours=1), notifier=notifier)
+
+    assert first.logins == second.logins == 1  # both runs saw the list without it
+    row = await stored_row(store, s)
+    assert (row.status, row.booked_raw_id) == (RowStatus.BOOKED, HELD_RAW)
+    assert second.cancelled_external == ()
+    assert notifier.events == []
+    assert fake.book_call_count == fake.cancel_call_count == 0
+
+
+async def test_watch_a_reservation_gone_well_before_its_tee_time_is_still_a_cancel() -> None:
+    """Operator, 2026-11-27: "if a cancel is made before the tee time we should know that it's
+    cancelled not used". Missing from 04:30 for a 07:30 tee time is no check-in."""
+    store = new_store()
+    fake = WatchFake(slots=[])
+    s, factory = await _owned_booking(store, fake=fake, live=False)
+    notifier = RecordingNotifier()
+    dawn = datetime.combine(TARGET, time(4, 30), tzinfo=ZoneInfo("America/New_York"))
+    first_at = now_with_cadence(s.account, base=dawn.astimezone(UTC))
+
+    await _watch(store, factory, now=first_at, notifier=notifier)
+    second = await _watch(store, factory, now=first_at + timedelta(hours=1), notifier=notifier)
+
+    row = await stored_row(store, s)
+    assert (row.status, row.status_reason) == (RowStatus.CANCELLED, "external")
+    assert second.cancelled_external == (s.row.id,)
+    assert [e.kind for e in notifier.events] == [UserEventKind.CANCELLED_EXTERNAL]
+
+
 async def test_watch_two_misses_inside_ten_minutes_are_one_observation() -> None:
     store = new_store()
     fake = WatchFake()

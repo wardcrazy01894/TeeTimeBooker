@@ -12,6 +12,7 @@ every merge and is not tagged.
 ## Contents
 
 - [Summary](#summary)
+- [infra/v3.24.0: 2026-11-27 (`main`@`58f7753`)](#infrav3240-2026-11-27-main58f7753)
 - [infra/v3.23.0: 2026-11-26 (`main`@`16e5c5b`)](#infrav3230-2026-11-26-main16e5c5b)
 - [infra/v3.22.0: 2026-11-16 (`main`@`ed1f4be`)](#infrav3220-2026-11-16-mained1f4be)
 - [infra/v3.21.0: 2026-11-16 (`main`@`303ced5`)](#infrav3210-2026-11-16-main303ced5)
@@ -62,6 +63,7 @@ every merge and is not tagged.
 
 | Tag | Deployed | `main` | Booking behaviour | Headline |
 |-----|----------|--------|-------------------|----------|
+| `infra/v3.24.0` | 2026-11-27 | `58f7753` | unchanged (watcher bookkeeping + web) | A reservation gone from the course's list on its own day is played, not cancelled: the watcher leaves the row booked and sends no "cancelled at the course" email, and the used-tee-times report counts the five it had written cancelled; footer credit links to spicyals.com (#378, #379) |
 | `infra/v3.23.0` | 2026-11-26 | `16e5c5b` | unchanged (web only + web deps) | The operator's upcoming-tee-times page: `/admin/upcoming` lists every person's booked tee times for the next 21 days, soonest first, and the dates still being looked for; fastapi 0.163.1, authlib 1.9.8, python-multipart 0.0.34; pytest-asyncio 1.5.0, ruff 0.17.5 (#371, #372, #373) |
 | `infra/v3.22.0` | 2026-11-16 | `ed1f4be` | unchanged (web only) | The operator's tee-times-used report: `/admin/bookings` lists every person's past dates that still held a tee time in a chosen window, counted per person; cancelled ones behind a toggle (#369) |
 | `infra/v3.21.0` | 2026-11-16 | `303ced5` | unchanged (web only) | Booking history: `/history` lists a person's past dates with what became of each, the tee time and how it was booked; the operator's page per person shows the same (#367, #368) |
@@ -104,6 +106,31 @@ every merge and is not tagged.
 | `infra/v2.4.0` | | | **changed** | Race pre-warm bundle |
 | `infra/v2.2.0` | | | **changed** | Within-window upgrade |
 | `infra/v2.1.0` | 2026-06-10 | | **changed** | Multi-day Sat+Sun, cutoff + skip-days live |
+
+## infra/v3.24.0: 2026-11-27 (`main`@`58f7753`)
+
+Operator, the same day: "I think your logic to see if past tee times were used is wrong. I'm
+pretty sure brad used his tee time this morning" (#379). **No booking-behaviour change**: the
+race, the search and the upgrade are untouched; what changes is what the watcher concludes
+from a reservation missing on its own date, and how the web reads rows it had already written.
+
+- **Cause.** ForeUP lists upcoming reservations only and drops one at check-in or once its tee
+  time has gone. The watcher read two logins without it as a cancel at the course, wrote the
+  row `cancelled(external)` and emailed the person. Five played tee times, 2026-11-01 to
+  2026-11-27, each first missing between 70 minutes before the tee time and the hour after it.
+  Two more rows in those weeks went missing the day BEFORE their date: real cancels.
+- **Watcher.** A reservation first seen missing on the row's own date (course-local) or later
+  is `PLAY_DAY`: the row stays booked, nothing is written or mailed. One first seen missing
+  before the date is still an external cancel.
+- **Tee times used and /history.** A row written `cancelled(external)` on its own date or
+  later reads as booked and counts as used, so the five need no data change. The dashboard's
+  "not seen at course" badge is off from the date on.
+- **Accepted cost.** A cancel made on the day of play looks the same as a check-in, so it
+  stays booked and counts as used.
+- The footer credit line links to spicyals.com (#378).
+
+Details: MULTIUSER_PLAN §7.5; [MULTIUSER_AS_BUILT.md](./MULTIUSER_AS_BUILT.md) "Tee times
+used, for the operator".
 
 ## infra/v3.23.0: 2026-11-26 (`main`@`16e5c5b`)
 
