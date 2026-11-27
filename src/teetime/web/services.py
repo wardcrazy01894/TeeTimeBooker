@@ -663,6 +663,7 @@ async def history(
     clock: Clock,
     first: date | None = None,
     last: date | None = None,
+    started_today: bool = False,
 ) -> list[HistoryRow]:
     """The person's PAST dates, newest first: every row the dashboard would have listed
     (``_VISIBLE``: a withdrawn or superseded row is a request taken back or replaced, not an
@@ -672,7 +673,9 @@ async def history(
     (account, date)) for the How column; never a snapshot or a course login.
     ``first`` / ``last`` narrow it to dates in that inclusive range (the operator's
     used-tee-times report), still inside the ``HISTORY_DAYS`` bound and still only past
-    dates."""
+    dates. ``started_today`` (that report only) adds TODAY's rows that held a reservation
+    whose tee time has started, so a tee time is "used" from its tee time on, not from the
+    next midnight; /history itself never passes it (today is on the dashboard)."""
     now = clock.now_utc()
     rows = await store.list_rows_for_user(
         user_id,
@@ -683,7 +686,10 @@ async def history(
     for row in sorted(rows, key=lambda r: (r.target_date, str(r.id)), reverse=True):
         local_today = now.astimezone(ZoneInfo(row.timezone)).date()
         oldest = local_today - timedelta(days=HISTORY_DAYS)
-        if row.status not in _VISIBLE or not oldest <= row.target_date < local_today:
+        past = oldest <= row.target_date < local_today
+        if started_today and row.target_date == local_today:
+            past = _held(row) and row.booked_tee_time is not None and row.booked_tee_time <= now
+        if row.status not in _VISIBLE or not past:
             continue
         if (first is None or first <= row.target_date) and (
             last is None or row.target_date <= last

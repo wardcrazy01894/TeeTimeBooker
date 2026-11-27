@@ -1101,7 +1101,8 @@ arguments, so the report and a person's own `/history` cannot disagree.
   `test_a_tee_time_dropped_from_the_courses_list_on_its_own_day_reads_as_booked`,
   `test_the_dashboard_does_not_flag_a_tee_time_missing_from_the_list_on_its_own_day`,
   `test_cancel_refuses_a_tee_time_that_has_already_started`.
-- **Used** = a BOOKED row whose date has passed and whose reservation the bot booked. A
+- **Used** = a BOOKED row whose tee time has passed (today's included; a row with no tee time
+  on record counts once its date has passed) and whose reservation the bot booked. A
   CANCELLED row is counted per person (`PersonTotal.cancelled`) and listed only with
   `?cancelled=1`; it is never used. A held reservation with no ledger entry
   (`services.HOW_NOT_OURS`) is listed, greyed and counted apart (`not_ours`): the person made
@@ -1113,7 +1114,10 @@ arguments, so the report and a person's own `/history` cannot disagree.
   best-ranked is used and the rest are flagged "extra booking" (`duplicates`). LOST, SKIPPED
   and PENDING rows never appear.
 - **Windows** (`WINDOWS`, `window_dates`): `30d` (default), `90d`, `365d`, `this-month`,
-  `last-month`. A day window ends yesterday; months are calendar months (on the 1st, this month is empty); "today" is Eastern
+  `last-month`. A day window and this month end TODAY (2026-11-27, operator: "we shouldn't need
+  to wait til the next day"): a held tee time is used from its tee time on, via
+  `services.history(started_today=True)`, which /history itself never passes; months are
+  calendar months; "today" is Eastern
   (the operator's clock, like the attempt times on Users). An unknown key is the default. The
   365-day bound of `history` still applies.
 - **By person**: used tee times, their players summed (a per-player charge needs no second
