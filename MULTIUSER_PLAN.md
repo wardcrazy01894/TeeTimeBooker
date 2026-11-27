@@ -899,8 +899,9 @@ vanished", leading to cancelled(external) or a re-book (**double booking**). Rul
   the logs name, and probably a fourth) were first missed between 17 minutes before the tee time
   and an hour after it. History and the
   operator's report read those rows as booked (`models.left_the_list_on_play_day`: written at or
-  after the tee time, i.e. first missed inside the window). Accepted cost: a real cancel in the
-  last hour before the tee time also stays BOOKED. The web cancel refuses a tee time that has
+  after the tee time, i.e. first missed inside the window). Accepted cost, both ways: a real cancel in
+  the last hour before the tee time also stays BOOKED, and a check-in more than an hour early is
+  written cancelled and mailed (widen `CHECK_IN_WINDOW` if that is ever seen). The web cancel refuses a tee time that has
   started, since its row is still BOOKED. Pinned by
   `test_a_reservation_that_leaves_the_list_on_the_day_of_play_is_not_a_cancel`,
   `test_watch_a_reservation_gone_on_the_day_of_play_stays_booked` and

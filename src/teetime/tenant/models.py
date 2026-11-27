@@ -489,7 +489,9 @@ def row_is_frozen(row: RequestRow, *, now: datetime) -> bool:
 
 # How long before its tee time a reservation may leave the course's list and still be a
 # check-in. The watcher logs in about hourly, so a first miss is up to an hour after the fact;
-# every check-in seen in prod was first missed inside this window, and nobody checks in earlier.
+# every check-in seen in prod was first missed inside this window. Accepted risk both ways: a
+# check-in earlier than this is written cancelled (and mailed), a cancel later than this stays
+# BOOKED. Widen it if a golfer who played is ever told "cancelled at the course".
 CHECK_IN_WINDOW = timedelta(minutes=60)
 
 
@@ -507,9 +509,11 @@ def could_be_checked_in(row: RequestRow, at: datetime) -> bool:
 def left_the_list_on_play_day(row: RequestRow) -> bool:
     """A row the watcher wrote CANCELLED(external) at or after its tee time: written before the
     check-in rule existed (three or four in prod, 2026-11-01 to 2026-11-27). Its tee time was
-    played, so history and the operator's report read it as booked, not cancelled. That write
-    came at the SECOND miss, about an hour after the first, so "at or after the tee time" here
-    is the same line ``could_be_checked_in`` draws at the first. No tee time on record: its
+    played, so history and the operator's report read it as booked, not cancelled. This reads
+    a FIXED set of old rows, each written at its second miss exactly one login cadence (an
+    hour) after the first, so "written at or after the tee time" is, for them, the line
+    ``could_be_checked_in`` draws at the first miss; it is not that rule in general (a write
+    ten minutes after the first miss would be judged too strictly). No tee time on record: its
     date decides."""
     if (
         row.status is not RowStatus.CANCELLED

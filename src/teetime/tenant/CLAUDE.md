@@ -98,7 +98,8 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](../../../docs/MULTIUSER_AS_B
   BOOKED, no write, no email. A miss first seen EARLIER is still an external cancel, the same
   morning included (operator: "if a cancel is made before the tee time we should know that
   it's cancelled not used"); a cancel inside the last hour cannot be told from a check-in and
-  stays BOOKED. Rows written the old way are read as booked by
+  stays BOOKED, and a check-in more than an hour early is written cancelled (accepted; widen
+  the window if it is ever seen). Rows written the old way are read as booked by
   `models.left_the_list_on_play_day` (written at or after the tee time; history, the report);
   the dashboard's "not seen at course" badge is off from the window on, and the web cancel
   refuses a tee time that has started (`services._not_started`), since such a row is still
