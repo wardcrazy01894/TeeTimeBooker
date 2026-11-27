@@ -138,6 +138,18 @@ footer.site-footer {
 }
 footer.site-footer p { margin: 0; }
 
+/* The studio credit links to the hub but keeps reading as the plain line it
+   always was: no colour change, underline only on hover / keyboard focus. */
+footer.site-footer a.studio-credit {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
+}
+footer.site-footer a.studio-credit:hover,
+footer.site-footer a.studio-credit:focus-visible {
+  text-decoration: underline;
+}
+
 section, .card {
   background: var(--surface);
   border: 1px solid var(--border);
