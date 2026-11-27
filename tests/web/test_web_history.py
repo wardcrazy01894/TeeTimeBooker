@@ -29,6 +29,7 @@ from teetime.tenant.models import (
     OwnedBooking,
     OwnedBookingId,
     RequestRow,
+    ReservationSnapshot,
     RowStatus,
     StandingRule,
 )
@@ -130,11 +131,13 @@ async def _book(
     )
 
 
-async def _cancel_at_course(store: InMemoryTenantStore, row: RequestRow) -> None:
+async def _cancel_at_course(
+    store: InMemoryTenantStore, row: RequestRow, *, at: datetime = T0
+) -> None:
     """booked -> cancelled(external), as the watcher writes a vanished reservation."""
     owner = "watcher:test"
     assert await store.acquire_row_lease(
-        row.id, owner=owner, until=T0 + timedelta(minutes=5), now=T0, expected=None
+        row.id, owner=owner, until=at + timedelta(minutes=5), now=at, expected=None
     )
     await store.record_outcomes(
         [
@@ -145,7 +148,7 @@ async def _cancel_at_course(store: InMemoryTenantStore, row: RequestRow) -> None
                 actor=Actor.WATCHER,
                 to_status=RowStatus.CANCELLED,
                 last_outcome="cancelled_external",
-                at=T0,
+                at=at,
                 status_reason="external",
                 release_lease_owner=owner,
             )
@@ -356,3 +359,44 @@ async def test_the_operators_page_for_a_person_shows_their_past_dates(
     assert "cancelled at the course" in past and "08:15" in past
     assert "Oct 3" in past and "09:30" in past
     assert "Oct 24" not in past  # upcoming: in the section above
+
+
+async def test_a_tee_time_dropped_from_the_courses_list_on_its_own_day_reads_as_booked(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, member: Member, clock: FakeClock
+) -> None:
+    """Prod, 2026-11-01 to 2026-11-27: the watcher wrote several PLAYED tee times
+    CANCELLED(external), because the course drops a reservation from the upcoming list at
+    check-in. A row cancelled that way on its own date was held to the day: history says
+    booked. One cancelled before its date (Oct 10, in ``_a_month_of_golf``) stays cancelled."""
+    await _a_month_of_golf(store, member, clock)
+    (oct3,) = await store.list_rows_for_user(member.user.id, from_date=OCT3, to_date=OCT3)
+    await _cancel_at_course(store, oct3, at=TEE_OCT3 + timedelta(minutes=40))  # 10:10 EDT
+    rows = await services.history(store, user_id=member.user.id, clock=clock)
+    by_date = {r.row.target_date: r for r in rows}
+    assert (by_date[OCT3].played, by_date[OCT10].played) == (True, False)
+    assert dict(services.history_summary(rows)) == {"booked": 1, "cancelled": 1, "lost": 1}
+    text = _main((await _history(client)).text)
+    oct3_line = text[text.index("Oct 3") : text.index("Dates from the last")]
+    assert "booked 09:30" in oct3_line and "cancelled" not in oct3_line
+
+
+async def test_the_dashboard_does_not_flag_a_tee_time_missing_from_the_list_on_its_own_day(
+    client: httpx.AsyncClient, store: InMemoryTenantStore, member: Member, clock: FakeClock
+) -> None:
+    """On the day of play "not seen at course" would be said of every checked-in tee time."""
+    rule = await _seed_rule(store, member)
+    await _book(store, await _row_for(store, member, rule, OCT3), TEE_OCT3)
+    for at in (TEE_OCT3 - timedelta(days=1), TEE_OCT3 + timedelta(minutes=40)):
+        await _move_clock_to(clock, at + timedelta(minutes=5))
+        await store.save_snapshot(
+            ReservationSnapshot(
+                course_account_id=member.account.id,
+                observed_at=at,
+                source="watcher",
+                trusted=True,
+                entries=(),
+            )
+        )
+        assert (await sign_in(client)).status_code == 303
+        page = (await client.get("/")).text
+        assert ("not seen at course" in page) is (at < TEE_OCT3)

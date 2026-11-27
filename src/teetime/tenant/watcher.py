@@ -45,6 +45,7 @@ from .models import (
     ReservationSnapshot,
     RowStatus,
     achieved_rank,
+    could_be_checked_in,
     options_time_windows,
     row_max_price,
 )
@@ -304,6 +305,10 @@ class MissingBookingVerdict(StrEnum):
     NOT_YET = "not_yet"  # fewer than VANISH_CONSECUTIVE_TRUSTED_SNAPSHOTS trusted misses
     BOT_CAUSED = "bot_caused"  # upgrade marker set, or ledgered cancelled_upgrade/extra
     ADOPT_REPLACEMENT = "adopt_replacement"  # a same-(date, party) reservation exists
+    # Gone from the list within the hour before its tee time, or later: the course lists
+    # upcoming reservations only, so it drops one at check-in or once its tee time has gone.
+    # Played, not cancelled: nothing written (``models.could_be_checked_in``).
+    PLAY_DAY = "play_day"
     EXTERNAL_CANCEL = "external_cancel"  # the expected common case: mark, notify, never re-book
 
 
@@ -316,8 +321,10 @@ def classify_missing_booking(
     """Pure (round-1 M2 exclusions + operator decision Q7). Only TRUSTED snapshots count (an
     untrusted one is neither a miss nor a sighting); they are ordered by ``observed_at`` here, so
     input order does not matter. BOT_CAUSED -> PENDING + needs_reconcile; EXTERNAL_CANCEL ->
-    CANCELLED(external) + slot freed + email. Raises ``ValueError`` for a non-BOOKED row or a
-    snapshot of another account; a BOOKED row with no raw id is NOT_YET (adoption resolves it)."""
+    CANCELLED(external) + slot freed + email; PLAY_DAY (every counted miss was seen within
+    ``CHECK_IN_WINDOW`` before the tee time, or later) -> the row stays BOOKED. Raises
+    ``ValueError`` for a non-BOOKED row or a snapshot of another account; a BOOKED row with no
+    raw id is NOT_YET (adoption resolves it)."""
     if row.status is not RowStatus.BOOKED:
         raise ValueError(f"classify_missing_booking needs a BOOKED row, got {row.status}")
     if any(s.course_account_id != row.course_account_id for s in snapshots):
@@ -325,9 +332,10 @@ def classify_missing_booking(
     raw = row.booked_raw_id
     if raw is None:
         return MissingBookingVerdict.NOT_YET
-    newest = _newest_trusted_miss(raw, snapshots)
-    if newest is None:
+    misses = _recent_trusted_misses(raw, snapshots)
+    if misses is None:
         return MissingBookingVerdict.NOT_YET
+    newest, oldest = misses[0], misses[-1]
     cancelled_by_us = any(
         o.raw_reservation_id == raw and o.state in _CANCELLED_BY_US for o in owned
     )
@@ -342,6 +350,9 @@ def classify_missing_booking(
     legs: tuple[tuple[bool, MissingBookingVerdict], ...] = (
         (row.upgrade_started_at is not None or cancelled_by_us, MissingBookingVerdict.BOT_CAUSED),
         (replaced, MissingBookingVerdict.ADOPT_REPLACEMENT),
+        # The OLDEST counted miss decides: a reservation already gone hours before its tee time
+        # was cancelled, however late the second look fell.
+        (could_be_checked_in(row, oldest.observed_at), MissingBookingVerdict.PLAY_DAY),
     )
     return next((verdict for hit, verdict in legs if hit), MissingBookingVerdict.EXTERNAL_CANCEL)
 
@@ -356,11 +367,11 @@ _CANCELLED_BY_US: frozenset[BookingState] = frozenset(
 )
 
 
-def _newest_trusted_miss(
+def _recent_trusted_misses(
     raw: str, snapshots: Sequence[ReservationSnapshot]
-) -> ReservationSnapshot | None:
-    """The newest TRUSTED snapshot iff the last ``VANISH_CONSECUTIVE_TRUSTED_SNAPSHOTS`` trusted
-    snapshots all miss ``raw`` and span at least ``VANISH_MIN_SNAPSHOT_GAP``; else None. Untrusted
+) -> list[ReservationSnapshot] | None:
+    """The last ``VANISH_CONSECUTIVE_TRUSTED_SNAPSHOTS`` TRUSTED snapshots, newest first, iff
+    they all miss ``raw`` and span at least ``VANISH_MIN_SNAPSHOT_GAP``; else None. Untrusted
     snapshots are skipped entirely (neither a miss nor a sighting)."""
     trusted = sorted((s for s in snapshots if s.trusted), key=lambda s: s.observed_at, reverse=True)
     recent = trusted[:VANISH_CONSECUTIVE_TRUSTED_SNAPSHOTS]
@@ -368,7 +379,7 @@ def _newest_trusted_miss(
         return None
     seen = any(e.raw_id == raw for s in recent for e in s.entries)
     too_close = recent[0].observed_at - recent[-1].observed_at < VANISH_MIN_SNAPSHOT_GAP
-    return None if seen or too_close else recent[0]
+    return None if seen or too_close else recent
 
 
 class WatchAction(StrEnum):

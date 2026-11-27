@@ -88,6 +88,26 @@ Details per milestone: [docs/MULTIUSER_AS_BUILT.md](../../../docs/MULTIUSER_AS_B
   `_try_upgrade`: it pre-seeds a `TTB:` terminal only for an owned BOOKED row
   (`seeded_terminal`) and hands the upgrade policy only to such rows, and passes
   `reconcile_eligible` = owned. A manual reservation is never upgraded or cancelled by the bot.
+- **A reservation that leaves the course's list around its tee time is PLAYED, never
+  cancelled** (2026-11-27). ForeUP lists upcoming reservations only and drops one at check-in or
+  after its tee time, so the watcher wrote three or four played tee times `cancelled(external)`, emailed
+  each person "cancelled at the course", and the operator's used-tee-times report left them out.
+  `classify_missing_booking` returns `PLAY_DAY` when the older of its two counted misses was
+  observed within `models.CHECK_IN_WINDOW` (60 min) before the row's tee time, or later
+  (`models.could_be_checked_in`; no tee time on record: the date decides): the row stays
+  BOOKED, no write, no email. A miss first seen EARLIER is still an external cancel, the same
+  morning included (operator: "if a cancel is made before the tee time we should know that
+  it's cancelled not used"); a cancel inside the last hour cannot be told from a check-in and
+  stays BOOKED, and a check-in more than an hour early is written cancelled (accepted; widen
+  the window if it is ever seen). Rows written the old way are read as booked by
+  `models.left_the_list_on_play_day` (written at or after the tee time; history, the report);
+  the dashboard's "not seen at course" badge is off from the window on, and the web cancel
+  refuses a tee time that has started (`services._not_started`), since such a row is still
+  BOOKED. Pinned by
+  `test_a_reservation_that_leaves_the_list_on_the_day_of_play_is_not_a_cancel`,
+  `test_watch_a_reservation_gone_on_the_day_of_play_stays_booked`,
+  `test_watch_a_reservation_gone_well_before_its_tee_time_is_still_a_cancel` and
+  `test_cancel_refuses_a_tee_time_that_has_already_started`.
 - **Dry-run environments never mutate reservations** (§7.8): no upgrade, no reconcile-cancel, no
   `cancelled(external)` write, and the web refuses cancel. **And send NO email unless the BOOKER
   fails** (operator, 2026-10-04; the day before, dev's watcher had emailed a real inbox "No tee

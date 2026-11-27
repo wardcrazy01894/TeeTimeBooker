@@ -1,14 +1,18 @@
 """The operator's used-tee-times report, ``/admin/bookings`` (operator request 2026-11-16: "I
 might start charging people for the tee times they use").
 
-Every signed-in person's PAST dates that still hold a tee time (a BOOKED row whose date has
-passed), in a chosen window, newest first, with a count per person. A booked-then-cancelled
-date is not "used": it is counted per person but listed only when asked for. A reservation the
-bot never owned (``services.HOW_NOT_OURS``: one the person made themselves, found on the date)
-is listed, flagged and NOT counted, since it is not the site's work to charge for.
+Every signed-in person's tee times that were still held when they started (a BOOKED row whose
+tee time has passed, today's included), in a chosen window, newest first, with a count per
+person. A booked-then-cancelled date is not "used": it is counted per person but listed only
+when asked for. "Still held" is ``HistoryRow.outcome``, so a reservation the course dropped
+from its upcoming list at its tee time (check-in; the watcher once wrote those cancelled) is
+used, not cancelled. A reservation the bot never owned (``services.HOW_NOT_OURS``: one the
+person made themselves, found on the date) is listed, flagged and NOT counted, since it is not
+the site's work to charge for.
 
-Built on ``services.history`` per person (the same read each person's own ``/history`` makes),
-so the report and the person's page can never disagree. Read-only; never logs in to a course.
+Built on ``services.history`` per person (the read each person's own ``/history`` makes, plus
+today's started tee times), so the report and the person's page cannot disagree about a past
+date. Read-only; never logs in to a course.
 """
 
 from __future__ import annotations
@@ -23,8 +27,8 @@ from ..tenant.store import TenantStore
 from . import services
 from .services import HistoryRow
 
-# key -> label, in the order the page offers them. A day window ends YESTERDAY: a tee time
-# counts once its date has passed.
+# key -> label, in the order the page offers them. A day window ends TODAY: a tee time counts
+# from its tee time on (``services.history(started_today=True)``), not from the next midnight.
 WINDOWS: dict[str, str] = {
     "30d": "Last 30 days",
     "90d": "Last 90 days",
@@ -39,14 +43,12 @@ _ET = ZoneInfo("America/New_York")
 
 def window_dates(window: str, *, today: date) -> tuple[date, date]:
     """The inclusive (first, last) dates of a ``WINDOWS`` key as seen on ``today``."""
-    yesterday = today - timedelta(days=1)
     if window == "this-month":
-        first = today.replace(day=1)
-        return first, max(first, yesterday)  # on the 1st: empty (today is never a past date)
+        return today.replace(day=1), today
     if window == "last-month":
         end = today.replace(day=1) - timedelta(days=1)
         return end.replace(day=1), end
-    return today - timedelta(days=int(window.removesuffix("d"))), yesterday
+    return today - timedelta(days=int(window.removesuffix("d"))), today
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,10 +128,10 @@ async def usage_report(
         if user.oauth_subject is None:  # never signed in: no accounts, no rows
             continue
         entries = await services.history(
-            store, user_id=user.id, clock=clock, first=first, last=last
+            store, user_id=user.id, clock=clock, first=first, last=last, started_today=True
         )
-        held = [e for e in entries if e.row.status is RowStatus.BOOKED]
-        cancelled = [e for e in entries if e.row.status is RowStatus.CANCELLED]
+        held = [e for e in entries if e.outcome is RowStatus.BOOKED]
+        cancelled = [e for e in entries if e.outcome is RowStatus.CANCELLED]
         ours = [e for e in held if e.how != services.HOW_NOT_OURS]
         used = _one_per_request(ours)
         if not held and not cancelled:
