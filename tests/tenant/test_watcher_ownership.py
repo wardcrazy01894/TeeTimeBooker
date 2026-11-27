@@ -220,6 +220,15 @@ def test_a_reservation_that_leaves_the_list_on_the_day_of_play_is_not_a_cancel()
         classify_missing_booking(r, snapshots=on_the_day, owned=[])
         is MissingBookingVerdict.PLAY_DAY
     )
+    # Gone well before the tee time (09:30), the same morning: nobody checks in two hours
+    # early, so that is a cancel. Inside the hour before, it cannot be told from a check-in.
+    for older, verdict in (
+        (time(7, 10), MissingBookingVerdict.EXTERNAL_CANCEL),
+        (time(8, 29), MissingBookingVerdict.EXTERNAL_CANCEL),
+        (time(8, 30), MissingBookingVerdict.PLAY_DAY),
+    ):
+        early = [_miss(local(day, time(9, 0))), _miss(local(day, older))]
+        assert classify_missing_booking(r, snapshots=early, owned=[]) is verdict
     # Gone before the day began (the older miss is the evening before): a real cancel.
     eve = local(day - timedelta(days=1), time(23, 40))
     overnight = [_miss(local(day, time(0, 10))), _miss(eve)]
